@@ -206,6 +206,19 @@ def _build_config(raw: dict[str, Any]) -> Config:
     )
 
     ex = raw.get("execution", {}) or {}
+    _valid_local_sandbox = {"off", "auto", "require"}
+    local_sandbox_raw = str(ex.get("local_sandbox", "off"))
+    if local_sandbox_raw not in _valid_local_sandbox:
+        raise ConfigError(
+            f"execution.local_sandbox must be one of "
+            f"{sorted(_valid_local_sandbox)} (got {local_sandbox_raw!r})."
+        )
+    sandbox_writable_raw = ex.get("sandbox_writable", []) or []
+    if not isinstance(sandbox_writable_raw, list):
+        raise ConfigError(
+            f"execution.sandbox_writable must be a list "
+            f"(got {sandbox_writable_raw!r})."
+        )
     cfg.execution = ExecutionConfig(
         backend=str(ex.get("backend", "local")),
         sandbox_provider=str(ex.get("sandbox_provider", "langsmith")),
@@ -213,6 +226,11 @@ def _build_config(raw: dict[str, Any]) -> Config:
         allow_local_fallback=_normalize_bool(
             ex.get("allow_local_fallback", False), "execution.allow_local_fallback"
         ),
+        local_sandbox=local_sandbox_raw,
+        sandbox_allow_network=_normalize_bool(
+            ex.get("sandbox_allow_network", True), "execution.sandbox_allow_network"
+        ),
+        sandbox_writable=[str(p) for p in sandbox_writable_raw],
     )
 
     perms = raw.get("permissions", {}) or {}

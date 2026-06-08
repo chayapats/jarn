@@ -286,6 +286,15 @@ def _collect_doctor(diag: dict) -> int:
         diag["main_model_error"] = str(exc)
         ok = False
 
+    from jarn.agent.os_sandbox import available as _sbx_available
+    from jarn.agent.os_sandbox import backend_name as _sbx_name
+
+    diag["sandbox"] = {
+        "backend": _sbx_name(),
+        "available": _sbx_available(),
+        "mode": cfg.execution.local_sandbox,
+    }
+
     from jarn.doctor_extensions import collect_extensions
 
     diag["extensions"] = collect_extensions(
@@ -323,6 +332,16 @@ def _cmd_doctor(*, as_json: bool = False) -> int:
     console.print(f"default profile: {diag['default_profile']}")
     console.print(f"main model: {diag['main_model']}")
     console.print(f"permission mode: {diag['permission_mode']}")
+
+    sbx = diag.get("sandbox") or {}
+    sbx_backend = sbx.get("backend") or "none"
+    sbx_avail = sbx.get("available", False)
+    sbx_mode = sbx.get("mode", "off")
+    if sbx_avail:
+        sbx_status = f"[green]{sbx_backend} available[/green]"
+    else:
+        sbx_status = "[dim]unavailable[/dim]"
+    console.print(f"sandbox: {sbx_status} · mode {sbx_mode}")
 
     console.print("\n[b]Providers[/b]")
     for entry in diag["providers"]:

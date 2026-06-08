@@ -203,6 +203,14 @@ context:
   auto_compact: true
   compact_at_pct: 85
 
+# Execution backend (shell commands). Defaults to local; see docs/CONFIGURATION.md.
+# OS-level sandbox is opt-in — enabling it changes execution behaviour.
+# execution:
+#   backend: local                 # local | sandbox
+#   local_sandbox: off             # off | auto | require
+#   sandbox_allow_network: true    # false = deny outbound network inside the sandbox
+#   sandbox_writable: []           # extra paths the sandbox may write
+
 # Persisted fine-grained permission rules (layered under permission_mode).
 permissions:
   allow: []             # e.g. ["git status", "ls *", "npm test"]

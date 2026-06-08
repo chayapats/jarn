@@ -125,17 +125,41 @@ class SandboxUnavailable(RuntimeError):
     """Raised when a sandbox backend is requested but cannot be constructed."""
 
 
-def _make_local_backend(project_root: Path | None):
+def _make_local_backend(project_root: Path | None, config: Config | None = None):
     """Local-first backend: real filesystem + shell, scoped to the project root.
 
     ``virtual_mode=True`` adds path guardrails (blocks ``..``/absolute escapes)
     for filesystem ops. Shell execution is still on the host — that is gated by
     the permission engine and danger-guard at the TUI layer.
+
+    When ``config.execution.local_sandbox`` is ``"auto"`` or ``"require"``, each
+    shell command is additionally wrapped by :mod:`jarn.agent.os_sandbox` so the
+    kernel enforces write isolation and optional network denial.  The default is
+    ``"off"`` which preserves the original behaviour exactly.
     """
     from jarn.agent.local_backend import CancellableLocalShellBackend
 
     root = str(project_root) if project_root else str(Path.cwd())
-    return CancellableLocalShellBackend(root_dir=root, virtual_mode=True)
+    root_path = Path(root)
+
+    sandbox_mode = "off"
+    sandbox_allow_network = True
+    sandbox_extra_writable: list[Path] = []
+
+    if config is not None:
+        ex = config.execution
+        sandbox_mode = ex.local_sandbox
+        sandbox_allow_network = ex.sandbox_allow_network
+        sandbox_extra_writable = [Path(p).expanduser() for p in ex.sandbox_writable]
+
+    return CancellableLocalShellBackend(
+        root_dir=root,
+        virtual_mode=True,
+        sandbox_mode=sandbox_mode,
+        project_root=root_path,
+        sandbox_allow_network=sandbox_allow_network,
+        sandbox_extra_writable=sandbox_extra_writable,
+    )
 
 
 def _make_sandbox_backend(config: Config):
@@ -166,7 +190,7 @@ def _make_sandbox_backend(config: Config):
 def _make_backend(config: Config, project_root: Path | None):
     if config.execution.backend == "sandbox":
         return _make_sandbox_backend(config)  # may raise SandboxUnavailable
-    return _make_local_backend(project_root)
+    return _make_local_backend(project_root, config)
 
 
 def _async_subagent_specs(config: Config) -> list[Any]:

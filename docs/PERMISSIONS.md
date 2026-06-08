@@ -144,3 +144,30 @@ a sandbox runtime is available. It **fails closed**: if the sandbox can't start,
 refuses to silently run on the host. Set `execution.allow_local_fallback: true` to opt
 into host fallback — the status bar then shows `host (no sandbox)` so the downgrade is
 never silent.
+
+### OS sandbox (optional kernel-enforced layer)
+
+`execution.local_sandbox` adds an optional second layer of isolation **beneath** the
+danger-guard for the local backend, enforced by the OS kernel rather than a regex:
+
+- **macOS**: uses `sandbox-exec` (Seatbelt / SBPL) to deny `file-write*` outside the
+  project root, system temp, and any caches; optionally denies `network*`.
+- **Linux**: uses `bwrap` (Bubblewrap) to bind-mount `/` read-only, overlay the project
+  read-write, and optionally remove the network namespace (`--unshare-net`).
+
+Three modes control behaviour:
+
+| Mode | Effect |
+|---|---|
+| `off` (default) | Disabled; existing behavior is preserved exactly. |
+| `auto` | Use the OS sandbox when available; emit a one-time warning and continue without isolation if the tool is absent. |
+| `require` | Sandbox or fail closed — `execute()` returns exit-code 126 with a clear error message if the sandbox tool is not on PATH. Does **not** silently run unsandboxed. |
+
+The writable scope is: the project root, the system temp dir (`$TMPDIR`/`/tmp`), and
+common cache directories that exist (`~/.cache`, `~/.npm`, `~/.cargo`,
+`~/.local/share`). Add extra paths with `execution.sandbox_writable`. Reads are always
+unrestricted — only writes are limited.
+
+Enable with `execution.local_sandbox: auto` to get kernel enforcement opportunistically,
+or `require` in environments where isolation is non-negotiable. `jarn doctor` reports the
+detected backend and configured mode.

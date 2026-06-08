@@ -156,6 +156,21 @@ execution:
                                 # host anyway? OFF = fail closed (recommended).
                                 # When on, the status bar shows "host (no sandbox)".
 
+  # OS-level kernel-enforced sandbox for the LOCAL shell backend.
+  # Adds a second layer of isolation beneath the danger-guard using sandbox-exec
+  # (macOS Seatbelt) or bwrap (Linux Bubblewrap). Shell commands can only write
+  # inside the project (plus temp/caches) and optionally have no network.
+  # Requires sandbox-exec (macOS, ships with Xcode CLI tools) or bwrap (Linux,
+  # available in most distros as the `bubblewrap` package) on PATH.
+  # Default "off" preserves the existing behavior exactly.
+  local_sandbox: off       # off | auto | require
+                           # off     — disabled (default; no behavior change)
+                           # auto    — use when available, warn once + continue if not
+                           # require — sandbox or fail closed (execute returns error 126)
+  sandbox_allow_network: true    # set false to block outbound network in the sandbox
+  sandbox_writable: []           # extra writable paths beyond project root + caches
+                                 # e.g. ["/home/user/shared-build-cache"]
+
 # ── Async / remote subagents (DeepAgents Agent Protocol) ─────────────────
 async_subagents:
   - name: researcher

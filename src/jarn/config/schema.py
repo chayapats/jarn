@@ -99,6 +99,16 @@ class ExecutionConfig:
     # we fail closed unless the user explicitly opts in.
     allow_local_fallback: bool = False
 
+    # OS-level kernel-enforced sandbox for the local shell backend.
+    # ``off``     — no OS sandbox (default; current behaviour preserved exactly).
+    # ``auto``    — use the OS sandbox when available, degrade with a one-time
+    #               warning when not; never blocks startup.
+    # ``require`` — OS sandbox or fail closed: execute() returns an error if the
+    #               sandbox backend is unavailable on this host.
+    local_sandbox: str = "off"        # off | auto | require
+    sandbox_allow_network: bool = True
+    sandbox_writable: list[str] = field(default_factory=list)  # extra writable paths
+
 
 @dataclass(slots=True)
 class PermissionRules:
