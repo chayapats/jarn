@@ -244,6 +244,17 @@ ui:
 # git:
 #   autocheckpoint: false   # set true to enable
 #   checkpoint_mode: shadow # shadow (private refs only) | commit (reserved)
+
+# ── Project knowledge base (wiki) ────────────────────────────────────────────
+# A transparent, git-friendly per-project (and global) markdown knowledge base.
+# Pages live under <project>/.jarn/wiki/pages/*.md and ~/.jarn/wiki/pages/*.md.
+# When enabled the agent gets four tools: wiki_search, wiki_read, wiki_write,
+# wiki_append. wiki_write/wiki_append require approval in ask mode; they are
+# auto-allowed in auto-edit/yolo (same policy as file writes).
+# The wiki index is injected into the system prompt at build time for trusted
+# projects; global wiki is always available.
+# wiki:
+#   enabled: false
 """
 
 

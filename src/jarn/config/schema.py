@@ -206,6 +206,19 @@ class GitConfig:
 
 
 @dataclass(slots=True)
+class WikiConfig:
+    """Per-project (and global) markdown knowledge base.
+
+    When ``enabled`` is ``True`` four wiki tools are registered on the agent
+    (``wiki_search``, ``wiki_read``, ``wiki_write``, ``wiki_append``) and the
+    wiki index is injected into the system prompt at build time.
+    Disabled by default so the feature is opt-in.
+    """
+
+    enabled: bool = False
+
+
+@dataclass(slots=True)
 class CompatConfig:
     """Cross-vendor interop: which context files to check and whether to read
     ``.claude/`` extension directories alongside ``.jarn/``.
@@ -247,6 +260,7 @@ class Config:
     ui: UIConfig = field(default_factory=UIConfig)
     compat: CompatConfig = field(default_factory=CompatConfig)
     git: GitConfig = field(default_factory=GitConfig)
+    wiki: WikiConfig = field(default_factory=WikiConfig)
 
     def resolved_main_model(self) -> str | None:
         """The model used for the top-level agent loop."""

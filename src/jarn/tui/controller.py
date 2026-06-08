@@ -891,6 +891,50 @@ class Controller:
             return CommandResult("No source files found in the project.")
         return CommandResult(text)
 
+    def _cmd_wiki(self, args: str) -> CommandResult:
+        """List or search the wiki knowledge base.
+
+        Usage::
+
+            /wiki              — list all pages in the index
+            /wiki list         — same as above
+            /wiki search <q>   — grep pages for <q> (case-insensitive)
+        """
+        from jarn.memory.wiki import WikiStore
+
+        store = WikiStore.build(self.project_root)
+
+        raw = args.strip()
+        if not raw or raw.lower() == "list":
+            index = store.index_text()
+            if not index.strip():
+                return CommandResult(
+                    "No wiki pages yet. "
+                    "Enable wiki with `wiki: {enabled: true}` in your config, "
+                    "then let the agent write pages with `wiki_write`."
+                )
+            return CommandResult(index)
+
+        parts = raw.split(None, 1)
+        subcmd = parts[0].lower()
+        if subcmd == "search":
+            query = parts[1].strip() if len(parts) > 1 else ""
+            if not query:
+                return CommandResult("Usage: /wiki search <query>")
+            results = store.search(query)
+            if not results:
+                return CommandResult(f"No wiki pages matched {query!r}.")
+            lines = [f"[b]Wiki search:[/b] {_escape_markup(query)!r}"]
+            for slug, matched in results:
+                lines.append(f"\n  [cyan]{_escape_markup(slug)}[/cyan]")
+                for line in matched[:5]:
+                    lines.append(f"    {_escape_markup(line)}")
+                if len(matched) > 5:
+                    lines.append(f"    [dim]… ({len(matched) - 5} more)[/dim]")
+            return CommandResult("\n".join(lines))
+
+        return CommandResult("Usage: /wiki [search <q>|list]")
+
     def _cmd_quit(self, args: str) -> CommandResult:
         return CommandResult("Bye.", quit=True)
 

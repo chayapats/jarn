@@ -31,6 +31,7 @@ from jarn.config.schema import (
     ProviderType,
     RoutingConfig,
     UIConfig,
+    WikiConfig,
 )
 
 _LIST_EXTEND_KEYS = {"hooks", "mcp_servers", "async_subagents"}
@@ -54,6 +55,7 @@ _KNOWN_TOP_LEVEL_KEYS = {
     "ui",
     "compat",
     "git",
+    "wiki",
 }
 
 _TRUE_STRINGS = {"true", "yes", "on", "1"}
@@ -288,6 +290,9 @@ def _build_config(raw: dict[str, Any]) -> Config:
     git = raw.get("git", {}) or {}
     cfg.git = _build_git_config(git)
 
+    wiki = raw.get("wiki", {}) or {}
+    cfg.wiki = _build_wiki_config(wiki)
+
     return cfg
 
 
@@ -396,6 +401,12 @@ def _build_git_config(raw: dict[str, Any]) -> GitConfig:
             raw.get("autocheckpoint", False), "git.autocheckpoint"
         ),
         checkpoint_mode=mode,
+    )
+
+
+def _build_wiki_config(raw: dict[str, Any]) -> WikiConfig:
+    return WikiConfig(
+        enabled=_normalize_bool(raw.get("enabled", False), "wiki.enabled"),
     )
 
 

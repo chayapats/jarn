@@ -248,6 +248,16 @@ def build_runtime(
 
     tools = [*build_web_tools(), *(extra_tools or [])]
 
+    # Wiki tools — registered only when wiki.enabled is True.
+    if config.wiki.enabled:
+        wiki_tools, system_prompt = _add_wiki_tools(
+            tools,
+            system_prompt,
+            root,
+            project_trusted=project_trusted,
+        )
+        tools = wiki_tools
+
     # Repo map tool and/or system-prompt injection.
     repo_map_mode = config.context.repo_map
     if repo_map_mode in ("tool", "auto"):
@@ -318,6 +328,126 @@ def build_runtime(
         backend=backend,
         warnings=(),
     )
+
+
+def _add_wiki_tools(
+    tools: list[Any],
+    system_prompt: str,
+    root: Path | None,
+    *,
+    project_trusted: bool,
+) -> tuple[list[Any], str]:
+    """Register the four wiki tools and optionally inject the wiki index.
+
+    Returns ``(updated_tools, updated_system_prompt)``.
+
+    Trust gate mirrors project JARN.md / skills: project-tier wiki content is
+    only injected into the system prompt when ``project_trusted`` is ``True``
+    (an untrusted repo's wiki could carry prompt-injection payloads).  Global
+    wiki is always available.
+    """
+    from langchain_core.tools import tool
+
+    from jarn.memory.wiki import WikiStore
+
+    store = WikiStore.build(root)
+
+    @tool
+    def wiki_search(query: str) -> str:  # type: ignore[misc]
+        """Search the project wiki knowledge base for pages matching a query.
+
+        Performs a case-insensitive substring search over all wiki pages and
+        returns the matching lines from each page.  Use this to find relevant
+        notes, decisions, or documentation before writing new ones.
+
+        Args:
+            query: Substring to search for (case-insensitive).
+        """
+        results = store.search(query)
+        if not results:
+            return f"No wiki pages matched {query!r}."
+        lines = [f"wiki_search results for {query!r}:\n"]
+        for slug, matched in results:
+            lines.append(f"## {slug}")
+            for line in matched[:10]:
+                lines.append(f"  {line}")
+            if len(matched) > 10:
+                lines.append(f"  … ({len(matched) - 10} more lines)")
+        return "\n".join(lines)
+
+    @tool
+    def wiki_read(page: str) -> str:  # type: ignore[misc]
+        """Read the full contents of a wiki page by its name/slug.
+
+        Args:
+            page: The slug or name of the wiki page to read.
+        """
+        try:
+            return store.read(page)
+        except (FileNotFoundError, ValueError) as exc:
+            return f"wiki_read error: {exc}"
+
+    @tool
+    def wiki_write(page: str, content: str) -> str:  # type: ignore[misc]
+        """Create or overwrite a wiki page with the given content.
+
+        Writes to the project tier if available, otherwise to the global tier.
+        The page name is sanitized to a safe slug — no path traversal allowed.
+        Requires approval in ask mode (same policy as file writes).
+
+        Args:
+            page: Name for the wiki page (becomes the slug/filename).
+            content: Full markdown content to write.
+        """
+        try:
+            ref = store.write(page, content)
+            return f"wiki page written: {ref}"
+        except ValueError as exc:
+            return f"wiki_write error: {exc}"
+
+    @tool
+    def wiki_append(page: str, text: str) -> str:  # type: ignore[misc]
+        """Append text to an existing wiki page (creates the page if absent).
+
+        Requires approval in ask mode (same policy as file writes).
+
+        Args:
+            page: Name/slug of the wiki page to append to.
+            text: Markdown text to append.
+        """
+        try:
+            ref = store.append(page, text)
+            return f"wiki page updated: {ref}"
+        except ValueError as exc:
+            return f"wiki_append error: {exc}"
+
+    new_tools = [*tools, wiki_search, wiki_read, wiki_write, wiki_append]
+
+    # Inject wiki index into the system prompt when pages exist.
+    # Global tier always loads; project tier only when project is trusted.
+    index_parts: list[str] = []
+
+    if project_trusted:
+        # Full combined index (project + global).
+        index_text = store.index_text()
+    else:
+        # Untrusted project: build a global-only store so project pages are
+        # excluded from injection.  The tools still have access to both tiers
+        # at call time because the store holds both dirs, but the *passive*
+        # injection into the system prompt respects the trust gate.
+        from jarn.memory.wiki import WikiStore as _WS
+
+        global_only = _WS(global_wiki_dir=store.global_wiki_dir)
+        index_text = global_only.index_text()
+
+    if index_text.strip():
+        index_parts.append(index_text.strip())
+
+    if index_parts:
+        block = "\n\n<wiki_index>\n" + "\n\n".join(index_parts) + "\n</wiki_index>\n\n"
+        system_prompt = block + system_prompt
+
+    return new_tools, system_prompt
 
 
 def _build_repo_map_tool(root: Path | None, *, token_budget: int):

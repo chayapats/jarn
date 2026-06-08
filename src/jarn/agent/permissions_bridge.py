@@ -17,6 +17,12 @@ from jarn.permissions import Action, ActionKind
 #: Tools that change the world and must be evaluated by the permission engine.
 MUTATING_TOOLS = ("write_file", "edit_file", "execute")
 
+#: Wiki tools that mutate the knowledge base — gated like file writes.
+WIKI_MUTATING_TOOLS = ("wiki_write", "wiki_append")
+
+#: Wiki read-only tools — never gated.
+WIKI_READONLY_TOOLS = ("wiki_search", "wiki_read")
+
 #: Fixed-name tools deepagents' ``AsyncSubAgentMiddleware`` injects when async
 #: subagents are configured. They make remote HTTP calls to a LangGraph
 #: deployment (launch/check/update/cancel/list background runs), so they must
@@ -64,6 +70,11 @@ def interrupt_map(
     gated = [*MUTATING_TOOLS, *extra_tools]
     if include_async:
         gated.extend(ASYNC_SUBAGENT_TOOLS)
+    # Wiki mutating tools are gated here when present in extra_tools so the
+    # engine evaluates them (write → WRITE action with the page path as target).
+    # We rely on extra_tools already containing them when wiki is enabled;
+    # no special flag needed because they flow through the same mechanism as
+    # other extra tools (web, MCP).
     return {t: True for t in gated}
 
 
@@ -78,6 +89,19 @@ def tool_to_action(tool_name: str, args: dict[str, Any]) -> Action:
     if tool_name in READONLY_TOOLS:
         path = args.get("file_path") or args.get("path") or args.get("pattern") or ""
         return Action(ActionKind.READ, target=str(path), tool=tool_name)
+    # Wiki mutating tools map to WRITE so the engine evaluates them exactly
+    # like file writes: auto-allowed in auto-edit/yolo, prompted in ask.
+    if tool_name in WIKI_MUTATING_TOOLS:
+        page = args.get("page") or args.get("name") or ""
+        return Action(ActionKind.WRITE, target=str(page), tool=tool_name)
+    # Wiki read-only tools never need gating — map to READ for completeness.
+    if tool_name in WIKI_READONLY_TOOLS:
+        query = args.get("query") or args.get("page") or ""
+        return Action(ActionKind.READ, target=str(query), tool=tool_name)
+    # repo_map is a read-only, purely local codebase overview — it reads source
+    # and returns a map, so it must not prompt (the NETWORK fallback would ASK).
+    if tool_name == "repo_map":
+        return Action(ActionKind.READ, target=str(args.get("focus", "") or "repo"), tool=tool_name)
     # Unknown/other tools: treat as network-ish actions requiring evaluation.
     return Action(ActionKind.NETWORK, target=_network_target(tool_name, args), tool=tool_name)
 

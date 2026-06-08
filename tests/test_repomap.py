@@ -481,3 +481,15 @@ def test_repo_map_tool_call_returns_map(tmp_path: Path) -> None:
     result = tool.invoke({"focus": ""})
     assert "app.py" in result
     assert "run" in result
+
+
+def test_repo_map_is_read_only_never_prompts():
+    """repo_map reads local source only — it must map to READ and auto-allow,
+    not fall through to the NETWORK default (which would prompt in ask mode)."""
+    from jarn.agent.permissions_bridge import tool_to_action
+    from jarn.config.schema import PermissionMode
+    from jarn.permissions import ActionKind, PermissionEngine
+
+    action = tool_to_action("repo_map", {"focus": "agent"})
+    assert action.kind is ActionKind.READ
+    assert PermissionEngine(mode=PermissionMode.ASK).evaluate(action).decision.value == "allow"

@@ -46,6 +46,17 @@ def global_memory_dir() -> Path:
     return global_home() / "memory"
 
 
+def global_wiki_dir() -> Path:
+    """Return ``~/.jarn/wiki/`` — the global wiki directory."""
+    return global_home() / "wiki"
+
+
+def project_wiki_dir(root: Path | None = None) -> Path | None:
+    """Return ``<root>/.jarn/wiki/`` for the discovered (or given) project root."""
+    pdir = project_dir(root)
+    return pdir / "wiki" if pdir else None
+
+
 def find_project_root(start: Path | None = None) -> Path | None:
     """Walk upward from ``start`` (cwd) looking for a project marker.
 

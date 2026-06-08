@@ -94,6 +94,12 @@ BUILTINS: tuple[BuiltinCommand, ...] = (
         "controller",
         usage="[focus] [--refresh]",
     ),
+    BuiltinCommand(
+        "wiki",
+        "Search or list wiki knowledge-base pages.",
+        "controller",
+        usage="[search <q>|list]",
+    ),
 )
 
 # Backward-compatible name → description map.

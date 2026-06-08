@@ -184,6 +184,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/checkpoints` | List recent auto-checkpoints. |
 | `/quit` | Exit J.A.R.N. |
 | `/map [focus] [--refresh]` | Show the ranked repo map (codebase overview). |
+| `/wiki [search <q>\|list]` | Search or list wiki knowledge-base pages. |
 
 ## Permission modes
 

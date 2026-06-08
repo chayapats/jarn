@@ -249,6 +249,48 @@ shared palette (chat colors, toolbar background/foreground, cost/context colors)
 The bottom toolbar is rendered by `tui/toolbar.py` and shows **model · mode · queue ·
 ctx · cost** (low-priority segments drop on narrow terminals).
 
+## Wiki knowledge base (`wiki`)
+
+A transparent, git-friendly per-project (and global) markdown knowledge base that the
+agent can read, search, and write — complementing the existing vector memory.
+
+```yaml
+wiki:
+  enabled: false   # set true to enable the four wiki tools on the agent
+```
+
+**Layout:**
+
+| Path | Tier |
+|---|---|
+| `~/.jarn/wiki/pages/*.md` | global (always available) |
+| `<project>/.jarn/wiki/pages/*.md` | project (gated by trust) |
+
+A one-line-per-page `index.md` in each wiki dir is injected into the system prompt at
+build time so the model knows what pages exist without calling a tool. Full pages are
+read on demand via `wiki_read`.
+
+**Tools registered when `wiki.enabled: true`:**
+
+| Tool | Mutating | Permission |
+|---|---|---|
+| `wiki_search` | No | Always allowed |
+| `wiki_read` | No | Always allowed |
+| `wiki_write` | Yes | Prompted in `ask`; auto-allowed in `auto-edit`/`yolo` |
+| `wiki_append` | Yes | Prompted in `ask`; auto-allowed in `auto-edit`/`yolo` |
+
+`wiki_write` and `wiki_append` route through the permission engine exactly like
+`write_file` / `edit_file` (mapped to `ActionKind.WRITE`), so the danger-guard and
+per-session allow/deny rules apply.
+
+**Trust gate:** project-tier wiki content (pages + index injection) is skipped when the
+project is not trusted — the same boundary that gates `JARN.md`, skills, and project
+memory. Global wiki is always available.
+
+**Page name safety:** names are sanitized to a slug (letters/digits/hyphens/underscores).
+Path traversal sequences (`..`) and path separators (`/`) are rejected, so a page name
+can never escape the wiki directory.
+
 ## Cross-vendor interop (`compat`)
 
 The `compat` section lets users coming from other agents (Claude Code, OpenAI
