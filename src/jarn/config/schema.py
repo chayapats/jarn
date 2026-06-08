@@ -80,10 +80,23 @@ class BudgetConfig:
     warn_at_pct: int = 80
 
 
+_VALID_REPO_MAP_MODES: frozenset[str] = frozenset({"off", "tool", "auto"})
+
+
 @dataclass(slots=True)
 class ContextConfig:
     auto_compact: bool = True
     compact_at_pct: int = 85     # summarize when context window this % full
+    #: How the repo map is exposed to the agent.
+    #: ``"off"``  — disabled entirely (no tool, no system-prompt injection).
+    #: ``"tool"`` — (default) a ``repo_map`` tool is registered; the model
+    #:              calls it on demand.
+    #: ``"auto"`` — the map is also injected into the system prompt at build
+    #:              time (budget-capped) in addition to the tool.
+    repo_map: str = "tool"
+    #: Token budget for the repo map (both system-prompt injection and tool
+    #: responses).  Must be > 0.
+    repo_map_tokens: int = 1024
 
 
 @dataclass(slots=True)

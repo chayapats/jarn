@@ -248,6 +248,19 @@ def build_runtime(
 
     tools = [*build_web_tools(), *(extra_tools or [])]
 
+    # Repo map tool and/or system-prompt injection.
+    repo_map_mode = config.context.repo_map
+    if repo_map_mode in ("tool", "auto"):
+        repo_map_tool = _build_repo_map_tool(
+            root, token_budget=config.context.repo_map_tokens
+        )
+        tools = [*tools, repo_map_tool]
+
+    if repo_map_mode == "auto" and root is not None:
+        system_prompt = _inject_repo_map(
+            system_prompt, root, token_budget=config.context.repo_map_tokens
+        )
+
     # Subagents may restrict themselves to a subset of the extra (web/MCP) tools;
     # pass the available set so to_spec can resolve names and reject typos.
     subagent_specs: list[Any] = [
@@ -305,3 +318,60 @@ def build_runtime(
         backend=backend,
         warnings=(),
     )
+
+
+def _build_repo_map_tool(root: Path | None, *, token_budget: int):
+    """Return a LangChain ``@tool``-decorated function for the agent to call.
+
+    The tool is read-only (no side effects) and delegates to
+    :func:`jarn.agent.repomap.build_repo_map`.  ``root`` is captured in a
+    closure so the model just passes an optional ``focus`` string.
+    """
+    from langchain_core.tools import tool
+
+    from jarn.agent.repomap import build_repo_map
+
+    # Capture root at build time so the tool closure works even if root is None
+    # (falls back to cwd) — same pattern as other built-in tools.
+    _root = root or Path.cwd()
+    _budget = token_budget
+
+    @tool
+    def repo_map(focus: str = "") -> str:
+        """Return a ranked, token-budgeted map of the current repository.
+
+        Provides file paths and their top-level symbols (classes, functions,
+        types) ordered by importance so you can orient in a large codebase
+        without reading every file.
+
+        Args:
+            focus: Optional substring to bias ranking toward matching paths.
+        """
+        try:
+            return build_repo_map(_root, token_budget=_budget, focus=focus)
+        except Exception as exc:  # noqa: BLE001
+            return f"repo_map failed: {exc}"
+
+    return repo_map
+
+
+def _inject_repo_map(system_prompt: str, root: Path, *, token_budget: int) -> str:
+    """Prepend a repo map block to *system_prompt* (for ``context.repo_map: auto``).
+
+    Failures are silently swallowed — a missing map should never prevent the
+    agent from starting.
+    """
+    from jarn.agent.repomap import build_repo_map
+
+    try:
+        map_text = build_repo_map(root, token_budget=token_budget)
+        if not map_text.strip():
+            return system_prompt
+        block = (
+            "<repo_map>\n"
+            + map_text
+            + "\n</repo_map>\n\n"
+        )
+        return block + system_prompt
+    except Exception:  # noqa: BLE001
+        return system_prompt

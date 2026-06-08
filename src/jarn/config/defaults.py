@@ -202,6 +202,9 @@ budget:
 context:
   auto_compact: true
   compact_at_pct: 85
+  # Repo map: compact ranked overview of the codebase injected into the agent.
+  # repo_map: tool        # off | tool (on-demand via repo_map tool) | auto (also in system prompt)
+  # repo_map_tokens: 1024  # token budget for map output (must be > 0)
 
 # Execution backend (shell commands). Defaults to local; see docs/CONFIGURATION.md.
 # OS-level sandbox is opt-in — enabling it changes execution behaviour.

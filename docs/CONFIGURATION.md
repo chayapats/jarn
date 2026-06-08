@@ -146,6 +146,15 @@ budget:
 context:
   auto_compact: true
   compact_at_pct: 85       # summarize when the context window is this % full (0-100)
+  repo_map: tool            # off | tool | auto
+                            # off  — repo map disabled entirely.
+                            # tool — (default) a read-only `repo_map` tool is
+                            #         registered; the model calls it on demand.
+                            # auto — map is ALSO injected into the system prompt at
+                            #         agent-build time (budget-capped) so the model
+                            #         sees an overview immediately, without a tool call.
+  repo_map_tokens: 1024     # token budget for the map (> 0). Applies to both
+                            # the tool response and the system-prompt injection.
 
 # ── Execution backend ────────────────────────────────────────────────────
 execution:

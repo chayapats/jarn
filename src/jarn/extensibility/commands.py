@@ -88,6 +88,12 @@ BUILTINS: tuple[BuiltinCommand, ...] = (
     BuiltinCommand("redo", "Re-apply the last undone agent turn's file changes.", "controller"),
     BuiltinCommand("checkpoints", "List recent auto-checkpoints.", "controller"),
     BuiltinCommand("quit", "Exit J.A.R.N.", "controller"),
+    BuiltinCommand(
+        "map",
+        "Show the ranked repo map (codebase overview).",
+        "controller",
+        usage="[focus] [--refresh]",
+    ),
 )
 
 # Backward-compatible name → description map.

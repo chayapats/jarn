@@ -197,6 +197,19 @@ def _build_config(raw: dict[str, Any]) -> Config:
     )
 
     ctx = raw.get("context", {}) or {}
+    repo_map_raw = str(ctx.get("repo_map", "tool"))
+    from jarn.config.schema import _VALID_REPO_MAP_MODES
+
+    if repo_map_raw not in _VALID_REPO_MAP_MODES:
+        raise ConfigError(
+            f"context.repo_map must be one of "
+            f"{sorted(_VALID_REPO_MAP_MODES)} (got {repo_map_raw!r})."
+        )
+    repo_map_tokens_raw = _coerce_int(ctx.get("repo_map_tokens", 1024), "context.repo_map_tokens")
+    if repo_map_tokens_raw <= 0:
+        raise ConfigError(
+            f"context.repo_map_tokens must be > 0 (got {repo_map_tokens_raw})."
+        )
     cfg.context = ContextConfig(
         auto_compact=_normalize_bool(
             ctx.get("auto_compact", True), "context.auto_compact"
@@ -205,6 +218,8 @@ def _build_config(raw: dict[str, Any]) -> Config:
             _coerce_int(ctx.get("compact_at_pct", 85), "context.compact_at_pct"),
             "context.compact_at_pct",
         ),
+        repo_map=repo_map_raw,
+        repo_map_tokens=repo_map_tokens_raw,
     )
 
     ex = raw.get("execution", {}) or {}

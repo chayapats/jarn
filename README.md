@@ -183,6 +183,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/redo` | Re-apply the last undone agent turn's file changes. |
 | `/checkpoints` | List recent auto-checkpoints. |
 | `/quit` | Exit J.A.R.N. |
+| `/map [focus] [--refresh]` | Show the ranked repo map (codebase overview). |
 
 ## Permission modes
 

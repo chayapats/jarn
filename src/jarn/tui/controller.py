@@ -859,8 +859,62 @@ class Controller:
             )
         return CommandResult("\n".join(lines))
 
+    def _cmd_map(self, args: str) -> CommandResult:
+        """Build and display the ranked repo map.
+
+        Supports an optional focus substring to bias ranking, and the keyword
+        ``--refresh`` to bypass the cache and recompute.
+
+        Usage: /map [focus] [--refresh]
+        """
+        from jarn.agent.repomap import build_repo_map
+
+        raw = args.strip()
+        refresh = False
+        if "--refresh" in raw:
+            raw = raw.replace("--refresh", "").strip()
+            refresh = True
+
+        focus = raw.strip()
+        root = self.project_root or Path.cwd()
+        budget = self.config.context.repo_map_tokens
+
+        if refresh:
+            # Bust the cache by removing any matching cache files for this root.
+            _bust_repomap_cache(root)
+
+        try:
+            text = build_repo_map(root, token_budget=budget, focus=focus)
+        except Exception as exc:  # noqa: BLE001
+            return CommandResult(f"Error building repo map: {exc}")
+        if not text.strip():
+            return CommandResult("No source files found in the project.")
+        return CommandResult(text)
+
     def _cmd_quit(self, args: str) -> CommandResult:
         return CommandResult("Bye.", quit=True)
+
+
+def _bust_repomap_cache(root: Path) -> None:
+    """Remove cached repo-map files for *root* (best-effort, never raises).
+
+    Since the cache key embeds both root and the file-set signature, the
+    simplest invalidation strategy is to wipe all .json files in the repomap
+    cache dir — it's cheap to rebuild and avoids reimplementing the key
+    derivation here.
+    """
+    import contextlib
+
+    from jarn.config import paths as _paths
+
+    cache_dir = _paths.cachedir() / "repomap"
+    if not cache_dir.is_dir():
+        return
+    with contextlib.suppress(Exception):
+        for f in cache_dir.iterdir():
+            if f.suffix == ".json":
+                with contextlib.suppress(Exception):
+                    f.unlink()
 
 
 def _format_memory_body(body: str) -> str:
