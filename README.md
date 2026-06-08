@@ -96,6 +96,22 @@ jarn doctor       # diagnose config / providers / keys / extensions at any time
 
 On first launch with no config, J.A.R.N. runs the setup wizard automatically.
 
+## Non-interactive / scripting
+
+```bash
+jarn -p "summarise the open TODOs"          # one-shot: print reply and exit
+echo "what changed?" | jarn -p -            # read prompt from stdin
+jarn -p "do X" --json                        # emit JSON: {result, tokens, cost, turns}
+jarn -p "do X" --model anthropic/claude-opus-4-8  # override model for this run
+jarn -p "do X" --permission-mode auto-edit  # allow file writes without prompting
+jarn -p "do X" --cwd /path/to/project       # set working directory
+```
+
+**Fail-closed safety:** the default modes (`ask` / `plan`) refuse any tool that
+would normally prompt for approval and exit non-zero. Pass `--permission-mode
+auto-edit` or `yolo` to allow unattended tool use — the danger-guard still
+blocks catastrophic commands in every mode.
+
 ## The interface: native inline
 
 ```bash

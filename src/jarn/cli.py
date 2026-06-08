@@ -25,6 +25,50 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--version", action="version", version=f"jarn {__version__}")
     parser.add_argument("--resume", action="store_true", help="Pick a previous session to resume on launch")
+
+    # Headless one-shot flags (top-level, not a subcommand).
+    parser.add_argument(
+        "-p", "--print",
+        dest="headless_prompt",
+        metavar="PROMPT",
+        help=(
+            "Run a single non-interactive turn and print the result. "
+            "Pass '-' to read the prompt from stdin."
+        ),
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="With -p: emit a JSON object {result, tokens, cost, turns} instead of plain text.",
+    )
+    parser.add_argument(
+        "--model",
+        dest="headless_model",
+        metavar="REF",
+        help="Override the active model for this headless run.",
+    )
+    parser.add_argument(
+        "--permission-mode",
+        dest="headless_permission_mode",
+        choices=["plan", "ask", "auto-edit", "yolo"],
+        metavar="MODE",
+        help="Override the permission mode for this headless run (plan|ask|auto-edit|yolo).",
+    )
+    parser.add_argument(
+        "--max-turns",
+        dest="headless_max_turns",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Maximum agent turns (default: 1).",
+    )
+    parser.add_argument(
+        "--cwd",
+        dest="headless_cwd",
+        metavar="PATH",
+        help="Working directory for this headless run.",
+    )
+
     sub = parser.add_subparsers(dest="command")
 
     p_setup = sub.add_parser("setup", help="Run the onboarding wizard")
@@ -60,6 +104,17 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    # Headless one-shot: dispatch before any TUI setup.
+    if args.headless_prompt is not None:
+        return _cmd_headless(
+            prompt_arg=args.headless_prompt,
+            as_json=args.json,
+            model_override=args.headless_model,
+            permission_mode_override=args.headless_permission_mode,
+            max_turns=args.headless_max_turns,
+            cwd_override=args.headless_cwd,
+        )
+
     # Fix the macOS Caps Lock language-switch stray-character bug before any TUI
     # (app / wizard / key inspector) starts its terminal driver.
     from jarn.tui.keyfix import apply_kitty_keyfix
@@ -80,6 +135,77 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "trust":
         return _cmd_trust(path=args.path, remove=args.remove, as_json=args.json)
     return _cmd_launch(resume=args.resume)
+
+
+def _cmd_headless(
+    *,
+    prompt_arg: str,
+    as_json: bool = False,
+    model_override: str | None = None,
+    permission_mode_override: str | None = None,
+    max_turns: int = 1,
+    cwd_override: str | None = None,
+) -> int:
+    """Run a single non-interactive agent turn and print the result.
+
+    Reads config from disk (same path as the normal launch), applies any CLI
+    overrides, then delegates to :func:`jarn.headless.run_headless`.
+    """
+    import sys
+
+    # Resolve working directory (used as the project root).
+    root = Path(cwd_override).expanduser().resolve() if cwd_override else Path.cwd()
+
+    # Read the prompt (a literal '-' means stdin).
+    if prompt_arg == "-":
+        try:
+            prompt = sys.stdin.read()
+        except (EOFError, KeyboardInterrupt):
+            print("error: could not read prompt from stdin", file=sys.stderr)
+            return 1
+    else:
+        prompt = prompt_arg
+
+    prompt = prompt.strip()
+    if not prompt:
+        print("error: prompt is empty", file=sys.stderr)
+        return 1
+
+    from jarn.config import paths
+    from jarn.config.loader import load_config
+    from jarn.config.schema import PermissionMode
+    from jarn.observability import configure_langsmith, setup_logging
+
+    if not paths.global_config_path().is_file():
+        print(
+            "error: no configuration found — run `jarn setup` first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Use the same trust logic as the interactive launch.
+    trusted = _resolve_project_trust(root)
+    cfg = load_config(project_root=root, project_trusted=trusted)
+    setup_logging(cfg.observability.log_level)
+    configure_langsmith(cfg.observability.langsmith)
+
+    # Apply CLI overrides.
+    if model_override:
+        cfg.routing.main = model_override
+        cfg.default_model = model_override
+    if permission_mode_override:
+        cfg.permission_mode = PermissionMode(permission_mode_override)
+
+    from jarn.headless import run_headless
+
+    return run_headless(
+        prompt,
+        cfg,
+        root,
+        project_trusted=trusted,
+        as_json=as_json,
+        max_turns=max_turns,
+    )
 
 
 def _cmd_setup(*, force: bool = False) -> int:
