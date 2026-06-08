@@ -221,6 +221,50 @@ def test_unknown_top_level_key_raises(tmp_path):
         load_config(global_path=gp, project_path=None)
 
 
+# -- FIX 7: enum-like field validation --------------------------------------
+
+
+def test_invalid_execution_backend_raises(tmp_path):
+    """execution.backend with an unknown value must raise ConfigError."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"execution": {"backend": "cloud"}})
+    with pytest.raises(ConfigError, match="execution.backend"):
+        load_config(global_path=gp, project_path=None)
+
+
+def test_valid_execution_backend_local(tmp_path):
+    """execution.backend: local is a valid value."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"execution": {"backend": "local"}})
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.execution.backend == "local"
+
+
+def test_valid_execution_backend_sandbox(tmp_path):
+    """execution.backend: sandbox is a valid value."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"execution": {"backend": "sandbox"}})
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.execution.backend == "sandbox"
+
+
+def test_invalid_observability_log_level_raises(tmp_path):
+    """observability.log_level with an unknown value must raise ConfigError."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"observability": {"log_level": "verbose"}})
+    with pytest.raises(ConfigError, match="observability.log_level"):
+        load_config(global_path=gp, project_path=None)
+
+
+@pytest.mark.parametrize("level", ["debug", "info", "warning", "error"])
+def test_valid_observability_log_level(tmp_path, level):
+    """Each of the four recognised log_level values must parse without error."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"observability": {"log_level": level}})
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.observability.log_level == level
+
+
 def test_doctor_json_is_valid(tmp_path, monkeypatch, capsys):
     import json
 

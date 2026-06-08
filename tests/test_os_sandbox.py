@@ -21,6 +21,7 @@ from jarn.agent.os_sandbox import (
     _linux_argv,
     _macos_argv,
     _macos_profile,
+    _safe_sandbox_path,
     available,
     backend_name,
     default_writable,
@@ -665,6 +666,73 @@ def test_sandbox_denies_write_outside_project(tmp_path):
         )
     finally:
         sentinel.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# FIX 2: path injection guard — _safe_sandbox_path
+# ---------------------------------------------------------------------------
+
+
+class TestSafeSandboxPath:
+    """_safe_sandbox_path raises ValueError on injection characters; passes clean paths."""
+
+    def test_clean_path_passes(self, tmp_path: Path) -> None:
+        """A normal path string is returned unchanged."""
+        result = _safe_sandbox_path(str(tmp_path))
+        assert result == str(tmp_path)
+
+    def test_double_quote_raises(self, tmp_path: Path) -> None:
+        """A path containing a double-quote char raises ValueError."""
+        bad = str(tmp_path) + '"evil'
+        with pytest.raises(ValueError, match="unsafe"):
+            _safe_sandbox_path(bad)
+
+    def test_backslash_raises(self, tmp_path: Path) -> None:
+        """A path containing a backslash raises ValueError."""
+        bad = str(tmp_path) + "\\evil"
+        with pytest.raises(ValueError, match="unsafe"):
+            _safe_sandbox_path(bad)
+
+    def test_newline_raises(self, tmp_path: Path) -> None:
+        """A path containing a newline raises ValueError."""
+        bad = str(tmp_path) + "\nevil"
+        with pytest.raises(ValueError, match="unsafe"):
+            _safe_sandbox_path(bad)
+
+    def test_close_paren_raises(self, tmp_path: Path) -> None:
+        """A path containing ')' raises ValueError (SBPL clause escape)."""
+        bad = str(tmp_path) + ")evil"
+        with pytest.raises(ValueError, match="unsafe"):
+            _safe_sandbox_path(bad)
+
+    def test_open_paren_raises(self, tmp_path: Path) -> None:
+        """A path containing '(' raises ValueError."""
+        bad = str(tmp_path) + "(evil"
+        with pytest.raises(ValueError, match="unsafe"):
+            _safe_sandbox_path(bad)
+
+    def test_wrap_raises_on_injected_project_root_macos(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """wrap() raises ValueError when project_root contains a double-quote (macOS)."""
+        monkeypatch.setattr(sbx, "backend_name", lambda: "sandbox-exec")
+        # Construct a Path object whose str() contains a quote — we monkeypatch
+        # Path.resolve to return the poisoned string.
+        poisoned = tmp_path / 'evil"dir'
+        # We need resolve() to return this; bypass filesystem check.
+        with patch("jarn.agent.os_sandbox.Path.resolve", return_value=poisoned), pytest.raises(ValueError, match="unsafe"):
+            wrap("echo hi", project_root=poisoned, allow_network=True, writable=[])
+
+    def test_wrap_raises_on_injected_writable_path_linux(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """wrap() raises ValueError when a writable path contains a quote (Linux)."""
+        monkeypatch.setattr(sbx, "backend_name", lambda: "bwrap")
+        poisoned = Path(str(tmp_path) + '"evil')
+        with pytest.raises(ValueError, match="unsafe"):
+            wrap("echo hi", project_root=tmp_path, allow_network=True, writable=[poisoned])
+
+    def test_macos_profile_raises_on_injected_project_root(self, tmp_path: Path) -> None:
+        """_macos_profile raises ValueError on a project_root with injection char."""
+        poisoned = Path(str(tmp_path) + '"evil')
+        with pytest.raises(ValueError, match="unsafe"):
+            _macos_profile(project_root=poisoned, allow_network=True, writable=[])
 
 
 class TestSymlinkCanonicalization:

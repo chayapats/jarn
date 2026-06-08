@@ -232,6 +232,13 @@ def _build_config(raw: dict[str, Any]) -> Config:
             f"execution.local_sandbox must be one of "
             f"{sorted(_valid_local_sandbox)} (got {local_sandbox_raw!r})."
         )
+    _valid_backends = {"local", "sandbox"}
+    backend_raw = str(ex.get("backend", "local"))
+    if backend_raw not in _valid_backends:
+        raise ConfigError(
+            f"execution.backend must be one of "
+            f"{sorted(_valid_backends)} (got {backend_raw!r})."
+        )
     sandbox_writable_raw = ex.get("sandbox_writable", []) or []
     if not isinstance(sandbox_writable_raw, list):
         raise ConfigError(
@@ -239,7 +246,7 @@ def _build_config(raw: dict[str, Any]) -> Config:
             f"(got {sandbox_writable_raw!r})."
         )
     cfg.execution = ExecutionConfig(
-        backend=str(ex.get("backend", "local")),
+        backend=backend_raw,
         sandbox_provider=str(ex.get("sandbox_provider", "langsmith")),
         multimodal=_normalize_bool(ex.get("multimodal", True), "execution.multimodal"),
         allow_local_fallback=_normalize_bool(
@@ -265,6 +272,13 @@ def _build_config(raw: dict[str, Any]) -> Config:
     ]
 
     obs = raw.get("observability", {}) or {}
+    _valid_log_levels = {"debug", "info", "warning", "error"}
+    log_level_raw = str(obs.get("log_level", "info"))
+    if log_level_raw not in _valid_log_levels:
+        raise ConfigError(
+            f"observability.log_level must be one of "
+            f"{sorted(_valid_log_levels)} (got {log_level_raw!r})."
+        )
     cfg.observability = ObservabilityConfig(
         langsmith=_normalize_bool(
             obs.get("langsmith", False), "observability.langsmith"
@@ -272,7 +286,7 @@ def _build_config(raw: dict[str, Any]) -> Config:
         telemetry=_normalize_bool(
             obs.get("telemetry", False), "observability.telemetry"
         ),
-        log_level=str(obs.get("log_level", "info")),
+        log_level=log_level_raw,
         transcript=_normalize_bool(
             obs.get("transcript", True), "observability.transcript"
         ),

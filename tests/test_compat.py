@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from jarn.config.loader import load_config
 from jarn.extensibility.commands import load_commands
@@ -289,3 +290,169 @@ def test_compat_read_claude_dir_false(tmp_path: Path) -> None:
     )
     cfg = load_config(global_path=gp, project_path=None)
     assert cfg.compat.read_claude_dir is False
+
+
+# ── FIX 1: build_runtime must forward compat settings ────────────────────────
+
+
+def test_build_runtime_forwards_read_claude_dir_false(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    """build_runtime must forward compat.read_claude_dir=False to load_skills/load_commands.
+
+    This test fails without FIX 1: without the fix, build_runtime calls
+    load_skills / load_commands without read_claude_dir, so the .claude/skills
+    dir is always consulted regardless of the compat setting.
+    """
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from jarn.agent.builder import build_runtime
+    from jarn.config.schema import (
+        CompatConfig,
+        Config,
+        ContextConfig,
+        ProviderConfig,
+        ProviderType,
+        RoutingConfig,
+        WikiConfig,
+    )
+    from jarn.providers.models import ModelFactory
+
+    # Config with read_claude_dir=False and a custom context file list.
+    cfg = Config(
+        default_profile="openrouter",
+        providers={
+            "openrouter": ProviderConfig(
+                type=ProviderType.OPENROUTER,
+                api_key="sk-test",
+                base_url="http://localhost:9999/v1",
+            )
+        },
+        routing=RoutingConfig(main="openrouter/anthropic/claude-opus-4-8"),
+        context=ContextConfig(repo_map="off"),
+        wiki=WikiConfig(enabled=False),
+        compat=CompatConfig(
+            read_claude_dir=False,
+            context_files=["AGENTS.md"],
+        ),
+    )
+
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    # Write a skill under .claude/skills — it should NOT be loaded with read_claude_dir=False.
+    claude_skill_dir = root / ".claude" / "skills"
+    claude_skill_dir.mkdir(parents=True)
+    (claude_skill_dir / "injected.md").write_text(
+        "---\nname: injected\ndescription: hostile\ntrigger: auto\n---\nBad skill.",
+        encoding="utf-8",
+    )
+    # Write AGENTS.md but NOT JARN.md — context_files=["AGENTS.md"] should pick it up.
+    (root / "AGENTS.md").write_text("AGENTS_CONTEXT_MARKER", encoding="utf-8")
+    (root / "JARN.md").write_text("JARN_MARKER_SHOULD_NOT_APPEAR", encoding="utf-8")
+
+    # Use monkeypatching to capture the kwargs forwarded to load_skills/load_commands
+    # so we can assert the correct values were passed without running the full agent.
+    captured: dict[str, object] = {}
+
+    import jarn.extensibility.commands as _cmds_mod
+    import jarn.extensibility.skills as _skills_mod
+
+    original_load_skills = _skills_mod.load_skills
+    original_load_commands = _cmds_mod.load_commands
+
+    def _spy_skills(*args: object, **kwargs: object) -> object:
+        captured["skills_kwargs"] = kwargs
+        return original_load_skills(*args, **kwargs)
+
+    def _spy_commands(*args: object, **kwargs: object) -> object:
+        captured["commands_kwargs"] = kwargs
+        return original_load_commands(*args, **kwargs)
+
+    fake = GenericFakeChatModel(messages=iter([]))
+    with (
+        patch.object(ModelFactory, "build", return_value=fake),
+        patch("jarn.agent.builder.load_skills", side_effect=_spy_skills),
+        patch("jarn.agent.builder.load_commands", side_effect=_spy_commands),
+        patch("deepagents.create_deep_agent", return_value=object()),
+    ):
+        build_runtime(cfg, project_root=root, project_trusted=True)
+
+    # FIX 1 assertion: read_claude_dir must have been forwarded as False.
+    assert captured.get("skills_kwargs", {}).get("read_claude_dir") is False, (
+        "build_runtime did not forward compat.read_claude_dir=False to load_skills"
+    )
+    assert captured.get("commands_kwargs", {}).get("read_claude_dir") is False, (
+        "build_runtime did not forward compat.read_claude_dir=False to load_commands"
+    )
+
+
+def test_build_runtime_forwards_context_files(
+    tmp_path: Path,
+) -> None:
+    """build_runtime must forward compat.context_files to assemble_system_context.
+
+    This test fails without FIX 1: without the fix, assemble_system_context is
+    called without context_files, so it always uses the default list rather
+    than the configured one.
+    """
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from jarn.agent.builder import build_runtime
+    from jarn.config.schema import (
+        CompatConfig,
+        Config,
+        ContextConfig,
+        ProviderConfig,
+        ProviderType,
+        RoutingConfig,
+        WikiConfig,
+    )
+    from jarn.providers.models import ModelFactory
+
+    cfg = Config(
+        default_profile="openrouter",
+        providers={
+            "openrouter": ProviderConfig(
+                type=ProviderType.OPENROUTER,
+                api_key="sk-test",
+                base_url="http://localhost:9999/v1",
+            )
+        },
+        routing=RoutingConfig(main="openrouter/anthropic/claude-opus-4-8"),
+        context=ContextConfig(repo_map="off"),
+        wiki=WikiConfig(enabled=False),
+        compat=CompatConfig(
+            read_claude_dir=True,
+            context_files=["AGENTS.md"],  # only AGENTS.md, not JARN.md
+        ),
+    )
+
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    # Only write AGENTS.md — with context_files=["AGENTS.md"] it should be chosen.
+    (root / "AGENTS.md").write_text("AGENTS_CONTEXT_MARKER", encoding="utf-8")
+    # JARN.md also present but should NOT be chosen because it's not in context_files.
+    (root / "JARN.md").write_text("JARN_MARKER_MUST_NOT_APPEAR", encoding="utf-8")
+
+    captured_context: dict[str, object] = {}
+
+    import jarn.memory.context as _ctx_mod
+
+    original_assemble = _ctx_mod.assemble_system_context
+
+    def _spy_assemble(*args: object, **kwargs: object) -> str:
+        captured_context["kwargs"] = kwargs
+        return original_assemble(*args, **kwargs)
+
+    fake = GenericFakeChatModel(messages=iter([]))
+    with (
+        patch.object(ModelFactory, "build", return_value=fake),
+        patch("jarn.agent.builder.assemble_system_context", side_effect=_spy_assemble),
+        patch("deepagents.create_deep_agent", return_value=object()),
+    ):
+        build_runtime(cfg, project_root=root, project_trusted=True)
+
+    # FIX 1 assertion: context_files must have been forwarded.
+    assert captured_context.get("kwargs", {}).get("context_files") == ["AGENTS.md"], (
+        "build_runtime did not forward compat.context_files to assemble_system_context"
+    )

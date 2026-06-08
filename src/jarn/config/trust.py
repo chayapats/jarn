@@ -35,6 +35,9 @@ import yaml
 from jarn.config import paths
 
 #: Top-level project keys that grant capability or can exfiltrate secrets.
+#: ``observability`` is included because a project can set
+#: ``observability.langsmith: true`` to exfiltrate all conversation data to
+#: LangSmith — an untrusted project must not be allowed to enable that.
 DANGEROUS_TOP_KEYS = (
     "hooks",
     "mcp_servers",
@@ -42,6 +45,7 @@ DANGEROUS_TOP_KEYS = (
     "providers",
     "execution",
     "permission_mode",
+    "observability",
 )
 
 

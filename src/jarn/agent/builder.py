@@ -232,13 +232,27 @@ def build_runtime(
     model = factory.build_main()
 
     # Context: project JARN.md + memory + skill catalog + detected verify cmds.
-    skills = load_skills(root, project_trusted=project_trusted)
-    commands = load_commands(root, project_trusted=project_trusted)
+    # Forward compat settings so that read_claude_dir and context_files are
+    # honoured here — without these, compat config would be silently ignored.
+    skills = load_skills(
+        root,
+        project_trusted=project_trusted,
+        read_claude_dir=config.compat.read_claude_dir,
+    )
+    commands = load_commands(
+        root,
+        project_trusted=project_trusted,
+        read_claude_dir=config.compat.read_claude_dir,
+    )
     subagents = load_subagents(root, project_trusted=project_trusted)
     capabilities = detect_capabilities(root or Path.cwd())
 
     system_prompt = prompts.build_system_prompt(
-        assemble_system_context(root, project_trusted=project_trusted),
+        assemble_system_context(
+            root,
+            project_trusted=project_trusted,
+            context_files=config.compat.context_files,
+        ),
         auto_skill_catalog(skills),
         capabilities.as_prompt_block(),
     )
@@ -350,7 +364,11 @@ def _add_wiki_tools(
 
     from jarn.memory.wiki import WikiStore
 
-    store = WikiStore.build(root)
+    # When the project is untrusted, the tool-facing store is global-only so
+    # that wiki_read / wiki_search cannot expose project wiki pages (which could
+    # carry prompt-injection payloads).  Mirrors the index-injection gate below.
+    full_store = WikiStore.build(root)
+    store = full_store if project_trusted else WikiStore(global_wiki_dir=full_store.global_wiki_dir)
 
     @tool
     def wiki_search(query: str) -> str:  # type: ignore[misc]

@@ -22,7 +22,7 @@ key from the project tier, it asks you to trust the project (once per root; you'
 re-prompted if those keys change). The gated keys are:
 
 `hooks` · `mcp_servers` · `async_subagents` · `providers` · `execution` ·
-`permission_mode` · `permissions.allow`
+`permission_mode` · `permissions.allow` · `observability`
 
 Until you trust the project, those keys are **ignored** (the rest — `ui`, `context`,
 `permissions.deny`, etc. — still applies) and the session continues safely. Decline if

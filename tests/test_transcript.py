@@ -318,6 +318,55 @@ def test_config_transcript_true_default(tmp_path: Path) -> None:
 # Secret / env-var leak guard
 # ---------------------------------------------------------------------------
 
+def test_tool_arg_string_value_truncated_at_cap(tmp_path: Path) -> None:
+    """Tool args with string values exceeding the cap are truncated in the JSONL.
+
+    This test fails without FIX 5: before the fix, write_tool writes args
+    verbatim, so a wiki_write/write_file call with full file content bloats the
+    transcript JSONL file.
+    """
+    from jarn.memory.sessions import _TRANSCRIPT_MAX_TOOL_CHARS
+
+    big_content = "y" * (_TRANSCRIPT_MAX_TOOL_CHARS + 500)
+    w = TranscriptWriter("fix5", sessions_dir=tmp_path)
+    w.write_tool(
+        "wiki_write",
+        ts=1.0,
+        args={"page": "my-page", "content": big_content},
+    )
+    w.close()
+
+    obj = json.loads(w.path.read_text(encoding="utf-8").strip())
+    assert obj["type"] == "tool"
+    args_recorded = obj["args"]
+    # The "content" arg must be truncated.
+    assert len(args_recorded["content"]) == _TRANSCRIPT_MAX_TOOL_CHARS, (
+        "Large string arg value must be truncated to _TRANSCRIPT_MAX_TOOL_CHARS"
+    )
+    # The truncation marker must be present.
+    assert args_recorded.get("content__truncated") is True
+    # Short args (the page slug) must not be truncated.
+    assert args_recorded["page"] == "my-page"
+    assert "page__truncated" not in args_recorded
+
+
+def test_tool_arg_non_string_values_not_truncated(tmp_path: Path) -> None:
+    """Non-string arg values (ints, booleans, lists) are written as-is."""
+    w = TranscriptWriter("fix5b", sessions_dir=tmp_path)
+    w.write_tool(
+        "some_tool",
+        ts=1.0,
+        args={"count": 42, "enabled": True, "items": [1, 2, 3]},
+    )
+    w.close()
+
+    obj = json.loads(w.path.read_text(encoding="utf-8").strip())
+    args_recorded = obj["args"]
+    assert args_recorded["count"] == 42
+    assert args_recorded["enabled"] is True
+    assert args_recorded["items"] == [1, 2, 3]
+
+
 def test_no_env_var_leaks_into_transcript(tmp_path: Path, monkeypatch) -> None:
     """A tool output that contains a sentinel secret value must not appear in the
     transcript when the caller correctly passes only the summary, not raw content.

@@ -625,3 +625,134 @@ def test_wiki_store_build_project_dir(tmp_path: Path, monkeypatch: pytest.Monkey
     from jarn.config import paths
 
     assert store.project_wiki_dir == paths.project_wiki_dir(root)
+
+
+# ---------------------------------------------------------------------------
+# FIX 4: wiki tools must not surface project pages when project is untrusted
+# ---------------------------------------------------------------------------
+
+
+def _build_wiki_cfg(*, enabled: bool = True):  # type: ignore[return]
+    from jarn.config.schema import (
+        Config,
+        ContextConfig,
+        ProviderConfig,
+        ProviderType,
+        RoutingConfig,
+        WikiConfig,
+    )
+
+    return Config(
+        default_profile="openrouter",
+        providers={
+            "openrouter": ProviderConfig(
+                type=ProviderType.OPENROUTER,
+                api_key="sk-test",
+                base_url="http://localhost:9999/v1",
+            )
+        },
+        routing=RoutingConfig(main="openrouter/anthropic/claude-opus-4-8"),
+        context=ContextConfig(repo_map="off"),
+        wiki=WikiConfig(enabled=enabled),
+    )
+
+
+def test_wiki_tool_does_not_surface_project_pages_when_untrusted(tmp_path: Path) -> None:
+    """With project_trusted=False, wiki tools must not expose project-tier wiki pages.
+
+    This test fails without FIX 4: before the fix, _add_wiki_tools builds the
+    tool-facing store with WikiStore.build(root), which includes the project
+    tier.  An untrusted project could therefore serve hostile content via
+    wiki_read/wiki_search — a prompt-injection vector.
+    """
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from jarn.agent.builder import build_runtime
+
+    cfg = _build_wiki_cfg(enabled=True)
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+
+    # Write a project wiki page with a distinctive marker.
+    store = WikiStore.build(root)
+    store.write("secret-project-wiki", "UNTRUSTED_PROJECT_WIKI_CONTENT", tier="project")
+    store.write("safe-global-wiki", "GLOBAL_WIKI_CONTENT", tier="global")
+
+    # We'll capture the tools registered with the agent so we can exercise them.
+    captured_tools: list = []
+
+    def _fake_create_agent(**kwargs):  # type: ignore[no-untyped-def]
+        captured_tools.extend(kwargs.get("tools") or [])
+        import deepagents
+        return deepagents.create_deep_agent(**kwargs)
+
+    fake = GenericFakeChatModel(messages=iter([]))
+    with (
+        patch("jarn.providers.models.ModelFactory.build", return_value=fake),
+        patch("deepagents.create_deep_agent", side_effect=_fake_create_agent),
+        contextlib.suppress(Exception),
+    ):
+        build_runtime(cfg, project_root=root, project_trusted=False)
+
+    # Find the wiki_search tool among the registered tools.
+    wiki_search_tool = next(
+        (t for t in captured_tools if getattr(t, "name", "") == "wiki_search"),
+        None,
+    )
+    assert wiki_search_tool is not None, "wiki_search tool must be registered"
+
+    # Invoke wiki_search — project pages must NOT be matched (i.e. the response
+    # must be the "no pages matched" message, not actual content lines).
+    # The query string appears in the "no pages matched" error message itself,
+    # so we check that no actual matched lines are returned (no "secret-project-wiki"
+    # slug header appears).
+    search_result = wiki_search_tool.func("UNTRUSTED_PROJECT_WIKI_CONTENT")
+    assert "secret-project-wiki" not in search_result, (
+        "wiki_search must not surface project wiki pages when project is untrusted"
+    )
+
+    # Global pages should still be accessible.
+    global_result = wiki_search_tool.func("GLOBAL_WIKI_CONTENT")
+    assert "GLOBAL_WIKI_CONTENT" in global_result, (
+        "wiki_search must still surface global wiki pages even when project is untrusted"
+    )
+
+
+def test_wiki_tool_surfaces_project_pages_when_trusted(tmp_path: Path) -> None:
+    """With project_trusted=True, wiki tools can read project-tier pages."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from jarn.agent.builder import build_runtime
+
+    cfg = _build_wiki_cfg(enabled=True)
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+
+    store = WikiStore.build(root)
+    store.write("trusted-project-wiki", "TRUSTED_PROJECT_WIKI_CONTENT", tier="project")
+
+    captured_tools: list = []
+
+    def _fake_create_agent(**kwargs):  # type: ignore[no-untyped-def]
+        captured_tools.extend(kwargs.get("tools") or [])
+        import deepagents
+        return deepagents.create_deep_agent(**kwargs)
+
+    fake = GenericFakeChatModel(messages=iter([]))
+    with (
+        patch("jarn.providers.models.ModelFactory.build", return_value=fake),
+        patch("deepagents.create_deep_agent", side_effect=_fake_create_agent),
+        contextlib.suppress(Exception),
+    ):
+        build_runtime(cfg, project_root=root, project_trusted=True)
+
+    wiki_search_tool = next(
+        (t for t in captured_tools if getattr(t, "name", "") == "wiki_search"),
+        None,
+    )
+    assert wiki_search_tool is not None
+
+    result = wiki_search_tool.func("TRUSTED_PROJECT_WIKI_CONTENT")
+    assert "TRUSTED_PROJECT_WIKI_CONTENT" in result, (
+        "wiki_search must surface project pages when project is trusted"
+    )

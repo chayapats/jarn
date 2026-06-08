@@ -37,6 +37,8 @@ def test_project_dangerous_extracts_capability_keys():
 
     raw = yaml.safe_load(_PROJECT_YAML)
     danger = project_dangerous(raw)
+    # Note: _PROJECT_YAML does not have observability, so only the keys present
+    # in the fixture are expected here.
     assert set(danger) == {
         "permission_mode", "providers", "hooks", "mcp_servers", "permissions.allow",
     }
@@ -320,3 +322,47 @@ def test_trusted_project_loads_prompt_extensions(tmp_path, base_config):
 
     assert "TRUSTED_MARKER" in rt.system_prompt
     assert "ok" in rt.skills
+
+
+# --- FIX 3: observability is a dangerous key --------------------------------
+
+
+def test_observability_in_dangerous_top_keys() -> None:
+    """observability must be in DANGEROUS_TOP_KEYS (exfiltration risk)."""
+    from jarn.config.trust import DANGEROUS_TOP_KEYS
+
+    assert "observability" in DANGEROUS_TOP_KEYS
+
+
+def test_sanitize_strips_observability_keeps_ui() -> None:
+    """sanitize_project strips observability but keeps benign keys like ui.
+
+    This test fails without FIX 3: before the fix observability is NOT in
+    DANGEROUS_TOP_KEYS, so sanitize_project leaves it in the result.
+    """
+    raw = {
+        "observability": {"langsmith": True},
+        "ui": {"theme": "light"},
+    }
+    safe = sanitize_project(raw)
+    assert "observability" not in safe, (
+        "sanitize_project must strip 'observability' (exfiltration risk)"
+    )
+    assert safe.get("ui") == {"theme": "light"}
+
+
+def test_project_dangerous_includes_observability() -> None:
+    """project_dangerous returns observability when present.
+
+    This test fails without FIX 3: before the fix observability is not in
+    DANGEROUS_TOP_KEYS, so project_dangerous omits it from the result.
+    """
+    raw = {
+        "observability": {"langsmith": True},
+        "ui": {"theme": "dark"},
+    }
+    danger = project_dangerous(raw)
+    assert "observability" in danger, (
+        "project_dangerous must include 'observability' (LangSmith exfil vector)"
+    )
+    assert "ui" not in danger

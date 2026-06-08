@@ -22,6 +22,37 @@ import sys
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
+# Path safety guard
+# ---------------------------------------------------------------------------
+
+#: Characters that would break an SBPL profile string or bwrap argv when
+#: interpolated verbatim.  A path containing any of these could escape the
+#: (subpath "…") clause, inject arbitrary SBPL directives, or corrupt the
+#: bwrap argument list.
+_UNSAFE_PATH_CHARS = frozenset({'"', "\\", "\n", "\r", ")", "("})
+
+
+def _safe_sandbox_path(p: str) -> str:
+    """Return *p* unchanged after asserting it contains no injection characters.
+
+    Raises :exc:`ValueError` if *p* contains any of ``"``, ``\\``, newline,
+    ``)``, or ``(``.  These characters would corrupt an SBPL profile string
+    (breaking the ``(subpath "…")`` clause) or a bwrap argv entry.
+
+    All paths that enter :func:`_macos_profile` or :func:`_linux_argv` must
+    pass through this guard so the sandbox policy cannot be silently weakened
+    by a maliciously crafted project root or writable-path value.
+    """
+    bad = _UNSAFE_PATH_CHARS.intersection(p)
+    if bad:
+        raise ValueError(
+            f"Sandbox path {p!r} contains unsafe characters {sorted(bad)!r}; "
+            "path injection into the sandbox policy is not allowed."
+        )
+    return p
+
+
+# ---------------------------------------------------------------------------
 # Detection helpers
 # ---------------------------------------------------------------------------
 
@@ -103,16 +134,19 @@ def _macos_profile(
       root, the system temp dir, and each caller-supplied writable path.
     - Optionally denies all network access when ``allow_network`` is False.
     """
-    tmpdir = str(Path(os.environ.get("TMPDIR", "/tmp")).resolve())
+    tmpdir = _safe_sandbox_path(str(Path(os.environ.get("TMPDIR", "/tmp")).resolve()))
 
     # Collect the paths that should be writable (dedup, resolve to str).
     # Paths MUST be canonicalized: Seatbelt matches a write against the target's
     # *resolved* path, but on macOS `/var` and `/tmp` (and any temp dir beneath
     # them) are symlinks into `/private/...`. An unresolved `(subpath "/var/...")`
     # would never match, silently denying writes inside the project itself.
-    write_allow: list[str] = [str(Path(project_root).resolve()), tmpdir]
+    write_allow: list[str] = [
+        _safe_sandbox_path(str(Path(project_root).resolve())),
+        tmpdir,
+    ]
     for p in writable:
-        s = str(Path(p).resolve())
+        s = _safe_sandbox_path(str(Path(p).resolve()))
         if s not in write_allow:
             write_allow.append(s)
 
@@ -170,7 +204,7 @@ def _linux_argv(
     - ``--unshare-net`` (optional) removes network namespace when denied.
     """
     # Canonicalize bind sources/targets so symlinked paths resolve consistently.
-    proj = str(Path(project_root).resolve())
+    proj = _safe_sandbox_path(str(Path(project_root).resolve()))
     argv: list[str] = [
         "bwrap",
         "--ro-bind", "/", "/",
@@ -178,7 +212,7 @@ def _linux_argv(
     ]
 
     for p in writable:
-        rp = str(Path(p).resolve())
+        rp = _safe_sandbox_path(str(Path(p).resolve()))
         argv.extend(["--bind", rp, rp])
 
     argv.extend([

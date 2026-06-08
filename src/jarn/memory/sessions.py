@@ -230,7 +230,17 @@ class TranscriptWriter:
         """
         record: dict[str, Any] = {"ts": ts, "type": "tool", "name": name}
         if args is not None:
-            record["args"] = args
+            # Truncate large string argument values so a wiki_write / write_file
+            # call with full file content doesn't bloat the transcript JSONL.
+            # Non-string values (ints, booleans, lists, …) are kept as-is.
+            capped: dict[str, Any] = {}
+            for k, v in args.items():
+                if isinstance(v, str) and len(v) > _TRANSCRIPT_MAX_TOOL_CHARS:
+                    capped[k] = v[:_TRANSCRIPT_MAX_TOOL_CHARS]
+                    capped[f"{k}__truncated"] = True
+                else:
+                    capped[k] = v
+            record["args"] = capped
         if result is not None:
             trimmed = result[:_TRANSCRIPT_MAX_TOOL_CHARS]
             record["result"] = trimmed

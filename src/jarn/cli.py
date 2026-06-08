@@ -295,6 +295,21 @@ def _collect_doctor(diag: dict) -> int:
         "mode": cfg.execution.local_sandbox,
     }
 
+    # Surface newer feature flags so operators can see them in doctor output.
+    diag["git"] = {
+        "autocheckpoint": cfg.git.autocheckpoint,
+    }
+    diag["wiki"] = {
+        "enabled": cfg.wiki.enabled,
+    }
+    diag["observability"] = {
+        "transcript": cfg.observability.transcript,
+    }
+    diag["context"] = {
+        "repo_map": cfg.context.repo_map,
+        "repo_map_tokens": cfg.context.repo_map_tokens,
+    }
+
     from jarn.doctor_extensions import collect_extensions
 
     diag["extensions"] = collect_extensions(
@@ -342,6 +357,23 @@ def _cmd_doctor(*, as_json: bool = False) -> int:
     else:
         sbx_status = "[dim]unavailable[/dim]"
     console.print(f"sandbox: {sbx_status} · mode {sbx_mode}")
+
+    git_diag = diag.get("git") or {}
+    autockpt = "on" if git_diag.get("autocheckpoint") else "off"
+    console.print(f"git.autocheckpoint: {autockpt}")
+
+    wiki_diag = diag.get("wiki") or {}
+    wiki_enabled = "on" if wiki_diag.get("enabled") else "off"
+    console.print(f"wiki.enabled: {wiki_enabled}")
+
+    obs_diag = diag.get("observability") or {}
+    transcript = "on" if obs_diag.get("transcript", True) else "off"
+    console.print(f"observability.transcript: {transcript}")
+
+    ctx_diag = diag.get("context") or {}
+    repo_map_mode = ctx_diag.get("repo_map", "tool")
+    repo_map_tokens = ctx_diag.get("repo_map_tokens", 1024)
+    console.print(f"context.repo_map: {repo_map_mode} · token_budget {repo_map_tokens}")
 
     console.print("\n[b]Providers[/b]")
     for entry in diag["providers"]:
