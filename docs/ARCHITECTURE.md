@@ -47,6 +47,12 @@ tracking, memory, the extensibility surfaces, and the terminal front-end (`jarn.
 | `jarn.onboarding` | First-run wizard |
 | `jarn.cli` | `jarn` entry point and subcommands |
 | `jarn.doctor_extensions` | Extension diagnostics for `jarn doctor` (skills, commands, shadowing) |
+| `jarn.os_sandbox` | OS-level kernel sandbox for the local shell backend (`sandbox-exec` on macOS, `bwrap` on Linux) |
+| `jarn.checkpoint` | Auto-checkpoint machinery: snapshot working tree before each turn, `/undo` / `/redo` / `/checkpoints` using private git refs |
+| `jarn.repomap` | Ranked, token-budgeted repo map (stdlib `ast` + light regex for JS/TS/Go/Rust); `repo_map` tool + `/map` command |
+| `jarn.memory.wiki` | Markdown wiki knowledge base (`wiki_search`, `wiki_read`, `wiki_write`, `wiki_append` tools + `/wiki` command) |
+| `jarn.headless` | Headless one-shot entry point (`jarn -p`); fail-closed tool gating, `--json` output, stdin support |
+| `jarn.compat` | Cross-agent interop: `AGENTS.md` / `CLAUDE.md` context-file discovery and `.claude/` skill/command dirs |
 
 ## The turn lifecycle
 
@@ -119,3 +125,9 @@ can force a confirmation even in YOLO mode.
 - `repl_renderer.py` — `TurnRenderer` (streaming Markdown, per-tool durations).
 - `tui/toolbar.py` — adaptive bottom toolbar; `tui/input_queue.py` — FIFO input queue.
 - `tui/palette.py` — theme tokens + `configure_ui(theme, accent)`.
+- `os_sandbox.py` — macOS SBPL / Linux bwrap wrappers; path-injection guard.
+- `checkpoint.py` — pre-turn snapshots via private git refs; undo/redo stack.
+- `repomap.py` — AST + regex source parser; ranked map builder; token budgeting.
+- `memory/wiki.py` — wiki page CRUD, slug sanitization, trust-gated project tier.
+- `headless.py` — single-turn agent runner for `jarn -p`; fail-closed tool gate.
+- `compat.py` — context-file resolution order and `.claude/` directory discovery.

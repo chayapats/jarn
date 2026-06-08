@@ -22,7 +22,12 @@ built as its own opinionated harness on top of the DeepAgents library. Its defin
 trait is **reliability**: it plans before acting, verifies its own work, asks before
 doing anything risky, and never claims success on a guess.
 
-It runs entirely in your terminal (a Web UI is on the roadmap, post-launch).
+It runs entirely in your terminal (a Web UI is on the roadmap, post-launch). Notable
+capabilities: **AGENTS.md / CLAUDE.md interop** (works out-of-the-box beside other
+agents), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcripts**,
+**`!` shell escape**, **OS-level execution sandbox** (macOS `sandbox-exec` / Linux
+`bwrap`), **auto-checkpoint + `/undo` / `/redo`**, **repo map** (`/map`), and a
+**wiki knowledge base** (`/wiki`).
 
 > **Status:** v0.1.0 **alpha** on PyPI. The architecture, configuration, permission
 > engine, and terminal REPL are implemented and tested; live model calls require
@@ -247,7 +252,7 @@ See [docs/EXTENDING.md](docs/EXTENDING.md) ([quick start](docs/EXTENDING.md#quic
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 371 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 602 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

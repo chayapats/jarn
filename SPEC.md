@@ -70,7 +70,9 @@
 - Git awareness (diff/branch/status + HITL commit)
 - Long-term memory (markdown-first)
 
-**Later (v2+):** Async/remote subagents (Agent Protocol) · Sandbox backend · Multimodal filesystem (PDF/image/audio) · Web UI
+**Shipped (post-v1, on main):** OS-level execution sandbox (`execution.local_sandbox`) · Repo map (`context.repo_map` / `/map`) · Wiki knowledge base (`wiki.enabled` / `/wiki`) · Auto-checkpoint + `/undo`/`/redo` · AGENTS.md/CLAUDE.md interop · Headless one-shot (`jarn -p`) · JSONL session transcript · `!` shell escape
+
+**Later (v2+):** Web UI · Open-core hosted sandbox / cloud features
 
 ---
 
@@ -171,7 +173,9 @@ JARN.md                   # project context (commit ได้)
 | **D6** | Web search/fetch, MCP client, skills/commands/custom-agents loaders, cost/budget + `/cost` |
 | **D7** | Long-term memory (markdown), LangSmith opt-in + local logs, polish/theme, PyPI packaging |
 
-**Deferred → v1.x / v2:** vector recall · telemetry · binary build · sandbox backend · async/remote subagents · multimodal · Web UI
+**Deferred → v1.x / v2:** vector recall · telemetry · binary build · async/remote subagents · multimodal · Web UI
+
+> **Note (2026-06-08):** sandbox backend, async/remote subagents, and multimodal filesystem shipped in v1.x (now in ROADMAP.md). OS-level execution sandbox, repo map, wiki, auto-checkpoint, AGENTS.md interop, headless mode, and JSONL transcripts shipped on `main` (unreleased, targeting v0.2.0).
 
 ---
 
@@ -195,6 +199,6 @@ JARN.md                   # project context (commit ได้)
   - (1) Unit/logic — `pytest`: config loader, **permission engine, allowlist, danger-guard**, model routing, cost calc
   - (2) Agent integration (mocked LLM) — agent loop/tools/HITL/verify loop/subagent routing โดย mock model (ไม่เปลือง token, ไม่ flaky)
   - (3) Front-end — `tests/test_repl.py` (headless REPL) + `tests/test_ux.py` (onboarding wizard pilot) + `tests/test_phase3.py` (registry/queue/toolbar parity); Textual chat snapshot retired
-  - Gate ปัจจุบัน: **371 tests**, `ruff check src tests`, `mypy src/` = 0 errors
+  - Gate ปัจจุบัน: **602 tests**, `ruff check src tests`, `mypy src/` = 0 errors
 - **Nightly/manual:** (4) E2E live LLM บน fixture repo (smoke suite เล็ก, ไม่บล็อก CI หลัก)
 - **Coverage สูงสุดที่:** permission engine + danger-guard + verify loop (หัวใจ "reliable")

@@ -53,7 +53,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-08**.
 - [x] `jarn` / `setup` / `init` / `doctor` (`--json`) CLI
 - [x] Strict config validation (typed bools, numeric ranges, unknown top-level keys rejected)
 - [x] Local rotating logs, opt-in LangSmith tracing
-- [x] `uv`/PyPI packaging, 371 tests (+ packaging gate), clean lint + `mypy` CI
+- [x] `uv`/PyPI packaging, 602 tests (+ packaging gate), clean lint + `mypy` CI
 - [x] `jarn doctor` extension diagnostics — skills, commands, subagents, hooks, MCP
   (shadowing, builtin renames, untrusted skips); `uv.lock` tracked for team installs
 
@@ -82,6 +82,31 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-08**.
   audio/video; binary-aware approval diff; `execution.multimodal` flag
 - [x] **Turn-level fallback model-swap** — on a turn that fails before producing
   output, rotate through `routing.fallback` and retry transparently
+
+## v0.2.0 — on `main`, not yet released
+
+- [x] **AGENTS.md / CLAUDE.md interop** — auto-loads `JARN.md` → `AGENTS.md` →
+  `CLAUDE.md` (first present); skills/commands also discovered under `.claude/` dirs
+  (`compat.read_claude_dir`); `.jarn` wins on conflict
+- [x] **Headless one-shot** — `jarn -p "prompt"` / stdin (`-`); `--json`, `--model`,
+  `--permission-mode`, `--max-turns`, `--cwd`; fail-closed (gated tools refused unless
+  an auto-approving mode is set)
+- [x] **JSONL session transcript** — append-only `<project>/.jarn/sessions/<id>.jsonl`;
+  `observability.transcript` (default `true`); trust-gated for project sessions
+- [x] **`!` shell escape** — REPL lines starting with `!` run a shell command directly
+  with no agent overhead and no approval
+- [x] **OS-level execution sandbox** — `sandbox-exec` / SBPL (macOS) or `bwrap`
+  (Linux) beneath the danger-guard; `execution.local_sandbox: off|auto|require`
+  (default `off`), `sandbox_allow_network`, `sandbox_writable`
+- [x] **Auto-checkpoint + `/undo` / `/redo` / `/checkpoints`** — snapshot working tree
+  before each turn using private git refs (never moves HEAD); `git.autocheckpoint`
+  (default `false`), `git.checkpoint_mode: shadow|commit` (default `shadow`)
+- [x] **Repo map** — ranked token-budgeted codebase overview (stdlib `ast` + regex for
+  JS/TS/Go/Rust); `repo_map` tool + `/map` command; `context.repo_map: off|tool|auto`
+  (default `tool`), `context.repo_map_tokens` (default 1024)
+- [x] **Wiki knowledge base** — `~/.jarn/wiki` + `<project>/.jarn/wiki`; tools
+  `wiki_search` / `wiki_read` / `wiki_write` / `wiki_append`; `/wiki` command;
+  `wiki.enabled` (default `false`); project tier gated by trust
 
 ## v2+ / launch-gated (scaffolded + documented, not shipped)
 

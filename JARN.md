@@ -20,8 +20,8 @@ plan → act → verify, with a strict permission system in front of every mutat
 - Onboarding: Textual wizard (`jarn.onboarding`) with Rich fallback
 - Source: `src/jarn/` — subsystems: `config`, `providers`, `permissions`, `cost`,
   `memory`, `extensibility`, `agent`, `repl`, `repl_renderer`, `tui`, `observability`,
-  `onboarding`, `cli`
-- Tests: `tests/` (**371** pytest cases); docs: `docs/` + `README.md`; design: `SPEC.md`
+  `onboarding`, `cli`, `os_sandbox`, `checkpoint`, `repomap`, `memory/wiki`, `headless`
+- Tests: `tests/` (**602** pytest cases); docs: `docs/` + `README.md`; design: `SPEC.md`
 
 ## Conventions
 
@@ -34,7 +34,7 @@ plan → act → verify, with a strict permission system in front of every mutat
 
 ```bash
 uv sync --extra dev
-uv run pytest                    # full suite (371 tests)
+uv run pytest                    # full suite (602 tests)
 uv run ruff check src tests      # lint
 uv run mypy src/                 # type-check (CI-gated)
 uv run jarn                      # launch the terminal REPL
@@ -53,7 +53,19 @@ uv run jarn doctor               # diagnose config/providers
 - Theme: `palette.configure_ui(theme, accent)`; `NO_COLOR=1` for plain toolbar labels.
 - Front-end tests: `test_repl.py`, `test_ux.py`, `test_phase3.py` (registry/queue/toolbar).
 - `LocalShellBackend` runs on the host; safety is the permission engine + danger-guard,
-  not isolation. Don't weaken the guard.
+  not isolation. Don't weaken the guard. An optional OS-level sandbox layer is in
+  `os_sandbox.py` (macOS `sandbox-exec`, Linux `bwrap`); controlled by
+  `execution.local_sandbox`.
+- Auto-checkpoint lives in `checkpoint.py`; `/undo`, `/redo`, `/checkpoints` commands
+  use private git refs and never move HEAD. Controlled by `git.autocheckpoint`.
+- Repo map is in `repomap.py` (stdlib `ast` + regex; no extra deps); exposed as the
+  `repo_map` tool and `/map` command. Controlled by `context.repo_map`.
+- Wiki knowledge base is in `memory/wiki.py`; four tools (`wiki_search`, `wiki_read`,
+  `wiki_write`, `wiki_append`) + `/wiki` command. Controlled by `wiki.enabled`.
+- Headless one-shot entry point is `headless.py`; invoked by `jarn -p "..."`.
+- AGENTS.md / CLAUDE.md interop is in `compat.py`; controlled by `compat.context_files`
+  and `compat.read_claude_dir`.
 - Keep the reliability core (engine, guard, interrupt→approval flow) well-tested.
-- `jarn doctor` reports loaded extensions (skills/commands/subagents/hooks/MCP) via
-  `doctor_extensions.py` — useful when onboarding teammates to a repo with `.jarn/`.
+- `jarn doctor` reports loaded extensions (skills/commands/subagents/hooks/MCP) and
+  autocheckpoint/wiki/transcript/repo_map status via `doctor_extensions.py` — useful
+  when onboarding teammates to a repo with `.jarn/`.
