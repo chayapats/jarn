@@ -8,19 +8,23 @@ permissions:
   contents: write
 
 jobs:
-  # Build the PyPI artifacts (sdist + wheel).
+  # Build and publish the PyPI artifacts (sdist + wheel) via Trusted Publishing.
   pypi:
     runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/jarn
+    permissions:
+      id-token: write   # OIDC token for PyPI Trusted Publishing (no API token needed)
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
       - run: uv build
-      - name: Publish to PyPI
-        env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: uv publish
+      - name: Publish to PyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
       - uses: actions/upload-artifact@v4
         with:
           name: dist-pypi
