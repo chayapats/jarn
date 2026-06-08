@@ -48,6 +48,38 @@ def test_parse_input_command_vs_chat():
     assert not parse_input("hello world").is_command
 
 
+def test_parse_input_shell_escape_with_space():
+    p = parse_input("! git status")
+    assert p.is_shell is True
+    assert p.shell_command == "git status"
+    assert p.is_command is False
+    assert p.text == ""
+
+
+def test_parse_input_shell_escape_no_space():
+    p = parse_input("!ls")
+    assert p.is_shell is True
+    assert p.shell_command == "ls"
+
+
+def test_parse_input_bare_bang_is_noop():
+    p = parse_input("!")
+    assert p.is_shell is True
+    assert p.shell_command == ""
+
+
+def test_parse_input_help_still_command():
+    p = parse_input("/help")
+    assert p.is_command is True and p.name == "help"
+    assert p.is_shell is False
+
+
+def test_parse_input_plain_chat_not_shell():
+    p = parse_input("hello world")
+    assert p.is_command is False and p.is_shell is False
+    assert p.text == "hello world"
+
+
 def test_load_custom_commands(monkeypatch, tmp_path, project_dir):
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     cdir = project_dir / ".jarn" / "commands"

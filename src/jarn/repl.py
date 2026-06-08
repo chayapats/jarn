@@ -53,6 +53,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape as _rich_escape
 
+from jarn.agent.local_backend import CancellableLocalShellBackend
 from jarn.agent.session import ApprovalReply, ApprovalRequest, Event, EventKind
 from jarn.config.schema import Config, PermissionMode
 from jarn.extensibility.commands import completion_catalog, parse_input
@@ -631,11 +632,13 @@ class InlineApp:
             self._turn_task = asyncio.create_task(self._handle(item.payload))
 
     async def _handle(self, text: str) -> None:
-        """Run one submitted line (a turn or a command) as a cancellable task."""
+        """Run one submitted line (a turn, a command, or a shell escape) as a cancellable task."""
         try:
             parsed = parse_input(text)
             if parsed.is_command:
                 await self._command(parsed.name, parsed.args)
+            elif parsed.is_shell:
+                await self._shell_escape(parsed.shell_command)
             else:
                 # Reset + pass the list as a sink so tool outputs accumulate LIVE
                 # — Ctrl+O works mid-turn, not only after the answer completes.
@@ -660,6 +663,26 @@ class InlineApp:
             if self.app is not None:
                 self.app.invalidate()
             self._drain_queue()
+
+    async def _shell_escape(self, command: str) -> None:
+        """Run a ``! <cmd>`` shell escape directly — no agent round-trip, no tokens.
+
+        The user typed the ``!`` prefix themselves, so the permission engine is
+        bypassed entirely (same trust model as the user's own terminal).  Output
+        is printed to the scrollback console.  Reuses
+        :class:`~jarn.agent.local_backend.CancellableLocalShellBackend` so
+        truncation and Esc/cancel behaviour match the agent's Bash tool.
+        """
+        c = self.console
+        if not command:
+            c.print(f"[{palette.C_DIM}]! <cmd>  — run a shell command directly[/{palette.C_DIM}]")
+            return
+        cwd = self.controller.project_root or Path(".")
+        backend = CancellableLocalShellBackend(str(cwd))
+        # execute is blocking; offload to a thread so the event-loop stays live
+        # (Esc can still fire while the command runs).
+        response = await asyncio.to_thread(backend.execute, command)
+        c.print(response.output)
 
     # -- commands -----------------------------------------------------------
 

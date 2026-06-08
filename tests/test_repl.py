@@ -643,5 +643,49 @@ def test_pastes_cleared_after_expand(tmp_path, monkeypatch):
     app.controller.close()
 
 
+@pytest.mark.asyncio
+async def test_shell_escape_runs_command_and_prints_output(tmp_path, monkeypatch):
+    """A ``! echo`` line bypasses the agent and prints stdout to the console."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    buf = StringIO()
+    app.console = Console(file=buf, width=80)
+    await app._shell_escape("echo hello_shell_test")
+    out = buf.getvalue()
+    assert "hello_shell_test" in out
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_shell_escape_bare_bang_prints_hint(tmp_path, monkeypatch):
+    """A bare ``!`` (no command) prints a usage hint, not an error."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    buf = StringIO()
+    app.console = Console(file=buf, width=80)
+    await app._shell_escape("")
+    out = buf.getvalue()
+    assert "!" in out  # hint mentions the ! prefix
+    app.controller.close()
+
+
 def test_repl_importable():
     from jarn.repl import InlineApp, run_inline  # noqa: F401

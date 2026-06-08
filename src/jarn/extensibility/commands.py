@@ -94,7 +94,8 @@ _BUILTIN_BY_NAME: dict[str, BuiltinCommand] = {cmd.name: cmd for cmd in BUILTINS
 
 HELP_SHORTCUTS = (
     "Tab complete · ↑/↓ history · Shift+Tab mode · "
-    "Ctrl+O or /expand last output · Esc cancel turn · Ctrl+C twice to quit"
+    "Ctrl+O or /expand last output · Esc cancel turn · Ctrl+C twice to quit · "
+    "! <cmd> run shell command directly"
 )
 HELP_COPY_HINT = "Copy: drag-select + ⌘C in your terminal (native scrollback)."
 
@@ -252,19 +253,30 @@ def load_commands(
 
 @dataclass(slots=True, frozen=True)
 class ParsedInput:
-    """Result of parsing a raw input line into a command or a chat message."""
+    """Result of parsing a raw input line into a command, a shell escape, or chat.
+
+    Exactly one of ``is_command``, ``is_shell``, or neither is true per instance.
+    Shell escapes (``! <cmd>``) bypass the agent entirely — the REPL runs them
+    directly via :class:`~jarn.agent.local_backend.CancellableLocalShellBackend`.
+    """
 
     is_command: bool
     name: str = ""
     args: str = ""
     text: str = ""
+    is_shell: bool = False
+    shell_command: str = ""
 
 
 def parse_input(line: str) -> ParsedInput:
-    """Split a leading ``/command args`` from plain chat text."""
+    """Split a leading ``/command args`` or ``! cmd`` from plain chat text."""
     stripped = line.strip()
     if stripped.startswith("/") and len(stripped) > 1:
         rest = stripped[1:]
         name, _, args = rest.partition(" ")
         return ParsedInput(is_command=True, name=name.strip(), args=args.strip())
+    if stripped.startswith("!"):
+        # ``!git status`` and ``! git status`` both work; bare ``!`` is a no-op.
+        shell_cmd = stripped[1:].lstrip()
+        return ParsedInput(is_command=False, is_shell=True, shell_command=shell_cmd)
     return ParsedInput(is_command=False, text=line)
