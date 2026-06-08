@@ -1,5 +1,8 @@
 # Contributing
 
+> **Audience:** contributors opening their first PR. Covers dev setup, the CI
+> gates you must pass, testing layers, and conventions for common changes.
+
 ## Dev setup
 
 ```bash
@@ -89,3 +92,7 @@ uv run pytest --cov=src/jarn --cov-report=term-missing
    `/help`, completion, and README parity tests derive from this registry.
 2. Implement `Controller._cmd_<name>` (`tui/controller.py`) returning a `CommandResult`.
 3. The REPL (`repl.py` / `Controller`) dispatches it automatically.
+
+---
+
+**Related docs:** [ARCHITECTURE.md](ARCHITECTURE.md) · [EXTENDING.md](EXTENDING.md) · [← docs index](README.md)

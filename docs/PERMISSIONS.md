@@ -1,5 +1,9 @@
 # Permissions & Safety
 
+> **Audience:** users who want to understand what J.A.R.N. will and won't do on their
+> behalf, and contributors working on the authorization path. Start here before
+> adjusting `permission_mode` or writing `allow`/`deny` rules.
+
 Reliability is the whole point of J.A.R.N., and the permission system is where that
 lives. Every file write and shell command the agent attempts is evaluated before it
 runs. There is a trust boundary around the project, then three runtime layers.
@@ -171,3 +175,7 @@ unrestricted — only writes are limited.
 Enable with `execution.local_sandbox: auto` to get kernel enforcement opportunistically,
 or `require` in environments where isolation is non-negotiable. `jarn doctor` reports the
 detected backend and configured mode.
+
+---
+
+**Related docs:** [CONFIGURATION.md](CONFIGURATION.md) · [ARCHITECTURE.md](ARCHITECTURE.md) · [← docs index](README.md)

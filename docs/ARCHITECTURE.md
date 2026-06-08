@@ -1,5 +1,8 @@
 # Architecture
 
+> **Audience:** contributors and anyone who wants to understand how the pieces fit
+> together. Read this before diving into the source.
+
 J.A.R.N. is a thin, opinionated harness around the
 [DeepAgents](https://github.com/langchain-ai/deepagents) library. DeepAgents (on
 LangGraph) provides the agent loop, the filesystem/shell tools, planning, subagents,
@@ -131,3 +134,7 @@ can force a confirmation even in YOLO mode.
 - `memory/wiki.py` — wiki page CRUD, slug sanitization, trust-gated project tier.
 - `headless.py` — single-turn agent runner for `jarn -p`; fail-closed tool gate.
 - `compat.py` — context-file resolution order and `.claude/` directory discovery.
+
+---
+
+**Related docs:** [CONFIGURATION.md](CONFIGURATION.md) · [PERMISSIONS.md](PERMISSIONS.md) · [EXTENDING.md](EXTENDING.md) · [← docs index](README.md)

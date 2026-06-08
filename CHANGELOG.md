@@ -3,7 +3,7 @@
 All notable changes to J.A.R.N. are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.2.0] - Unreleased
+## [0.2.0] - 2026-06-09
 
 ### Added
 
@@ -94,4 +94,5 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Windows: use WSL; native Windows terminal is unsupported
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
+[0.2.0]: https://github.com/chayapats/jarn/releases/tag/v0.2.0
 [0.1.0]: https://github.com/chayapats/jarn/releases/tag/v0.1.0

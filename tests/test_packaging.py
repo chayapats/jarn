@@ -84,7 +84,9 @@ def test_wheel_install_smoke(built_artifacts, tmp_path):
         env=isolated,
     )
     version = _run([str(jarn), "--version"], cwd=ROOT, env=isolated)
-    assert "0.1.0" in version.stdout
+    from jarn.version import __version__
+
+    assert __version__ in version.stdout
     doctor = subprocess.run(
         [str(jarn), "doctor", "--json"],
         cwd=ROOT,

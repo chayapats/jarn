@@ -1,6 +1,9 @@
-# Licensing & open-core model
+# Licensing & Open-Core Model
 
-## Today (v0.1)
+> **Audience:** anyone curious about the project's business model and licensing.
+> This document describes future plans, not shipped features.
+
+## Today (v0.2.0)
 
 - The project is **Apache-2.0** (see [LICENSE](../LICENSE)) and developed in a
   license-clean, "ready to open" state: no bundled secrets, no proprietary deps.
@@ -26,3 +29,7 @@ Principles that keep the core trustworthy:
 
 These are **plans**, not shipped features. No commercial code, accounts, or hosted
 infrastructure exist in this repository.
+
+---
+
+[← docs index](README.md)

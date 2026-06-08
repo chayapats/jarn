@@ -1,5 +1,8 @@
 # Configuration
 
+> **Audience:** users setting up J.A.R.N. for the first time, and contributors
+> adding new config keys. This is the authoritative reference for every setting.
+
 J.A.R.N. reads two YAML files and merges them. Built-in defaults apply when a key is
 absent, so a minimal config (or none at all) still works.
 
@@ -337,3 +340,7 @@ it with `~/.jarn/pricing.yaml`:
 
 Unknown models are counted as `$0` and flagged as *unpriced* in `/cost` so you know the
 figure is incomplete rather than wrong.
+
+---
+
+**Related docs:** [PERMISSIONS.md](PERMISSIONS.md) · [EXTENDING.md](EXTENDING.md) · [ARCHITECTURE.md](ARCHITECTURE.md) · [← docs index](README.md)

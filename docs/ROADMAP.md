@@ -1,6 +1,10 @@
 # Roadmap
 
-Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-08**.
+> **Audience:** users curious about what is shipped versus planned, and contributors
+> choosing where to contribute. Items marked `[x]` are implemented and in the
+> current release; `[ ]` items are scaffolded or documented but not yet shipped.
+
+Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-09** (v0.2.0).
 
 ## v1 — implemented
 
@@ -83,7 +87,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-08**.
 - [x] **Turn-level fallback model-swap** — on a turn that fails before producing
   output, rotate through `routing.fallback` and retry transparently
 
-## v0.2.0 — on `main`, not yet released
+## v0.2.0 — released
 
 - [x] **AGENTS.md / CLAUDE.md interop** — auto-loads `JARN.md` → `AGENTS.md` →
   `CLAUDE.md` (first present); skills/commands also discovered under `.claude/` dirs
@@ -126,3 +130,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-08**.
 - The pricing table is best-effort (override via `~/.jarn/pricing.yaml`).
 - `LocalEmbedder` recall is lexical/subword (no neural embeddings) unless a provider
   embedder is configured.
+
+---
+
+**Related docs:** [ARCHITECTURE.md](ARCHITECTURE.md) · [OPEN_CORE.md](OPEN_CORE.md) · [← docs index](README.md)

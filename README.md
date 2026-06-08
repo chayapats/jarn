@@ -13,6 +13,8 @@
 
 A TUI-first coding agent harness built on [DeepAgents](https://github.com/langchain-ai/deepagents).
 
+**English** · [ภาษาไทย](README-TH.md)
+
 </div>
 
 ---
@@ -29,7 +31,7 @@ agents), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcrip
 `bwrap`), **auto-checkpoint + `/undo` / `/redo`**, **repo map** (`/map`), and a
 **wiki knowledge base** (`/wiki`).
 
-> **Status:** v0.1.0 **alpha** on PyPI. The architecture, configuration, permission
+> **Status:** v0.2.0 on PyPI. The architecture, configuration, permission
 > engine, and terminal REPL are implemented and tested; live model calls require
 > your own API key. See [CHANGELOG.md](CHANGELOG.md) and [SECURITY.md](SECURITY.md).
 

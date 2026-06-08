@@ -1,6 +1,10 @@
-# Web UI (planned — post-launch)
+# Web UI (planned — not yet built)
 
-The Web UI is intentionally **not** built in v1. Per [SPEC.md](../SPEC.md), J.A.R.N.
+> **Audience:** contributors and anyone evaluating J.A.R.N.'s future direction.
+> **Nothing described here is shipped.** This document records the intended design
+> so the core stays Web-UI-ready; see [ROADMAP.md](ROADMAP.md) for status.
+
+The Web UI is intentionally **not** built yet. Per [SPEC.md](../SPEC.md), J.A.R.N.
 ships TUI-first and a Web UI follows only once the core is launch-ready. This
 document records the intended design so the core stays Web-UI-ready.
 
@@ -44,3 +48,7 @@ WebSocket ─▶│ PermissionEngine · CostTracker · Memory · Extensibility  
 `web/server_sketch.py`) that shows how a server would reuse `SessionDriver`. It has
 no runtime dependencies and is not wired into the package — it's a design reference,
 not a shipped feature.
+
+---
+
+**Related docs:** [OPEN_CORE.md](OPEN_CORE.md) · [ROADMAP.md](ROADMAP.md) · [ARCHITECTURE.md](ARCHITECTURE.md) · [← docs index](README.md)

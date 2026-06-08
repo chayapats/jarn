@@ -1,5 +1,9 @@
 # Extending J.A.R.N.
 
+> **Audience:** users who want to add skills, custom commands, subagents, hooks,
+> or MCP tools to J.A.R.N. No code changes required — everything here is
+> file- or config-based.
+
 Five extension surfaces, all file- or config-based, all two-tier (global
 `~/.jarn/...` and project `.jarn/...`, with the project tier winning on name
 conflicts). Working examples live in [`examples/`](../examples).
@@ -123,7 +127,9 @@ a built-in, update `BUILTINS` and keep `README.md` in sync
 
 Current built-ins: `/help`, `/init`, `/model`, `/mode`, `/sandbox`, `/cost`,
 `/compact`, `/expand`, `/clear`, `/sessions`, `/resume`, `/skills`, `/memory`,
-`/permissions`, `/queue`, `/quit`. See [README.md § Built-in commands](../README.md#built-in-commands).
+`/permissions`, `/queue`, `/undo`, `/redo`, `/checkpoints`, `/map`, `/wiki`,
+`/quit`. The README command table is the authoritative list (kept in sync by the
+parity test). See [README.md § Built-in commands](../README.md#built-in-commands).
 
 ### Custom commands
 
@@ -247,3 +253,7 @@ launching.
 - Commit project-tier extensions (`.jarn/`) so your whole team shares them.
 - `state.sqlite` and `logs/` under `.jarn/` are gitignored by the provided
   `.gitignore`.
+
+---
+
+**Related docs:** [CONFIGURATION.md](CONFIGURATION.md) · [PERMISSIONS.md](PERMISSIONS.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [← docs index](README.md)
