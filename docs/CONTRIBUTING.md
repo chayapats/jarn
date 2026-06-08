@@ -42,8 +42,7 @@ keep `README.md`'s command table in sync — `tests/test_phase3.py` checks parit
 
 **Doc sync:** user-facing docs live in `README.md`, `JARN.md`, `SPEC.md`, and
 `docs/*.md`. Built-in command lists must match `BUILTINS`; test counts must match
-`uv run pytest -q`. Historical audit files (`PROJECT_AUDIT_*.md`) are point-in-time
-but carry a banner with the current gate.
+`uv run pytest -q`.
 
 ## Testing layers
 

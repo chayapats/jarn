@@ -1,6 +1,6 @@
 # Roadmap
 
-Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-08** (Phase 3 UX complete).
+Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-08**.
 
 ## v1 — implemented
 

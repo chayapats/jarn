@@ -45,7 +45,7 @@ trust the project, J.A.R.N. strips project hooks, MCP servers, and project
 skills/commands/subagents (global `~/.jarn/` still loads). Run once per repo:
 
 ```bash
-jarn trust
+jarn trust .
 ```
 
 Details: [CONFIGURATION.md § Project trust](CONFIGURATION.md#project-trust),

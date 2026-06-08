@@ -39,7 +39,6 @@ Besides the pre-launch prompt, the `jarn trust` subcommand manages the same trus
 
 ```bash
 jarn trust                  # list trusted project roots (+ short fingerprint)
-jarn trust list             # same as above
 jarn trust /path/to/repo    # trust a root (validates .jarn/config.yaml, fingerprints it)
 jarn trust /path/to/repo --remove   # untrust a root
 jarn trust --json           # emit the trust list as JSON

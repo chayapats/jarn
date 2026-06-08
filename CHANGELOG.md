@@ -35,6 +35,6 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Runs on the **host filesystem** by default — not a sandboxed VM
 - Live model calls require your own API key; CI does not exercise real LLM traffic
 - Windows: use WSL; native Windows terminal is unsupported
-- Web UI, hosted sandbox, and Phase-4 differentiators are not in this release
+- Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
 [0.1.0]: https://github.com/chayapats/jarn/releases/tag/v0.1.0
