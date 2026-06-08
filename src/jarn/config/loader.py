@@ -1,0 +1,375 @@
+"""Load and merge the two configuration tiers into a :class:`Config`.
+
+Merge order (later wins): built-in defaults < global (~/.jarn) < project (.jarn).
+Dicts merge recursively; lists and scalars are replaced wholesale, *except*
+``permissions.allow`` / ``permissions.deny`` and ``hooks`` / ``mcp_servers``
+which are concatenated so a project can extend (not just replace) global rules.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from jarn.config import paths
+from jarn.config.schema import (
+    AsyncSubagentSpec,
+    BudgetConfig,
+    Config,
+    ContextConfig,
+    ExecutionConfig,
+    HookSpec,
+    MCPServer,
+    ObservabilityConfig,
+    PermissionMode,
+    PermissionRules,
+    ProviderConfig,
+    ProviderType,
+    RoutingConfig,
+    UIConfig,
+)
+
+_LIST_EXTEND_KEYS = {"hooks", "mcp_servers", "async_subagents"}
+
+#: The authoritative set of recognised top-level config keys. Anything else is a
+#: typo or an unsupported feature and is rejected loudly rather than ignored.
+_KNOWN_TOP_LEVEL_KEYS = {
+    "default_profile",
+    "default_model",
+    "permission_mode",
+    "providers",
+    "routing",
+    "budget",
+    "context",
+    "execution",
+    "permissions",
+    "hooks",
+    "mcp_servers",
+    "async_subagents",
+    "observability",
+    "ui",
+}
+
+_TRUE_STRINGS = {"true", "yes", "on", "1"}
+_FALSE_STRINGS = {"false", "no", "off", "0", ""}
+
+
+class ConfigError(ValueError):
+    """Raised on malformed configuration."""
+
+
+def _normalize_bool(value: Any, path: str) -> bool:
+    """Coerce a YAML scalar to a strict bool, rejecting ambiguous values.
+
+    Real ``bool`` passes through. Strings (stripped/lowercased) map via the
+    well-known truthy/falsey words; ints ``0``/``1`` map to ``False``/``True``.
+    Anything else raises :class:`ConfigError` naming ``path`` so the user sees
+    which key was wrong instead of a silent surprising coercion.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in _TRUE_STRINGS:
+            return True
+        if token in _FALSE_STRINGS:
+            return False
+        raise ConfigError(
+            f"{path} must be a boolean (got {value!r})."
+        )
+    if isinstance(value, int):  # note: bool already handled above
+        if value in (0, 1):
+            return bool(value)
+        raise ConfigError(f"{path} must be a boolean (got {value!r}).")
+    raise ConfigError(f"{path} must be a boolean (got {value!r}).")
+
+
+def _coerce_int(value: Any, path: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{path} must be an integer (got {value!r}).") from exc
+
+
+def _coerce_float(value: Any, path: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{path} must be a number (got {value!r}).") from exc
+
+
+def _check_pct(value: int, path: str) -> int:
+    if not 0 <= value <= 100:
+        raise ConfigError(f"{path} must be between 0 and 100 (got {value}).")
+    return value
+
+
+def _read_yaml(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"Invalid YAML in {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"Top-level config in {path} must be a mapping.")
+    return data
+
+
+def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for key, value in overlay.items():
+        if key in _LIST_EXTEND_KEYS and isinstance(value, list):
+            out[key] = [*out.get(key, []), *value]
+        elif key == "permissions" and isinstance(value, dict):
+            # Allow/deny rules concatenate so a project extends global rules.
+            out[key] = _merge_permissions(out.get(key, {}), value)
+        elif isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def _merge_permissions(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for bucket in ("allow", "deny"):
+        if bucket in overlay:
+            merged[bucket] = [*base.get(bucket, []), *overlay.get(bucket, [])]
+    return merged
+
+
+def _build_config(raw: dict[str, Any]) -> Config:
+    cfg = Config()
+
+    unknown = set(raw) - _KNOWN_TOP_LEVEL_KEYS
+    if unknown:
+        key = sorted(unknown)[0]
+        raise ConfigError(
+            f"Unknown top-level config key {key!r}; "
+            f"expected one of {sorted(_KNOWN_TOP_LEVEL_KEYS)}"
+        )
+
+    if "default_profile" in raw:
+        cfg.default_profile = str(raw["default_profile"])
+    if "default_model" in raw:
+        cfg.default_model = raw["default_model"]
+    if "permission_mode" in raw:
+        try:
+            cfg.permission_mode = PermissionMode(str(raw["permission_mode"]))
+        except ValueError as exc:
+            raise ConfigError(
+                f"Unknown permission_mode {raw['permission_mode']!r}; "
+                f"expected one of {[m.value for m in PermissionMode]}"
+            ) from exc
+
+    cfg.providers = _build_providers(raw.get("providers", {}))
+
+    routing = raw.get("routing", {}) or {}
+    cfg.routing = RoutingConfig(
+        main=routing.get("main"),
+        subagent=routing.get("subagent"),
+        summarizer=routing.get("summarizer"),
+        fallback=list(routing.get("fallback", []) or []),
+    )
+
+    budget = raw.get("budget", {}) or {}
+    per_session = budget.get("per_session_usd")
+    if per_session is not None:
+        per_session = _coerce_float(per_session, "budget.per_session_usd")
+        if per_session < 0:
+            raise ConfigError(
+                f"budget.per_session_usd must be >= 0 (got {per_session})."
+            )
+    cfg.budget = BudgetConfig(
+        per_session_usd=per_session,
+        hard_stop=_normalize_bool(budget.get("hard_stop", True), "budget.hard_stop"),
+        warn_at_pct=_check_pct(
+            _coerce_int(budget.get("warn_at_pct", 80), "budget.warn_at_pct"),
+            "budget.warn_at_pct",
+        ),
+    )
+
+    ctx = raw.get("context", {}) or {}
+    cfg.context = ContextConfig(
+        auto_compact=_normalize_bool(
+            ctx.get("auto_compact", True), "context.auto_compact"
+        ),
+        compact_at_pct=_check_pct(
+            _coerce_int(ctx.get("compact_at_pct", 85), "context.compact_at_pct"),
+            "context.compact_at_pct",
+        ),
+    )
+
+    ex = raw.get("execution", {}) or {}
+    cfg.execution = ExecutionConfig(
+        backend=str(ex.get("backend", "local")),
+        sandbox_provider=str(ex.get("sandbox_provider", "langsmith")),
+        multimodal=_normalize_bool(ex.get("multimodal", True), "execution.multimodal"),
+        allow_local_fallback=_normalize_bool(
+            ex.get("allow_local_fallback", False), "execution.allow_local_fallback"
+        ),
+    )
+
+    perms = raw.get("permissions", {}) or {}
+    cfg.permissions = PermissionRules(
+        allow=list(perms.get("allow", []) or []),
+        deny=list(perms.get("deny", []) or []),
+    )
+
+    cfg.hooks = [_build_hook(h) for h in raw.get("hooks", []) or []]
+    cfg.mcp_servers = [_build_mcp(m) for m in raw.get("mcp_servers", []) or []]
+    cfg.async_subagents = [
+        _build_async_subagent(a) for a in raw.get("async_subagents", []) or []
+    ]
+
+    obs = raw.get("observability", {}) or {}
+    cfg.observability = ObservabilityConfig(
+        langsmith=_normalize_bool(
+            obs.get("langsmith", False), "observability.langsmith"
+        ),
+        telemetry=_normalize_bool(
+            obs.get("telemetry", False), "observability.telemetry"
+        ),
+        log_level=str(obs.get("log_level", "info")),
+    )
+
+    ui = raw.get("ui", {}) or {}
+    cfg.ui = UIConfig(
+        theme=str(ui.get("theme", "dark")),
+        accent=str(ui.get("accent", "cyan")),
+    )
+
+    return cfg
+
+
+def _build_providers(raw: dict[str, Any]) -> dict[str, ProviderConfig]:
+    providers: dict[str, ProviderConfig] = {}
+    for name, spec in (raw or {}).items():
+        spec = spec or {}
+        if not isinstance(spec, dict):
+            raise ConfigError(
+                f"Provider {name!r} must be a mapping (got {spec!r})."
+            )
+        type_str = spec.get("type", name)
+        try:
+            ptype = ProviderType(str(type_str))
+        except ValueError as exc:
+            raise ConfigError(
+                f"Provider {name!r} has unknown type {type_str!r}; "
+                f"expected one of {[p.value for p in ProviderType]}"
+            ) from exc
+        known = {"type", "api_key", "base_url"}
+        providers[name] = ProviderConfig(
+            type=ptype,
+            api_key=spec.get("api_key"),
+            base_url=spec.get("base_url"),
+            extra={k: v for k, v in spec.items() if k not in known},
+        )
+    return providers
+
+
+def _build_hook(raw: dict[str, Any]) -> HookSpec:
+    if "event" not in raw or "command" not in raw:
+        raise ConfigError(f"Hook entry must have 'event' and 'command': {raw!r}")
+    if not isinstance(raw["event"], str):
+        raise ConfigError(f"Hook 'event' must be a string (got {raw['event']!r}).")
+    if not isinstance(raw["command"], str):
+        raise ConfigError(
+            f"Hook 'command' must be a string (got {raw['command']!r})."
+        )
+    return HookSpec(
+        event=raw["event"],
+        command=raw["command"],
+        name=raw.get("name"),
+        matcher=raw.get("matcher"),
+        blocking=_normalize_bool(raw.get("blocking", False), "hook.blocking"),
+    )
+
+
+def _build_async_subagent(raw: dict[str, Any]) -> AsyncSubagentSpec:
+    for key in ("name", "description", "graph_id"):
+        if key not in raw:
+            raise ConfigError(f"async_subagent entry needs '{key}': {raw!r}")
+        if not isinstance(raw[key], str):
+            raise ConfigError(
+                f"async_subagent '{key}' must be a string (got {raw[key]!r})."
+            )
+    headers = raw.get("headers")
+    if headers is not None and not isinstance(headers, dict):
+        raise ConfigError(
+            f"async_subagent 'headers' must be a mapping (got {headers!r})."
+        )
+    return AsyncSubagentSpec(
+        name=raw["name"],
+        description=raw["description"],
+        graph_id=raw["graph_id"],
+        url=raw.get("url"),
+        headers=dict(headers or {}),
+    )
+
+
+def _build_mcp(raw: dict[str, Any]) -> MCPServer:
+    if "name" not in raw:
+        raise ConfigError(f"MCP server entry must have a 'name': {raw!r}")
+    args = raw.get("args", []) or []
+    if not isinstance(args, list):
+        raise ConfigError(f"MCP server 'args' must be a list (got {args!r}).")
+    env = raw.get("env", {}) or {}
+    if not isinstance(env, dict):
+        raise ConfigError(f"MCP server 'env' must be a mapping (got {env!r}).")
+    headers = raw.get("headers")
+    if headers is not None and not isinstance(headers, dict):
+        raise ConfigError(
+            f"MCP server 'headers' must be a mapping (got {headers!r})."
+        )
+    return MCPServer(
+        name=str(raw["name"]),
+        transport=str(raw.get("transport", "stdio")),
+        command=raw.get("command"),
+        args=list(args),
+        url=raw.get("url"),
+        headers=dict(headers or {}),
+        env=dict(env),
+        enabled=_normalize_bool(raw.get("enabled", True), "mcp_server.enabled"),
+    )
+
+
+def load_config(
+    *,
+    global_path: Path | None = None,
+    project_path: Path | None = None,
+    project_root: Path | None = None,
+    project_trusted: bool = True,
+) -> Config:
+    """Load, merge, and validate configuration from both tiers.
+
+    Paths default to the discovered global/project locations; they are injectable
+    for testing.
+
+    ``project_trusted`` is the trust boundary: when ``False`` the project tier's
+    capability-granting keys (``hooks``, ``mcp_servers``, ``providers``, …) are
+    stripped before merging, so opening an untrusted repo can't run code or leak
+    secrets. The launcher decides trust (see :mod:`jarn.config.trust`); the
+    default is ``True`` so the global tier and explicitly-trusted callers behave
+    as before.
+    """
+    gpath = global_path if global_path is not None else paths.global_config_path()
+    ppath = (
+        project_path
+        if project_path is not None
+        else paths.project_config_path(project_root)
+    )
+
+    project_raw = _read_yaml(ppath)
+    if not project_trusted:
+        from jarn.config.trust import sanitize_project
+
+        project_raw = sanitize_project(project_raw)
+
+    merged: dict[str, Any] = {}
+    merged = _deep_merge(merged, _read_yaml(gpath))
+    merged = _deep_merge(merged, project_raw)
+    return _build_config(merged)

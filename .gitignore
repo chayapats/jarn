@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Test / tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Textual snapshot diffs (keep baselines in tests/__snapshots__)
+snapshot_report.html
+
+# J.A.R.N. runtime state (never commit)
+.jarn/
+large_tool_results/
+.jarn/state.sqlite
+.jarn/state.sqlite-*
+.jarn/checkpoints.sqlite*
+.jarn/logs/
+harness_memory/
+audit_logs/
+.audit-jarn-home/
+
+# Internal planning / audit notes (kept local, not for the public repo)
+PROJECT_AUDIT_*.md
+todo.md
+
+# Secrets / credentials (never commit)
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+
+# OS
+.DS_Store

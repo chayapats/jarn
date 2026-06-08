@@ -1,0 +1,461 @@
+"""Controller-level tests: provider validation & status line."""
+
+from __future__ import annotations
+
+from unittest.mock import patch
+
+import pytest
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+from jarn.tui.controller import Controller
+
+
+def _controller(tmp_path, monkeypatch, base_config):
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    return Controller(base_config, root)
+
+
+def test_validate_ok_when_model_builds(tmp_path, monkeypatch, base_config):
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    fake = GenericFakeChatModel(messages=iter([]))
+    with patch("jarn.providers.models.ModelFactory.build", return_value=fake):
+        ok, msg = ctrl.validate()
+    assert ok and ctrl.health == "ok"
+    assert "●" in ctrl.status_line
+    ctrl.close()
+
+
+def test_validate_error_on_missing_key(tmp_path, monkeypatch, base_config):
+    base_config.providers["openrouter"].api_key = "${DEFINITELY_UNSET_XYZ}"
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    ok, msg = ctrl.validate()
+    assert not ok and ctrl.health == "error"
+    assert "✗" in ctrl.status_line
+    assert ctrl.last_error
+    ctrl.close()
+
+
+def test_sandbox_command_mentions_fail_closed(tmp_path, monkeypatch, base_config):
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    result = ctrl.handle_command("sandbox", "on")
+    assert "allow_local_fallback" in result.text
+    assert "fails closed" in result.text.lower()
+    ctrl.close()
+
+
+def test_help_text_has_no_stale_features(tmp_path, monkeypatch, base_config):
+    """/help must not advertise removed features (full-screen TUI leftovers)."""
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    text = ctrl.handle_command("help", "").text
+    for stale in ("Ctrl+T", "/mouse", "PageUp", "PageDown", "side panel"):
+        assert stale not in text, f"/help still mentions removed feature: {stale}"
+    ctrl.close()
+
+
+def test_help_renders_through_rich(tmp_path, monkeypatch, base_config):
+    """Usage hints like [/ref] must not break Rich markup in /help."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    from jarn.extensibility.commands import format_help
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    buf = StringIO()
+    # highlight=False: we're checking that our explicit Rich markup (and the
+    # escaped [/ref] usage hint) renders without breaking — not the repr
+    # highlighter, which cosmetically splits tokens like "/model" on the slash.
+    console = Console(file=buf, force_terminal=True, width=100, highlight=False)
+    console.print(ctrl.handle_command("help", "").text)
+    console.print(format_help())
+    assert "/model" in buf.getvalue()
+    assert "[/ref]" in buf.getvalue() or "/ref" in buf.getvalue()
+    ctrl.close()
+
+
+def test_all_builtin_command_outputs_render_through_rich(
+    tmp_path, monkeypatch, base_config
+):
+    """Every built-in slash command output must be valid Rich markup."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    from jarn.extensibility.commands import BUILTINS
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    buf = StringIO()
+    console = Console(file=buf, force_terminal=True, width=100)
+
+    # Seed data that often contains brackets — common markup foot-guns.
+    ctrl.tracker.record("openrouter/test", input_tokens=10, output_tokens=5)
+    (tmp_path / "proj" / ".jarn" / "skills").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "proj" / ".jarn" / "skills" / "x.md").write_text(
+        "---\nname: bracket-skill\ndescription: uses [tags]\ntrigger: manual\n---\nbody",
+        encoding="utf-8",
+    )
+    ctrl.sessions.touch("thread-1", title="Session [draft]", when=1.0)
+
+    args_by_name = {
+        "memory": "search [brackets]",
+        "sandbox": "off",
+        "mode": "ask",
+        "model": "openrouter/anthropic/claude-opus-4-8",
+    }
+    for cmd in BUILTINS:
+        if cmd.name == "quit":
+            continue
+        args = args_by_name.get(cmd.name, "")
+        result = ctrl.handle_command(cmd.name, args)
+        console.print(result.text)
+
+    ctrl.close()
+
+
+def test_record_turn_emits_numeric_event(tmp_path, monkeypatch, base_config):
+    """record_turn writes a 'turn' event with numeric props (telemetry on)."""
+    import json
+
+    base_config.observability.telemetry = True
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    assert ctrl.telemetry.enabled
+    ctrl.tracker.context_tokens = 1234
+    ctrl.tracker.total.input_tokens = 800
+    ctrl.tracker.total.output_tokens = 200
+    ctrl.tracker.total.cost_usd = 0.05
+    ctrl.tracker.total.calls = 3
+
+    ctrl.record_turn(when=42.0)
+    ctrl.telemetry.flush()
+
+    row = json.loads(ctrl.telemetry.sink_path.read_text().splitlines()[0])
+    assert row["event"] == "turn"
+    assert row["context_tokens"] == 1234
+    assert row["total_tokens"] == 1000
+    assert row["cost_cents"] == 5.0
+    assert row["calls"] == 3
+    ctrl.close()
+
+
+def test_record_turn_noop_when_disabled(tmp_path, monkeypatch, base_config):
+    ctrl = _controller(tmp_path, monkeypatch, base_config)  # telemetry off by default
+    assert not ctrl.telemetry.enabled
+    ctrl.record_turn(when=1.0)
+    ctrl.telemetry.flush()
+    assert not ctrl.telemetry.sink_path.exists()
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_compact_records_summarizer_usage(tmp_path, monkeypatch, base_config):
+    """compact() bills the summarizer call to the summarizer's model ref."""
+    from types import SimpleNamespace
+
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    base_config.routing.summarizer = "openrouter/anthropic/claude-haiku-4-5"
+
+    class _Summarizer:
+        async def ainvoke(self, prompt):
+            msg = AIMessage(content="SUMMARY: did X.")
+            msg.usage_metadata = {"input_tokens": 500, "output_tokens": 120}
+            return msg
+
+    class _Agent:
+        def __init__(self):
+            self.updated = None
+
+        async def aget_state(self, config):
+            return SimpleNamespace(values={
+                "messages": [HumanMessage(content="hi"), AIMessage(content="hello")]
+            })
+
+        async def aupdate_state(self, config, values):
+            self.updated = values
+
+    ctrl.runtime = SimpleNamespace(
+        agent=_Agent(),
+        factory=SimpleNamespace(
+            build_summarizer=lambda: _Summarizer(),
+            build_main=lambda: _Summarizer(),
+        ),
+        main_model_ref="openrouter/anthropic/claude-opus-4-8",
+    )
+
+    summary = await ctrl.compact()
+    assert "SUMMARY" in summary
+    per = ctrl.tracker.per_model
+    assert "openrouter/anthropic/claude-haiku-4-5" in per
+    bucket = per["openrouter/anthropic/claude-haiku-4-5"]
+    assert bucket.input_tokens == 500 and bucket.output_tokens == 120
+    assert bucket.calls == 1
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_compact_no_usage_metadata_records_nothing(tmp_path, monkeypatch, base_config):
+    """A summarizer that returns no usage_metadata must not be recorded."""
+    from types import SimpleNamespace
+
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    class _Summarizer:
+        async def ainvoke(self, prompt):
+            return AIMessage(content="SUMMARY: did X.")  # no usage_metadata
+
+    class _Agent:
+        async def aget_state(self, config):
+            return SimpleNamespace(values={"messages": [HumanMessage(content="hi")]})
+
+        async def aupdate_state(self, config, values):
+            pass
+
+    ctrl.runtime = SimpleNamespace(
+        agent=_Agent(),
+        factory=SimpleNamespace(
+            build_summarizer=lambda: _Summarizer(),
+            build_main=lambda: _Summarizer(),
+        ),
+        main_model_ref="openrouter/anthropic/claude-opus-4-8",
+    )
+    await ctrl.compact()
+    assert ctrl.tracker.per_model == {}
+    ctrl.close()
+
+
+def test_should_auto_compact_threshold(tmp_path, monkeypatch, base_config):
+    """Triggers only when enabled AND the context gauge crosses the threshold."""
+    base_config.context.auto_compact = True
+    base_config.context.compact_at_pct = 85
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    monkeypatch.setattr(ctrl, "context_status", lambda: (80, 100, 0.80))
+    assert ctrl.should_auto_compact() is False          # below threshold
+
+    monkeypatch.setattr(ctrl, "context_status", lambda: (86, 100, 0.86))
+    assert ctrl.should_auto_compact() is True           # at/over threshold
+
+    monkeypatch.setattr(ctrl, "context_status", lambda: None)
+    assert ctrl.should_auto_compact() is False          # unknown context
+
+    monkeypatch.setattr(ctrl, "context_status", lambda: (90, 100, 0.90))
+    ctrl.config.context.auto_compact = False
+    assert ctrl.should_auto_compact() is False          # disabled
+    ctrl.close()
+
+
+def test_enrich_turn_input_injects_recall_and_skips_untrusted_project(
+    tmp_path, monkeypatch, base_config
+):
+    from jarn.memory import Memory, MemoryStore
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    project = MemoryStore.project_store(root)
+    assert project is not None
+    project.save(
+        Memory(
+            name="project-db",
+            description="project uses neon postgres",
+            body="Neon Postgres is the database.",
+            type="project",
+        )
+    )
+
+    trusted = Controller(base_config, root, project_trusted=True)
+    enriched = trusted.enrich_turn_input("which postgres database?")
+    assert "# Relevant memories" in enriched
+    assert "project-db" in enriched
+    trusted.close()
+
+    untrusted = Controller(base_config, root, project_trusted=False)
+    assert untrusted.enrich_turn_input("which postgres database?") == "which postgres database?"
+    assert "trusted" in untrusted.handle_command("memory", "add project project x y").text
+    untrusted.close()
+
+
+def test_memory_commands_crud_project_scope(tmp_path, monkeypatch, base_config):
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    add = ctrl.handle_command(
+        "memory",
+        'add project project "test-style" "Use pytest" "Prefer parametrized tests."',
+    )
+    assert "Saved project memory" in add.text
+
+    listed = ctrl.handle_command("memory", "").text
+    assert "test-style" in listed
+
+    search = ctrl.handle_command("memory", "search parametrized").text
+    assert "test-style" in search
+    assert "Prefer parametrized tests." in search
+
+    show = ctrl.handle_command("memory", "show project test-style").text
+    assert "Use pytest" in show
+    assert "Prefer parametrized tests." in show
+
+    update = ctrl.handle_command(
+        "memory",
+        'update project test-style "Use pytest fixtures" "Prefer fixtures."',
+    )
+    assert "Updated project memory" in update.text
+    assert "Use pytest fixtures" in ctrl.handle_command("memory", "show test-style").text
+
+    delete = ctrl.handle_command("memory", "delete project test-style")
+    assert "Deleted project memory" in delete.text
+    assert "test-style" not in ctrl.handle_command("memory", "").text
+    ctrl.close()
+
+
+def test_memory_search_dedupes_global_and_project(tmp_path, monkeypatch, base_config):
+    from jarn.memory import Memory, MemoryStore
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    MemoryStore.global_store().save(
+        Memory(
+            name="prefers-pytest",
+            description="global pytest",
+            body="Use pytest globally.",
+            type="user",
+        )
+    )
+    project = MemoryStore.project_store(ctrl.project_root)
+    assert project is not None
+    project.save(
+        Memory(
+            name="prefers-pytest",
+            description="project pytest",
+            body="Use pytest in this project.",
+            type="project",
+        )
+    )
+
+    result = ctrl.handle_command("memory", "search pytest").text
+
+    assert result.count("prefers-pytest") == 1
+    ctrl.close()
+
+
+# --- MCP health wiring through ensure_runtime ----------------------------
+
+
+def _stub_runtime_build(monkeypatch, mcp_result):
+    """Patch ensure_runtime's heavy deps so it only exercises MCP wiring.
+
+    Returns the list of extra_tools build_runtime was handed (mutated in place).
+    """
+    import jarn.tui.controller as controller_mod
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    seen = {}
+
+    async def _fake_loader(servers):
+        assert isinstance(mcp_result, MCPLoadResult)
+        return mcp_result
+
+    async def _fake_checkpointer(db_path):
+        return object(), None
+
+    def _fake_build_runtime(
+        config, *, project_root, project_trusted=True, checkpointer, extra_tools
+    ):
+        seen["extra_tools"] = extra_tools
+        seen["project_trusted"] = project_trusted
+        from types import SimpleNamespace
+
+        return SimpleNamespace(agent=object(), main_model_ref="m", warnings=())
+
+    monkeypatch.setattr(controller_mod, "load_mcp_tools", _fake_loader)
+    monkeypatch.setattr(controller_mod, "create_async_checkpointer", _fake_checkpointer)
+    monkeypatch.setattr(controller_mod, "build_runtime", _fake_build_runtime)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_ensure_runtime_degraded_on_partial_mcp_failure(
+    tmp_path, monkeypatch, base_config
+):
+    """A failing MCP server degrades the session and names it in last_error,
+    while the healthy server's tools still reach build_runtime."""
+    from jarn.config.schema import MCPServer
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    base_config.mcp_servers = [
+        MCPServer(name="good", command="x"),
+        MCPServer(name="bad", command="y"),
+    ]
+    result = MCPLoadResult(
+        tools=["good_tool"],
+        health={"good": "ok", "bad": "error"},
+        errors={"bad": "boom"},
+    )
+    seen = _stub_runtime_build(monkeypatch, result)
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    await ctrl.ensure_runtime()
+
+    assert ctrl.health == "degraded"
+    assert ctrl.last_error is not None and "bad" in ctrl.last_error
+    assert ctrl.mcp_health == {"good": "ok", "bad": "error"}
+    assert ctrl.mcp_errors == {"bad": "boom"}
+    assert seen["extra_tools"] == ["good_tool"]  # flat tool list, healthy only
+    # Per-server health mirrored onto the config entries.
+    by_name = {s.name: s.health for s in ctrl.config.mcp_servers}
+    assert by_name == {"good": "ok", "bad": "error"}
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_ensure_runtime_stays_healthy_when_all_mcp_ok(
+    tmp_path, monkeypatch, base_config
+):
+    """All-ok MCP load leaves health unchanged (not degraded) and no last_error."""
+    from jarn.config.schema import MCPServer
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    base_config.mcp_servers = [MCPServer(name="a", command="x")]
+    result = MCPLoadResult(tools=["a_tool"], health={"a": "ok"}, errors={})
+    seen = _stub_runtime_build(monkeypatch, result)
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    await ctrl.ensure_runtime()
+
+    assert ctrl.health != "degraded"
+    assert ctrl.last_error is None
+    assert ctrl.mcp_health == {"a": "ok"}
+    assert ctrl.mcp_errors == {}
+    assert seen["extra_tools"] == ["a_tool"]
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_ensure_runtime_errors_on_ambient_key_leak(
+    tmp_path, monkeypatch, base_config
+):
+    """Ambient key leak to a non-local async subagent fails closed at build time."""
+    import jarn.tui.controller as controller_mod
+    from jarn.agent.builder import AmbientKeyLeakError
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    _stub_runtime_build(monkeypatch, MCPLoadResult(tools=[], health={}, errors={}))
+
+    def _leak_build(config, *, project_root, project_trusted, checkpointer, extra_tools):
+        raise AmbientKeyLeakError(
+            ["ambient LANGGRAPH_API_KEY would leak to https://evil.example.com/x"]
+        )
+
+    monkeypatch.setattr(controller_mod, "build_runtime", _leak_build)
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    with pytest.raises(AmbientKeyLeakError):
+        await ctrl.ensure_runtime()
+
+    assert ctrl.health == "error"
+    assert ctrl.last_error is not None and "evil.example.com" in ctrl.last_error
+    ctrl.close()

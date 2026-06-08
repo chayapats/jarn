@@ -1,0 +1,8 @@
+# Optional MCP snippet — merge into .jarn/config.yaml (under mcp_servers:).
+# Requires Node.js and npx. Leave commented until you want filesystem MCP tools.
+#
+# mcp_servers:
+#   - name: filesystem
+#     transport: stdio
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-filesystem", "."]

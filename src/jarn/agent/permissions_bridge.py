@@ -1,0 +1,113 @@
+"""Translate deepagents tool calls into permission-engine :class:`Action`s.
+
+deepagents exposes a fixed set of built-in tools. This module maps a tool name +
+arguments to an :class:`~jarn.permissions.Action`, and lists which tools mutate
+state (and therefore must be gated behind an interrupt).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from typing import Any
+
+from langchain.agents.middleware import InterruptOnConfig
+
+from jarn.permissions import Action, ActionKind
+
+#: Tools that change the world and must be evaluated by the permission engine.
+MUTATING_TOOLS = ("write_file", "edit_file", "execute")
+
+#: Fixed-name tools deepagents' ``AsyncSubAgentMiddleware`` injects when async
+#: subagents are configured. They make remote HTTP calls to a LangGraph
+#: deployment (launch/check/update/cancel/list background runs), so they must
+#: route through the permission engine (→ ``ActionKind.NETWORK``) rather than
+#: bypass it. Only gated when async subagents are actually configured (see
+#: ``interrupt_map(include_async=...)``); otherwise the names don't exist.
+ASYNC_SUBAGENT_TOOLS = (
+    "start_async_task",
+    "check_async_task",
+    "update_async_task",
+    "cancel_async_task",
+    "list_async_tasks",
+)
+
+#: Read-only tools — always permitted, never interrupted.
+READONLY_TOOLS = ("read_file", "ls", "glob", "grep")
+
+#: Planning / internal tools — always permitted.
+INTERNAL_TOOLS = ("write_todos", "task")
+
+
+def interrupt_map(
+    extra_tools: Iterable[str] = (),
+    *,
+    include_async: bool = False,
+) -> dict[str, bool | InterruptOnConfig]:
+    """Build the ``interrupt_on`` dict for ``create_deep_agent``.
+
+    **Every** mutating tool is gated in **every** mode: the permission engine —
+    not this map — decides ALLOW/ASK/DENY. This is deliberate. An in-scope file
+    edit in auto-edit/yolo auto-resolves to ALLOW (no prompt), but the engine's
+    danger-guard still inspects it, so a write to a sensitive path (``.git/``,
+    ``.ssh/``) or out of scope is caught even in YOLO. Gating ``edit_file`` only
+    in some modes (the old behaviour) let edits skip the danger-guard entirely.
+
+    ``extra_tools`` gates additional tools — the built-in web tools and any
+    MCP-loaded tools — so network / external-mutating tools route through the
+    same policy (they map to ``ActionKind.NETWORK`` → ASK by default) instead of
+    bypassing it.
+
+    ``include_async`` adds the five :data:`ASYNC_SUBAGENT_TOOLS`. Pass it only
+    when async subagents are configured (deepagents injects those tools then and
+    only then); otherwise gating phantom names is harmless but pointless.
+    """
+    gated = [*MUTATING_TOOLS, *extra_tools]
+    if include_async:
+        gated.extend(ASYNC_SUBAGENT_TOOLS)
+    return {t: True for t in gated}
+
+
+def tool_to_action(tool_name: str, args: dict[str, Any]) -> Action:
+    """Map a tool call to an Action the permission engine can evaluate."""
+    if tool_name == "execute":
+        command = args.get("command") or args.get("cmd") or _stringify(args)
+        return Action(ActionKind.SHELL, target=str(command), tool=tool_name)
+    if tool_name in ("write_file", "edit_file"):
+        path = args.get("file_path") or args.get("path") or args.get("filename") or ""
+        return Action(ActionKind.WRITE, target=str(path), tool=tool_name)
+    if tool_name in READONLY_TOOLS:
+        path = args.get("file_path") or args.get("path") or args.get("pattern") or ""
+        return Action(ActionKind.READ, target=str(path), tool=tool_name)
+    # Unknown/other tools: treat as network-ish actions requiring evaluation.
+    return Action(ActionKind.NETWORK, target=_network_target(tool_name, args), tool=tool_name)
+
+
+def _network_target(tool_name: str, args: dict[str, Any]) -> str:
+    """Human-readable target for approval UI (URL, query, MCP server/tool, args)."""
+    if tool_name == "web_fetch":
+        url = args.get("url") or ""
+        return f"web_fetch → {url}" if url else "web_fetch"
+    if tool_name == "web_search":
+        query = args.get("query") or args.get("q") or ""
+        return f'web_search → {query!r}' if query else "web_search"
+    if tool_name.startswith("mcp__"):
+        parts = tool_name.split("__", 2)
+        server = parts[1] if len(parts) > 1 else "?"
+        tool = parts[2] if len(parts) > 2 else tool_name
+        preview = _stringify(args)
+        base = f"mcp/{server}/{tool}"
+        if preview:
+            preview = preview if len(preview) <= 120 else preview[:117] + "..."
+            return f"{base} ({preview})"
+        return base
+    if tool_name in ASYNC_SUBAGENT_TOOLS:
+        preview = _stringify(args)
+        if preview:
+            preview = preview if len(preview) <= 120 else preview[:117] + "..."
+            return f"{tool_name} ({preview})"
+        return tool_name
+    return tool_name
+
+
+def _stringify(args: dict[str, Any]) -> str:
+    return " ".join(f"{v}" for v in args.values())

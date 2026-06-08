@@ -1,0 +1,28 @@
+# Example project config — copy to <your-project>/.jarn/config.yaml and commit it.
+# Overrides ~/.jarn/config.yaml for this project only.
+
+# Pin a model for this repo (optional):
+# default_model: openrouter/anthropic/claude-sonnet-4-6
+
+# Self-verification: lint after edits, tests before commits.
+hooks:
+  - event: post_edit
+    command: "ruff check --fix ."
+  - event: pre_commit
+    command: "pytest -q"
+    blocking: true
+
+# Trust common read-only commands so the agent stops asking.
+permissions:
+  allow:
+    - "git status"
+    - "git diff"
+    - "pytest *"
+    - "ruff *"
+  deny:
+    - "curl *"
+
+# Extra tools via MCP — empty by default so `jarn doctor` stays clean when you
+# copy this file as-is. To enable the filesystem server, merge
+# examples/mcp-filesystem.snippet.yaml (requires Node + npx).
+mcp_servers: []
