@@ -232,6 +232,15 @@ ui:
 # compat:
 #   context_files: ["JARN.md", "AGENTS.md", "CLAUDE.md"]  # first present wins
 #   read_claude_dir: true   # set false to disable .claude/ skills/commands discovery
+
+# ── Git safety (auto-checkpoint + /undo /redo) ────────────────────────────────
+# When autocheckpoint is true, J.A.R.N. snapshots the git working tree before
+# every agent turn so you can revert with /undo or re-apply with /redo.
+# Snapshots live under refs/jarn/checkpoints/ — they NEVER move HEAD or the
+# branch. Requires a git repo with at least one commit.
+# git:
+#   autocheckpoint: false   # set true to enable
+#   checkpoint_mode: shadow # shadow (private refs only) | commit (reserved)
 """
 
 

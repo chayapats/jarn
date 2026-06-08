@@ -84,6 +84,9 @@ BUILTINS: tuple[BuiltinCommand, ...] = (
         "repl",
         usage="[clear|cancel <n>|move <from> <to>]",
     ),
+    BuiltinCommand("undo", "Revert the last agent turn's file changes.", "controller"),
+    BuiltinCommand("redo", "Re-apply the last undone agent turn's file changes.", "controller"),
+    BuiltinCommand("checkpoints", "List recent auto-checkpoints.", "controller"),
     BuiltinCommand("quit", "Exit J.A.R.N.", "controller"),
 )
 

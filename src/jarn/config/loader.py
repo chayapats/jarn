@@ -21,6 +21,7 @@ from jarn.config.schema import (
     Config,
     ContextConfig,
     ExecutionConfig,
+    GitConfig,
     HookSpec,
     MCPServer,
     ObservabilityConfig,
@@ -52,6 +53,7 @@ _KNOWN_TOP_LEVEL_KEYS = {
     "observability",
     "ui",
     "compat",
+    "git",
 }
 
 _TRUE_STRINGS = {"true", "yes", "on", "1"}
@@ -268,6 +270,9 @@ def _build_config(raw: dict[str, Any]) -> Config:
     compat = raw.get("compat", {}) or {}
     cfg.compat = _build_compat(compat)
 
+    git = raw.get("git", {}) or {}
+    cfg.git = _build_git_config(git)
+
     return cfg
 
 
@@ -360,6 +365,22 @@ def _build_mcp(raw: dict[str, Any]) -> MCPServer:
         headers=dict(headers or {}),
         env=dict(env),
         enabled=_normalize_bool(raw.get("enabled", True), "mcp_server.enabled"),
+    )
+
+
+def _build_git_config(raw: dict[str, Any]) -> GitConfig:
+    _valid_modes = {"shadow", "commit"}
+    mode = str(raw.get("checkpoint_mode", "shadow"))
+    if mode not in _valid_modes:
+        raise ConfigError(
+            f"git.checkpoint_mode must be one of "
+            f"{sorted(_valid_modes)} (got {mode!r})."
+        )
+    return GitConfig(
+        autocheckpoint=_normalize_bool(
+            raw.get("autocheckpoint", False), "git.autocheckpoint"
+        ),
+        checkpoint_mode=mode,
     )
 
 

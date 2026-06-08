@@ -174,6 +174,25 @@ class UIConfig:
 
 
 @dataclass(slots=True)
+class GitConfig:
+    """Git working-tree safety features.
+
+    ``autocheckpoint`` causes J.A.R.N. to snapshot the working tree into a
+    private git ref (``refs/jarn/checkpoints/``) at the start of every agent
+    turn.  This enables ``/undo`` and ``/redo``: the user can revert or
+    re-apply the last agent turn's changes without affecting HEAD, the branch,
+    or the staged index.
+
+    ``checkpoint_mode`` is reserved for future expansion:
+      ``"shadow"`` (default) — snapshots live in private refs only.
+      ``"commit"`` — reserved; behaves like ``"shadow"`` today.
+    """
+
+    autocheckpoint: bool = False
+    checkpoint_mode: str = "shadow"   # "shadow" | "commit"
+
+
+@dataclass(slots=True)
 class CompatConfig:
     """Cross-vendor interop: which context files to check and whether to read
     ``.claude/`` extension directories alongside ``.jarn/``.
@@ -214,6 +233,7 @@ class Config:
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     ui: UIConfig = field(default_factory=UIConfig)
     compat: CompatConfig = field(default_factory=CompatConfig)
+    git: GitConfig = field(default_factory=GitConfig)
 
     def resolved_main_model(self) -> str | None:
         """The model used for the top-level agent loop."""

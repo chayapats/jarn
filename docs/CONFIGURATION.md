@@ -224,6 +224,15 @@ ui:
   theme: dark              # dark | light | high-contrast
   accent: cyan             # brand accent for splash + toolbar (cyan|blue|teal|…)
   # Set NO_COLOR=1 in the environment for plain/unstyled toolbar labels.
+
+# ── Git safety (auto-checkpoint + /undo /redo) ────────────────────────────────
+git:
+  autocheckpoint: false    # set true to snapshot the working tree before each
+                           # agent turn, enabling /undo and /redo.
+                           # Snapshots live under refs/jarn/checkpoints/ and
+                           # NEVER move HEAD, the branch, or the staged index.
+                           # Requires a git repo with at least one commit.
+  checkpoint_mode: shadow  # shadow (private refs only) | commit (reserved)
 ```
 
 At REPL launch, `palette.configure_ui(theme, accent)` applies theme tokens to the

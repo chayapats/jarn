@@ -15,6 +15,7 @@ driver works headless (tests) and inside Textual.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -105,6 +106,11 @@ class SessionDriver:
     #: user prompt, assistant reply, and tool call/result is appended to the JSONL
     #: transcript file immediately (crash-safe). ``None`` disables transcription.
     transcript: Any = None
+    #: Optional :class:`jarn.agent.checkpoint.CheckpointManager`. When set and
+    #: enabled, the working tree is snapshotted at the start of each turn so
+    #: ``/undo`` can revert the turn's file edits. Best-effort: a snapshot
+    #: failure never aborts the turn.
+    checkpoint: Any = None
     #: Most recent write/edit file path, so post_edit hooks can scope by path.
     _last_edit_target: str = ""
     #: Accumulates assistant TEXT chunks for the current turn so a single
@@ -139,6 +145,14 @@ class SessionDriver:
         if self.transcript is not None and not resume:
             self.transcript.write_user(user_input, ts=_time.time())
         self._turn_text = ""
+
+        # Snapshot the working tree before the agent can edit files, so /undo can
+        # revert this turn. Best-effort — a checkpoint failure must never abort
+        # the turn (the manager itself no-ops cleanly when disabled / not a repo).
+        if self.checkpoint is not None and not resume:
+            # A snapshot failure must never abort the turn.
+            with contextlib.suppress(Exception):
+                self.checkpoint.snapshot(user_input[:80], now=_time.time())
 
         while True:
             interrupts: list[Any] = []

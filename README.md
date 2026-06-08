@@ -179,6 +179,9 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/memory [search\|show\|add\|update\|delete] ...` | List, search, show, add, update, or delete long-term memory. |
 | `/permissions` | Show current permission rules and allowlist. |
 | `/queue [clear\|cancel <n>\|move <from> <to>]` | Show or manage queued input lines (while a turn is running). |
+| `/undo` | Revert the last agent turn's file changes. |
+| `/redo` | Re-apply the last undone agent turn's file changes. |
+| `/checkpoints` | List recent auto-checkpoints. |
 | `/quit` | Exit J.A.R.N. |
 
 ## Permission modes

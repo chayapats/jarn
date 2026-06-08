@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from rich.markup import escape as _escape_markup
 
 from jarn.agent.builder import JarnRuntime, build_runtime
+from jarn.agent.checkpoint import CheckpointManager
 from jarn.agent.session import Approver, SessionDriver
 from jarn.config.schema import Config, PermissionMode
 from jarn.cost import CostTracker
@@ -79,6 +80,13 @@ class Controller:
         self.telemetry = Telemetry.from_config(config.observability.telemetry)
         self.health = "unknown"            # unknown | ok | error | degraded
         self.last_error: str | None = None
+        # Auto-checkpoint manager: snapshots working tree before agent turns so
+        # /undo and /redo can revert or re-apply file changes without touching HEAD.
+        _cp_root = project_root or Path.cwd()
+        self.checkpoint_manager = CheckpointManager(
+            repo_root=_cp_root,
+            enabled=config.git.autocheckpoint,
+        )
         # Set once the degraded/error state has been surfaced to the user, so the
         # TUI shows it a single time per session rather than on every turn.
         self.health_notice_shown = False
@@ -262,6 +270,13 @@ class Controller:
 
     def make_driver(self, approver: Approver) -> SessionDriver:
         assert self.runtime is not None, "call ensure_runtime() first"
+        transcript = None
+        if self.config.observability.transcript:
+            from jarn.memory.sessions import make_transcript_writer
+
+            transcript = make_transcript_writer(
+                self.thread_id, project_root=self.project_root
+            )
         return SessionDriver(
             agent=self.runtime.agent,
             engine=self.engine,
@@ -271,6 +286,8 @@ class Controller:
             known_model_refs=self.runtime.known_model_refs,
             approver=approver,
             hooks=self._hook_runner(),
+            transcript=transcript,
+            checkpoint=self.checkpoint_manager,
         )
 
     def close(self) -> None:
@@ -800,6 +817,47 @@ class Controller:
         except FileExistsError as exc:
             return CommandResult(f"{exc} (use /init --force to overwrite)")
         return CommandResult(f"Created {path}. Edit it to give J.A.R.N. project context.")
+
+    def _cmd_undo(self, args: str) -> CommandResult:
+        """Revert the last agent turn's file changes via the checkpoint stack.
+
+        Capturing the current state as a redo-point first guarantees that undo
+        is itself reversible: the user can always /redo to get back here.
+        """
+        result = self.checkpoint_manager.undo()
+        if result.ok:
+            return CommandResult(f"Undone. {result.message}")
+        return CommandResult(f"Cannot undo: {result.message}")
+
+    def _cmd_redo(self, args: str) -> CommandResult:
+        """Re-apply the most recently undone agent turn's file changes."""
+        result = self.checkpoint_manager.redo()
+        if result.ok:
+            return CommandResult(f"Redone. {result.message}")
+        return CommandResult(f"Cannot redo: {result.message}")
+
+    def _cmd_checkpoints(self, args: str) -> CommandResult:
+        """List recent auto-checkpoints available for /undo."""
+        if not self.checkpoint_manager.enabled:
+            return CommandResult(
+                "Autocheckpoint is disabled. "
+                "Set git.autocheckpoint: true in your config to enable /undo."
+            )
+        if not self.checkpoint_manager._is_repo:
+            return CommandResult("Not a git repository — checkpoints are unavailable.")
+        entries = self.checkpoint_manager.list()
+        if not entries:
+            return CommandResult(
+                "No checkpoints yet. "
+                "Checkpoints are taken automatically at the start of each agent turn."
+            )
+        lines = ["[b]Checkpoints[/b] [dim](most recent first)[/dim]"]
+        for i, entry in enumerate(entries):
+            marker = "→ " if i == 0 else "  "
+            lines.append(
+                f"{marker}[dim]{entry.sha[:12]}[/dim] {_escape_markup(entry.label)}"
+            )
+        return CommandResult("\n".join(lines))
 
     def _cmd_quit(self, args: str) -> CommandResult:
         return CommandResult("Bye.", quit=True)
