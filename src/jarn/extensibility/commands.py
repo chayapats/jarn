@@ -183,8 +183,26 @@ class CustomCommand:
         return f"{text.rstrip()}\n\n{args.strip()}" if args.strip() else text
 
 
-def command_dirs(project_root: Path | None = None) -> list[Path]:
-    dirs = [paths.global_subdir("commands")]
+def command_dirs(
+    project_root: Path | None = None,
+    *,
+    read_claude_dir: bool = True,
+) -> list[Path]:
+    """Return the ordered list of command directories to scan.
+
+    ``.jarn`` directories are listed before ``.claude`` so that
+    project-specific overrides always take precedence on name conflicts
+    (last-write-wins in :func:`load_commands`).
+    """
+    # Lower-priority (.claude) dirs first so that higher-priority (.jarn)
+    # entries overwrite them in the load loop.
+    dirs: list[Path] = []
+    if read_claude_dir:
+        dirs.append(paths.global_claude_subdir("commands"))
+        claude_pdir = paths.project_claude_dir(project_root)
+        if claude_pdir:
+            dirs.append(claude_pdir / "commands")
+    dirs.append(paths.global_subdir("commands"))
     pdir = paths.project_dir(project_root)
     if pdir:
         dirs.append(pdir / "commands")
@@ -195,13 +213,28 @@ def load_commands(
     project_root: Path | None = None,
     *,
     project_trusted: bool = True,
+    read_claude_dir: bool = True,
 ) -> dict[str, CustomCommand]:
-    """Load custom commands keyed by name (project overrides global)."""
+    """Load custom commands keyed by name.
+
+    Precedence (highest first): project ``.jarn`` > global ``.jarn`` >
+    global ``.claude`` > project ``.claude``. Built-in names are never
+    shadowed — a conflicting custom file gets a ``-custom`` suffix instead.
+    Project-tier ``.claude/commands`` is skipped when ``project_trusted`` is
+    ``False``.
+    """
     out: dict[str, CustomCommand] = {}
-    global_dir = paths.global_subdir("commands")
-    for path in discover(command_dirs(project_root)):
-        scope = "global" if str(path).startswith(str(global_dir)) else "project"
-        if scope == "project" and not project_trusted:
+    pdir = paths.project_dir(project_root)
+    claude_pdir = paths.project_claude_dir(project_root)
+
+    def _is_project(path: Path) -> bool:
+        if pdir and str(path).startswith(str(pdir)):
+            return True
+        return bool(claude_pdir and str(path).startswith(str(claude_pdir)))
+
+    for path in discover(command_dirs(project_root, read_claude_dir=read_claude_dir)):
+        is_proj = _is_project(path)
+        if is_proj and not project_trusted:
             continue
         doc = parse(path)
         name = str(doc.meta.get("name") or path.stem)

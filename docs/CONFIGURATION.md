@@ -213,6 +213,29 @@ shared palette (chat colors, toolbar background/foreground, cost/context colors)
 The bottom toolbar is rendered by `tui/toolbar.py` and shows **model · mode · queue ·
 ctx · cost** (low-priority segments drop on narrow terminals).
 
+## Cross-vendor interop (`compat`)
+
+The `compat` section lets users coming from other agents (Claude Code, OpenAI
+Codex, …) work out of the box without renaming their existing context files or
+skill directories.
+
+```yaml
+compat:
+  # Ordered list of context filenames to check in the project root.
+  # The first file present wins. JARN.md is always tried first; AGENTS.md
+  # (Codex / OpenAI) and CLAUDE.md (Claude Code) are fallbacks.
+  context_files: ["JARN.md", "AGENTS.md", "CLAUDE.md"]
+
+  # When true, skills and commands are also discovered from ~/.claude/skills,
+  # ~/.claude/commands, <project>/.claude/skills, and <project>/.claude/commands
+  # in addition to the canonical .jarn directories. .jarn always takes
+  # precedence on a name conflict; built-in commands are never shadowed.
+  # Project-tier .claude dirs respect the same trust gate as .jarn ones.
+  read_claude_dir: true
+```
+
+Both settings have sensible defaults and the section can be omitted entirely.
+
 ## Secrets
 
 | Form | Resolves to |

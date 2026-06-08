@@ -1,5 +1,10 @@
 """Project context assembly — the ``JARN.md`` file plus memory indices that get
 folded into the agent's system prompt at session start.
+
+The project context file is resolved from an ordered list (default:
+``["JARN.md", "AGENTS.md", "CLAUDE.md"]``). The first file present in the
+project root wins, so users coming from other agents (Cursor, Claude Code, …)
+work out of the box without renaming their existing context file.
 """
 
 from __future__ import annotations
@@ -8,6 +13,10 @@ from pathlib import Path
 
 from jarn.config import paths
 from jarn.memory.store import MemoryStore
+
+#: Default ordered list of context filenames tried in the project root.
+#: Mirrors :attr:`jarn.config.schema.CompatConfig.context_files`.
+DEFAULT_CONTEXT_FILES: list[str] = ["JARN.md", "AGENTS.md", "CLAUDE.md"]
 
 JARN_MD_TEMPLATE = """\
 # {project_name}
@@ -43,11 +52,34 @@ JARN_MD_TEMPLATE = """\
 """
 
 
-def project_context_text(project_root: Path | None = None) -> str | None:
-    """Return the contents of ``JARN.md`` for the project, if present."""
-    path = paths.project_context_path(project_root)
-    if path and path.is_file():
-        return path.read_text(encoding="utf-8")
+def project_context_text(
+    project_root: Path | None = None,
+    *,
+    context_files: list[str] | None = None,
+) -> str | None:
+    """Return the contents of the first present context file for the project.
+
+    ``context_files`` is an ordered list of filenames to check (default
+    :data:`DEFAULT_CONTEXT_FILES`). The first file found in the project root
+    wins. This lets users coming from Claude Code (``CLAUDE.md``) or OpenAI
+    Codex (``AGENTS.md``) have their context loaded without renaming anything.
+
+    Falls back to the legacy :func:`jarn.config.paths.project_context_path`
+    when the project root cannot be determined.
+    """
+    root = project_root or paths.find_project_root()
+    if root is None:
+        # Legacy path: might return None for the path too, handled below.
+        legacy = paths.project_context_path(project_root)
+        if legacy and legacy.is_file():
+            return legacy.read_text(encoding="utf-8")
+        return None
+
+    names = context_files if context_files is not None else DEFAULT_CONTEXT_FILES
+    for name in names:
+        candidate = root / name
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8")
     return None
 
 
@@ -70,21 +102,25 @@ def assemble_system_context(
     project_root: Path | None = None,
     *,
     project_trusted: bool = True,
+    context_files: list[str] | None = None,
 ) -> str:
     """Build the context block appended to the agent's base system prompt.
 
-    Combines (in order): project ``JARN.md``, global memory index, project
+    Combines (in order): project context file, global memory index, project
     memory index. Empty sections are omitted. Returns ``""`` when nothing is
     available so the caller can skip appending.
 
-    When ``project_trusted`` is ``False``, project-tier context (``JARN.md`` and
-    project memory) is omitted — the same trust boundary that strips dangerous
-    config keys also keeps hostile repo content out of the system prompt.
+    ``context_files`` is forwarded to :func:`project_context_text` to control
+    the ordered candidate list (defaults to :data:`DEFAULT_CONTEXT_FILES`).
+
+    When ``project_trusted`` is ``False``, project-tier context and project
+    memory are omitted — the same trust boundary that strips dangerous config
+    keys also keeps hostile repo content out of the system prompt.
     """
     sections: list[str] = []
 
     if project_trusted:
-        ctx = project_context_text(project_root)
+        ctx = project_context_text(project_root, context_files=context_files)
         if ctx:
             sections.append("# Project context (JARN.md)\n\n" + ctx.strip())
 

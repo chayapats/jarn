@@ -17,6 +17,7 @@ from jarn.config import paths
 from jarn.config.schema import (
     AsyncSubagentSpec,
     BudgetConfig,
+    CompatConfig,
     Config,
     ContextConfig,
     ExecutionConfig,
@@ -50,6 +51,7 @@ _KNOWN_TOP_LEVEL_KEYS = {
     "async_subagents",
     "observability",
     "ui",
+    "compat",
 }
 
 _TRUE_STRINGS = {"true", "yes", "on", "1"}
@@ -242,6 +244,9 @@ def _build_config(raw: dict[str, Any]) -> Config:
         accent=str(ui.get("accent", "cyan")),
     )
 
+    compat = raw.get("compat", {}) or {}
+    cfg.compat = _build_compat(compat)
+
     return cfg
 
 
@@ -335,6 +340,22 @@ def _build_mcp(raw: dict[str, Any]) -> MCPServer:
         env=dict(env),
         enabled=_normalize_bool(raw.get("enabled", True), "mcp_server.enabled"),
     )
+
+
+def _build_compat(raw: dict[str, Any]) -> CompatConfig:
+    context_files_raw = raw.get("context_files")
+    if context_files_raw is not None:
+        if not isinstance(context_files_raw, list):
+            raise ConfigError(
+                f"compat.context_files must be a list (got {context_files_raw!r})."
+            )
+        context_files = [str(f) for f in context_files_raw]
+    else:
+        context_files = ["JARN.md", "AGENTS.md", "CLAUDE.md"]
+    read_claude_dir = _normalize_bool(
+        raw.get("read_claude_dir", True), "compat.read_claude_dir"
+    )
+    return CompatConfig(context_files=context_files, read_claude_dir=read_claude_dir)
 
 
 def load_config(

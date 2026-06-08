@@ -92,3 +92,26 @@ def project_state_db(root: Path | None = None) -> Path | None:
 def cachedir() -> Path:
     """Per-user cache dir for non-essential, regenerable data."""
     return Path(platformdirs.user_cache_dir("jarn"))
+
+
+# ── Cross-vendor (.claude) helpers ───────────────────────────────────────────
+#: Name of the Claude Code config/extension directory (cross-vendor standard).
+CLAUDE_DIR_NAME = ".claude"
+
+
+def global_claude_home() -> Path:
+    """Return ``~/.claude`` — the global Claude Code extension directory."""
+    return Path.home() / CLAUDE_DIR_NAME
+
+
+def global_claude_subdir(name: str) -> Path:
+    """Return ``~/.claude/<name>``."""
+    return global_claude_home() / name
+
+
+def project_claude_dir(root: Path | None = None) -> Path | None:
+    """Return ``<root>/.claude`` for the discovered (or given) project root."""
+    root = root or find_project_root()
+    if root is None:
+        return None
+    return root / CLAUDE_DIR_NAME

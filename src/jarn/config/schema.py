@@ -163,6 +163,27 @@ class UIConfig:
 
 
 @dataclass(slots=True)
+class CompatConfig:
+    """Cross-vendor interop: which context files to check and whether to read
+    ``.claude/`` extension directories alongside ``.jarn/``.
+
+    ``context_files`` is an ordered list — the first file present in the project
+    root wins. Add or reorder entries to control which vendor's context file
+    J.A.R.N. picks up when ``JARN.md`` is absent.
+
+    ``read_claude_dir`` enables discovery of skills and commands from
+    ``~/.claude/skills``, ``~/.claude/commands``, ``<project>/.claude/skills``,
+    and ``<project>/.claude/commands`` in addition to the canonical ``.jarn``
+    directories. ``.jarn`` always takes precedence on name conflicts.
+    """
+
+    context_files: list[str] = field(
+        default_factory=lambda: ["JARN.md", "AGENTS.md", "CLAUDE.md"]
+    )
+    read_claude_dir: bool = True
+
+
+@dataclass(slots=True)
 class Config:
     """The fully-merged configuration handed to the rest of the application."""
 
@@ -181,6 +202,7 @@ class Config:
     async_subagents: list[AsyncSubagentSpec] = field(default_factory=list)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     ui: UIConfig = field(default_factory=UIConfig)
+    compat: CompatConfig = field(default_factory=CompatConfig)
 
     def resolved_main_model(self) -> str | None:
         """The model used for the top-level agent loop."""

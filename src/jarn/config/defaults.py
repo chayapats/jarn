@@ -216,6 +216,13 @@ observability:
 ui:
   theme: dark           # dark | light | high-contrast
   accent: cyan
+
+# ── Cross-vendor interop ──────────────────────────────────────────────────────
+# Controls which context file is auto-loaded and whether ~/.claude / .claude/
+# extension directories are scanned alongside ~/.jarn / .jarn/.
+# compat:
+#   context_files: ["JARN.md", "AGENTS.md", "CLAUDE.md"]  # first present wins
+#   read_claude_dir: true   # set false to disable .claude/ skills/commands discovery
 """
 
 
