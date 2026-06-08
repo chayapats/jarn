@@ -843,7 +843,7 @@ class Controller:
                 "Autocheckpoint is disabled. "
                 "Set git.autocheckpoint: true in your config to enable /undo."
             )
-        if not self.checkpoint_manager._is_repo:
+        if not self.checkpoint_manager.is_repo:
             return CommandResult("Not a git repository — checkpoints are unavailable.")
         entries = self.checkpoint_manager.list()
         if not entries:

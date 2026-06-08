@@ -2,8 +2,9 @@
 
 When enabled in config, set the environment variables LangChain/LangGraph read
 to emit traces. We only *enable*; we never disable a user's pre-set tracing.
-Telemetry (separate, usage analytics) is intentionally not implemented in v1 and
-defaults to OFF — see ROADMAP.
+Telemetry (separate, local-only usage analytics) is implemented under
+``observability.telemetry`` (numeric turn events, default OFF); only a *remote*
+telemetry sink is out of scope for v1 — see ROADMAP.
 """
 
 from __future__ import annotations

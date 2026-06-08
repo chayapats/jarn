@@ -377,6 +377,11 @@ class CheckpointManager:
         # Cache the repo check once at construction; no subprocess per-call.
         self._is_repo = _is_git_repo(self.repo_root)
 
+    @property
+    def is_repo(self) -> bool:
+        """Whether ``repo_root`` is inside a git repository (cached at init)."""
+        return self._is_repo
+
     # -- primary interface --------------------------------------------------
 
     def snapshot(
