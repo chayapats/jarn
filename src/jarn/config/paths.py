@@ -89,6 +89,21 @@ def project_state_db(root: Path | None = None) -> Path | None:
     return pdir / "state.sqlite" if pdir else None
 
 
+def project_sessions_dir(root: Path | None = None) -> Path | None:
+    """Directory for per-session JSONL transcript files (gitignored).
+
+    Returns ``<root>/.jarn/sessions/`` when a project root is discoverable,
+    else ``None`` (the transcript writer falls back to the global home).
+    """
+    pdir = project_dir(root)
+    return pdir / "sessions" if pdir else None
+
+
+def global_sessions_dir() -> Path:
+    """Fallback transcript directory under the global J.A.R.N. home."""
+    return global_home() / "sessions"
+
+
 def cachedir() -> Path:
     """Per-user cache dir for non-essential, regenerable data."""
     return Path(platformdirs.user_cache_dir("jarn"))

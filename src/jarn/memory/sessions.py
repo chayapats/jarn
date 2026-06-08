@@ -4,18 +4,28 @@ Each conversation runs under a ``thread_id``; LangGraph persists the graph state
 after every step so a session can be resumed after a crash or restart. The DB
 lives at ``<project>/.jarn/state.sqlite`` (or the global home when run outside a
 project) and should be gitignored.
+
+The :class:`TranscriptWriter` companion appends one JSON object per line to
+``<project>/.jarn/sessions/<session_id>.jsonl`` so sessions are grep-friendly
+and survive crashes (partial transcript beats no transcript).
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from jarn.config import paths
+
+# Maximum characters retained from a tool output in the transcript.
+# Large outputs (e.g. full file reads) are truncated to keep JSONL files sane.
+_TRANSCRIPT_MAX_TOOL_CHARS = 2_000
 
 
 def default_db_path(project_root: Path | None = None) -> Path:
@@ -145,3 +155,102 @@ class SessionIndex:
                 (limit,),
             ).fetchall()
         return [SessionInfo(*row) for row in rows]
+
+
+class TranscriptWriter:
+    """Append-only, human-readable JSONL transcript for a single session.
+
+    Each call to :meth:`append` flushes one JSON line immediately so a crash
+    leaves a valid (partial) transcript — no data is lost waiting for a buffer
+    flush at session end.
+
+    Secret safety: the writer never receives raw config or environment values.
+    Callers must pass only display-safe strings (tool names, text fragments).
+    Large tool outputs are truncated to :data:`_TRANSCRIPT_MAX_TOOL_CHARS` so
+    the file stays grep-friendly even for sessions with big file reads.
+
+    The file is created lazily on the first :meth:`append` call; the directory
+    is created if it does not exist.
+    """
+
+    def __init__(self, session_id: str, *, sessions_dir: Path) -> None:
+        self._path = sessions_dir / f"{session_id}.jsonl"
+        self._sessions_dir = sessions_dir
+        self._file: Any = None  # opened lazily on first write
+
+    @property
+    def path(self) -> Path:
+        """Resolved path to the JSONL transcript file."""
+        return self._path
+
+    def append(self, record: dict[str, Any]) -> None:
+        """Append *record* as one JSON line, flushed immediately.
+
+        ``record`` must already be serialisable and must not contain secret
+        values — the caller is responsible for sanitising before passing here.
+        """
+        if self._file is None:
+            self._sessions_dir.mkdir(parents=True, exist_ok=True)
+            self._file = self._path.open("a", encoding="utf-8")  # noqa: WPS515
+        self._file.write(json.dumps(record, ensure_ascii=False) + "\n")
+        self._file.flush()
+
+    def close(self) -> None:
+        """Close the underlying file handle if it was opened."""
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+
+    # -- convenience helpers ------------------------------------------------
+
+    def write_user(self, text: str, *, ts: float) -> None:
+        """Record a user prompt event."""
+        self.append({"ts": ts, "type": "user", "text": text})
+
+    def write_assistant(self, text: str, *, ts: float) -> None:
+        """Record the assistant's final reply text for a turn.
+
+        Callers accumulate TEXT chunks and call this once per turn with the
+        joined result so each turn produces a single readable assistant line.
+        """
+        self.append({"ts": ts, "type": "assistant", "text": text})
+
+    def write_tool(
+        self,
+        name: str,
+        *,
+        ts: float,
+        args: dict[str, Any] | None = None,
+        result: str | None = None,
+    ) -> None:
+        """Record a tool invocation (start) or result (end).
+
+        ``result`` is truncated to :data:`_TRANSCRIPT_MAX_TOOL_CHARS` so large
+        payloads (file reads, web pages) don't bloat the transcript.
+        """
+        record: dict[str, Any] = {"ts": ts, "type": "tool", "name": name}
+        if args is not None:
+            record["args"] = args
+        if result is not None:
+            trimmed = result[:_TRANSCRIPT_MAX_TOOL_CHARS]
+            record["result"] = trimmed
+            if len(result) > _TRANSCRIPT_MAX_TOOL_CHARS:
+                record["truncated"] = True
+        self.append(record)
+
+
+def make_transcript_writer(
+    session_id: str,
+    *,
+    project_root: Path | None = None,
+) -> TranscriptWriter:
+    """Construct a :class:`TranscriptWriter` for *session_id*.
+
+    Uses ``<project>/.jarn/sessions/`` when a project root is discoverable,
+    falling back to ``~/.jarn/sessions/`` otherwise.  The directory is created
+    lazily by :class:`TranscriptWriter` on the first write.
+    """
+    sessions_dir = paths.project_sessions_dir(project_root)
+    if sessions_dir is None:
+        sessions_dir = paths.global_sessions_dir()
+    return TranscriptWriter(session_id, sessions_dir=sessions_dir)

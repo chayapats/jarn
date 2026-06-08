@@ -101,8 +101,15 @@ class SessionDriver:
     #: Optional :class:`jarn.extensibility.hooks.HookRunner` for lifecycle hooks
     #: (pre/post tool, post-edit, pre-commit). ``None`` disables hook firing.
     hooks: Any = None
+    #: Optional :class:`jarn.memory.sessions.TranscriptWriter`. When set, every
+    #: user prompt, assistant reply, and tool call/result is appended to the JSONL
+    #: transcript file immediately (crash-safe). ``None`` disables transcription.
+    transcript: Any = None
     #: Most recent write/edit file path, so post_edit hooks can scope by path.
     _last_edit_target: str = ""
+    #: Accumulates assistant TEXT chunks for the current turn so a single
+    #: ``assistant`` event is written per turn rather than one per streaming token.
+    _turn_text: str = ""
 
     def _config(self) -> dict[str, Any]:
         return {"configurable": {"thread_id": self.thread_id}}
@@ -118,12 +125,20 @@ class SessionDriver:
         since LangGraph already checkpointed the user message before the (failed)
         model call. This prevents a duplicate human message in the thread.
         """
+        import time as _time
+
         self.tracker.check_or_raise()
 
         payload: Any = (
             {"messages": []} if resume
             else {"messages": [{"role": "user", "content": user_input}]}
         )
+
+        # Emit the user prompt to the transcript before the model is called so a
+        # crash mid-turn still records what the user asked.
+        if self.transcript is not None and not resume:
+            self.transcript.write_user(user_input, ts=_time.time())
+        self._turn_text = ""
 
         while True:
             interrupts: list[Any] = []
@@ -141,6 +156,16 @@ class SessionDriver:
                     if mode == "messages":
                         ev = self._handle_message_chunk(chunk)
                         if ev:
+                            # Accumulate assistant text chunks for the transcript.
+                            if ev.kind is EventKind.TEXT and self.transcript is not None:
+                                self._turn_text += ev.text
+                            # Write tool results incrementally (crash-safe).
+                            if ev.kind is EventKind.TOOL_END and self.transcript is not None:
+                                self.transcript.write_tool(
+                                    ev.text,
+                                    ts=_time.time(),
+                                    result=ev.data.get("summary", ""),
+                                )
                             yield ev
                             if ev.kind is EventKind.TOOL_END and self.hooks is not None:
                                 async for note in self._run_post_hooks(ev.text):
@@ -162,6 +187,13 @@ class SessionDriver:
                             return
                     elif mode == "updates":
                         for ev in self._handle_update_chunk(chunk, interrupts):
+                            # Write tool-start events incrementally.
+                            if ev.kind is EventKind.TOOL_START and self.transcript is not None:
+                                self.transcript.write_tool(
+                                    ev.text,
+                                    ts=_time.time(),
+                                    args=ev.data.get("args"),
+                                )
                             yield ev
             except Exception as exc:  # noqa: BLE001 - surface to UI, don't crash
                 # Tag retryable provider failures (rate-limit/timeout/5xx/etc.)
@@ -174,6 +206,9 @@ class SessionDriver:
                 return
 
             if not interrupts:
+                # Flush the accumulated assistant reply as a single transcript line.
+                if self.transcript is not None and self._turn_text:
+                    self.transcript.write_assistant(self._turn_text, ts=_time.time())
                 yield Event(EventKind.DONE, data={"usage": self.tracker.summary_line()})
                 return
 

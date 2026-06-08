@@ -200,6 +200,9 @@ observability:
   langsmith: false         # opt-in tracing (needs LANGSMITH_API_KEY)
   telemetry: false         # opt-in local usage analytics, default OFF (see ROADMAP)
   log_level: info          # debug | info | warning | error
+  transcript: true         # append-only JSONL session transcript under .jarn/sessions/
+                           # one event per line: user prompt, assistant reply, tool calls/results
+                           # set false to disable; files are grep- and git-friendly
 
 # ── UI ───────────────────────────────────────────────────────────────────
 ui:

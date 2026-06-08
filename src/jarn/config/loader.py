@@ -236,6 +236,9 @@ def _build_config(raw: dict[str, Any]) -> Config:
             obs.get("telemetry", False), "observability.telemetry"
         ),
         log_level=str(obs.get("log_level", "info")),
+        transcript=_normalize_bool(
+            obs.get("transcript", True), "observability.transcript"
+        ),
     )
 
     ui = raw.get("ui", {}) or {}

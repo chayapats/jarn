@@ -212,6 +212,7 @@ observability:
   langsmith: false      # opt-in LangSmith tracing
   telemetry: false      # opt-in usage analytics (default OFF)
   log_level: info
+  transcript: true      # append JSONL session transcripts to .jarn/sessions/
 
 ui:
   theme: dark           # dark | light | high-contrast

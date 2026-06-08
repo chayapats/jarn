@@ -154,6 +154,7 @@ class ObservabilityConfig:
     langsmith: bool = False       # opt-in tracing
     telemetry: bool = False       # opt-in usage analytics, default OFF
     log_level: str = "info"
+    transcript: bool = True       # append-only JSONL session transcript under .jarn/sessions/
 
 
 @dataclass(slots=True)
