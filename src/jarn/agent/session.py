@@ -226,8 +226,23 @@ class SessionDriver:
                 yield Event(EventKind.DONE, data={"usage": self.tracker.summary_line()})
                 return
 
+            # Dedupe interrupts by id: with stream_mode=["messages","updates"] +
+            # subgraphs=True the same __interrupt__ can surface more than once, and
+            # resuming with one decision per duplicate over-counts ("Number of human
+            # decisions (N) does not match number of hanging tool calls" — seen when
+            # the model batches parallel tool calls). One decision per unique
+            # interrupt keeps the count aligned with the hanging calls.
+            seen_intr: set[Any] = set()
+            unique_interrupts = []
+            for intr in interrupts:
+                key = getattr(intr, "id", None) or id(intr)
+                if key in seen_intr:
+                    continue
+                seen_intr.add(key)
+                unique_interrupts.append(intr)
+
             decisions = []
-            async for ev, decision in self._resolve_interrupts(interrupts):
+            async for ev, decision in self._resolve_interrupts(unique_interrupts):
                 if ev is not None:
                     yield ev
                 decisions.append(decision)
