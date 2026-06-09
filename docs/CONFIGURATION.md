@@ -56,6 +56,32 @@ write through the same `~/.jarn/trust.yaml`, so they are a single source of trut
 `jarn setup` writes `~/.jarn/config.yaml` for you. To see a fully-commented template,
 read `jarn.config.defaults.global_config_template()`.
 
+## Editing settings — `/config`
+
+You rarely need to hand-edit the YAML. Inside the REPL:
+
+- `/config` — list the settable settings, grouped, with their current values.
+- `/config get <key>` — show one value (and its allowed choices, for enums).
+- `/config set <key> <value>` — change a setting and **persist it to
+  `~/.jarn/config.yaml`** (comments preserved, atomic write). The value is type-checked
+  and the merged config re-validated; an invalid value is **rejected and rolled back**,
+  and a valid one is applied to the running session immediately.
+
+Keys are dotted, e.g. `/config set ui.theme light`, `/config set routing.main
+openrouter/anthropic/claude-opus-4-8`, `/config set wiki.enabled true`,
+`/config set budget.per_session_usd 5`.
+
+Only a curated allowlist of **scalar** settings is editable this way (permission mode,
+models/routing, policy profile, execution/sandbox, budget, context, ui, and feature
+toggles). Structured / capability sections — `providers`, `hooks`, `mcp_servers`,
+`async_subagents`, `permissions` — are **not** settable via `/config`; use `jarn setup`
+or edit the file directly (and, for an untrusted project, `jarn trust` it first). Note:
+on an untrusted project a permissive `permission_mode` is still persisted but the live
+session stays clamped to the `review-only` floor.
+
+> `/model`, `/mode`, `/sandbox`, `/profile` change the **current session only** and do
+> not persist; use `/config set` (or edit the file) to make a change stick.
+
 ## Validation
 
 Config is validated strictly when it loads, so a typo fails loud instead of being

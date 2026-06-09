@@ -11,7 +11,7 @@ see CHANGELOG §0.3.0 for the remaining road-to-1.0 work.
 uv sync --extra dev
 uv run ruff check src tests scripts
 uv run mypy src/
-uv run pytest -q                    # 757 tests
+uv run pytest -q                    # 769 tests
 uv run pytest tests/test_packaging.py -q
 uv build
 ```
@@ -94,7 +94,7 @@ git push origin v0.3.0
 
 | Gate | Result |
 |------|--------|
-| pytest (full) | 757 passed |
+| pytest (full) | 769 passed |
 | ruff + mypy | clean |
 | `tests/test_packaging.py` | ✅ 3 passed (2026-06-09) |
 | `uv build` | ✅ `dist/jarn-0.3.0-py3-none-any.whl` + `.tar.gz` (2026-06-09) |

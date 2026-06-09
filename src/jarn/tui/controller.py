@@ -762,6 +762,85 @@ class Controller:
             rebuilt=True,
         )
 
+    def _apply_reloaded_config(self) -> None:
+        """Re-sync engine + fallback candidates after ``self.config`` is replaced
+        (e.g. by ``/config set`` or ``/trust``) and force a runtime rebuild.
+
+        Honours the untrusted floor: an untrusted project can never end up more
+        permissive than ``plan`` via a reload.
+        """
+        self.engine.mode = self.config.permission_mode
+        self.engine.rules = self.config.permissions
+        if (
+            not self.project_trusted
+            and self.config.permission_mode.rank > PermissionMode.PLAN.rank
+        ):
+            self.config.permission_mode = PermissionMode.PLAN
+            self.engine.mode = PermissionMode.PLAN
+        main = self.config.resolved_main_model()
+        self._candidates = ([main] if main else []) + list(self.config.routing.fallback)
+        self._candidate_idx = 0
+        self.runtime = None  # rebuild with the new config
+
+    def _cmd_config(self, args: str) -> CommandResult:
+        """View or edit settings. ``/config`` lists them; ``/config get <key>``
+        shows one; ``/config set <key> <value>`` persists to the global config."""
+        from jarn.config import settings
+
+        parts = args.strip().split(maxsplit=2)
+        if not parts or not parts[0]:
+            return CommandResult(settings.format_settings(self.config))
+        sub = parts[0]
+        if sub == "get":
+            if len(parts) < 2:
+                return CommandResult("Usage: /config get <key>")
+            key = parts[1]
+            spec = settings.setting_for(key)
+            if spec is None:
+                return CommandResult(f"Unknown setting {key!r}. Run /config to list keys.")
+            val = settings.get_value(self.config, key)
+            shown = "(unset)" if val is None or val == "" else str(val)
+            tail = ""
+            if spec.choices:
+                opts = ", ".join(c if c else "(none)" for c in spec.choices)
+                tail = f"  [{palette.C_DIM}](choices: {opts})[/{palette.C_DIM}]"
+            return CommandResult(f"{key} = {shown}{tail}")
+        if sub == "set":
+            if len(parts) < 3:
+                return CommandResult("Usage: /config set <key> <value>")
+            return self._config_set(parts[1], parts[2])
+        return CommandResult(
+            "Usage: /config  |  /config get <key>  |  /config set <key> <value>"
+        )
+
+    def _config_set(self, key: str, raw: str) -> CommandResult:
+        from jarn.config import paths, settings
+        from jarn.config.loader import ConfigError, load_config
+
+        try:
+            value = settings.coerce(key, raw)
+        except settings.SettingError as exc:
+            return CommandResult(str(exc))
+        gpath = paths.global_config_path()
+        store = settings.ConfigStore(gpath)
+        backup = store.read_text()
+        store.set(key, value)
+        # Validate by reloading the merged config; roll the file back on any error
+        # so an invalid edit never leaves the config broken on disk.
+        try:
+            new_cfg = load_config(
+                project_root=self.project_root, project_trusted=self.project_trusted
+            )
+        except ConfigError as exc:
+            store.restore(backup)
+            return CommandResult(f"Rejected — invalid value: {_escape_markup(str(exc))}")
+        self.config = new_cfg
+        self._apply_reloaded_config()
+        shown = "(none)" if value == "" else value
+        return CommandResult(
+            f"Set [b]{key}[/b] = {shown} → saved to {gpath} (rebuilding).", rebuilt=True
+        )
+
     def _cmd_cost(self, args: str) -> CommandResult:
         t = self.tracker
         lines = [f"[b]Session usage[/b] — {t.summary_line()}", f"status: {t.status().value}"]

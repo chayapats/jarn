@@ -39,6 +39,11 @@ BUILTINS: tuple[BuiltinCommand, ...] = (
     BuiltinCommand("help", "Show available commands and shortcuts.", "controller"),
     BuiltinCommand("init", "Create a JARN.md project context file.", "controller"),
     BuiltinCommand(
+        "config",
+        "View or edit settings: /config, /config get <key>, /config set <key> <value> (persists).",
+        "controller",
+    ),
+    BuiltinCommand(
         "model",
         "Show or switch the active model.",
         "repl",

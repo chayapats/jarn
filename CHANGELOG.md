@@ -35,6 +35,13 @@ M1–M4 work below.
 - **M4 — `/trust` + untrusted launch notice**: `/trust` persists trust for the
   current project, lifts the review-only floor in-session, and rebuilds; the REPL
   surfaces a one-time scrollback notice when launched on an untrusted project.
+- **`/config` — easy settings editor**: `/config` lists the settable settings
+  grouped; `/config get <key>` shows one; `/config set <key> <value>` coerces +
+  validates the value, **persists it to `~/.jarn/config.yaml`** (comment-preserving
+  ruamel round-trip, atomic), rolls back on an invalid value, and applies it live.
+  A curated scalar allowlist (mode, models, profile, execution, budget, context,
+  ui, features) — structured/capability sections stay file/wizard-only. Untrusted
+  sessions still clamp to the floor even when a permissive mode is persisted.
 
 ### Security / hardening
 
