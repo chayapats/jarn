@@ -60,10 +60,11 @@ read `jarn.config.defaults.global_config_template()`.
 
 You rarely need to hand-edit the YAML. Inside the REPL:
 
-- `/config` — open an **interactive arrow-key panel**: ↑/↓ to move between settings
-  (grouped by section), **Enter** to toggle a boolean, cycle an enum, or edit a
-  text/number value in place (type the value, Enter saves, Esc cancels), **Esc** to
-  close. Each change saves immediately.
+- `/config` — open the **interactive settings panel** (Claude-Code style): category
+  tabs run horizontally (**←/→**: General · Models · Policy · Execution · Budget ·
+  Context · Features · UI), settings run vertically under the active tab (**↑/↓**).
+  **Enter** toggles a boolean, cycles an enum, or edits a text/number value in place
+  (type · Enter saves · Esc cancels); **Esc** closes. Each change saves immediately.
 - `/config get <key>` — show one value (and its allowed choices, for enums).
 - `/config set <key> <value>` — change a setting and **persist it to
   `~/.jarn/config.yaml`** (comments preserved, atomic write). The value is type-checked

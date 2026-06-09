@@ -190,20 +190,39 @@ class ConfigStore:
         os.replace(tmp, self.path)
 
 
+#: Friendly titles for the category tabs (the horizontal top row).
+GROUP_LABELS: dict[str, str] = {
+    "general": "General",
+    "models": "Models",
+    "policy": "Policy",
+    "execution": "Execution",
+    "budget": "Budget",
+    "context": "Context",
+    "features": "Features",
+    "ui": "UI",
+}
+
+# Style tokens (theme-agnostic where it matters; cyan accent matches the brand).
+_C_ACCENT = "#22d3ee"
+_C_DIM = "#7c8f94"
+_C_ON = "#3fb950"
+
+
 class ConfigPanel:
-    """State model for the interactive ``/config`` settings panel (arrow-key).
+    """State model for the interactive ``/config`` settings panel.
 
     Framework-agnostic (no prompt_toolkit) so it is fully unit-testable: the REPL
     view drives it with key events and renders :meth:`render_lines`.
 
-    - ``get_config()`` returns the live config (read fresh — it is replaced on
-      each successful save).
-    - ``apply(key, raw)`` persists ``key`` = ``raw`` and returns ``(ok, message)``.
+    Two-dimensional, Claude-Code-style navigation:
+    - **categories** run horizontally as tabs (``←``/``→``) — General, Models,
+      Policy, Execution, Budget, Context, Features, UI;
+    - **settings** in the active category run vertically (``↑``/``↓``).
 
-    Navigation: ↑/↓ moves the selection. Enter on a **bool** toggles it, on an
-    **enum** cycles to the next choice, on a **str/int/float** enters edit mode
-    (type a value, Enter saves, Esc cancels). Each toggle/cycle/save persists
-    immediately via ``apply``.
+    Enter on the selected setting toggles a **bool**, cycles an **enum**, or edits
+    a **str/int/float** in place (type · Enter saves · Esc cancels). Every change
+    persists immediately via ``apply(key, raw) -> (ok, message)``. ``get_config()``
+    returns the live config (read fresh — replaced on each successful save).
     """
 
     NAVIGATE = "navigate"
@@ -213,28 +232,60 @@ class ConfigPanel:
         self.settings = list(SETTINGS)
         self._get_config = get_config
         self._apply = apply
-        self.index = 0
+        # ordered, de-duplicated category list (tab order)
+        self.groups: list[str] = []
+        for s in self.settings:
+            if s.group not in self.groups:
+                self.groups.append(s.group)
+        self.cat_index = 0
+        self.item_index = 0
         self.mode = self.NAVIGATE
         self.buffer = ""
         self.message = ""
+
+    # -- selection ----------------------------------------------------------
 
     @property
     def editing(self) -> bool:
         return self.mode == self.EDIT
 
+    @property
+    def category(self) -> str:
+        return self.groups[self.cat_index]
+
+    def items(self) -> list[Setting]:
+        """Settings in the active category."""
+        return [s for s in self.settings if s.group == self.category]
+
     def current(self) -> Setting:
-        return self.settings[self.index]
+        return self.items()[self.item_index]
 
     def value_of(self, spec: Setting) -> object:
         return get_value(self._get_config(), spec.key)
 
+    def select_key(self, key: str) -> None:
+        """Jump selection to the setting named ``key`` (category + item)."""
+        spec = next(s for s in self.settings if s.key == key)
+        self.cat_index = self.groups.index(spec.group)
+        self.item_index = self.items().index(spec)
+
+    def move_category(self, delta: int) -> None:
+        if self.editing:
+            return
+        self.cat_index = (self.cat_index + delta) % len(self.groups)
+        self.item_index = 0
+        self.message = ""
+
     def move(self, delta: int) -> None:
         if self.editing:
             return
-        self.index = (self.index + delta) % len(self.settings)
+        items = self.items()
+        self.item_index = (self.item_index + delta) % len(items)
+
+    # -- actions ------------------------------------------------------------
 
     def activate(self) -> None:
-        """Enter on the selected row: toggle / cycle / begin editing."""
+        """Enter on the selected setting: toggle / cycle / begin editing."""
         if self.editing:
             return
         spec = self.current()
@@ -278,29 +329,71 @@ class ConfigPanel:
         _ok, msg = self._apply(spec.key, raw)
         self.message = msg
 
+    # -- rendering ----------------------------------------------------------
+
+    def _label(self, spec: Setting) -> str:
+        """Item label with the redundant ``<group>.`` prefix stripped."""
+        prefix = f"{spec.group}."
+        return spec.key[len(prefix):] if spec.key.startswith(prefix) else spec.key
+
+    def _value_fragment(self, spec: Setting) -> tuple[str, str]:
+        """(style, text) for a setting's value (non-selected rows)."""
+        if spec.type == "bool":
+            return (_C_ON, "● on") if bool(self.value_of(spec)) else (_C_DIM, "○ off")
+        val = self.value_of(spec)
+        if val is None or val == "":
+            return (_C_DIM, "(none)")
+        if spec.type == "enum":
+            return (_C_ACCENT, str(val))
+        return ("", str(val))
+
     def render_lines(self) -> list[tuple[str, str]]:
         """(style, text) fragments for a prompt_toolkit FormattedTextControl."""
-        out: list[tuple[str, str]] = [
-            ("bold", " Settings  "),
-            ("#7c8f94", "↑/↓ move · Enter toggle/edit · Esc close\n"),
-        ]
-        last_group = ""
-        for i, spec in enumerate(self.settings):
-            if spec.group != last_group:
-                out.append(("bold #7c8f94", f"\n {spec.group}\n"))
-                last_group = spec.group
-            selected = i == self.index
-            if self.editing and selected:
-                shown = self.buffer + "▏"   # ▏ caret
+        out: list[tuple[str, str]] = [("bold", "  Settings\n"), ("", "\n")]
+
+        # Horizontal category tabs.
+        out.append(("", "  "))
+        for i, g in enumerate(self.groups):
+            label = GROUP_LABELS.get(g, g.title())
+            if i == self.cat_index:
+                out.append(("reverse bold", f" {label} "))
             else:
-                val = self.value_of(spec)
-                shown = "(unset)" if val is None or val == "" else str(val)
-            marker = "›" if selected else " "  # ›
-            out.append(
-                ("reverse" if selected else "", f" {marker} {spec.key}: {shown}\n")
-            )
+                out.append((_C_DIM, f" {label} "))
+            out.append(("", " "))
+        out.append(("", "\n\n"))
+
+        # Vertical settings for the active category, value column aligned.
+        items = self.items()
+        width = max((len(self._label(s)) for s in items), default=0)
+        for i, spec in enumerate(items):
+            selected = i == self.item_index
+            label = self._label(spec).ljust(width)
+            marker = "▸ " if selected else "  "
+            if selected and self.editing:
+                out.append(("reverse", f"  {marker}{label}  {self.buffer}▏\n"))
+            elif selected:
+                vstyle, vtext = self._value_fragment(spec)
+                # one inverse bar for the whole selected row (clean highlight)
+                out.append(("reverse", f"  {marker}{label}  {vtext}\n"))
+            else:
+                vstyle, vtext = self._value_fragment(spec)
+                out.append((_C_DIM, f"  {marker}{label}  "))
+                out.append((vstyle, vtext))
+                out.append(("", "\n"))
+
+        # Contextual hint + last action message.
+        spec = self.current()
+        action = {
+            "bool": "Enter toggle",
+            "enum": "Enter cycle",
+        }.get(spec.type, "Enter edit")
+        out.append(("", "\n"))
+        out.append((_C_DIM, f"  ←/→ category · ↑/↓ setting · {action} · Esc close\n"))
+        if spec.type == "enum":
+            opts = " / ".join(c if c else "(none)" for c in spec.choices)
+            out.append((_C_DIM, f"  choices: {opts}\n"))
         if self.message:
-            out.append(("#7c8f94", f"\n {self.message}\n"))
+            out.append((_C_ACCENT, f"  {self.message}\n"))
         return out
 
 

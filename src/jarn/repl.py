@@ -691,6 +691,20 @@ class InlineApp:
                 self._config_panel.move(1)
                 event.app.invalidate()
 
+        @kb.add("left", filter=cfg_nav)
+        @kb.add("s-tab", filter=cfg_nav)
+        def _cfg_prev_cat(event) -> None:
+            if self._config_panel is not None:
+                self._config_panel.move_category(-1)
+                event.app.invalidate()
+
+        @kb.add("right", filter=cfg_nav)
+        @kb.add("tab", filter=cfg_nav)
+        def _cfg_next_cat(event) -> None:
+            if self._config_panel is not None:
+                self._config_panel.move_category(1)
+                event.app.invalidate()
+
         @kb.add("enter", filter=cfg_open)
         def _cfg_enter(event) -> None:
             p = self._config_panel

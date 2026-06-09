@@ -173,24 +173,37 @@ def _panel(config, apply):
     return settings.ConfigPanel(get_config=lambda: config, apply=apply)
 
 
-def _index_of(panel, key):
-    return [s.key for s in panel.settings].index(key)
-
-
-def test_panel_move_wraps(base_config):
+def test_panel_item_move_wraps_within_category(base_config):
     p = _panel(base_config, lambda k, r: (True, "ok"))
-    n = len(p.settings)
-    p.move(-1)
-    assert p.index == n - 1
-    p.move(1)
-    assert p.index == 0
+    p.cat_index = 0           # "general" has a single setting (permission_mode)
+    p.move(-1)                # wraps within the category's items
+    assert 0 <= p.item_index < len(p.items())
+
+
+def test_panel_category_move_wraps(base_config):
+    p = _panel(base_config, lambda k, r: (True, "ok"))
+    n = len(p.groups)
+    p.move_category(-1)
+    assert p.cat_index == n - 1
+    p.move_category(1)
+    assert p.cat_index == 0
+    # switching category resets the item selection
+    p.item_index = 0
+    p.move_category(1)
+    assert p.item_index == 0
+
+
+def test_panel_select_key(base_config):
+    p = _panel(base_config, lambda k, r: (True, "ok"))
+    p.select_key("ui.theme")
+    assert p.category == "ui" and p.current().key == "ui.theme"
 
 
 def test_panel_toggle_bool(base_config):
     apply, calls = _make_apply(base_config)
     base_config.wiki.enabled = False
     p = _panel(base_config, apply)
-    p.index = _index_of(p, "wiki.enabled")
+    p.select_key("wiki.enabled")
     p.activate()
     assert calls[-1] == ("wiki.enabled", "true") and base_config.wiki.enabled is True
     p.activate()
@@ -201,7 +214,7 @@ def test_panel_cycle_enum(base_config):
     apply, calls = _make_apply(base_config)
     base_config.ui.theme = "dark"
     p = _panel(base_config, apply)
-    p.index = _index_of(p, "ui.theme")
+    p.select_key("ui.theme")
     p.activate()                       # dark -> light (next choice)
     assert calls[-1] == ("ui.theme", "light") and base_config.ui.theme == "light"
 
@@ -209,7 +222,7 @@ def test_panel_cycle_enum(base_config):
 def test_panel_edit_str_commits(base_config):
     apply, calls = _make_apply(base_config)
     p = _panel(base_config, apply)
-    p.index = _index_of(p, "execution.docker_image")
+    p.select_key("execution.docker_image")
     p.activate()
     assert p.editing
     p.buffer = ""
@@ -225,16 +238,20 @@ def test_panel_edit_str_commits(base_config):
 def test_panel_cancel_edit_applies_nothing(base_config):
     apply, calls = _make_apply(base_config)
     p = _panel(base_config, apply)
-    p.index = _index_of(p, "ui.accent")
+    p.select_key("ui.accent")
     p.activate()
     p.type_text("zzz")
     p.cancel_edit()
     assert not p.editing and calls == []
 
 
-def test_panel_render_marks_selection(base_config):
+def test_panel_render_has_tabs_and_selection(base_config):
     p = _panel(base_config, lambda k, r: (True, "ok"))
+    p.select_key("ui.theme")
     frags = p.render_lines()
-    assert any(style == "reverse" for style, _ in frags)   # selected row highlighted
+    assert any(style == "reverse bold" for style, _ in frags)  # active category tab
+    assert any(style == "reverse" for style, _ in frags)       # selected setting row
     text = "".join(t for _, t in frags)
-    assert "Settings" in text and "ui.theme" in text
+    # horizontal category tabs + the stripped item label + the cycle hint
+    assert "Models" in text and "Execution" in text and "UI" in text
+    assert "theme" in text and "choices:" in text

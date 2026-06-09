@@ -36,10 +36,12 @@ M1–M4 work below.
   current project, lifts the review-only floor in-session, and rebuilds; the REPL
   surfaces a one-time scrollback notice when launched on an untrusted project.
 - **`/config` — interactive settings panel + scriptable get/set**: `/config`
-  opens an **arrow-key panel** — ↑/↓ to move, Enter to **toggle** a bool, **cycle**
-  an enum, or **edit** a text/number value in place (type · Enter saves · Esc
-  cancels), grouped by section. `/config get <key>` / `/config set <key> <value>`
-  remain for scripting. Every change coerces + validates the value, **persists it
+  opens a **tabbed arrow-key panel** (Claude-Code style) — categories run
+  horizontally as tabs (**←/→** General · Models · Policy · Execution · Budget ·
+  Context · Features · UI), settings run vertically under the active tab
+  (**↑/↓**). **Enter** toggles a bool (`● on` / `○ off`), cycles an enum (with the
+  choices shown), or edits a text/number value in place (type · Enter saves · Esc
+  cancels). `/config get <key>` / `/config set <key> <value>` remain for scripting. Every change coerces + validates the value, **persists it
   to `~/.jarn/config.yaml`** (comment-preserving ruamel round-trip, atomic), rolls
   back on an invalid value, and applies live. A curated scalar allowlist (mode,
   models, profile, execution, budget, context, ui, features) — structured /
