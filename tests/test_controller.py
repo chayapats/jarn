@@ -365,7 +365,8 @@ def _stub_runtime_build(monkeypatch, mcp_result):
         return object(), None
 
     def _fake_build_runtime(
-        config, *, project_root, project_trusted=True, checkpointer, extra_tools
+        config, *, project_root, project_trusted=True, checkpointer, extra_tools,
+        system_prompt_override=None,
     ):
         seen["extra_tools"] = extra_tools
         seen["project_trusted"] = project_trusted
@@ -447,7 +448,10 @@ async def test_ensure_runtime_errors_on_ambient_key_leak(
 
     _stub_runtime_build(monkeypatch, MCPLoadResult(tools=[], health={}, errors={}))
 
-    def _leak_build(config, *, project_root, project_trusted, checkpointer, extra_tools):
+    def _leak_build(
+        config, *, project_root, project_trusted, checkpointer, extra_tools,
+        system_prompt_override=None,
+    ):
         raise AmbientKeyLeakError(
             ["ambient LANGGRAPH_API_KEY would leak to https://evil.example.com/x"]
         )

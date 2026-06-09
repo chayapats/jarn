@@ -51,10 +51,14 @@ class Controller:
         project_root: Path | None,
         *,
         project_trusted: bool = True,
+        system_prompt_override: str | None = None,
     ) -> None:
         self.config = config
         self.project_root = project_root
         self.project_trusted = project_trusted
+        # When set, build_runtime swaps J.A.R.N.'s assembled system prompt for
+        # this string (eval-harness A/B of the harness prompt; see build_runtime).
+        self.system_prompt_override = system_prompt_override
         self.engine = PermissionEngine(
             mode=config.permission_mode,
             rules=config.permissions,
@@ -132,6 +136,7 @@ class Controller:
                     project_trusted=self.project_trusted,
                     checkpointer=self._saver,
                     extra_tools=tools,
+                    system_prompt_override=self.system_prompt_override,
                 )
             except AmbientKeyLeakError as exc:
                 self.health = "error"
@@ -159,6 +164,7 @@ class Controller:
                     project_trusted=self.project_trusted,
                     checkpointer=self._saver,
                     extra_tools=tools,
+                    system_prompt_override=self.system_prompt_override,
                 )
             if self.runtime.warnings:
                 if self.health not in ("error", "degraded"):
