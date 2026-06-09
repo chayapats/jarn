@@ -1,6 +1,6 @@
 [project]
 name = "jarn"
-version = "0.2.0"
+version = "0.3.0"
 description = "J.A.R.N. — Just A Reliable Nerd. A TUI-first coding agent harness built on DeepAgents."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -94,6 +94,8 @@ exclude = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# eval fixtures are intentionally-broken/standalone seed projects; don't lint them.
+extend-exclude = ["evals/fixtures"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -105,6 +107,8 @@ ignore = ["E501", "UP042"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+# evals/fixtures hold intentionally-broken seed projects; never collect them.
+norecursedirs = ["evals"]
 
 [tool.mypy]
 python_version = "3.12"

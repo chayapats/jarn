@@ -187,8 +187,54 @@ def _make_sandbox_backend(config: Config):
     raise SandboxUnavailable(f"Unknown sandbox provider: {provider!r}")
 
 
+def _make_docker_backend(config: Config, project_root: Path | None):
+    """Construct a Docker container backend (real OS-level isolation).
+
+    Requires the ``docker`` CLI on PATH and a reachable daemon; otherwise raises
+    :class:`SandboxUnavailable` so the caller can fail closed (or fall back to
+    the host only when ``allow_local_fallback`` is set). The project root is
+    bind-mounted read-write at its own absolute path; everything else the agent
+    sees is the container image's filesystem.
+    """
+    from jarn.agent.docker_backend import (
+        CancellableDockerSandbox,
+        DockerStartError,
+        docker_available,
+    )
+
+    if not docker_available():
+        raise SandboxUnavailable(
+            "Docker is not available (the `docker` CLI is missing or the daemon "
+            "is not running). Start Docker, or use execution.backend: local."
+        )
+    root = Path(project_root) if project_root else Path.cwd()
+    ex = config.execution
+    try:
+        return CancellableDockerSandbox(
+            project_root=root,
+            image=ex.docker_image,
+            allow_network=ex.sandbox_allow_network,
+            extra_writable=[Path(p).expanduser() for p in ex.sandbox_writable],
+            memory=ex.docker_memory,
+            pids=ex.docker_pids,
+            cpus=ex.docker_cpus,
+            user=ex.docker_user,
+        )
+    except DockerStartError as exc:
+        raise SandboxUnavailable(
+            f"Could not start docker sandbox with image {ex.docker_image!r}: {exc}\n"
+            f"The image may not be present locally — try: docker pull {ex.docker_image}"
+        ) from exc
+
+
 def _make_backend(config: Config, project_root: Path | None):
+    if config.execution.backend == "docker":
+        return _make_docker_backend(config, project_root)  # may raise SandboxUnavailable
     if config.execution.backend == "sandbox":
+        # The "sandbox" backend historically meant the remote LangSmith runtime;
+        # `sandbox_provider: docker` redirects it to the local container backend.
+        if config.execution.sandbox_provider == "docker":
+            return _make_docker_backend(config, project_root)
         return _make_sandbox_backend(config)  # may raise SandboxUnavailable
     return _make_local_backend(project_root, config)
 
@@ -257,10 +303,13 @@ def build_runtime(
         capabilities.as_prompt_block(),
     )
 
-    # Built-in web tools + any MCP-loaded tools.
+    # Built-in web tools + any MCP-loaded tools. Web tools run in-process and
+    # bypass the OS sandbox, so the policy layer can disable them (e.g. the
+    # 'offline' profile sets policy.web_tools False).
     from jarn.agent.web_tools import build_web_tools
 
-    tools = [*build_web_tools(), *(extra_tools or [])]
+    web_tools = build_web_tools() if config.policy.web_tools else []
+    tools = [*web_tools, *(extra_tools or [])]
 
     # Wiki tools — registered only when wiki.enabled is True.
     if config.wiki.enabled:

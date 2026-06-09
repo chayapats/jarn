@@ -25,7 +25,7 @@ key from the project tier, it asks you to trust the project (once per root; you'
 re-prompted if those keys change). The gated keys are:
 
 `hooks` · `mcp_servers` · `async_subagents` · `providers` · `execution` ·
-`permission_mode` · `permissions.allow` · `observability`
+`permission_mode` · `policy` · `observability` · `permissions.allow`
 
 Until you trust the project, those keys are **ignored** (the rest — `ui`, `context`,
 `permissions.deny`, etc. — still applies) and the session continues safely. Decline if
@@ -56,6 +56,38 @@ write through the same `~/.jarn/trust.yaml`, so they are a single source of trut
 `jarn setup` writes `~/.jarn/config.yaml` for you. To see a fully-commented template,
 read `jarn.config.defaults.global_config_template()`.
 
+## Editing settings — `/config`
+
+You rarely need to hand-edit the YAML. Inside the REPL:
+
+- `/config` — open the **interactive settings panel** (Claude-Code style): category
+  tabs run horizontally (**←/→**: General · Models · Policy · Execution · Budget ·
+  Context · Features · UI), settings run vertically under the active tab (**↑/↓**).
+  **Enter** toggles a boolean, cycles an enum, or edits a text/number value in place
+  (type · Enter saves · Esc cancels); **Esc** closes. Each change saves immediately.
+- `/config get <key>` — show one value (and its allowed choices, for enums).
+- `/config set <key> <value>` — change a setting and **persist it to
+  `~/.jarn/config.yaml`** (comments preserved, atomic write). The value is type-checked,
+  the merged config re-validated, and the *combination* of settings checked for
+  consistency (see [Validation](#validation)); an invalid or contradictory value is
+  **rejected and rolled back**, and a valid one is applied to the running session
+  immediately. A harmless-but-ineffective change is saved with a `⚠` note.
+
+Keys are dotted, e.g. `/config set ui.theme light`, `/config set routing.main
+openrouter/anthropic/claude-opus-4-8`, `/config set wiki.enabled true`,
+`/config set budget.per_session_usd 5`.
+
+Only a curated allowlist of **scalar** settings is editable this way (permission mode,
+models/routing, policy profile, execution/sandbox, budget, context, ui, and feature
+toggles). Structured / capability sections — `providers`, `hooks`, `mcp_servers`,
+`async_subagents`, `permissions` — are **not** settable via `/config`; use `jarn setup`
+or edit the file directly (and, for an untrusted project, `jarn trust` it first). Note:
+on an untrusted project a permissive `permission_mode` is still persisted but the live
+session stays clamped to the `review-only` floor.
+
+> `/model`, `/mode`, `/sandbox`, `/profile` change the **current session only** and do
+> not persist; use `/config set` (or edit the file) to make a change stick.
+
 ## Validation
 
 Config is validated strictly when it loads, so a typo fails loud instead of being
@@ -73,6 +105,27 @@ silently ignored. Errors raise `ConfigError` with the offending path.
   keys *nested* inside a section (e.g. extra provider fields) are not rejected; provider
   `extra` is folded through deliberately.
 
+### Cross-setting consistency
+
+Beyond per-value checks, `/config` validates that settings make sense *together*
+(`jarn.config.consistency`). Two severities:
+
+- **Errors** — genuine contradictions where a knob can't take effect. The interactive
+  editor refuses to *introduce* one (you can't turn the offending setting on). The
+  canonical case: the kernel-level **OS sandbox** (`execution.local_sandbox` `auto`/
+  `require`) is only honoured by the **local** backend, so enabling it while
+  `execution.backend` is `docker`/`sandbox` is rejected. Only conflicts the current
+  edit creates are blocked — a pre-existing, hand-edited contradiction never blocks an
+  unrelated change, nor traps you from editing your way out of it.
+- **Warnings** (`⚠`) — the value is harmless but currently has no effect, and is saved
+  anyway: a `budget.hard_stop`/`warn_at_pct` while the session budget is `0` (unlimited),
+  a `context.compact_at_pct` while `auto_compact` is off, a `context.repo_map_tokens`
+  while the repo map is off, or a value that an active `policy.profile` will overwrite at
+  launch.
+
+In the panel the result line is colour-coded: `✗` (rejected), `⚠` (saved with a note),
+`✓` (saved cleanly).
+
 Run `jarn doctor` to surface these errors before a session; pass `jarn doctor --json`
 to emit the diagnostics as machine-readable JSON.
 
@@ -85,6 +138,24 @@ default_model: openrouter/anthropic/claude-opus-4-8
 
 # Coarse trust level: plan | ask | auto-edit | yolo
 permission_mode: ask
+
+# ── Policy profile ───────────────────────────────────────────────────────
+# A named bundle of trust-relevant settings applied at launch. Selecting a
+# profile overlays permission_mode + execution.local_sandbox +
+# execution.sandbox_allow_network + policy.web_tools in one shot.
+#   trusted-repo     — ask · no OS sandbox · network on · web tools on (everyday)
+#   review-only      — plan (read-only) · web tools on
+#   sandbox-required — ask · local_sandbox=require · network off (untrusted, isolated)
+#   ci               — yolo (no prompts) · local_sandbox=require · network on
+#   offline          — ask · local_sandbox=auto · network off · web tools OFF
+# Precedence: `jarn --profile NAME` (CLI) > policy.profile (here) > raw settings.
+# Untrusted projects are CLAMPED to `review-only` regardless — they can never be
+# loosened (via config, --profile, /profile, /mode, or Shift+Tab) until trusted.
+# Switch at runtime with `/profile`. `policy` keys are stripped from untrusted
+# project configs (capability gate).
+policy:
+  profile: ""              # "" = none (use the raw settings above)
+  web_tools: true          # register web_search/web_fetch? (a profile may flip this)
 
 # ── Providers ────────────────────────────────────────────────────────────
 # Keys are referenced, never inlined:
@@ -161,10 +232,30 @@ context:
 
 # ── Execution backend ────────────────────────────────────────────────────
 execution:
-  backend: local           # local | sandbox  (toggle at runtime with /sandbox)
-  sandbox_provider: langsmith   # sandbox runtime (needs external setup)
+  backend: local           # local | docker | sandbox  (toggle at runtime with /sandbox)
+                           # local  — run on the host (permission engine is the only
+                           #          authorizer; NO isolation)
+                           # docker — run every command + file op inside a Docker
+                           #          container; the host is exposed only through a
+                           #          bind-mount of the project root (REAL isolation)
+                           # sandbox— remote runtime (LangSmith; needs external setup)
+  sandbox_provider: langsmith   # remote sandbox runtime (or "docker" to redirect
+                                # `backend: sandbox` to the local container backend)
+  docker_image: python:3.12-slim  # image for `backend: docker`. Must ship python3 +
+                                   # /bin/sh. Use a fuller image (node, ripgrep, git)
+                                   # if your project needs those tools in-container.
+  # Docker resource limits (backend: docker) — all unset by default.
+  docker_memory: ""        # --memory cap, e.g. "2g" / "512m"  ("" = no cap)
+  docker_pids: 0           # --pids-limit (0 = no cap). Set e.g. 512 for untrusted
+                           # code to stop fork bombs without breaking normal builds.
+  docker_cpus: ""          # --cpus cap, e.g. "2"  ("" = no cap)
+  docker_user: ""          # --user uid:gid  ("" = image default, usually root).
+                           # FOOTGUN on Linux: when empty, files the agent writes in
+                           # the project land owned by root. Set to your host uid:gid
+                           # (e.g. "1000:1000") to avoid root-owned files. Not forced
+                           # by default because many images need root for apt/pip.
   multimodal: true         # read_file auto-detects image/PDF/audio/video
-  allow_local_fallback: false   # if `backend: sandbox` can't start, run on the
+  allow_local_fallback: false   # if `backend: docker|sandbox` can't start, run on the
                                 # host anyway? OFF = fail closed (recommended).
                                 # When on, the status bar shows "host (no sandbox)".
 

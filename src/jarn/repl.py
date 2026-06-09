@@ -24,7 +24,7 @@ import shutil
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
@@ -47,6 +47,7 @@ from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import BeforeInput
+from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from rich.console import Console
@@ -68,9 +69,16 @@ from jarn.tui.logo import splash
 from jarn.tui.toolbar import render_toolbar
 from jarn.version import __version__
 
+if TYPE_CHECKING:
+    from jarn.config.settings import ConfigPanel
+
 Ask = Callable[[str], Awaitable[str]]
 Pick = Callable[[list[tuple[str, ApprovalReply]]], Awaitable[ApprovalReply]]
 _MenuT = TypeVar("_MenuT")
+
+#: Max diff lines shown in a write/edit approval prompt before collapsing the
+#: rest to a "… (+N more lines)" footer, so a large file doesn't flood the TUI.
+_APPROVAL_DIFF_MAX_LINES = 40
 
 def run_inline(
     config: Config,
@@ -88,6 +96,25 @@ def run_inline(
             ).run()
         )
     return 0
+
+
+class _ShellEscapeLexer(Lexer):
+    """Colour the input red while it is a ``!`` shell escape.
+
+    A ``!``-prefixed line runs directly on the host shell — no agent, no
+    permission engine, no danger-guard — so the live input is rendered in the
+    ``shell-escape`` style (red + bold) to make that unmistakable as the user
+    types, distinct from a normal agent prompt.
+    """
+
+    def lex_document(self, document):  # noqa: ANN001 - prompt_toolkit Document
+        is_shell = document.text.lstrip().startswith("!")
+
+        def get_line(lineno: int):
+            text = document.lines[lineno]
+            return [("class:shell-escape" if is_shell else "", text)]
+
+        return get_line
 
 
 class InlineApp:
@@ -142,6 +169,9 @@ class InlineApp:
         self._last_todos_sig: str | None = None    # de-dupe the todo checklist
         self._pager_buffer = Buffer(read_only=True)
         self._pager_window: Window | None = None
+        self._config_open = False                  # interactive /config panel open?
+        self._config_panel: ConfigPanel | None = None
+        self._config_window: Window | None = None
         self._resume_on_start = resume               # show the /resume picker on launch
         self.app: Application | None = None
 
@@ -158,6 +188,19 @@ class InlineApp:
             c.print(
                 f"[{palette.C_ERROR}]Provider not ready: {_rich_escape(message)}"
                 f"[/{palette.C_ERROR}]  [{palette.C_DIM}]run `jarn setup`[/{palette.C_DIM}]"
+            )
+        # One-time untrusted-project notice: the review-only floor is active and
+        # capability keys were stripped. Surfaced once in scrollback (not per turn)
+        # so the user knows why modes are clamped and how to unlock.
+        if not self.controller.project_trusted and self.controller.project_root is not None:
+            c.print(
+                f"[{palette.C_WARN}]⚠ This project is untrusted[/{palette.C_WARN}] "
+                f"[{palette.C_DIM}]— review-only floor active (modes clamped to plan; "
+                f"project hooks/MCP/providers ignored). Run [/{palette.C_DIM}]"
+                f"[{palette.C_NOTICE}]/trust[/{palette.C_NOTICE}]"
+                f"[{palette.C_DIM}] or [/{palette.C_DIM}]"
+                f"[{palette.C_NOTICE}]jarn trust[/{palette.C_NOTICE}]"
+                f"[{palette.C_DIM}] to unlock.[/{palette.C_DIM}]"
             )
         self._warm_pricing_catalog()
         await self._ensure_extensions()
@@ -212,7 +255,11 @@ class InlineApp:
             dont_extend_height=True, style=f"fg:{palette.C_DIM}",
         )
         prompt = Window(
-            BufferControl(self.input, input_processors=[BeforeInput("› ", style="bold")]),
+            BufferControl(
+                self.input,
+                input_processors=[BeforeInput("› ", style="bold")],
+                lexer=_ShellEscapeLexer(),
+            ),
             height=Dimension(min=1, max=10), wrap_lines=True, dont_extend_height=True,
         )
         toolbar = Window(
@@ -228,11 +275,22 @@ class InlineApp:
         pager_header = Window(
             FormattedTextControl(self._pager_header), height=1, style="class:bottom-toolbar",
         )
+        # Interactive settings panel overlay (/config). FormattedTextControl is
+        # non-focusable; the global key bindings (gated on _config_open) drive it.
+        self._config_window = Window(
+            FormattedTextControl(self._config_render), wrap_lines=True,
+        )
         top = HSplit([
-            ConditionalContainer(stream, filter=Condition(lambda: not self._expanded)),
+            ConditionalContainer(
+                stream,
+                filter=Condition(lambda: not self._expanded and not self._config_open),
+            ),
             ConditionalContainer(
                 HSplit([pager_header, self._pager_window]),
                 filter=Condition(lambda: self._expanded),
+            ),
+            ConditionalContainer(
+                self._config_window, filter=Condition(lambda: self._config_open)
             ),
         ])
         root = FloatContainer(
@@ -445,6 +503,34 @@ class InlineApp:
             self.app.layout.focus(self.input)  # back to the conversation
             self.app.invalidate()
 
+    # -- interactive settings panel (/config) -------------------------------
+
+    def _config_render(self):
+        """FormattedTextControl source for the settings panel."""
+        if self._config_panel is None:
+            return []
+        return self._config_panel.render_lines()
+
+    def _open_config(self) -> None:
+        """Open the arrow-key settings panel. Saves persist to global config."""
+        from jarn.config.settings import ConfigPanel
+
+        self._config_panel = ConfigPanel(
+            get_config=lambda: self.controller.config,
+            apply=self.controller.set_setting,
+        )
+        self._config_open = True
+        # The input keeps focus; global bindings (gated on _config_open) drive
+        # the panel, so input keys stay inert while it is open.
+        if self.app is not None:
+            self.app.invalidate()
+
+    def _close_config(self) -> None:
+        self._config_open = False
+        self._config_panel = None
+        if self.app is not None:
+            self.app.invalidate()
+
     def _pager_header(self) -> HTML:
         base = (' <b>full output</b> '
                 '<style fg="#7c8f94">— ↑/↓ PgUp/PgDn scroll · Ctrl+O / q / Esc close</style>')
@@ -464,9 +550,19 @@ class InlineApp:
 
     def _build_keys(self) -> KeyBindings:
         kb = KeyBindings()
-        # Input/editing keys only apply when the pager overlay is closed; while it
-        # is open they fall through to the pager's default scroll handling.
-        live = Condition(lambda: not self._expanded)
+        # Input/editing keys only apply when neither overlay (pager / config
+        # panel) is open; while one is open keys drive that overlay instead.
+        live = Condition(lambda: not self._expanded and not self._config_open)
+        cfg_open = Condition(lambda: self._config_open)
+        cfg_edit = Condition(
+            lambda: self._config_open
+            and self._config_panel is not None
+            and self._config_panel.editing
+        )
+        cfg_nav = Condition(
+            lambda: self._config_open
+            and (self._config_panel is None or not self._config_panel.editing)
+        )
 
         @kb.add("enter", filter=live)
         def _submit(event) -> None:
@@ -509,7 +605,17 @@ class InlineApp:
                 # input buffer is cleared, so without this the message vanishes).
                 send = self._expand_pastes(stripped)
                 self._pastes.clear()
-                self.console.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(stripped)}")
+                if stripped.startswith("!"):
+                    # Host shell escape — echo in red with a clear marker so it's
+                    # obvious this ran outside the agent (no approval).
+                    cmd = _rich_escape(stripped[1:].strip())
+                    self.console.print(
+                        f"[{palette.C_ERROR}]![/{palette.C_ERROR}] "
+                        f"[{palette.C_ERROR}]{cmd}[/{palette.C_ERROR}] "
+                        f"[{palette.C_DIM}](host shell)[/{palette.C_DIM}]"
+                    )
+                else:
+                    self.console.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(stripped)}")
                 self._turn_start = time.monotonic()
                 self._thinking_word = random.choice(palette.THINKING_WORDS)
                 self._turn_task = asyncio.create_task(self._handle(send))
@@ -576,9 +682,64 @@ class InlineApp:
             ))
             event.app.invalidate()
 
+        # -- interactive /config settings panel --------------------------------
+        @kb.add("up", filter=cfg_open)
+        def _cfg_up(event) -> None:
+            if self._config_panel is not None:
+                self._config_panel.move(-1)
+                event.app.invalidate()
+
+        @kb.add("down", filter=cfg_open)
+        def _cfg_down(event) -> None:
+            if self._config_panel is not None:
+                self._config_panel.move(1)
+                event.app.invalidate()
+
+        @kb.add("left", filter=cfg_nav)
+        @kb.add("s-tab", filter=cfg_nav)
+        def _cfg_prev_cat(event) -> None:
+            if self._config_panel is not None:
+                self._config_panel.move_category(-1)
+                event.app.invalidate()
+
+        @kb.add("right", filter=cfg_nav)
+        @kb.add("tab", filter=cfg_nav)
+        def _cfg_next_cat(event) -> None:
+            if self._config_panel is not None:
+                self._config_panel.move_category(1)
+                event.app.invalidate()
+
+        @kb.add("enter", filter=cfg_open)
+        def _cfg_enter(event) -> None:
+            p = self._config_panel
+            if p is not None:
+                p.commit_edit() if p.editing else p.activate()
+                event.app.invalidate()
+
+        @kb.add("space", filter=cfg_nav)
+        def _cfg_space(event) -> None:
+            if self._config_panel is not None:
+                self._config_panel.activate()
+                event.app.invalidate()
+
+        @kb.add("backspace", filter=cfg_edit)
+        def _cfg_backspace(event) -> None:
+            if self._config_panel is not None:
+                self._config_panel.backspace()
+                event.app.invalidate()
+
+        @kb.add(Keys.Any, filter=cfg_edit)
+        def _cfg_type(event) -> None:
+            data = event.data
+            if self._config_panel is not None and data and len(data) == 1 and data.isprintable():
+                self._config_panel.type_text(data)
+                event.app.invalidate()
+
         @kb.add("c-o")
         def _expand_key(event) -> None:
             self._armed = False
+            if self._config_open:
+                return
             self._collapse() if self._expanded else self._open_pager()
 
         @kb.add("q", filter=Condition(lambda: self._expanded))
@@ -587,6 +748,14 @@ class InlineApp:
 
         @kb.add("escape")
         def _esc_key(event) -> None:
+            if self._config_open:
+                p = self._config_panel
+                if p is not None and p.editing:
+                    p.cancel_edit()      # leave edit mode, panel stays open
+                else:
+                    self._close_config()
+                event.app.invalidate()
+                return
             if self._menu_future is not None and not self._menu_future.done():
                 self._menu_future.set_result(self._menu_cancel)
                 return
@@ -599,6 +768,14 @@ class InlineApp:
 
         @kb.add("c-c")
         def _interrupt(event) -> None:
+            if self._config_open:
+                p = self._config_panel
+                if p is not None and p.editing:
+                    p.cancel_edit()
+                else:
+                    self._close_config()
+                event.app.invalidate()
+                return
             if self._expanded:
                 self._collapse()
                 return
@@ -677,6 +854,12 @@ class InlineApp:
         if not command:
             c.print(f"[{palette.C_DIM}]! <cmd>  — run a shell command directly[/{palette.C_DIM}]")
             return
+        # Make it unmistakable this runs on the host, outside the agent: no
+        # permission engine, no danger-guard, no sandbox.
+        c.print(
+            f"[{palette.C_ERROR}]⚡ host shell[/{palette.C_ERROR}] "
+            f"[{palette.C_DIM}]— runs on your machine directly; no agent, no approval[/{palette.C_DIM}]"
+        )
         cwd = self.controller.project_root or Path(".")
         backend = CancellableLocalShellBackend(str(cwd))
         # execute is blocking; offload to a thread so the event-loop stays live
@@ -688,6 +871,11 @@ class InlineApp:
 
     async def _command(self, name: str, args: str) -> None:
         c = self.console
+        # `/config` with no args opens the interactive arrow-key settings panel;
+        # `/config get|set …` still routes to the controller as text below.
+        if name == "config" and not args.strip():
+            self._open_config()
+            return
         await self._ensure_extensions()
         rt = self.controller.runtime
         if rt and name in rt.commands:
@@ -1056,7 +1244,9 @@ async def _approve(
     if a.kind is ActionKind.WRITE:
         from jarn.tui.widgets.diff import diff_from_edit_args
 
-        diff = diff_from_edit_args(request.args or {})
+        # Cap the diff so writing a large file doesn't flood the prompt; the
+        # full content is what's being approved, not what needs to be read.
+        diff = diff_from_edit_args(request.args or {}, max_lines=_APPROVAL_DIFF_MAX_LINES)
         if diff is not None:
             console.print(diff)
     options = _approval_options(request)

@@ -65,22 +65,25 @@ def _ip_is_blocked(ip: str) -> bool:
     )
 
 
-def _check_host(host: str) -> str | None:
-    """Return a block *reason*, or ``None`` if the host is safe to fetch.
+def _check_host(host: str) -> tuple[list[str], str | None]:
+    """Return ``(resolved_ips, block_reason)`` for *host*.
 
-    Blocks loopback / private / link-local / reserved targets (so the agent
-    can't reach localhost, the LAN, or the cloud-metadata endpoint), unless the
-    host is on the explicit allowlist. Both literal IPs and DNS names (every
-    resolved address) are checked.
+    ``block_reason`` is ``None`` when the host is safe to fetch; otherwise it
+    explains why it was refused (and ``resolved_ips`` may be empty). Blocks
+    loopback / private / link-local / reserved targets (so the agent can't reach
+    localhost, the LAN, or the cloud-metadata endpoint), unless the host is on the
+    explicit allowlist. Both literal IPs and DNS names (every resolved address)
+    are checked.
 
-    Callers that fetch must pin the validated address at connect-time (see
-    :func:`_fetch_raw`) so a hostile DNS name cannot rebind between check and
-    connect.
+    The resolved IPs are returned so the caller can **pin the very same address**
+    it validated at connect-time — DNS is resolved exactly once, eliminating the
+    rebinding window where a second lookup could return a different (private) IP.
+    For an allowlisted host the IPs are still resolved and returned so pinning
+    works, but a block is never raised.
     """
     if not host:
-        return "missing host"
-    if host.lower() in _allowlisted_hosts():
-        return None
+        return [], "missing host"
+    allowlisted = host.lower() in _allowlisted_hosts()
     try:
         ipaddress.ip_address(host)
         ips = [host]                       # literal IP — no DNS needed
@@ -88,11 +91,13 @@ def _check_host(host: str) -> str | None:
         try:
             ips = _resolve_ips(host)
         except OSError:
-            return f"could not resolve host {host!r}"
+            return [], f"could not resolve host {host!r}"
+    if allowlisted:
+        return ips, None
     blocked = [ip for ip in ips if _ip_is_blocked(ip)]
     if blocked:
-        return f"refusing to reach a private/loopback address ({blocked[0]})"
-    return None
+        return ips, f"refusing to reach a private/loopback address ({blocked[0]})"
+    return ips, None
 
 
 @dataclass(slots=True)
@@ -115,21 +120,15 @@ def _pinned_request(url: str) -> tuple[str, dict[str, str], dict[str, str]]:
     """Return (connect_url, headers, extensions) with the resolved IP pinned."""
     parsed = urlparse(url)
     hostname = parsed.hostname or ""
-    reason = _check_host(hostname)
+    # Resolve + validate in ONE call and pin the exact IP we just checked. No
+    # second DNS lookup happens, so there is no rebinding window between the
+    # safety check and the connect.
+    ips, reason = _check_host(hostname)
     if reason:
         raise ValueError(reason)
-
-    try:
-        ipaddress.ip_address(hostname)
-        pinned_ip = hostname
-    except ValueError:
-        ips = _resolve_ips(hostname)
-        blocked = [ip for ip in ips if _ip_is_blocked(ip)]
-        if blocked:
-            raise ValueError(
-                f"refusing to reach a private/loopback address ({blocked[0]})"
-            ) from None
-        pinned_ip = ips[0]
+    if not ips:
+        raise ValueError(f"could not resolve host {hostname!r}")
+    pinned_ip = ips[0]
 
     port = parsed.port
     if port is None:
@@ -194,20 +193,38 @@ def web_search(query: str, max_results: int = 5) -> str:
     Use this to find current information. Follow up with web_fetch on a URL to
     read a page in full.
     """
+    from urllib.parse import urlencode
+
+    # Route the search request through the SAME SSRF guard as web_fetch: the
+    # query endpoint host is validated + IP-pinned, redirects are followed
+    # manually and re-checked each hop (httpx follow_redirects could otherwise
+    # land on a private/loopback address).
+    url = "https://html.duckduckgo.com/html/?" + urlencode({"q": query})
     try:
-        resp = httpx.get(
-            "https://html.duckduckgo.com/html/",
-            params={"q": query},
-            headers={"User-Agent": _UA},
-            timeout=15,
-            follow_redirects=True,
-        )
-        resp.raise_for_status()
-    except httpx.HTTPError as exc:
+        for _ in range(_MAX_REDIRECTS + 1):
+            parsed = urlparse(url)
+            if parsed.scheme not in ("http", "https"):
+                return f"web_search blocked: unsupported scheme {parsed.scheme!r}"
+            _ips, reason = _check_host(parsed.hostname or "")
+            if reason:
+                return f"web_search blocked: {reason}"
+            raw = _fetch_raw(url)
+            if raw.status_code in _REDIRECT_CODES:
+                location = raw.headers.get("location") or raw.headers.get("Location")
+                if not location:
+                    break
+                url = urljoin(url, location)
+                continue
+            if raw.status_code >= 400:
+                return f"web_search failed: HTTP {raw.status_code}"
+            break
+        else:
+            return "web_search failed: too many redirects"
+    except (httpx.HTTPError, ValueError) as exc:
         return f"web_search failed: {exc}"
 
     results: list[str] = []
-    for m in _RESULT_RE.finditer(resp.text):
+    for m in _RESULT_RE.finditer(raw.text):
         href, title, snippet = m.group(1), _strip_html(m.group(2) or ""), _strip_html(m.group(3) or "")
         # DuckDuckGo wraps target URLs in a redirect; unwrap uddg= param.
         um = re.search(r"uddg=([^&]+)", href)
@@ -241,7 +258,7 @@ def web_fetch(url: str, max_chars: int = 6000) -> str:
             parsed = urlparse(url)
             if parsed.scheme not in ("http", "https"):
                 return f"web_fetch blocked: unsupported scheme {parsed.scheme!r}"
-            reason = _check_host(parsed.hostname or "")
+            _ips, reason = _check_host(parsed.hostname or "")
             if reason:
                 return f"web_fetch blocked: {reason}"
             raw = _fetch_raw(url)

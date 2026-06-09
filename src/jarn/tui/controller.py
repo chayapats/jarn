@@ -295,6 +295,13 @@ class Controller:
 
         with contextlib.suppress(Exception):
             self.telemetry.flush()
+        # Tear down the execution backend deterministically (e.g. remove the
+        # Docker sandbox container) instead of relying on GC / __del__.
+        backend = getattr(self.runtime, "backend", None)
+        backend_close = getattr(backend, "close", None)
+        if callable(backend_close):
+            with contextlib.suppress(Exception):
+                backend_close()
 
     async def aclose(self) -> None:
         """Async cleanup: fire session_end, flush telemetry, close checkpointer."""
@@ -417,18 +424,31 @@ class Controller:
         self._candidate_idx = 0
         self.runtime = None
 
-    def apply_mode(self, value: str) -> None:
-        self.config.permission_mode = PermissionMode(value)
-        self.engine.mode = self.config.permission_mode
+    def apply_mode(self, value: str) -> str:
+        """Apply a permission mode, clamped to the untrusted floor.
+
+        This is the single choke point for every mode change (``/mode``,
+        Shift+Tab cycle, the mode picker), so the untrusted-project floor cannot
+        be bypassed through any of them: an untrusted project can never be
+        loosened past the review-only floor (``plan``). Returns the mode actually
+        applied (which may be clamped below ``value``)."""
+        target = PermissionMode(value)
+        if not self.project_trusted and target.rank > PermissionMode.PLAN.rank:
+            target = PermissionMode.PLAN
+        self.config.permission_mode = target
+        self.engine.mode = target
         self.runtime = None
+        return target.value
 
     def cycle_mode(self) -> str:
-        """Advance to the next permission mode (plan→ask→auto-edit→yolo→plan)."""
+        """Advance to the next permission mode (plan→ask→auto-edit→yolo→plan).
+
+        Returns the mode actually applied — on an untrusted project this stays
+        ``plan`` (apply_mode clamps anything more permissive to the floor)."""
         order = list(PermissionMode)
         idx = order.index(self.config.permission_mode)
         nxt = order[(idx + 1) % len(order)]
-        self.apply_mode(nxt.value)
-        return nxt.value
+        return self.apply_mode(nxt.value)
 
     # -- status -------------------------------------------------------------
 
@@ -474,6 +494,47 @@ class Controller:
         _tokens, _window, fraction = status
         return fraction * 100 >= self.config.context.compact_at_pct
 
+    def isolation_level(self) -> str:
+        """Effective execution isolation level, for status display + doctor.
+
+        Returns one of:
+        - ``"docker"``         — commands run inside a Docker container.
+        - ``"os-sandbox"``     — host shell wrapped by sandbox-exec/bwrap.
+        - ``"remote-sandbox"`` — remote (LangSmith) sandbox runtime.
+        - ``"host"``           — running directly on the host, NO isolation
+          (the permission engine + danger-guard are the only authorizers).
+
+        Reads the live backend when a runtime exists, otherwise infers from
+        config so the bar/doctor are honest even before the first turn.
+        """
+        backend = getattr(self.runtime, "backend", None) if self.runtime else None
+        cls = type(backend).__name__ if backend is not None else ""
+        if cls == "CancellableDockerSandbox":
+            return "docker"
+        if cls == "CancellableLangSmithSandbox":
+            return "remote-sandbox"
+        if cls == "CancellableLocalShellBackend":
+            if getattr(backend, "_sandbox_mode", "off") in ("auto", "require"):
+                from jarn.agent import os_sandbox
+
+                if os_sandbox.available():
+                    return "os-sandbox"
+            return "host"
+        # No runtime yet — infer from config.
+        ex = self.config.execution
+        if ex.backend == "docker" or (
+            ex.backend == "sandbox" and ex.sandbox_provider == "docker"
+        ):
+            return "docker"
+        if ex.backend == "sandbox":
+            return "remote-sandbox"
+        if ex.local_sandbox in ("auto", "require"):
+            from jarn.agent import os_sandbox
+
+            if os_sandbox.available():
+                return "os-sandbox"
+        return "host"
+
     @property
     def status_line(self) -> str:
         model = (self.runtime.main_model_ref if self.runtime else None) or self.config.resolved_main_model()
@@ -485,10 +546,20 @@ class Controller:
         }.get(self.health, "")
         sep = f" [{palette.C_DIM}]·[/{palette.C_DIM}] "
         mode = palette.mode_label(self.config.permission_mode.value)
-        # When isolation was downgraded to the host, say so plainly in the bar.
-        backend = ""
-        if self.health == "degraded":
+        # Make the isolation level visible: positively flag a real sandbox, and
+        # never let the host (no-isolation) state hide — so nobody assumes they
+        # are safe when the permission engine is the only thing standing guard.
+        level = self.isolation_level()
+        if level == "docker":
+            backend = f"{sep}[{palette.C_SUCCESS}]docker[/{palette.C_SUCCESS}]"
+        elif level == "os-sandbox":
+            backend = f"{sep}[{palette.C_SUCCESS}]os-sandbox[/{palette.C_SUCCESS}]"
+        elif level == "remote-sandbox":
+            backend = f"{sep}[{palette.C_SUCCESS}]sandbox[/{palette.C_SUCCESS}]"
+        elif self.health == "degraded":
             backend = f"{sep}[{palette.C_WARN}]host (no sandbox)[/{palette.C_WARN}]"
+        else:
+            backend = f"{sep}[{palette.C_DIM}]host[/{palette.C_DIM}]"
         return (
             f"{glyph}{model or 'unconfigured'}{sep}{mode}{backend}{sep}{self.tracker.summary_line()}"
         )
@@ -526,31 +597,274 @@ class Controller:
         except ValueError:
             valid = ", ".join(m.value for m in PermissionMode)
             return CommandResult(f"Unknown mode. Choose one of: {valid}")
-        self.config.permission_mode = mode
-        self.engine.mode = mode
-        self.runtime = None  # interrupt map depends on mode
-        return CommandResult(f"Permission mode set to {mode.value} (rebuilding).", rebuilt=True)
+        # Route through apply_mode so the untrusted-floor clamp applies here too.
+        applied = self.apply_mode(mode.value)
+        if applied != mode.value:
+            return CommandResult(
+                f"Project untrusted — mode clamped to {applied}. "
+                "Run `jarn trust` to unlock other modes. (rebuilding)",
+                rebuilt=True,
+            )
+        return CommandResult(f"Permission mode set to {applied} (rebuilding).", rebuilt=True)
 
     def _cmd_sandbox(self, args: str) -> CommandResult:
         current = self.config.execution.backend
         if not args.strip():
             return CommandResult(
-                f"Execution backend: {current}. Use /sandbox on|off to toggle."
+                f"Execution backend: {current} · isolation: {self.isolation_level()}. "
+                "Use /sandbox docker|on|off."
+            )
+        # Untrusted projects can't weaken isolation at runtime (defence in depth
+        # alongside the untrusted-mode floor); viewing it (no-arg) stays allowed.
+        if not self.project_trusted:
+            return CommandResult(
+                "Project untrusted — execution backend is locked. "
+                "Run `jarn trust` to change it."
             )
         choice = args.strip().lower()
-        if choice in ("on", "sandbox"):
+        if choice == "docker":
+            self.config.execution.backend = "docker"
+        elif choice in ("on", "sandbox"):
             self.config.execution.backend = "sandbox"
         elif choice in ("off", "local"):
             self.config.execution.backend = "local"
         else:
-            return CommandResult("Usage: /sandbox on|off")
+            return CommandResult("Usage: /sandbox docker|on|off")
         self.runtime = None  # backend changes require a rebuild
         return CommandResult(
             f"Execution backend set to {self.config.execution.backend} (rebuilding). "
-            "Sandbox requires an available runtime; fails closed unless "
-            "execution.allow_local_fallback is true.",
+            "A sandbox/docker backend requires an available runtime; fails closed "
+            "unless execution.allow_local_fallback is true.",
             rebuilt=True,
         )
+
+    def _cmd_profile(self, args: str) -> CommandResult:
+        from jarn.config.loader import ConfigError
+        from jarn.config.profiles import PROFILE_NAMES, resolve_effective_profile
+
+        available = ", ".join(sorted(PROFILE_NAMES))
+        if not args.strip():
+            current = self.config.policy.profile or "none"
+            return CommandResult(
+                f"Current policy profile: {current}. Available: {available}."
+            )
+        choice = args.strip()
+        # resolve_effective_profile applies the chosen profile (raising on an
+        # unknown name) AND clamps untrusted sessions to the floor — a single
+        # apply path, so the REPL can never loosen an untrusted session.
+        try:
+            effective = resolve_effective_profile(
+                self.config, project_trusted=self.project_trusted, cli_profile=choice
+            )
+        except ConfigError:
+            return CommandResult(f"Unknown profile {choice!r}. Choose one of: {available}")
+        self.config.policy.profile = effective or ""
+        self.engine.mode = self.config.permission_mode
+        self.runtime = None  # mode/sandbox/web-tools changes require a rebuild
+        suffix = ""
+        if effective != choice:
+            suffix = f" (clamped to {effective} — project untrusted)"
+        return CommandResult(
+            f"Policy profile set to {effective}{suffix} (rebuilding).", rebuilt=True
+        )
+
+    def _cmd_mcp(self, args: str) -> CommandResult:
+        """Show configured MCP servers with per-server health + last error.
+
+        Usage: ``/mcp`` or ``/mcp status``. Reads the live health/error maps
+        populated by :meth:`ensure_runtime` (falling back to each server's
+        ``health`` field) so the user can see at a glance which stdio/HTTP MCP
+        servers came up and which failed (with the reason)."""
+        sub = args.strip().lower()
+        if sub and sub != "status":
+            return CommandResult("Usage: /mcp [status]")
+        servers = self.config.mcp_servers
+        if not servers:
+            return CommandResult("No MCP servers configured.")
+        glyph = {
+            "ok": f"[{palette.C_SUCCESS}]●[/{palette.C_SUCCESS}]",
+            "error": f"[{palette.C_ERROR}]✗[/{palette.C_ERROR}]",
+        }
+        lines = ["[b]MCP servers[/b]"]
+        for server in servers:
+            health = self.mcp_health.get(server.name, server.health or "unknown")
+            mark = glyph.get(health, f"[{palette.C_DIM}]○[/{palette.C_DIM}]")
+            transport = getattr(server, "transport", "") or ""
+            detail = f" [dim]({_escape_markup(transport)})[/dim]" if transport else ""
+            line = f"  {mark} [cyan]{_escape_markup(server.name)}[/cyan]{detail} — {health}"
+            err = self.mcp_errors.get(server.name)
+            if err:
+                line += f"\n      [dim]last error: {_escape_markup(err)}[/dim]"
+            lines.append(line)
+        if not self.runtime:
+            lines.append(
+                f"[{palette.C_DIM}]Health is populated after the first turn "
+                f"loads the servers.[/{palette.C_DIM}]"
+            )
+        return CommandResult("\n".join(lines))
+
+    def _cmd_trust(self, args: str) -> CommandResult:
+        """Trust the current project root and lift the untrusted review-only floor.
+
+        Persists the trust grant via :class:`~jarn.config.trust.TrustStore`,
+        flips ``project_trusted`` on, re-resolves the effective policy profile so
+        the review-only clamp no longer applies, and forces a runtime rebuild.
+
+        Honesty note: capability-granting keys (``hooks``/``mcp_servers``/
+        ``providers``/…) were stripped from the in-memory config at LOAD time for
+        an untrusted project; lifting the floor here cannot retroactively
+        re-inject them, so we tell the user they take effect on the next launch.
+        """
+        if self.project_root is None:
+            return CommandResult("No project root — nothing to trust.")
+        if self.project_trusted:
+            return CommandResult("This project is already trusted.")
+
+        from jarn.config import paths
+        from jarn.config.loader import _read_yaml
+        from jarn.config.trust import (
+            TrustStore,
+            fingerprint,
+            project_dangerous,
+        )
+
+        ppath = paths.project_config_path(self.project_root)
+        danger = project_dangerous(_read_yaml(ppath)) if ppath else {}
+        store = TrustStore.load()
+        store.trust(self.project_root, fingerprint(danger))
+        store.save()
+
+        self.project_trusted = True
+        # RELOAD the config from disk now that the project is trusted. A simple
+        # re-resolve can't fix this: the launch-time untrusted floor already
+        # OVERWROTE config.permission_mode with the review-only clamp (plan) and
+        # the loader had stripped the project's capability keys. Reloading with
+        # project_trusted=True restores both the configured mode and the project
+        # hooks / MCP / providers, so the rebuilt runtime is genuinely unlocked.
+        from jarn.config.loader import load_config
+        from jarn.config.profiles import resolve_effective_profile
+
+        self.config = load_config(project_root=self.project_root, project_trusted=True)
+        resolve_effective_profile(self.config, project_trusted=True, cli_profile=None)
+        self.engine.mode = self.config.permission_mode
+        self.engine.rules = self.config.permissions
+        self.runtime = None  # rebuild so trust-gated state is reapplied
+
+        note = ""
+        if danger:
+            note = (
+                "\n[dim]Project hooks / MCP servers / providers from "
+                ".jarn/config.yaml are now active.[/dim]"
+            )
+        return CommandResult(
+            f"Trusted {self.project_root}. Review-only floor lifted; "
+            f"mode is now {self.config.permission_mode.value} (rebuilding).{note}",
+            rebuilt=True,
+        )
+
+    def _apply_reloaded_config(self) -> None:
+        """Re-sync engine + fallback candidates after ``self.config`` is replaced
+        (e.g. by ``/config set`` or ``/trust``) and force a runtime rebuild.
+
+        Honours the untrusted floor: an untrusted project can never end up more
+        permissive than ``plan`` via a reload.
+        """
+        self.engine.mode = self.config.permission_mode
+        self.engine.rules = self.config.permissions
+        if (
+            not self.project_trusted
+            and self.config.permission_mode.rank > PermissionMode.PLAN.rank
+        ):
+            self.config.permission_mode = PermissionMode.PLAN
+            self.engine.mode = PermissionMode.PLAN
+        main = self.config.resolved_main_model()
+        self._candidates = ([main] if main else []) + list(self.config.routing.fallback)
+        self._candidate_idx = 0
+        self.runtime = None  # rebuild with the new config
+
+    def _cmd_config(self, args: str) -> CommandResult:
+        """View or edit settings. ``/config`` lists them; ``/config get <key>``
+        shows one; ``/config set <key> <value>`` persists to the global config."""
+        from jarn.config import settings
+
+        parts = args.strip().split(maxsplit=2)
+        if not parts or not parts[0]:
+            return CommandResult(settings.format_settings(self.config))
+        sub = parts[0]
+        if sub == "get":
+            if len(parts) < 2:
+                return CommandResult("Usage: /config get <key>")
+            key = parts[1]
+            spec = settings.setting_for(key)
+            if spec is None:
+                return CommandResult(f"Unknown setting {key!r}. Run /config to list keys.")
+            val = settings.get_value(self.config, key)
+            shown = "(unset)" if val is None or val == "" else str(val)
+            tail = ""
+            if spec.choices:
+                opts = ", ".join(c if c else "(none)" for c in spec.choices)
+                tail = f"  [{palette.C_DIM}](choices: {opts})[/{palette.C_DIM}]"
+            return CommandResult(f"{key} = {shown}{tail}")
+        if sub == "set":
+            if len(parts) < 3:
+                return CommandResult("Usage: /config set <key> <value>")
+            return self._config_set(parts[1], parts[2])
+        return CommandResult(
+            "Usage: /config  |  /config get <key>  |  /config set <key> <value>"
+        )
+
+    def set_setting(self, key: str, raw: str) -> tuple[bool, str]:
+        """Coerce + validate + persist a setting; apply it live. Returns
+        ``(ok, message)``. Shared by ``/config set`` and the interactive panel.
+
+        On success: writes to the global ``~/.jarn/config.yaml`` (comments
+        preserved), reloads + re-validates the merged config (rolling the file
+        back if the result is invalid), and applies it to the running session.
+        """
+        from jarn.config import paths, settings
+        from jarn.config.consistency import check_consistency
+        from jarn.config.loader import ConfigError, load_config
+
+        try:
+            value = settings.coerce(key, raw)
+        except settings.SettingError as exc:
+            return False, str(exc)
+        store = settings.ConfigStore(paths.global_config_path())
+        backup = store.read_text()
+        store.set(key, value)
+        try:
+            new_cfg = load_config(
+                project_root=self.project_root, project_trusted=self.project_trusted
+            )
+        except ConfigError as exc:
+            store.restore(backup)   # never leave the config broken on disk
+            return False, f"Rejected — invalid value: {exc}"
+        # Cross-setting consistency. Block only conflicts this edit *introduces*:
+        # the changed key must take part in the conflict, and that key must not
+        # have already been tangled in one (so a pre-existing, hand-edited
+        # contradiction neither blocks unrelated edits nor traps the user from
+        # editing their way out of it).
+        new_errors, new_warnings = check_consistency(new_cfg)
+        prior_keys = {k for e in check_consistency(self.config)[0] for k in e.keys}
+        introduced = [e for e in new_errors
+                      if e.involves(key) and key not in prior_keys]
+        if introduced:
+            store.restore(backup)
+            return False, f"Rejected — {introduced[0].message}"
+        self.config = new_cfg
+        self._apply_reloaded_config()
+        shown = "(none)" if value == "" else value
+        msg = f"saved {key} = {shown}"
+        note = next((w.message for w in new_warnings if w.involves(key)), None)
+        if note:
+            msg += f"  ⚠ {note}"
+        return True, msg
+
+    def _config_set(self, key: str, raw: str) -> CommandResult:
+        ok, msg = self.set_setting(key, raw)
+        if ok:
+            return CommandResult(f"{msg} → ~/.jarn/config.yaml (rebuilding).", rebuilt=True)
+        return CommandResult(_escape_markup(msg))
 
     def _cmd_cost(self, args: str) -> CommandResult:
         t = self.tracker

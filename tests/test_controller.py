@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
+from jarn.config.schema import PermissionMode
 from jarn.tui.controller import Controller
 
 
@@ -458,4 +460,112 @@ async def test_ensure_runtime_errors_on_ambient_key_leak(
 
     assert ctrl.health == "error"
     assert ctrl.last_error is not None and "evil.example.com" in ctrl.last_error
+    ctrl.close()
+
+
+# ---------------------------------------------------------------------------
+# M4: /mcp status
+# ---------------------------------------------------------------------------
+
+
+def test_cmd_mcp_no_servers(tmp_path, monkeypatch, base_config):
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    out = ctrl.handle_command("mcp", "").text
+    assert "No MCP servers configured." in out
+    ctrl.close()
+
+
+def test_cmd_mcp_lists_servers_with_health_and_error(tmp_path, monkeypatch, base_config):
+    from jarn.config.schema import MCPServer
+
+    base_config.mcp_servers = [
+        MCPServer(name="docs", transport="stdio"),
+        MCPServer(name="search", transport="http"),
+    ]
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    # Simulate post-ensure_runtime health population.
+    ctrl.mcp_health = {"docs": "ok", "search": "error"}
+    ctrl.mcp_errors = {"search": "connection refused"}
+
+    out = ctrl.handle_command("mcp", "status").text
+    assert "docs" in out and "search" in out
+    assert "ok" in out
+    assert "error" in out
+    assert "connection refused" in out
+    ctrl.close()
+
+
+def test_cmd_mcp_falls_back_to_server_health_field(tmp_path, monkeypatch, base_config):
+    from jarn.config.schema import MCPServer
+
+    base_config.mcp_servers = [MCPServer(name="docs", transport="stdio", health="ok")]
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    out = ctrl.handle_command("mcp", "").text
+    assert "docs" in out and "ok" in out
+    ctrl.close()
+
+
+# ---------------------------------------------------------------------------
+# M4: /trust + untrusted floor
+# ---------------------------------------------------------------------------
+
+
+def test_untrusted_controller_starts_clamped(tmp_path, monkeypatch, base_config):
+    """An untrusted controller cannot be loosened past the plan floor."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    ctrl = Controller(base_config, root, project_trusted=False)
+    # Any attempt to escalate clamps to plan.
+    assert ctrl.apply_mode("yolo") == "plan"
+    assert ctrl.config.permission_mode.value == "plan"
+    out = ctrl.handle_command("mode", "auto-edit")
+    assert "untrusted" in out.text.lower()
+    assert ctrl.config.permission_mode.value == "plan"
+    ctrl.close()
+
+
+def test_cmd_trust_lifts_floor_and_rebuilds(tmp_path, monkeypatch, base_config):
+    """/trust trusts the project, reloads config, and restores the CONFIGURED
+    mode from disk (not just lifts the flag) — the launch floor overwrote it."""
+    import yaml
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("JARN_HOME", str(home))
+    # The on-disk configured mode is ask. (The launch-time untrusted floor would
+    # have overwritten the in-memory mode with plan — we simulate that below.)
+    (home / "config.yaml").write_text(
+        yaml.safe_dump({"permission_mode": "ask"}), encoding="utf-8"
+    )
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    # Simulate the launch clamp: the in-memory config is already floored to plan.
+    base_config.permission_mode = PermissionMode.PLAN
+    ctrl = Controller(base_config, root, project_trusted=False)
+    assert ctrl.config.permission_mode == PermissionMode.PLAN
+    ctrl.runtime = object()  # pretend a runtime exists so we can see it cleared
+
+    result = ctrl.handle_command("trust", "")
+    assert result.rebuilt is True
+    assert ctrl.project_trusted is True
+    assert ctrl.runtime is None  # rebuild forced
+    # /trust ITSELF restored the configured mode from disk (no extra apply_mode).
+    assert ctrl.config.permission_mode == PermissionMode.ASK
+    assert ctrl.engine.mode == PermissionMode.ASK
+    # And the floor is gone — escalation now sticks.
+    assert ctrl.apply_mode("yolo") == "yolo"
+
+    # Trust is persisted: a fresh TrustStore sees the root.
+    from jarn.config.trust import TrustStore
+
+    assert root.resolve() in {Path(r) for r in TrustStore.load().entries()}
+    ctrl.close()
+
+
+def test_cmd_trust_already_trusted(tmp_path, monkeypatch, base_config):
+    ctrl = _controller(tmp_path, monkeypatch, base_config)  # trusted by default
+    out = ctrl.handle_command("trust", "")
+    assert "already trusted" in out.text.lower()
+    assert out.rebuilt is False
     ctrl.close()

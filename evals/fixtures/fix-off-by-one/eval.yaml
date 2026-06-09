@@ -1,0 +1,6 @@
+name: fix-off-by-one
+prompt: "chunk() drops the last partial chunk. Fix ranges.py so the tests pass without changing the tests."
+checker: "python -m pytest -q"
+timeout_s: 30
+protected:
+  - test_ranges.py

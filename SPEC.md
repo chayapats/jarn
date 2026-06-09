@@ -28,7 +28,10 @@
 ## 3. Models & Providers
 
 - กลยุทธ์: **Multi-provider, BYO key**, default profile = **OpenRouter** (เลือกโมเดลได้เยอะ)
-- v1 providers: **Anthropic · OpenAI · OpenRouter · Ollama · LM Studio**
+- Original v1 provider target: **Anthropic · OpenAI · OpenRouter · Ollama · LM Studio**.
+  The current implementation is broader — **13 providers**: OpenRouter, OpenAI,
+  LM Studio, Groq, DeepSeek, Together, Fireworks, xAI, OpenAI-compatible (any
+  custom `base_url`), Anthropic, Ollama, Google, Mistral (see `ProviderType`).
 - **Per-task model routing**: มีตั้งแต่ออกแบบ (subagent/งานย่อยใช้โมเดลถูก, งานหลักใช้โมเดลแรง)
 - Key เก็บแบบอ้างอิง **env var / OS keychain** — ไม่ hardcode ลง config
 
@@ -175,7 +178,7 @@ JARN.md                   # project context (commit ได้)
 
 **Deferred → v1.x / v2:** vector recall · telemetry · binary build · async/remote subagents · multimodal · Web UI
 
-> **Note (2026-06-08):** sandbox backend, async/remote subagents, and multimodal filesystem shipped in v1.x (now in ROADMAP.md). OS-level execution sandbox, repo map, wiki, auto-checkpoint, AGENTS.md interop, headless mode, and JSONL transcripts shipped on `main` (unreleased, targeting v0.2.0).
+> **Note (2026-06-09):** sandbox backend, async/remote subagents, multimodal filesystem (v1.x), then OS-level execution sandbox, repo map, wiki, auto-checkpoint, AGENTS.md interop, headless mode, and JSONL transcripts all shipped in **v0.2.0**. **v0.3.0 (prepared, Alpha)** adds a Docker container backend + hardening (`jarn.agent.docker_backend`), policy profiles + an untrusted `review-only` floor (`jarn.config.profiles`), a `/config` interactive settings panel (`jarn.config.settings`) with cross-setting consistency validation (`jarn.config.consistency`), a smoke-eval harness (`scripts/eval.py`), and REPL additions `/mcp status` / `/trust`. Write/edit approval diffs are capped (40 lines) so large files don't flood the TUI. See ROADMAP.md.
 
 ---
 
@@ -199,6 +202,6 @@ JARN.md                   # project context (commit ได้)
   - (1) Unit/logic — `pytest`: config loader, **permission engine, allowlist, danger-guard**, model routing, cost calc
   - (2) Agent integration (mocked LLM) — agent loop/tools/HITL/verify loop/subagent routing โดย mock model (ไม่เปลือง token, ไม่ flaky)
   - (3) Front-end — `tests/test_repl.py` (headless REPL) + `tests/test_ux.py` (onboarding wizard pilot) + `tests/test_phase3.py` (registry/queue/toolbar parity); Textual chat snapshot retired
-  - Gate ปัจจุบัน: **602 tests**, `ruff check src tests`, `mypy src/` = 0 errors
+  - Gate ปัจจุบัน: **789 tests**, `ruff check src tests`, `mypy src/` = 0 errors
 - **Nightly/manual:** (4) E2E live LLM บน fixture repo (smoke suite เล็ก, ไม่บล็อก CI หลัก)
 - **Coverage สูงสุดที่:** permission engine + danger-guard + verify loop (หัวใจ "reliable")

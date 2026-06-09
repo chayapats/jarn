@@ -52,7 +52,16 @@ def main(argv: list[str] | None = None) -> int:
         dest="headless_permission_mode",
         choices=["plan", "ask", "auto-edit", "yolo"],
         metavar="MODE",
-        help="Override the permission mode for this headless run (plan|ask|auto-edit|yolo).",
+        help=(
+            "Override the permission mode for this headless run (plan|ask|auto-edit|yolo). "
+            "Note: --profile takes precedence over this for trust-relevant knobs if both are given."
+        ),
+    )
+    parser.add_argument(
+        "--profile",
+        dest="profile",
+        metavar="NAME",
+        help="Apply a policy profile (trusted-repo|review-only|sandbox-required|ci|offline).",
     )
     parser.add_argument(
         "--max-turns",
@@ -113,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
             permission_mode_override=args.headless_permission_mode,
             max_turns=args.headless_max_turns,
             cwd_override=args.headless_cwd,
+            profile_override=args.profile,
         )
 
     # Fix the macOS Caps Lock language-switch stray-character bug before any TUI
@@ -134,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "trust":
         return _cmd_trust(path=args.path, remove=args.remove, as_json=args.json)
-    return _cmd_launch(resume=args.resume)
+    return _cmd_launch(resume=args.resume, profile_override=args.profile)
 
 
 def _cmd_headless(
@@ -145,6 +155,7 @@ def _cmd_headless(
     permission_mode_override: str | None = None,
     max_turns: int = 1,
     cwd_override: str | None = None,
+    profile_override: str | None = None,
 ) -> int:
     """Run a single non-interactive agent turn and print the result.
 
@@ -172,7 +183,7 @@ def _cmd_headless(
         return 1
 
     from jarn.config import paths
-    from jarn.config.loader import load_config
+    from jarn.config.loader import ConfigError, load_config
     from jarn.config.schema import PermissionMode
     from jarn.observability import configure_langsmith, setup_logging
 
@@ -195,6 +206,25 @@ def _cmd_headless(
         cfg.default_model = model_override
     if permission_mode_override:
         cfg.permission_mode = PermissionMode(permission_mode_override)
+
+    # Apply the effective policy profile (CLI > config) and clamp untrusted.
+    # A profile overrides the trust-relevant knobs (incl. permission_mode), so
+    # warn when both were supplied rather than silently dropping --permission-mode.
+    if profile_override and permission_mode_override:
+        print(
+            f"warning: --profile {profile_override} overrides "
+            f"--permission-mode {permission_mode_override} for trust-relevant settings.",
+            file=sys.stderr,
+        )
+    from jarn.config.profiles import resolve_effective_profile
+
+    try:
+        resolve_effective_profile(
+            cfg, project_trusted=trusted, cli_profile=profile_override
+        )
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     from jarn.headless import run_headless
 
@@ -259,6 +289,15 @@ def _collect_doctor(diag: dict) -> int:
     diag["default_profile"] = cfg.default_profile
     diag["main_model"] = cfg.resolved_main_model()
     diag["permission_mode"] = cfg.permission_mode.value
+    diag["policy_profile"] = cfg.policy.profile or "none"
+    diag["web_tools"] = cfg.policy.web_tools
+    # The effective profile at runtime: an untrusted project is clamped to the
+    # review-only floor regardless of the stored profile, so surface that here.
+    from jarn.config.profiles import UNTRUSTED_FLOOR_PROFILE
+
+    diag["effective_profile"] = (
+        UNTRUSTED_FLOOR_PROFILE if not project_trusted else (cfg.policy.profile or "none")
+    )
 
     factory = ModelFactory(cfg)
     ok = True
@@ -286,6 +325,7 @@ def _collect_doctor(diag: dict) -> int:
         diag["main_model_error"] = str(exc)
         ok = False
 
+    from jarn.agent.docker_backend import docker_available as _docker_available
     from jarn.agent.os_sandbox import available as _sbx_available
     from jarn.agent.os_sandbox import backend_name as _sbx_name
 
@@ -293,6 +333,11 @@ def _collect_doctor(diag: dict) -> int:
         "backend": _sbx_name(),
         "available": _sbx_available(),
         "mode": cfg.execution.local_sandbox,
+    }
+    diag["execution"] = {
+        "backend": cfg.execution.backend,
+        "docker_image": cfg.execution.docker_image,
+        "docker_available": _docker_available(),
     }
 
     # Surface newer feature flags so operators can see them in doctor output.
@@ -347,6 +392,17 @@ def _cmd_doctor(*, as_json: bool = False) -> int:
     console.print(f"default profile: {diag['default_profile']}")
     console.print(f"main model: {diag['main_model']}")
     console.print(f"permission mode: {diag['permission_mode']}")
+    _stored = diag.get("policy_profile", "none")
+    _effective = diag.get("effective_profile", _stored)
+    _profile_str = (
+        f"{_stored} (effective: {_effective} — project untrusted)"
+        if _effective != _stored
+        else _stored
+    )
+    console.print(
+        f"policy profile: {_profile_str}"
+        f" · web tools: {'on' if diag.get('web_tools', True) else 'off'}"
+    )
 
     sbx = diag.get("sandbox") or {}
     sbx_backend = sbx.get("backend") or "none"
@@ -357,6 +413,20 @@ def _cmd_doctor(*, as_json: bool = False) -> int:
     else:
         sbx_status = "[dim]unavailable[/dim]"
     console.print(f"sandbox: {sbx_status} · mode {sbx_mode}")
+
+    ex = diag.get("execution") or {}
+    ex_backend = ex.get("backend", "local")
+    if ex_backend == "docker" or ex.get("docker_image"):
+        docker_ok = ex.get("docker_available", False)
+        docker_status = (
+            "[green]available[/green]" if docker_ok else "[dim]unavailable[/dim]"
+        )
+        console.print(
+            f"execution backend: {ex_backend} · docker: {docker_status}"
+            f" · image {ex.get('docker_image')}"
+        )
+    else:
+        console.print(f"execution backend: {ex_backend}")
 
     git_diag = diag.get("git") or {}
     autockpt = "on" if git_diag.get("autocheckpoint") else "off"
@@ -525,9 +595,9 @@ def _trust_list(store: Any, *, as_json: bool) -> int:
     return 0
 
 
-def _cmd_launch(*, resume: bool = False) -> int:
+def _cmd_launch(*, resume: bool = False, profile_override: str | None = None) -> int:
     from jarn.config import paths
-    from jarn.config.loader import load_config
+    from jarn.config.loader import ConfigError, load_config
     from jarn.observability import configure_langsmith, setup_logging
 
     if not paths.global_config_path().is_file():
@@ -548,6 +618,17 @@ def _cmd_launch(*, resume: bool = False) -> int:
     cfg = load_config(project_root=root, project_trusted=trusted)
     setup_logging(cfg.observability.log_level)
     configure_langsmith(cfg.observability.langsmith)
+
+    # Apply the effective policy profile (CLI > config) and clamp untrusted.
+    from jarn.config.profiles import resolve_effective_profile
+
+    try:
+        resolve_effective_profile(
+            cfg, project_trusted=trusted, cli_profile=profile_override
+        )
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     # The terminal front-end (native scrollback) is the only chat UI.
     from jarn.repl import run_inline
@@ -604,6 +685,8 @@ def _prompt_project_trust(root: Path, danger: dict, status: str) -> bool:
         "providers": "providers (model endpoints / API keys)",
         "execution": "execution backend",
         "permission_mode": "permission mode",
+        "policy": "policy profile (permission mode / sandbox / web tools)",
+        "observability": "observability (telemetry / LangSmith tracing)",
         "permissions.allow": "pre-approved (allow) commands",
     }
     for key in danger:

@@ -104,8 +104,12 @@ class ExecutionConfig:
     """Where tools run. ``local`` is the default; ``sandbox`` isolates execution
     (requires an available sandbox runtime — see docs)."""
 
-    backend: str = "local"            # local | sandbox
-    sandbox_provider: str = "langsmith"  # future: docker, e2b, ...
+    backend: str = "local"            # local | sandbox | docker
+    sandbox_provider: str = "langsmith"  # langsmith (remote); docker is its own backend
+    # Container image for ``backend: docker``. Must ship python3 + /bin/sh
+    # (BaseSandbox derives glob/edit/read via inline python3 scripts). Non-slim
+    # so ``procps``/``pkill`` is present for in-container turn cancellation.
+    docker_image: str = "python:3.12"
     multimodal: bool = True           # read_file auto-detects images/PDF/audio/video
     # When ``backend: sandbox`` but the sandbox can't start, fall back to running
     # on the host. OFF by default: silently downgrading isolation is a footgun, so
@@ -121,6 +125,40 @@ class ExecutionConfig:
     local_sandbox: str = "off"        # off | auto | require
     sandbox_allow_network: bool = True
     sandbox_writable: list[str] = field(default_factory=list)  # extra writable paths
+
+    # -- Docker resource limits (items 2 & 3) ---------------------------------
+    # Memory cap passed to ``--memory``; empty string = unset (no cap).
+    # Example: "2g", "512m".
+    docker_memory: str = ""
+    # Process-ID limit passed to ``--pids-limit``; 0 = unset (no cap).
+    # Default of 0 (unset) means the daemon default applies. Consider setting
+    # 512 for untrusted code — it prevents fork bombs without breaking most
+    # legit workloads.
+    docker_pids: int = 0
+    # CPU cap passed to ``--cpus``; empty string = unset (no cap).
+    # Example: "2" for at most two CPU cores.
+    docker_cpus: str = ""
+    # User/group for ``--user``; empty string = image default (often root).
+    # FOOTGUN: when left empty, container processes run as root. On Linux,
+    # files written to the bind-mounted project root land as uid 0 (host root),
+    # which can produce root-owned files in your working tree. Set this to a
+    # uid:gid (e.g. "1000:1000") that matches your host uid to avoid that.
+    # Do NOT force a non-root default here: many images need root for apt/pip.
+    docker_user: str = ""
+
+
+@dataclass(slots=True)
+class PolicyConfig:
+    """Policy profile selection and policy-driven feature flags.
+
+    ``profile`` names a bundle in :mod:`jarn.config.profiles` (empty = none).
+    ``web_tools`` gates the in-process web_search/web_fetch tools; profiles such
+    as ``offline`` set it ``False`` so those tools (which bypass the OS sandbox)
+    are not registered.
+    """
+
+    profile: str = ""
+    web_tools: bool = True
 
 
 @dataclass(slots=True)
@@ -252,6 +290,7 @@ class Config:
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
+    policy: PolicyConfig = field(default_factory=PolicyConfig)
     permissions: PermissionRules = field(default_factory=PermissionRules)
     hooks: list[HookSpec] = field(default_factory=list)
     mcp_servers: list[MCPServer] = field(default_factory=list)

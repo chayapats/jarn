@@ -16,6 +16,17 @@ from jarn.config.schema import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_jarn_home(tmp_path_factory, monkeypatch):
+    """Point ``JARN_HOME`` at a fresh empty dir for every test so the suite never
+    reads or writes the developer's real ``~/.jarn/config.yaml``. Without this,
+    ``load_config(global_path=None)`` tests depend on local machine state. Tests
+    that set ``JARN_HOME`` themselves still override this (their monkeypatch runs
+    after the autouse fixture)."""
+    home = tmp_path_factory.mktemp("jarn-home")
+    monkeypatch.setenv("JARN_HOME", str(home))
+
+
 @pytest.fixture
 def base_config() -> Config:
     return Config(

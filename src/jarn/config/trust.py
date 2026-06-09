@@ -13,6 +13,7 @@ those capabilities when merely loaded —
   ``${ANY_ENV}`` / ``keychain:*`` to exfiltrate a real secret on the next call.
 * ``execution`` — backend choice (e.g. force ``local`` off a sandbox).
 * ``permission_mode`` — a project could force ``yolo``.
+* ``policy`` — a profile could escalate ``permission_mode`` or loosen the sandbox.
 * ``permissions.allow`` — pre-approve commands without the user ever seeing them.
 
 So a project must be **explicitly trusted** before those keys take effect. Until
@@ -45,6 +46,7 @@ DANGEROUS_TOP_KEYS = (
     "providers",
     "execution",
     "permission_mode",
+    "policy",
     "observability",
 )
 

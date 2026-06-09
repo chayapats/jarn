@@ -4,7 +4,7 @@
 > choosing where to contribute. Items marked `[x]` are implemented and in the
 > current release; `[ ]` items are scaffolded or documented but not yet shipped.
 
-Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-09** (v0.2.0).
+Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-09** (v0.3.0 prepared, Alpha; v0.2.0 on PyPI).
 
 ## v1 — implemented
 
@@ -57,7 +57,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-09** (v0.2.0).
 - [x] `jarn` / `setup` / `init` / `doctor` (`--json`) CLI
 - [x] Strict config validation (typed bools, numeric ranges, unknown top-level keys rejected)
 - [x] Local rotating logs, opt-in LangSmith tracing
-- [x] `uv`/PyPI packaging, 602 tests (+ packaging gate), clean lint + `mypy` CI
+- [x] `uv`/PyPI packaging, 789 tests (+ packaging gate), clean lint + `mypy` CI
 - [x] `jarn doctor` extension diagnostics — skills, commands, subagents, hooks, MCP
   (shadowing, builtin renames, untrusted skips); `uv.lock` tracked for team installs
 
@@ -86,6 +86,17 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-09** (v0.2.0).
   audio/video; binary-aware approval diff; `execution.multimodal` flag
 - [x] **Turn-level fallback model-swap** — on a turn that fails before producing
   output, rotate through `routing.fallback` and retry transparently
+
+## v0.3.0 — prepared (Alpha, unreleased)
+
+- [x] **Real isolation (M1)** — Docker container execution backend
+  (`execution.backend: docker`, hardened) + OS sandbox recommended for untrusted repos
+- [x] **Policy profiles (M2)** — `trusted-repo`/`review-only`/`sandbox-required`/`ci`/`offline`
+  via `--profile`/`policy.profile`/`/profile`; untrusted projects clamped to a `review-only` floor
+- [x] **Quality floor (M3)** — `scripts/eval.py` smoke-eval harness + fixtures (CI-safe offline logic)
+- [x] **Release UX (M4)** — `/mcp status`, in-REPL `/trust` + untrusted-launch notice; security
+  audit fixes (Docker cancel/reaper, web_fetch SSRF, eval-checker guard, transcript redaction)
+- Stays **Alpha**; v1.0.0 pending the road-to-1.0 hardening (see Known limitations).
 
 ## v0.2.0 — released
 

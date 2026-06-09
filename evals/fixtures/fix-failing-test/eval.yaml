@@ -1,0 +1,6 @@
+name: fix-failing-test
+prompt: "The test suite is failing. Find and fix the bug in calc.py so all tests pass. Do not change the tests."
+checker: python -m pytest -q
+timeout_s: 60
+protected:
+  - test_calc.py

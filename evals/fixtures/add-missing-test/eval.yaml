@@ -1,0 +1,9 @@
+name: add-missing-test
+prompt: >
+  Add a pytest test file test_parser.py that covers parse_kv for a valid
+  'k=v' line and for an invalid line with no '='. The tests must pass.
+checker: python check.py
+timeout_s: 60
+protected:
+  - parser.py
+  - check.py
