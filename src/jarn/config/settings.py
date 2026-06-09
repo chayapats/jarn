@@ -234,6 +234,8 @@ class ConfigStore:
 _C_ACCENT = "#22d3ee"
 _C_DIM = "#7c8f94"
 _C_ON = "#3fb950"
+_C_WARN = "#d29922"
+_C_ERR = "#f85149"
 
 
 class ConfigPanel:
@@ -270,6 +272,7 @@ class ConfigPanel:
         self.mode = self.NAVIGATE
         self.buffer = ""
         self.message = ""
+        self.message_ok = True
 
     # -- selection ----------------------------------------------------------
 
@@ -354,8 +357,9 @@ class ConfigPanel:
         self._commit(spec, raw)
 
     def _commit(self, spec: Setting, raw: str) -> None:
-        _ok, msg = self._apply(spec.key, raw)
+        ok, msg = self._apply(spec.key, raw)
         self.message = msg
+        self.message_ok = ok
 
     # -- rendering ----------------------------------------------------------
 
@@ -423,7 +427,14 @@ class ConfigPanel:
         out.append((_C_ACCENT, f"   {hint}\n"))
         out.append((_C_DIM, "   ←/→ switch section · ↑/↓ move\n"))
         if self.message and not self.editing:
-            out.append((_C_ON, f"   ✓ {self.message}\n"))
+            if not self.message_ok:
+                style, glyph = _C_ERR, "✗"
+            elif "⚠" in self.message:
+                style, glyph = _C_WARN, ""   # message already carries its own ⚠
+            else:
+                style, glyph = _C_ON, "✓"
+            prefix = f"{glyph} " if glyph else ""
+            out.append((style, f"   {prefix}{self.message}\n"))
         return out
 
 

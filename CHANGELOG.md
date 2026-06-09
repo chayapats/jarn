@@ -50,6 +50,15 @@ M1–M4 work below.
   models, profile, execution, budget, context, ui, features) — structured /
   capability sections stay file/wizard-only. Untrusted sessions still clamp to the
   review-only floor even when a permissive mode is persisted.
+- **`/config` cross-setting consistency checks.** Saving a setting now validates
+  the *combination*, not just the value. Genuine contradictions are refused with
+  a plain-language reason — e.g. enabling the OS sandbox
+  (`execution.local_sandbox`) while the backend isn't `local` (the only backend
+  that honours it) — but only when the edit *introduces* the conflict, so a
+  pre-existing hand-edited config never blocks an unrelated change. Harmless
+  "this knob has no effect right now" cases (a budget threshold with no budget,
+  a compact-% with auto-compact off, a value a policy profile will overwrite at
+  launch) are saved with a ⚠ note instead of being blocked.
 
 ### Security / hardening
 
@@ -84,6 +93,13 @@ M1–M4 work below.
   `⚡ host shell — runs on your machine directly; no agent, no approval` header
   precedes its output — so it's unmistakable that it bypasses the agent.
 - Version → 0.3.0; classifier stays `Development Status :: 3 - Alpha`.
+
+### Fixed
+
+- **Large write/edit approvals no longer flood the terminal.** The unified diff
+  shown before approving a `write_file` / `edit_file` is capped (40 lines) with
+  the remainder collapsed to a `… (+N more lines)` footer, so creating or
+  rewriting a big file no longer dumps the whole content into the prompt.
 
 ## [0.2.0] - 2026-06-09
 

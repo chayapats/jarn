@@ -76,6 +76,10 @@ Ask = Callable[[str], Awaitable[str]]
 Pick = Callable[[list[tuple[str, ApprovalReply]]], Awaitable[ApprovalReply]]
 _MenuT = TypeVar("_MenuT")
 
+#: Max diff lines shown in a write/edit approval prompt before collapsing the
+#: rest to a "… (+N more lines)" footer, so a large file doesn't flood the TUI.
+_APPROVAL_DIFF_MAX_LINES = 40
+
 def run_inline(
     config: Config,
     project_root: Path | None,
@@ -1240,7 +1244,9 @@ async def _approve(
     if a.kind is ActionKind.WRITE:
         from jarn.tui.widgets.diff import diff_from_edit_args
 
-        diff = diff_from_edit_args(request.args or {})
+        # Cap the diff so writing a large file doesn't flood the prompt; the
+        # full content is what's being approved, not what needs to be read.
+        diff = diff_from_edit_args(request.args or {}, max_lines=_APPROVAL_DIFF_MAX_LINES)
         if diff is not None:
             console.print(diff)
     options = _approval_options(request)

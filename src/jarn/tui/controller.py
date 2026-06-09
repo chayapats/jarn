@@ -822,6 +822,7 @@ class Controller:
         back if the result is invalid), and applies it to the running session.
         """
         from jarn.config import paths, settings
+        from jarn.config.consistency import check_consistency
         from jarn.config.loader import ConfigError, load_config
 
         try:
@@ -838,10 +839,26 @@ class Controller:
         except ConfigError as exc:
             store.restore(backup)   # never leave the config broken on disk
             return False, f"Rejected — invalid value: {exc}"
+        # Cross-setting consistency. Block only conflicts this edit *introduces*:
+        # the changed key must take part in the conflict, and that key must not
+        # have already been tangled in one (so a pre-existing, hand-edited
+        # contradiction neither blocks unrelated edits nor traps the user from
+        # editing their way out of it).
+        new_errors, new_warnings = check_consistency(new_cfg)
+        prior_keys = {k for e in check_consistency(self.config)[0] for k in e.keys}
+        introduced = [e for e in new_errors
+                      if e.involves(key) and key not in prior_keys]
+        if introduced:
+            store.restore(backup)
+            return False, f"Rejected — {introduced[0].message}"
         self.config = new_cfg
         self._apply_reloaded_config()
         shown = "(none)" if value == "" else value
-        return True, f"saved {key} = {shown}"
+        msg = f"saved {key} = {shown}"
+        note = next((w.message for w in new_warnings if w.involves(key)), None)
+        if note:
+            msg += f"  ⚠ {note}"
+        return True, msg
 
     def _config_set(self, key: str, raw: str) -> CommandResult:
         ok, msg = self.set_setting(key, raw)
