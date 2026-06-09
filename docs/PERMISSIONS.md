@@ -139,6 +139,11 @@ ASK. An `always` approval is persisted to `.jarn/config.yaml` (comment-preservin
 except for guard-dangerous actions which can never be remembered. See
 [ARCHITECTURE.md](ARCHITECTURE.md#the-turn-lifecycle).
 
+When the gated action is a `write_file`/`edit_file`, the modal shows a colored unified
+diff of the change. The diff is **capped at 40 lines** with a dim `… (+N more lines)`
+footer, so creating or rewriting a large file doesn't flood the terminal — you're
+approving the whole change, not reading it line by line.
+
 `web_fetch` additionally enforces an SSRF guard (blocks loopback/private/link-local/
 CGNAT/cloud-metadata targets, re-checked on every redirect; streams with a byte cap;
 honors a `JARN_WEB_FETCH_ALLOW_HOSTS` allowlist).

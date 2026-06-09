@@ -178,7 +178,7 @@ JARN.md                   # project context (commit ได้)
 
 **Deferred → v1.x / v2:** vector recall · telemetry · binary build · async/remote subagents · multimodal · Web UI
 
-> **Note (2026-06-09):** sandbox backend, async/remote subagents, multimodal filesystem (v1.x), then OS-level execution sandbox, repo map, wiki, auto-checkpoint, AGENTS.md interop, headless mode, and JSONL transcripts all shipped in **v0.2.0**. **v0.3.0 (prepared, Alpha)** adds a Docker container backend + hardening (`jarn.agent.docker_backend`), policy profiles + an untrusted `review-only` floor (`jarn.config.profiles`), a `/config` interactive settings panel (`jarn.config.settings`), a smoke-eval harness (`scripts/eval.py`), and REPL additions `/mcp status` / `/trust`. See ROADMAP.md.
+> **Note (2026-06-09):** sandbox backend, async/remote subagents, multimodal filesystem (v1.x), then OS-level execution sandbox, repo map, wiki, auto-checkpoint, AGENTS.md interop, headless mode, and JSONL transcripts all shipped in **v0.2.0**. **v0.3.0 (prepared, Alpha)** adds a Docker container backend + hardening (`jarn.agent.docker_backend`), policy profiles + an untrusted `review-only` floor (`jarn.config.profiles`), a `/config` interactive settings panel (`jarn.config.settings`) with cross-setting consistency validation (`jarn.config.consistency`), a smoke-eval harness (`scripts/eval.py`), and REPL additions `/mcp status` / `/trust`. Write/edit approval diffs are capped (40 lines) so large files don't flood the TUI. See ROADMAP.md.
 
 ---
 
@@ -202,6 +202,6 @@ JARN.md                   # project context (commit ได้)
   - (1) Unit/logic — `pytest`: config loader, **permission engine, allowlist, danger-guard**, model routing, cost calc
   - (2) Agent integration (mocked LLM) — agent loop/tools/HITL/verify loop/subagent routing โดย mock model (ไม่เปลือง token, ไม่ flaky)
   - (3) Front-end — `tests/test_repl.py` (headless REPL) + `tests/test_ux.py` (onboarding wizard pilot) + `tests/test_phase3.py` (registry/queue/toolbar parity); Textual chat snapshot retired
-  - Gate ปัจจุบัน: **778 tests**, `ruff check src tests`, `mypy src/` = 0 errors
+  - Gate ปัจจุบัน: **789 tests**, `ruff check src tests`, `mypy src/` = 0 errors
 - **Nightly/manual:** (4) E2E live LLM บน fixture repo (smoke suite เล็ก, ไม่บล็อก CI หลัก)
 - **Coverage สูงสุดที่:** permission engine + danger-guard + verify loop (หัวใจ "reliable")

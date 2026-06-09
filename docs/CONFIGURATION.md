@@ -67,9 +67,11 @@ You rarely need to hand-edit the YAML. Inside the REPL:
   (type · Enter saves · Esc cancels); **Esc** closes. Each change saves immediately.
 - `/config get <key>` — show one value (and its allowed choices, for enums).
 - `/config set <key> <value>` — change a setting and **persist it to
-  `~/.jarn/config.yaml`** (comments preserved, atomic write). The value is type-checked
-  and the merged config re-validated; an invalid value is **rejected and rolled back**,
-  and a valid one is applied to the running session immediately.
+  `~/.jarn/config.yaml`** (comments preserved, atomic write). The value is type-checked,
+  the merged config re-validated, and the *combination* of settings checked for
+  consistency (see [Validation](#validation)); an invalid or contradictory value is
+  **rejected and rolled back**, and a valid one is applied to the running session
+  immediately. A harmless-but-ineffective change is saved with a `⚠` note.
 
 Keys are dotted, e.g. `/config set ui.theme light`, `/config set routing.main
 openrouter/anthropic/claude-opus-4-8`, `/config set wiki.enabled true`,
@@ -102,6 +104,27 @@ silently ignored. Errors raise `ConfigError` with the offending path.
   path-aware message listing the expected keys. This is **top-level only** — unknown
   keys *nested* inside a section (e.g. extra provider fields) are not rejected; provider
   `extra` is folded through deliberately.
+
+### Cross-setting consistency
+
+Beyond per-value checks, `/config` validates that settings make sense *together*
+(`jarn.config.consistency`). Two severities:
+
+- **Errors** — genuine contradictions where a knob can't take effect. The interactive
+  editor refuses to *introduce* one (you can't turn the offending setting on). The
+  canonical case: the kernel-level **OS sandbox** (`execution.local_sandbox` `auto`/
+  `require`) is only honoured by the **local** backend, so enabling it while
+  `execution.backend` is `docker`/`sandbox` is rejected. Only conflicts the current
+  edit creates are blocked — a pre-existing, hand-edited contradiction never blocks an
+  unrelated change, nor traps you from editing your way out of it.
+- **Warnings** (`⚠`) — the value is harmless but currently has no effect, and is saved
+  anyway: a `budget.hard_stop`/`warn_at_pct` while the session budget is `0` (unlimited),
+  a `context.compact_at_pct` while `auto_compact` is off, a `context.repo_map_tokens`
+  while the repo map is off, or a value that an active `policy.profile` will overwrite at
+  launch.
+
+In the panel the result line is colour-coded: `✗` (rejected), `⚠` (saved with a note),
+`✓` (saved cleanly).
 
 Run `jarn doctor` to surface these errors before a session; pass `jarn doctor --json`
 to emit the diagnostics as machine-readable JSON.
