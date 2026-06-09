@@ -263,12 +263,20 @@ def build_runtime(
     project_trusted: bool = True,
     checkpointer: Any | None = None,
     extra_tools: list[Any] | None = None,
+    system_prompt_override: str | None = None,
 ) -> JarnRuntime:
     """Build a ready-to-run :class:`JarnRuntime` from config.
 
     ``checkpointer`` (a LangGraph saver) enables resumable sessions; pass one
     obtained from :func:`jarn.memory.open_checkpointer`. ``extra_tools`` is for
     MCP-loaded tools (see :func:`jarn.extensibility.mcp.load_mcp_tools`).
+
+    ``system_prompt_override`` replaces J.A.R.N.'s assembled system prompt
+    wholesale (the "reliable nerd" persona + project context) with the given
+    string — used by the eval harness to A/B the harness prompt against a bare
+    tool-using agent while holding tools/model/loop constant. ``None`` (default)
+    builds the normal prompt; ``""`` yields an empty prompt (DeepAgents' own
+    default agent instructions still apply).
     """
     from deepagents import create_deep_agent
 
@@ -293,15 +301,22 @@ def build_runtime(
     subagents = load_subagents(root, project_trusted=project_trusted)
     capabilities = detect_capabilities(root or Path.cwd())
 
-    system_prompt = prompts.build_system_prompt(
-        assemble_system_context(
-            root,
-            project_trusted=project_trusted,
-            context_files=config.compat.context_files,
-        ),
-        auto_skill_catalog(skills),
-        capabilities.as_prompt_block(),
-    )
+    if system_prompt_override is not None:
+        # A/B baseline: skip the JARN persona + project/skill/capability context
+        # entirely. Config-gated injections below (wiki, repo map) still apply so
+        # the *only* controlled difference is the base prompt — keep them off in
+        # the config to isolate the prompt cleanly.
+        system_prompt = system_prompt_override
+    else:
+        system_prompt = prompts.build_system_prompt(
+            assemble_system_context(
+                root,
+                project_trusted=project_trusted,
+                context_files=config.compat.context_files,
+            ),
+            auto_skill_catalog(skills),
+            capabilities.as_prompt_block(),
+        )
 
     # Built-in web tools + any MCP-loaded tools. Web tools run in-process and
     # bypass the OS sandbox, so the policy layer can disable them (e.g. the

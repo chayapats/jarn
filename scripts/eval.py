@@ -78,6 +78,10 @@ class TaskResult:
     turns: int
     cost_cents: float
     duration_s: float
+    tool_calls: int = 0
+    #: How many source files the agent actually changed (added/modified),
+    #: excluding the restored ``protected`` files. 0 = it never touched the code.
+    files_changed: int = 0
 
 
 def discover_fixtures(fixtures_dir: Path = FIXTURES_DIR) -> list[Fixture]:
@@ -200,7 +204,11 @@ def run_task(fixture: Fixture, agent_fn: AgentFn) -> TaskResult:
         work = Path(tmp) / "repo"
         _prepare_workdir(fixture, work)
 
+        before = _snapshot_tree(work)
         stats = agent_fn(fixture.prompt, work) or {}
+        # Count changes the agent made, ignoring the protected files (which are
+        # restored next) — this tells "did it touch the actual code at all?".
+        files_changed = _count_changes(before, _snapshot_tree(work), fixture.protected)
 
         _restore_protected(fixture, work)
         passed = run_checker(fixture.checker, work, fixture.timeout_s)
@@ -211,7 +219,35 @@ def run_task(fixture: Fixture, agent_fn: AgentFn) -> TaskResult:
         turns=int(stats.get("turns", 0)),
         cost_cents=float(stats.get("cost_usd", 0.0)) * 100.0,
         duration_s=round(time.monotonic() - start, 2),
+        tool_calls=int(stats.get("tool_calls", 0)),
+        files_changed=files_changed,
     )
+
+
+def _snapshot_tree(root: Path) -> dict[str, int]:
+    """Map each file's relative path -> a content hash (skips __pycache__)."""
+    import hashlib
+
+    snap: dict[str, int] = {}
+    for p in root.rglob("*"):
+        if p.is_file() and "__pycache__" not in p.parts:
+            rel = str(p.relative_to(root))
+            snap[rel] = hash(hashlib.sha1(p.read_bytes()).hexdigest())
+    return snap
+
+
+def _count_changes(
+    before: dict[str, int], after: dict[str, int], protected: list[str]
+) -> int:
+    """How many non-protected files were added or had their contents change."""
+    protected_set = set(protected)
+    changed = 0
+    for rel, h in after.items():
+        if rel in protected_set:
+            continue
+        if before.get(rel) != h:
+            changed += 1
+    return changed
 
 
 # --------------------------------------------------------------------------- #
@@ -219,7 +255,7 @@ def run_task(fixture: Fixture, agent_fn: AgentFn) -> TaskResult:
 # --------------------------------------------------------------------------- #
 
 
-def _load_eval_config() -> Any:
+def _load_eval_config(model_override: str | None = None) -> Any:
     """Load config set for unattended edits on the host.
 
     Sets ``permission_mode=yolo`` directly (no prompts) rather than the ``ci``
@@ -248,14 +284,24 @@ def _load_eval_config() -> Any:
     # project_root=None → global config only; no dev-repo project context/keys.
     cfg = load_config(project_root=None, project_trusted=False)
     cfg.permission_mode = PermissionMode.YOLO
+    if model_override:
+        # routing.main takes precedence over default_model in resolution, so set
+        # both to be unambiguous — lets an experiment pin a model without touching
+        # the user's ~/.jarn/config.yaml.
+        cfg.default_model = model_override
+        cfg.routing.main = model_override
     return cfg
 
 
-def _make_headless_agent(config: Any) -> AgentFn:
+def _make_headless_agent(
+    config: Any, system_prompt_override: str | None = None
+) -> AgentFn:
     """Build the real ``agent_fn`` that drives an in-process headless turn.
 
     Returns run stats (turns, cost) as the callback's return value, which
-    :func:`run_task` records — no side channel.
+    :func:`run_task` records — no side channel. ``system_prompt_override`` is
+    forwarded to the runtime for the harness-prompt A/B (see
+    :func:`run_harness_comparison`).
     """
     import asyncio
 
@@ -263,11 +309,112 @@ def _make_headless_agent(config: Any) -> AgentFn:
 
     def agent_fn(prompt: str, cwd: Path) -> dict[str, Any] | None:
         result = asyncio.run(
-            _run_headless(prompt, config, cwd, project_trusted=True)
+            _run_headless(
+                prompt, config, cwd, project_trusted=True,
+                system_prompt_override=system_prompt_override,
+            )
         )
-        return {"turns": result.turns, "cost_usd": result.cost}
+        return {
+            "turns": result.turns,
+            "cost_usd": result.cost,
+            "tool_calls": result.tool_calls,
+        }
 
     return agent_fn
+
+
+# --------------------------------------------------------------------------- #
+# Harness-prompt A/B: same model + same tools + same loop, prompt is the ONLY  #
+# variable. Isolates the contribution of J.A.R.N.'s system prompt.             #
+# --------------------------------------------------------------------------- #
+
+#: (arm label, system_prompt_override). ``None`` = J.A.R.N.'s full assembled
+#: prompt; ``""`` = empty (DeepAgents' own default agent instructions still
+#: apply — there is no "zero prompt" floor with a tool-using agent).
+HARNESS_ARMS: list[tuple[str, str | None]] = [
+    ("jarn-full", None),
+    (
+        "minimal",
+        "You are a coding assistant working in a terminal. "
+        "Use the available tools to complete the task.",
+    ),
+    ("empty", ""),
+]
+
+
+def run_harness_comparison(
+    fixtures: list[Fixture], config: Any, repeat: int
+) -> list[dict[str, Any]]:
+    """Run every (arm × fixture) ``repeat`` times; return aggregated rows.
+
+    The only thing that differs between arms is the system prompt — model,
+    tools, backend, loop, fixture seed and checker are all held constant.
+    """
+    rows: list[dict[str, Any]] = []
+    for arm, override in HARNESS_ARMS:
+        agent_fn = _make_headless_agent(config, system_prompt_override=override)
+        for fixture in fixtures:
+            runs: list[TaskResult] = []
+            errors = 0
+            for _ in range(repeat):
+                # A transient model failure (stream timeout / rate-limit / 5xx) on
+                # one run must NOT abort the whole matrix — record it as an errored
+                # (non-passing) attempt and carry on.
+                try:
+                    runs.append(run_task(fixture, agent_fn))
+                except Exception as exc:  # noqa: BLE001
+                    errors += 1
+                    print(f"    {arm}/{fixture.name} run errored: {exc}",
+                          file=sys.stderr)
+            n_pass = sum(1 for r in runs if r.passed)
+            ok = len(runs) or 1  # avoid /0 when every attempt errored
+            rows.append({
+                "arm": arm,
+                "fixture": fixture.name,
+                "passed": n_pass,
+                "n": repeat,
+                "errors": errors,
+                # Averages are over completed runs only (errored runs have no
+                # meaningful tool/edit/time numbers).
+                "avg_tool_calls": round(sum(r.tool_calls for r in runs) / ok, 1),
+                "avg_files_changed": round(sum(r.files_changed for r in runs) / ok, 1),
+                "avg_turns": round(sum(r.turns for r in runs) / ok, 1),
+                "avg_cost_cents": round(sum(r.cost_cents for r in runs) / ok, 3),
+                "avg_time_s": round(sum(r.duration_s for r in runs) / ok, 2),
+            })
+            errnote = f", err={errors}" if errors else ""
+            print(
+                f"  {arm:<10} {fixture.name:<20} {n_pass}/{repeat} pass "
+                f"(tools≈{rows[-1]['avg_tool_calls']}, "
+                f"edits≈{rows[-1]['avg_files_changed']}{errnote})",
+                file=sys.stderr,
+            )
+    return rows
+
+
+def _print_comparison(rows: list[dict[str, Any]]) -> None:
+    header = (
+        f"{'ARM':<10} {'FIXTURE':<20} {'PASS':>7} {'ERR':>4} {'TOOLS':>6} "
+        f"{'EDITS':>6} {'TURNS':>6} {'COST¢':>8} {'TIME(s)':>8}"
+    )
+    print(header)
+    print("-" * len(header))
+    for r in rows:
+        passed = f"{r['passed']}/{r['n']}"
+        print(
+            f"{r['arm']:<10} {r['fixture']:<20} {passed:>7} {r.get('errors', 0):>4} "
+            f"{r['avg_tool_calls']:>6} {r['avg_files_changed']:>6} "
+            f"{r['avg_turns']:>6} {r['avg_cost_cents']:>8.3f} {r['avg_time_s']:>8.2f}"
+        )
+    print("-" * len(header))
+    # Per-arm overall pass-rate.
+    print("Overall pass-rate by arm:")
+    for arm, _ in HARNESS_ARMS:
+        arm_rows = [r for r in rows if r["arm"] == arm]
+        p = sum(r["passed"] for r in arm_rows)
+        n = sum(r["n"] for r in arm_rows)
+        pct = (100.0 * p / n) if n else 0.0
+        print(f"  {arm:<10} {p}/{n}  ({pct:.0f}%)")
 
 
 # --------------------------------------------------------------------------- #
@@ -321,9 +468,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     parser.add_argument("--fixture", help="run only the named fixture")
     parser.add_argument(
+        "--model",
+        help="override the model ref for this run only (does not touch "
+        "~/.jarn/config.yaml), e.g. openrouter/deepseek/deepseek-v4-pro",
+    )
+    parser.add_argument(
         "--update-baseline",
         action="store_true",
         help="write evals/baseline.json from this run instead of comparing",
+    )
+    parser.add_argument(
+        "--compare-harness",
+        action="store_true",
+        help="A/B the JARN system prompt vs minimal/empty (same model+tools), "
+        "running each arm x fixture --repeat times",
+    )
+    parser.add_argument(
+        "--repeat", type=int, default=3,
+        help="repeats per (arm, fixture) in --compare-harness mode (default 3)",
     )
     args = parser.parse_args(argv)
 
@@ -335,11 +497,30 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     try:
-        config = _load_eval_config()
+        config = _load_eval_config(model_override=args.model)
     except RuntimeError as exc:
         print(f"skip: {exc}", file=sys.stderr)
         print("eval requires a configured model + API key; skipping.", file=sys.stderr)
         return 2
+
+    if args.compare_harness:
+        # Small/self-hosted endpoints can stall mid-stream on a long task; give
+        # the stream a longer leash for the eval so a transient pause isn't a
+        # hard failure (per-run errors are tolerated below regardless). Respect an
+        # explicit user setting.
+        import os
+        os.environ.setdefault("LANGCHAIN_OPENAI_STREAM_CHUNK_TIMEOUT_S", "300")
+        print(
+            f"comparing {len(HARNESS_ARMS)} arms x {len(fixtures)} fixtures "
+            f"x {args.repeat} repeats (model + tools held constant)…",
+            file=sys.stderr,
+        )
+        rows = run_harness_comparison(fixtures, config, args.repeat)
+        if args.json:
+            print(json.dumps(rows, indent=2))
+        else:
+            _print_comparison(rows)
+        return 0
 
     agent_fn = _make_headless_agent(config)
 
