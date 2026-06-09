@@ -47,6 +47,7 @@ from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import BeforeInput
+from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from rich.console import Console
@@ -88,6 +89,25 @@ def run_inline(
             ).run()
         )
     return 0
+
+
+class _ShellEscapeLexer(Lexer):
+    """Colour the input red while it is a ``!`` shell escape.
+
+    A ``!``-prefixed line runs directly on the host shell — no agent, no
+    permission engine, no danger-guard — so the live input is rendered in the
+    ``shell-escape`` style (red + bold) to make that unmistakable as the user
+    types, distinct from a normal agent prompt.
+    """
+
+    def lex_document(self, document):  # noqa: ANN001 - prompt_toolkit Document
+        is_shell = document.text.lstrip().startswith("!")
+
+        def get_line(lineno: int):
+            text = document.lines[lineno]
+            return [("class:shell-escape" if is_shell else "", text)]
+
+        return get_line
 
 
 class InlineApp:
@@ -225,7 +245,11 @@ class InlineApp:
             dont_extend_height=True, style=f"fg:{palette.C_DIM}",
         )
         prompt = Window(
-            BufferControl(self.input, input_processors=[BeforeInput("› ", style="bold")]),
+            BufferControl(
+                self.input,
+                input_processors=[BeforeInput("› ", style="bold")],
+                lexer=_ShellEscapeLexer(),
+            ),
             height=Dimension(min=1, max=10), wrap_lines=True, dont_extend_height=True,
         )
         toolbar = Window(
@@ -522,7 +546,17 @@ class InlineApp:
                 # input buffer is cleared, so without this the message vanishes).
                 send = self._expand_pastes(stripped)
                 self._pastes.clear()
-                self.console.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(stripped)}")
+                if stripped.startswith("!"):
+                    # Host shell escape — echo in red with a clear marker so it's
+                    # obvious this ran outside the agent (no approval).
+                    cmd = _rich_escape(stripped[1:].strip())
+                    self.console.print(
+                        f"[{palette.C_ERROR}]![/{palette.C_ERROR}] "
+                        f"[{palette.C_ERROR}]{cmd}[/{palette.C_ERROR}] "
+                        f"[{palette.C_DIM}](host shell)[/{palette.C_DIM}]"
+                    )
+                else:
+                    self.console.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(stripped)}")
                 self._turn_start = time.monotonic()
                 self._thinking_word = random.choice(palette.THINKING_WORDS)
                 self._turn_task = asyncio.create_task(self._handle(send))
@@ -690,6 +724,12 @@ class InlineApp:
         if not command:
             c.print(f"[{palette.C_DIM}]! <cmd>  — run a shell command directly[/{palette.C_DIM}]")
             return
+        # Make it unmistakable this runs on the host, outside the agent: no
+        # permission engine, no danger-guard, no sandbox.
+        c.print(
+            f"[{palette.C_ERROR}]⚡ host shell[/{palette.C_ERROR}] "
+            f"[{palette.C_DIM}]— runs on your machine directly; no agent, no approval[/{palette.C_DIM}]"
+        )
         cwd = self.controller.project_root or Path(".")
         backend = CancellableLocalShellBackend(str(cwd))
         # execute is blocking; offload to a thread so the event-loop stays live

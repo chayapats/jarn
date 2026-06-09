@@ -259,7 +259,7 @@ See [docs/EXTENDING.md](docs/EXTENDING.md) ([quick start](docs/EXTENDING.md#quic
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 755 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 757 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

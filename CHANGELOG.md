@@ -64,6 +64,10 @@ M1–M4 work below.
 ### Changed
 
 - Default Docker image: `python:3.12-slim` → `python:3.12` (procps/pkill present).
+- `!` shell escape is now visually distinct: the input line renders **red + bold**
+  while typing, the echoed command shows a red `!` + `(host shell)` marker, and a
+  `⚡ host shell — runs on your machine directly; no agent, no approval` header
+  precedes its output — so it's unmistakable that it bypasses the agent.
 - Version → 0.3.0; classifier stays `Development Status :: 3 - Alpha`.
 
 ## [0.2.0] - 2026-06-09

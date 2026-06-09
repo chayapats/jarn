@@ -167,10 +167,17 @@ def no_color() -> bool:
 
 
 def toolbar_style_dict() -> dict[str, str]:
-    """prompt_toolkit Style dict for the bottom toolbar."""
+    """prompt_toolkit Style dict for the bottom toolbar + input classes."""
     if no_color():
-        return {"bottom-toolbar": "noreverse"}
-    return {"bottom-toolbar": f"bg:{TOOLBAR_BG} {TOOLBAR_FG} noreverse"}
+        # `shell-escape` still bolds so the `!` host-shell line stands out even
+        # without colour.
+        return {"bottom-toolbar": "noreverse", "shell-escape": "bold"}
+    return {
+        "bottom-toolbar": f"bg:{TOOLBAR_BG} {TOOLBAR_FG} noreverse",
+        # `!` shell-escape input: red + bold — it runs on the host, bypassing the
+        # agent and the permission engine, so make it unmistakable while typing.
+        "shell-escape": f"{C_ERROR} bold",
+    }
 
 
 def styled_fg(color: str, text: str, *, bold: bool = False) -> str:
