@@ -56,6 +56,12 @@ BUILTINS: tuple[BuiltinCommand, ...] = (
         "controller",
         usage="[on|off]",
     ),
+    BuiltinCommand(
+        "profile",
+        "Show or apply a policy profile (permission mode + sandbox + web tools).",
+        "controller",
+        usage="[<profile-name>]",
+    ),
     BuiltinCommand("cost", "Show session token usage and cost.", "controller"),
     BuiltinCommand(
         "compact",
@@ -78,6 +84,17 @@ BUILTINS: tuple[BuiltinCommand, ...] = (
         usage="[search|show|add|update|delete] ...",
     ),
     BuiltinCommand("permissions", "Show current permission rules and allowlist.", "controller"),
+    BuiltinCommand(
+        "mcp",
+        "Show configured MCP servers with per-server health and last error.",
+        "controller",
+        usage="[status]",
+    ),
+    BuiltinCommand(
+        "trust",
+        "Trust this project root and lift the untrusted review-only floor.",
+        "controller",
+    ),
     BuiltinCommand(
         "queue",
         "Show or manage queued input lines (while a turn is running).",

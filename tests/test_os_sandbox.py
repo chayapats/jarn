@@ -735,6 +735,183 @@ class TestSafeSandboxPath:
             _macos_profile(project_root=poisoned, allow_network=True, writable=[])
 
 
+# ---------------------------------------------------------------------------
+# Policy coverage — structural assertions about what the generated policy
+# actually enforces (deny-then-allow ordering, canonical paths, network flags).
+# All branches are exercisable on any host via monkeypatching.
+# ---------------------------------------------------------------------------
+
+
+class TestMacOSPolicyCoverage:
+    """Verify that _macos_profile generates a policy that really enforces our claims.
+
+    The tests below check the *structure* of the generated SBPL profile:
+    deny-file-write* over '/', allow-file-write* for the (resolved) project root,
+    and the network-deny clause presence/absence.  These are distinct from the
+    basic smoke-tests above — they assert the structural ordering that the Seatbelt
+    engine requires (deny first, then re-allow exceptions).
+    """
+
+    def test_deny_file_write_block_covers_root(self, tmp_path):
+        """The deny clause must target (subpath "/") — a narrower deny would leave
+        writes outside the project silently permitted."""
+        profile = _macos_profile(
+            project_root=tmp_path,
+            allow_network=True,
+            writable=[],
+        )
+        # The deny block must contain the root subpath guard.
+        assert "(deny file-write*\n  (subpath \"/\"))" in profile
+
+    def test_allow_file_write_block_re_allows_resolved_project_root(self, tmp_path):
+        """After the global deny, there must be an allow-file-write* block that
+        re-allows the *resolved* project root (not an unresolved symlink path)."""
+        resolved = str(tmp_path.resolve())
+        profile = _macos_profile(
+            project_root=tmp_path,
+            allow_network=True,
+            writable=[],
+        )
+        # The allow block must name the resolved path.
+        assert '(allow file-write*' in profile
+        assert f'(subpath "{resolved}")' in profile
+
+    def test_deny_comes_before_allow_in_profile(self, tmp_path):
+        """Seatbelt requires the deny to appear before the re-allow exceptions.
+        Reversed ordering would leave the deny unreachable."""
+        profile = _macos_profile(
+            project_root=tmp_path,
+            allow_network=True,
+            writable=[],
+        )
+        deny_pos = profile.index("(deny file-write*")
+        allow_pos = profile.index("(allow file-write*")
+        assert deny_pos < allow_pos, (
+            "deny file-write* must appear before allow file-write* in the profile"
+        )
+
+    def test_network_deny_clause_present_when_blocked(self, tmp_path):
+        """When allow_network=False the profile must contain (deny network*)."""
+        profile = _macos_profile(
+            project_root=tmp_path,
+            allow_network=False,
+            writable=[],
+        )
+        assert "(deny network*)" in profile
+
+    def test_network_deny_clause_absent_when_allowed(self, tmp_path):
+        """When allow_network=True the profile must NOT contain (deny network*)."""
+        profile = _macos_profile(
+            project_root=tmp_path,
+            allow_network=True,
+            writable=[],
+        )
+        assert "(deny network*)" not in profile
+
+    def test_resolved_path_used_for_symlinked_project_root(self, tmp_path):
+        """A symlinked project root must appear as its resolved (real) path in
+        the allow clause — unresolved symlinks would silently deny writes."""
+        real = tmp_path / "real_proj"
+        real.mkdir()
+        link = tmp_path / "linked_proj"
+        link.symlink_to(real)
+        profile = _macos_profile(project_root=link, allow_network=True, writable=[])
+        resolved = str(real.resolve())
+        # Resolved path present in the allow block.
+        assert f'(subpath "{resolved}")' in profile
+        # The raw symlink path must not be the allow target.
+        assert f'(subpath "{link}")' not in profile
+
+    def test_wrap_macos_policy_structure(self, tmp_path, monkeypatch):
+        """End-to-end: wrap() on macOS produces a profile with the correct
+        deny-before-allow structure regardless of allow_network."""
+        monkeypatch.setattr(sbx, "backend_name", lambda: "sandbox-exec")
+        argv = wrap("pwd", project_root=tmp_path, allow_network=False, writable=[])
+        profile = argv[2]
+        assert "(deny file-write*\n  (subpath \"/\"))" in profile
+        assert "(allow file-write*" in profile
+        deny_pos = profile.index("(deny file-write*")
+        allow_pos = profile.index("(allow file-write*")
+        assert deny_pos < allow_pos
+        assert "(deny network*)" in profile
+
+
+class TestLinuxPolicyCoverage:
+    """Verify that _linux_argv generates an argv that enforces our claims.
+
+    bwrap applies bind-mounts in order: the ro-bind of / must come first so that
+    the project root --bind can overlay it read-write.  --unshare-net must appear
+    when network is denied and must be absent when it is permitted.
+    """
+
+    def test_ro_bind_root_precedes_project_bind(self, tmp_path):
+        """--ro-bind / / must appear before --bind <project> <project> so the
+        rw overlay takes effect on top of the read-only base."""
+        argv = _linux_argv("echo hi", project_root=tmp_path, allow_network=True, writable=[])
+        ro_bind_idx = next(
+            i for i, a in enumerate(argv)
+            if a == "--ro-bind" and argv[i + 1] == "/" and argv[i + 2] == "/"
+        )
+        proj_str = str(tmp_path.resolve())
+        bind_idx = next(
+            i for i, a in enumerate(argv)
+            if a == "--bind" and argv[i + 1] == proj_str
+        )
+        assert ro_bind_idx < bind_idx, (
+            "--ro-bind / / must appear before --bind <project> in bwrap argv"
+        )
+
+    def test_project_root_bound_read_write(self, tmp_path):
+        """The project root must appear as a rw --bind (not --ro-bind) so that
+        the agent can actually write inside the project."""
+        argv = _linux_argv("echo hi", project_root=tmp_path, allow_network=True, writable=[])
+        proj_str = str(tmp_path.resolve())
+        triples = list(zip(argv, argv[1:], argv[2:], strict=False))
+        assert any(a == "--bind" and b == proj_str and c == proj_str for a, b, c in triples), (
+            f"project root {proj_str!r} not found as --bind target in argv"
+        )
+        # Must NOT appear as an ro-bind target.
+        assert not any(a == "--ro-bind" and b == proj_str for a, b, _ in triples), (
+            f"project root {proj_str!r} must not be --ro-bind"
+        )
+
+    def test_unshare_net_present_when_network_denied(self, tmp_path):
+        """--unshare-net must be present in argv when allow_network=False."""
+        argv = _linux_argv("echo hi", project_root=tmp_path, allow_network=False, writable=[])
+        assert "--unshare-net" in argv
+
+    def test_unshare_net_absent_when_network_allowed(self, tmp_path):
+        """--unshare-net must NOT appear in argv when allow_network=True."""
+        argv = _linux_argv("echo hi", project_root=tmp_path, allow_network=True, writable=[])
+        assert "--unshare-net" not in argv
+
+    def test_resolved_path_used_for_symlinked_project_root(self, tmp_path):
+        """A symlinked project root must be resolved before binding — bwrap
+        canonicalizes bind sources so an unresolved symlink can cause a
+        source/destination mismatch."""
+        real = tmp_path / "real_proj"
+        real.mkdir()
+        link = tmp_path / "linked_proj"
+        link.symlink_to(real)
+        argv = _linux_argv("echo hi", project_root=link, allow_network=True, writable=[])
+        resolved = str(real.resolve())
+        assert resolved in argv
+        # The raw symlink string must not appear in the argv (would be wrong target).
+        assert str(link) not in argv
+
+    def test_wrap_linux_policy_structure(self, tmp_path, monkeypatch):
+        """End-to-end: wrap() on Linux produces argv with ro-bind-root, rw project
+        bind, and unshare-net when network is denied."""
+        monkeypatch.setattr(sbx, "backend_name", lambda: "bwrap")
+        argv = wrap("pwd", project_root=tmp_path, allow_network=False, writable=[])
+        assert argv[0] == "bwrap"
+        # ro-bind root present.
+        triples = list(zip(argv, argv[1:], argv[2:], strict=False))
+        assert any(a == "--ro-bind" and b == "/" and c == "/" for a, b, c in triples)
+        # network namespace removed.
+        assert "--unshare-net" in argv
+
+
 class TestSymlinkCanonicalization:
     """Regression: profile/argv paths must be resolved (symlink-safe).
 

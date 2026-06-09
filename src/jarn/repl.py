@@ -159,6 +159,19 @@ class InlineApp:
                 f"[{palette.C_ERROR}]Provider not ready: {_rich_escape(message)}"
                 f"[/{palette.C_ERROR}]  [{palette.C_DIM}]run `jarn setup`[/{palette.C_DIM}]"
             )
+        # One-time untrusted-project notice: the review-only floor is active and
+        # capability keys were stripped. Surfaced once in scrollback (not per turn)
+        # so the user knows why modes are clamped and how to unlock.
+        if not self.controller.project_trusted and self.controller.project_root is not None:
+            c.print(
+                f"[{palette.C_WARN}]⚠ This project is untrusted[/{palette.C_WARN}] "
+                f"[{palette.C_DIM}]— review-only floor active (modes clamped to plan; "
+                f"project hooks/MCP/providers ignored). Run [/{palette.C_DIM}]"
+                f"[{palette.C_NOTICE}]/trust[/{palette.C_NOTICE}]"
+                f"[{palette.C_DIM}] or [/{palette.C_DIM}]"
+                f"[{palette.C_NOTICE}]jarn trust[/{palette.C_NOTICE}]"
+                f"[{palette.C_DIM}] to unlock.[/{palette.C_DIM}]"
+            )
         self._warm_pricing_catalog()
         await self._ensure_extensions()
         self.app = self._build_app()

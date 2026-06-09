@@ -229,6 +229,7 @@ def _build_config_dict(
         "routing": derive_routing_models(profile, default_model),
         "budget": {"per_session_usd": 5.0, "hard_stop": True, "warn_at_pct": 80},
         "context": {"auto_compact": True, "compact_at_pct": 85},
+        "execution": {"local_sandbox": "auto"},
         "permissions": {"allow": [], "deny": []},
         "observability": {"langsmith": False, "telemetry": False, "log_level": "info"},
         "ui": {"theme": theme, "accent": "cyan"},

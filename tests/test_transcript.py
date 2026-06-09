@@ -70,6 +70,38 @@ def test_write_assistant_event(tmp_path: Path) -> None:
     assert obj["text"] == "Sure, done."
 
 
+def test_write_user_redacts_secret_shaped_text(tmp_path: Path) -> None:
+    """A user prompt containing a key-shaped string is scrubbed before persist."""
+    from jarn.memory.sessions import redact_secrets
+
+    w = TranscriptWriter("redact-u", sessions_dir=tmp_path)
+    secret = "sk-ant-api03-" + "A" * 40
+    w.write_user(f"deploy with key {secret} please", ts=1.0)
+    w.write_user("export ANTHROPIC_API_KEY=hunter2supersecret", ts=2.0)
+    w.close()
+
+    body = w.path.read_text(encoding="utf-8")
+    assert secret not in body
+    assert "hunter2supersecret" not in body
+    assert "[REDACTED]" in body
+    # The non-secret surrounding text is preserved.
+    assert "deploy with key" in body
+    assert "ANTHROPIC_API_KEY" in body  # name kept, value redacted
+
+    # redact_secrets leaves ordinary text untouched.
+    assert redact_secrets("just a normal sentence") == "just a normal sentence"
+
+
+def test_write_assistant_redacts_secret_shaped_text(tmp_path: Path) -> None:
+    w = TranscriptWriter("redact-a", sessions_dir=tmp_path)
+    token = "ghp_" + "b" * 36
+    w.write_assistant(f"Your token is {token}", ts=1.0)
+    w.close()
+    body = w.path.read_text(encoding="utf-8")
+    assert token not in body
+    assert "[REDACTED]" in body
+
+
 def test_write_tool_start_event(tmp_path: Path) -> None:
     """A tool-start event records name and args but no result."""
     w = TranscriptWriter("t", sessions_dir=tmp_path)

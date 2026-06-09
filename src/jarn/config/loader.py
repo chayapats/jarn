@@ -27,6 +27,7 @@ from jarn.config.schema import (
     ObservabilityConfig,
     PermissionMode,
     PermissionRules,
+    PolicyConfig,
     ProviderConfig,
     ProviderType,
     RoutingConfig,
@@ -47,6 +48,7 @@ _KNOWN_TOP_LEVEL_KEYS = {
     "budget",
     "context",
     "execution",
+    "policy",
     "permissions",
     "hooks",
     "mcp_servers",
@@ -232,7 +234,7 @@ def _build_config(raw: dict[str, Any]) -> Config:
             f"execution.local_sandbox must be one of "
             f"{sorted(_valid_local_sandbox)} (got {local_sandbox_raw!r})."
         )
-    _valid_backends = {"local", "sandbox"}
+    _valid_backends = {"local", "sandbox", "docker"}
     backend_raw = str(ex.get("backend", "local"))
     if backend_raw not in _valid_backends:
         raise ConfigError(
@@ -245,9 +247,30 @@ def _build_config(raw: dict[str, Any]) -> Config:
             f"execution.sandbox_writable must be a list "
             f"(got {sandbox_writable_raw!r})."
         )
+    docker_memory_raw = ex.get("docker_memory", "")
+    if not isinstance(docker_memory_raw, str):
+        raise ConfigError(
+            f"execution.docker_memory must be a string (got {docker_memory_raw!r})."
+        )
+    docker_pids_raw = ex.get("docker_pids", 0)
+    if not isinstance(docker_pids_raw, int) or isinstance(docker_pids_raw, bool):
+        raise ConfigError(
+            f"execution.docker_pids must be an integer (got {docker_pids_raw!r})."
+        )
+    docker_cpus_raw = ex.get("docker_cpus", "")
+    if not isinstance(docker_cpus_raw, str):
+        raise ConfigError(
+            f"execution.docker_cpus must be a string (got {docker_cpus_raw!r})."
+        )
+    docker_user_raw = ex.get("docker_user", "")
+    if not isinstance(docker_user_raw, str):
+        raise ConfigError(
+            f"execution.docker_user must be a string (got {docker_user_raw!r})."
+        )
     cfg.execution = ExecutionConfig(
         backend=backend_raw,
         sandbox_provider=str(ex.get("sandbox_provider", "langsmith")),
+        docker_image=str(ex.get("docker_image", "python:3.12")),
         multimodal=_normalize_bool(ex.get("multimodal", True), "execution.multimodal"),
         allow_local_fallback=_normalize_bool(
             ex.get("allow_local_fallback", False), "execution.allow_local_fallback"
@@ -257,7 +280,13 @@ def _build_config(raw: dict[str, Any]) -> Config:
             ex.get("sandbox_allow_network", True), "execution.sandbox_allow_network"
         ),
         sandbox_writable=[str(p) for p in sandbox_writable_raw],
+        docker_memory=docker_memory_raw,
+        docker_pids=docker_pids_raw,
+        docker_cpus=docker_cpus_raw,
+        docker_user=docker_user_raw,
     )
+
+    cfg.policy = _build_policy_config(raw.get("policy", {}) or {})
 
     perms = raw.get("permissions", {}) or {}
     cfg.permissions = PermissionRules(
@@ -415,6 +444,21 @@ def _build_git_config(raw: dict[str, Any]) -> GitConfig:
             raw.get("autocheckpoint", False), "git.autocheckpoint"
         ),
         checkpoint_mode=mode,
+    )
+
+
+def _build_policy_config(raw: dict[str, Any]) -> PolicyConfig:
+    from jarn.config.profiles import PROFILE_NAMES
+
+    profile = str(raw.get("profile", ""))
+    if profile and profile not in PROFILE_NAMES:
+        raise ConfigError(
+            f"policy.profile must be one of "
+            f"{sorted(PROFILE_NAMES)} or empty (got {profile!r})."
+        )
+    return PolicyConfig(
+        profile=profile,
+        web_tools=_normalize_bool(raw.get("web_tools", True), "policy.web_tools"),
     )
 
 

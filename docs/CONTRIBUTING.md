@@ -35,7 +35,7 @@ uv run mypy src/                   # type-check (must report 0 errors)
 ```
 
 Before pushing, run all three gates locally — `ruff check src tests`, `mypy src/`, and
-`pytest` (currently **602** tests). CI runs exactly these on every push/PR
+`pytest` (currently **755** tests). CI runs exactly these on every push/PR
 (lint → type-check → test) across Linux/macOS and Python 3.12/3.13. The live-LLM
 end-to-end suite is intentionally **not** part of that gate (it's slow, costs tokens,
 and is flaky); run those manually / nightly.

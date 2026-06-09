@@ -277,7 +277,7 @@ def test_no_args_calls_launch_not_headless(tmp_path, monkeypatch):
 
     called: list[str] = []
 
-    def _fake_launch(*, resume: bool = False) -> int:
+    def _fake_launch(*, resume: bool = False, profile_override: str | None = None) -> int:
         called.append("launch")
         return 0
 

@@ -21,7 +21,7 @@ plan → act → verify, with a strict permission system in front of every mutat
 - Source: `src/jarn/` — subsystems: `config`, `providers`, `permissions`, `cost`,
   `memory`, `extensibility`, `agent`, `repl`, `repl_renderer`, `tui`, `observability`,
   `onboarding`, `cli`, `os_sandbox`, `checkpoint`, `repomap`, `memory/wiki`, `headless`
-- Tests: `tests/` (**602** pytest cases); docs: `docs/` + `README.md`; design: `SPEC.md`
+- Tests: `tests/` (**755** pytest cases); docs: `docs/` + `README.md`; design: `SPEC.md`
 
 ## Conventions
 
@@ -34,7 +34,7 @@ plan → act → verify, with a strict permission system in front of every mutat
 
 ```bash
 uv sync --extra dev
-uv run pytest                    # full suite (602 tests)
+uv run pytest                    # full suite (755 tests)
 uv run ruff check src tests      # lint
 uv run mypy src/                 # type-check (CI-gated)
 uv run jarn                      # launch the terminal REPL
@@ -63,7 +63,9 @@ uv run jarn doctor               # diagnose config/providers
 - Wiki knowledge base is in `memory/wiki.py`; four tools (`wiki_search`, `wiki_read`,
   `wiki_write`, `wiki_append`) + `/wiki` command. Controlled by `wiki.enabled`.
 - Headless one-shot entry point is `headless.py`; invoked by `jarn -p "..."`.
-- AGENTS.md / CLAUDE.md interop is in `compat.py`; controlled by `compat.context_files`
+- AGENTS.md / CLAUDE.md interop lives in `jarn.memory.context` (context-file
+  resolution) and `jarn.extensibility` (`.claude/` skill/command discovery);
+  controlled by `CompatConfig` (`jarn.config.schema`) via `compat.context_files`
   and `compat.read_claude_dir`.
 - Keep the reliability core (engine, guard, interrupt→approval flow) well-tested.
 - `jarn doctor` reports loaded extensions (skills/commands/subagents/hooks/MCP) and

@@ -28,18 +28,37 @@ _DDG_HTML = """
 
 
 def test_web_search_parses(monkeypatch):
-    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp(_DDG_HTML))
+    # web_search now routes through the SSRF-guarded, IP-pinned _fetch_raw path
+    # (same as web_fetch), so stub DNS + _fetch_raw rather than httpx.get.
+    _public_dns(monkeypatch)
+    monkeypatch.setattr(web_tools, "_fetch_raw", lambda url, **k: _raw(_DDG_HTML))
     out = web_search.invoke({"query": "gold price"})
     assert "Gold price today" in out
     assert "https://gold.example/price" in out
 
 
 def test_web_search_network_error(monkeypatch):
+    _public_dns(monkeypatch)
+
     def boom(*a, **k):
         raise httpx.ConnectError("no net")
-    monkeypatch.setattr(httpx, "get", boom)
+    monkeypatch.setattr(web_tools, "_fetch_raw", boom)
     out = web_search.invoke({"query": "x"})
     assert "web_search failed" in out
+
+
+def test_web_search_blocks_private_redirect(monkeypatch):
+    """A search-endpoint redirect to a private address is refused (SSRF guard)."""
+    monkeypatch.setattr(
+        web_tools, "_resolve_ips",
+        lambda host: ["10.0.0.5"] if host == "evil.internal" else ["93.184.216.34"],
+    )
+    monkeypatch.setattr(
+        web_tools, "_fetch_raw",
+        lambda url, **k: _raw("", status=302, headers={"location": "http://evil.internal/x"}),
+    )
+    out = web_search.invoke({"query": "x"})
+    assert "web_search blocked" in out
 
 
 def _public_dns(monkeypatch):
@@ -150,6 +169,31 @@ def test_fetch_raw_caps_bytes(monkeypatch):
     monkeypatch.setattr(web_tools, "_resolve_ips", lambda host: ["93.184.216.34"])
     raw = web_tools._fetch_raw("http://example.com", max_bytes=1_000_000)
     assert len(raw.text) == 1_000_000  # stopped at the cap, didn't load 5 MB
+
+
+def test_pinned_request_resolves_dns_once_no_rebinding(monkeypatch):
+    """_pinned_request must resolve DNS exactly once and pin the checked IP.
+
+    Regression for the DNS-rebinding TOCTOU: a hostile short-TTL record that
+    serves a public IP on the first lookup and 127.0.0.1 on a second lookup must
+    not slip through. We make _resolve_ips return a *public* IP first and a
+    *loopback* IP on any subsequent call; the single-resolution design means the
+    second (malicious) answer is never consulted, so the connect pins the public
+    IP that was validated.
+    """
+    calls = {"n": 0}
+
+    def rebinding_resolve(host):
+        calls["n"] += 1
+        # First lookup: safe public IP. Any later lookup: loopback (attack).
+        return ["93.184.216.34"] if calls["n"] == 1 else ["127.0.0.1"]
+
+    monkeypatch.setattr(web_tools, "_resolve_ips", rebinding_resolve)
+    connect_url, _headers, _ext = web_tools._pinned_request("http://example.com/")
+    assert calls["n"] == 1, "DNS must be resolved exactly once (no rebinding window)"
+    # The connect URL must pin the validated public IP, never the loopback.
+    assert "93.184.216.34" in connect_url
+    assert "127.0.0.1" not in connect_url
 
 
 def test_build_web_tools():
