@@ -25,42 +25,82 @@ from ruamel.yaml.error import YAMLError
 
 @dataclass(frozen=True, slots=True)
 class Setting:
-    """One settable key: its dotted path, value type, optional choices, group."""
+    """One settable setting: dotted key, type, friendly category/label/help."""
 
     key: str
     type: str          # "str" | "int" | "float" | "bool" | "enum"
-    group: str
+    group: str         # friendly category (also the tab label)
+    label: str         # human title shown in the panel
+    desc: str          # one-line plain-language help
     choices: tuple[str, ...] = ()
 
 
-#: The curated, safe, scalar settings exposed to ``/config``. Dotted keys map
-#: 1:1 onto both the :class:`~jarn.config.schema.Config` attribute path and the
-#: YAML path. Ordered for a readable grouped display.
+def _s(key, type, group, label, desc, choices=()):  # noqa: A002 - terse builder
+    return Setting(key, type, group, label, desc, tuple(choices))
+
+
+#: The curated, safe, scalar settings exposed to ``/config``. Grouped into a few
+#: plain-language categories with human labels + one-line help so the panel reads
+#: like a real settings screen, not a YAML dump. Dotted ``key`` maps 1:1 onto the
+#: Config attribute path and the YAML path.
 SETTINGS: tuple[Setting, ...] = (
-    Setting("permission_mode", "enum", "general", ("plan", "ask", "auto-edit", "yolo")),
-    Setting("default_model", "str", "models"),
-    Setting("routing.main", "str", "models"),
-    Setting("routing.subagent", "str", "models"),
-    Setting("routing.summarizer", "str", "models"),
-    Setting("policy.profile", "enum", "policy",
-            ("", "trusted-repo", "review-only", "sandbox-required", "ci", "offline")),
-    Setting("policy.web_tools", "bool", "policy"),
-    Setting("execution.backend", "enum", "execution", ("local", "sandbox", "docker")),
-    Setting("execution.local_sandbox", "enum", "execution", ("off", "auto", "require")),
-    Setting("execution.sandbox_allow_network", "bool", "execution"),
-    Setting("execution.docker_image", "str", "execution"),
-    Setting("budget.per_session_usd", "float", "budget"),
-    Setting("budget.hard_stop", "bool", "budget"),
-    Setting("budget.warn_at_pct", "int", "budget"),
-    Setting("context.auto_compact", "bool", "context"),
-    Setting("context.compact_at_pct", "int", "context"),
-    Setting("context.repo_map", "enum", "context", ("off", "tool", "auto")),
-    Setting("context.repo_map_tokens", "int", "context"),
-    Setting("wiki.enabled", "bool", "features"),
-    Setting("git.autocheckpoint", "bool", "features"),
-    Setting("observability.transcript", "bool", "features"),
-    Setting("ui.theme", "enum", "ui", ("dark", "light", "high-contrast")),
-    Setting("ui.accent", "str", "ui"),
+    # ── Models ──
+    _s("default_model", "str", "Models", "Model",
+       "The model the agent uses by default."),
+    _s("routing.main", "str", "Models", "Main model",
+       "Override the model for the main agent (blank = use Model above)."),
+    _s("routing.subagent", "str", "Models", "Subagent model",
+       "A cheaper model for delegated subagent tasks (blank = same)."),
+    _s("routing.summarizer", "str", "Models", "Summarizer model",
+       "Model used to compact long conversations (blank = same)."),
+    # ── Safety ──
+    _s("permission_mode", "enum", "Safety", "Permission mode",
+       "How much to confirm before edits / shell / network.",
+       ("plan", "ask", "auto-edit", "yolo")),
+    _s("policy.profile", "enum", "Safety", "Safety profile",
+       "A one-pick preset that sets several safety knobs at once.",
+       ("", "trusted-repo", "review-only", "sandbox-required", "ci", "offline")),
+    _s("policy.web_tools", "bool", "Safety", "Web tools",
+       "Let the agent use web search & fetch."),
+    # ── Sandbox ──
+    _s("execution.backend", "enum", "Sandbox", "Run commands in",
+       "Where tools run: your host, a Docker container, or a remote sandbox.",
+       ("local", "docker", "sandbox")),
+    _s("execution.local_sandbox", "enum", "Sandbox", "OS sandbox",
+       "Kernel-level isolation for host commands (sandbox-exec / bwrap).",
+       ("off", "auto", "require")),
+    _s("execution.sandbox_allow_network", "bool", "Sandbox", "Sandbox network",
+       "Allow network access from inside the sandbox."),
+    _s("execution.docker_image", "str", "Sandbox", "Docker image",
+       "Container image used when running in Docker."),
+    # ── Budget ──
+    _s("budget.per_session_usd", "float", "Budget", "Session budget ($)",
+       "Warn or stop after this much spend per session (0 = no limit)."),
+    _s("budget.hard_stop", "bool", "Budget", "Hard stop",
+       "Stop the session when the budget is exceeded (vs just warn)."),
+    _s("budget.warn_at_pct", "int", "Budget", "Warn at (%)",
+       "Warn when spend reaches this percent of the budget."),
+    # ── Behavior ──
+    _s("context.auto_compact", "bool", "Behavior", "Auto-compact",
+       "Summarize the conversation automatically as context fills up."),
+    _s("context.compact_at_pct", "int", "Behavior", "Compact at (%)",
+       "Context fullness that triggers auto-compact."),
+    _s("context.repo_map", "enum", "Behavior", "Repo map",
+       "Give the agent a map of your codebase (tool / auto-inject / off).",
+       ("off", "tool", "auto")),
+    _s("context.repo_map_tokens", "int", "Behavior", "Repo map size",
+       "Token budget for the repo map."),
+    _s("wiki.enabled", "bool", "Behavior", "Wiki",
+       "Enable the agent's markdown knowledge base (/wiki)."),
+    _s("git.autocheckpoint", "bool", "Behavior", "Auto-checkpoint",
+       "Snapshot files before each turn so /undo can revert."),
+    _s("observability.transcript", "bool", "Behavior", "Session transcript",
+       "Write a JSONL log of each session under .jarn/sessions."),
+    # ── Appearance ──
+    _s("ui.theme", "enum", "Appearance", "Theme",
+       "Color theme.", ("dark", "light", "high-contrast")),
+    _s("ui.accent", "str", "Appearance", "Accent color",
+       "Brand accent color (e.g. cyan, magenta)."),
 )
 
 _BY_KEY: dict[str, Setting] = {s.key: s for s in SETTINGS}
@@ -189,18 +229,6 @@ class ConfigStore:
         tmp.write_text(buf.getvalue(), encoding="utf-8")
         os.replace(tmp, self.path)
 
-
-#: Friendly titles for the category tabs (the horizontal top row).
-GROUP_LABELS: dict[str, str] = {
-    "general": "General",
-    "models": "Models",
-    "policy": "Policy",
-    "execution": "Execution",
-    "budget": "Budget",
-    "context": "Context",
-    "features": "Features",
-    "ui": "UI",
-}
 
 # Style tokens (theme-agnostic where it matters; cyan accent matches the brand).
 _C_ACCENT = "#22d3ee"
@@ -331,69 +359,71 @@ class ConfigPanel:
 
     # -- rendering ----------------------------------------------------------
 
-    def _label(self, spec: Setting) -> str:
-        """Item label with the redundant ``<group>.`` prefix stripped."""
-        prefix = f"{spec.group}."
-        return spec.key[len(prefix):] if spec.key.startswith(prefix) else spec.key
-
-    def _value_fragment(self, spec: Setting) -> tuple[str, str]:
-        """(style, text) for a setting's value (non-selected rows)."""
+    def _value_text(self, spec: Setting) -> tuple[str, str]:
+        """(style, text) for a setting's value (friendly, non-selected rows)."""
         if spec.type == "bool":
-            return (_C_ON, "● on") if bool(self.value_of(spec)) else (_C_DIM, "○ off")
+            return (_C_ON, "● On") if bool(self.value_of(spec)) else (_C_DIM, "○ Off")
         val = self.value_of(spec)
         if val is None or val == "":
-            return (_C_DIM, "(none)")
+            return (_C_DIM, "—")
         if spec.type == "enum":
             return (_C_ACCENT, str(val))
         return ("", str(val))
 
     def render_lines(self) -> list[tuple[str, str]]:
-        """(style, text) fragments for a prompt_toolkit FormattedTextControl."""
-        out: list[tuple[str, str]] = [("bold", "  Settings\n"), ("", "\n")]
+        """(style, text) fragments for a prompt_toolkit FormattedTextControl.
+
+        Layout: a title, horizontal category tabs, the active category's settings
+        (human label + value, aligned, selected row highlighted), then a detail
+        box describing the *selected* setting — so the screen stays uncluttered
+        but always explains what the highlighted thing does.
+        """
+        out: list[tuple[str, str]] = [("bold", "  ⚙  Settings"), (_C_DIM, "   esc to close\n\n")]
 
         # Horizontal category tabs.
-        out.append(("", "  "))
+        out.append(("", "   "))
         for i, g in enumerate(self.groups):
-            label = GROUP_LABELS.get(g, g.title())
-            if i == self.cat_index:
-                out.append(("reverse bold", f" {label} "))
-            else:
-                out.append((_C_DIM, f" {label} "))
+            style = "reverse bold" if i == self.cat_index else _C_DIM
+            out.append((style, f" {g} "))
             out.append(("", " "))
         out.append(("", "\n\n"))
 
-        # Vertical settings for the active category, value column aligned.
+        # Settings in the active category — label column aligned to the value.
         items = self.items()
-        width = max((len(self._label(s)) for s in items), default=0)
+        width = max((len(s.label) for s in items), default=0)
         for i, spec in enumerate(items):
             selected = i == self.item_index
-            label = self._label(spec).ljust(width)
+            label = spec.label.ljust(width)
             marker = "▸ " if selected else "  "
             if selected and self.editing:
-                out.append(("reverse", f"  {marker}{label}  {self.buffer}▏\n"))
+                out.append(("reverse", f"   {marker}{label}   {self.buffer}▏ \n"))
             elif selected:
-                vstyle, vtext = self._value_fragment(spec)
-                # one inverse bar for the whole selected row (clean highlight)
-                out.append(("reverse", f"  {marker}{label}  {vtext}\n"))
+                _vs, vtext = self._value_text(spec)
+                out.append(("reverse", f"   {marker}{label}   {vtext} \n"))
             else:
-                vstyle, vtext = self._value_fragment(spec)
-                out.append((_C_DIM, f"  {marker}{label}  "))
+                vstyle, vtext = self._value_text(spec)
+                out.append(("", f"   {marker}{label}   "))
                 out.append((vstyle, vtext))
                 out.append(("", "\n"))
 
-        # Contextual hint + last action message.
+        # Detail box for the selected setting: its description + how to change it.
         spec = self.current()
-        action = {
-            "bool": "Enter toggle",
-            "enum": "Enter cycle",
-        }.get(spec.type, "Enter edit")
-        out.append(("", "\n"))
-        out.append((_C_DIM, f"  ←/→ category · ↑/↓ setting · {action} · Esc close\n"))
-        if spec.type == "enum":
-            opts = " / ".join(c if c else "(none)" for c in spec.choices)
-            out.append((_C_DIM, f"  choices: {opts}\n"))
-        if self.message:
-            out.append((_C_ACCENT, f"  {self.message}\n"))
+        out.append((_C_DIM, "\n   " + "─" * (width + 28) + "\n"))
+        out.append(("bold", f"   {spec.label}  "))
+        out.append((_C_DIM, f"{spec.desc}\n"))
+        if self.editing:
+            hint = "type a value · Enter save · Esc cancel"
+        elif spec.type == "bool":
+            hint = "Enter to toggle On/Off"
+        elif spec.type == "enum":
+            opts = " · ".join(c if c else "(none)" for c in spec.choices)
+            hint = f"Enter to cycle:  {opts}"
+        else:
+            hint = "Enter to edit"
+        out.append((_C_ACCENT, f"   {hint}\n"))
+        out.append((_C_DIM, "   ←/→ switch section · ↑/↓ move\n"))
+        if self.message and not self.editing:
+            out.append((_C_ON, f"   ✓ {self.message}\n"))
         return out
 
 

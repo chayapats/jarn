@@ -196,7 +196,7 @@ def test_panel_category_move_wraps(base_config):
 def test_panel_select_key(base_config):
     p = _panel(base_config, lambda k, r: (True, "ok"))
     p.select_key("ui.theme")
-    assert p.category == "ui" and p.current().key == "ui.theme"
+    assert p.category == "Appearance" and p.current().key == "ui.theme"
 
 
 def test_panel_toggle_bool(base_config):
@@ -245,13 +245,21 @@ def test_panel_cancel_edit_applies_nothing(base_config):
     assert not p.editing and calls == []
 
 
-def test_panel_render_has_tabs_and_selection(base_config):
+def test_panel_render_has_tabs_label_and_detail(base_config):
     p = _panel(base_config, lambda k, r: (True, "ok"))
     p.select_key("ui.theme")
     frags = p.render_lines()
     assert any(style == "reverse bold" for style, _ in frags)  # active category tab
     assert any(style == "reverse" for style, _ in frags)       # selected setting row
     text = "".join(t for _, t in frags)
-    # horizontal category tabs + the stripped item label + the cycle hint
-    assert "Models" in text and "Execution" in text and "UI" in text
-    assert "theme" in text and "choices:" in text
+    # friendly category tabs + human label + description + enum cycle hint
+    assert "Models" in text and "Sandbox" in text and "Appearance" in text
+    assert "Theme" in text and "Color theme" in text and "cycle" in text
+
+
+def test_panel_friendly_label_and_desc(base_config):
+    p = _panel(base_config, lambda k, r: (True, "ok"))
+    p.select_key("execution.local_sandbox")
+    text = "".join(t for _, t in p.render_lines())
+    assert "OS sandbox" in text          # human label, not the dotted key
+    assert "Kernel-level isolation" in text   # description of the selected item

@@ -194,6 +194,9 @@ def test_untrusted_project_does_not_gate_async_tools(tmp_path):
     cfg = load_config(global_path=None, project_path=pp, project_trusted=False)
     assert cfg.async_subagents == []
 
+    # Provide a model so build_runtime doesn't depend on the dev's real global
+    # config (the test home is isolated); the build itself is mocked.
+    cfg.default_model = "openrouter/test-model"
     fake = GenericFakeChatModel(messages=iter([]))
     with patch("jarn.providers.models.ModelFactory.build", return_value=fake):
         rt = build_runtime(cfg, project_root=tmp_path)
