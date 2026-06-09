@@ -28,8 +28,11 @@ It runs entirely in your terminal (a Web UI is on the roadmap, post-launch). Not
 capabilities: **AGENTS.md / CLAUDE.md interop** (works out-of-the-box beside other
 agents), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcripts**,
 **`!` shell escape**, **OS-level execution sandbox** (macOS `sandbox-exec` / Linux
-`bwrap`), **auto-checkpoint + `/undo` / `/redo`**, **repo map** (`/map`), and a
-**wiki knowledge base** (`/wiki`).
+`bwrap`) and **Docker container backend** (`execution.backend: docker`), **policy
+profiles** (`/profile`, `jarn --profile`) with an untrusted `review-only` floor,
+**auto-checkpoint + `/undo` / `/redo`**, **repo map** (`/map`), a **wiki knowledge
+base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists to
+`~/.jarn/config.yaml`), and per-server **MCP health** (`/mcp status`).
 
 > **Status:** v0.3.0 (Alpha) — prepared, pending publish; v0.2.0 is the latest on
 > PyPI. Adds real container/OS isolation, policy profiles, a smoke-eval harness,

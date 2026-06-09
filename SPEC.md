@@ -178,7 +178,7 @@ JARN.md                   # project context (commit ได้)
 
 **Deferred → v1.x / v2:** vector recall · telemetry · binary build · async/remote subagents · multimodal · Web UI
 
-> **Note (2026-06-09):** sandbox backend, async/remote subagents, multimodal filesystem (v1.x), then OS-level execution sandbox, repo map, wiki, auto-checkpoint, AGENTS.md interop, headless mode, and JSONL transcripts all shipped in **v0.2.0**. **v0.3.0 (prepared, Alpha)** adds a Docker container backend + hardening, policy profiles + an untrusted floor, a smoke-eval harness, and `/mcp` / `/trust`. See ROADMAP.md.
+> **Note (2026-06-09):** sandbox backend, async/remote subagents, multimodal filesystem (v1.x), then OS-level execution sandbox, repo map, wiki, auto-checkpoint, AGENTS.md interop, headless mode, and JSONL transcripts all shipped in **v0.2.0**. **v0.3.0 (prepared, Alpha)** adds a Docker container backend + hardening (`jarn.agent.docker_backend`), policy profiles + an untrusted `review-only` floor (`jarn.config.profiles`), a `/config` interactive settings panel (`jarn.config.settings`), a smoke-eval harness (`scripts/eval.py`), and REPL additions `/mcp status` / `/trust`. See ROADMAP.md.
 
 ---
 
