@@ -21,7 +21,7 @@ plan → act → verify, with a strict permission system in front of every mutat
 - Source: `src/jarn/` — subsystems: `config`, `providers`, `permissions`, `cost`,
   `memory`, `extensibility`, `agent`, `repl`, `repl_renderer`, `tui`, `observability`,
   `onboarding`, `cli`, `os_sandbox`, `checkpoint`, `repomap`, `memory/wiki`, `headless`
-- Tests: `tests/` (**769** pytest cases); docs: `docs/` + `README.md`; design: `SPEC.md`
+- Tests: `tests/` (**775** pytest cases); docs: `docs/` + `README.md`; design: `SPEC.md`
 
 ## Conventions
 
@@ -34,7 +34,7 @@ plan → act → verify, with a strict permission system in front of every mutat
 
 ```bash
 uv sync --extra dev
-uv run pytest                    # full suite (769 tests)
+uv run pytest                    # full suite (775 tests)
 uv run ruff check src tests      # lint
 uv run mypy src/                 # type-check (CI-gated)
 uv run jarn                      # launch the terminal REPL

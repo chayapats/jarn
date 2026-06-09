@@ -813,33 +813,41 @@ class Controller:
             "Usage: /config  |  /config get <key>  |  /config set <key> <value>"
         )
 
-    def _config_set(self, key: str, raw: str) -> CommandResult:
+    def set_setting(self, key: str, raw: str) -> tuple[bool, str]:
+        """Coerce + validate + persist a setting; apply it live. Returns
+        ``(ok, message)``. Shared by ``/config set`` and the interactive panel.
+
+        On success: writes to the global ``~/.jarn/config.yaml`` (comments
+        preserved), reloads + re-validates the merged config (rolling the file
+        back if the result is invalid), and applies it to the running session.
+        """
         from jarn.config import paths, settings
         from jarn.config.loader import ConfigError, load_config
 
         try:
             value = settings.coerce(key, raw)
         except settings.SettingError as exc:
-            return CommandResult(str(exc))
-        gpath = paths.global_config_path()
-        store = settings.ConfigStore(gpath)
+            return False, str(exc)
+        store = settings.ConfigStore(paths.global_config_path())
         backup = store.read_text()
         store.set(key, value)
-        # Validate by reloading the merged config; roll the file back on any error
-        # so an invalid edit never leaves the config broken on disk.
         try:
             new_cfg = load_config(
                 project_root=self.project_root, project_trusted=self.project_trusted
             )
         except ConfigError as exc:
-            store.restore(backup)
-            return CommandResult(f"Rejected — invalid value: {_escape_markup(str(exc))}")
+            store.restore(backup)   # never leave the config broken on disk
+            return False, f"Rejected — invalid value: {exc}"
         self.config = new_cfg
         self._apply_reloaded_config()
         shown = "(none)" if value == "" else value
-        return CommandResult(
-            f"Set [b]{key}[/b] = {shown} → saved to {gpath} (rebuilding).", rebuilt=True
-        )
+        return True, f"saved {key} = {shown}"
+
+    def _config_set(self, key: str, raw: str) -> CommandResult:
+        ok, msg = self.set_setting(key, raw)
+        if ok:
+            return CommandResult(f"{msg} → ~/.jarn/config.yaml (rebuilding).", rebuilt=True)
+        return CommandResult(_escape_markup(msg))
 
     def _cmd_cost(self, args: str) -> CommandResult:
         t = self.tracker

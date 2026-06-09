@@ -190,6 +190,120 @@ class ConfigStore:
         os.replace(tmp, self.path)
 
 
+class ConfigPanel:
+    """State model for the interactive ``/config`` settings panel (arrow-key).
+
+    Framework-agnostic (no prompt_toolkit) so it is fully unit-testable: the REPL
+    view drives it with key events and renders :meth:`render_lines`.
+
+    - ``get_config()`` returns the live config (read fresh — it is replaced on
+      each successful save).
+    - ``apply(key, raw)`` persists ``key`` = ``raw`` and returns ``(ok, message)``.
+
+    Navigation: ↑/↓ moves the selection. Enter on a **bool** toggles it, on an
+    **enum** cycles to the next choice, on a **str/int/float** enters edit mode
+    (type a value, Enter saves, Esc cancels). Each toggle/cycle/save persists
+    immediately via ``apply``.
+    """
+
+    NAVIGATE = "navigate"
+    EDIT = "edit"
+
+    def __init__(self, get_config, apply) -> None:  # noqa: ANN001
+        self.settings = list(SETTINGS)
+        self._get_config = get_config
+        self._apply = apply
+        self.index = 0
+        self.mode = self.NAVIGATE
+        self.buffer = ""
+        self.message = ""
+
+    @property
+    def editing(self) -> bool:
+        return self.mode == self.EDIT
+
+    def current(self) -> Setting:
+        return self.settings[self.index]
+
+    def value_of(self, spec: Setting) -> object:
+        return get_value(self._get_config(), spec.key)
+
+    def move(self, delta: int) -> None:
+        if self.editing:
+            return
+        self.index = (self.index + delta) % len(self.settings)
+
+    def activate(self) -> None:
+        """Enter on the selected row: toggle / cycle / begin editing."""
+        if self.editing:
+            return
+        spec = self.current()
+        if spec.type == "bool":
+            self._commit(spec, "false" if bool(self.value_of(spec)) else "true")
+        elif spec.type == "enum":
+            choices = list(spec.choices)
+            cur = self.value_of(spec)
+            cur = "" if cur is None else str(cur)
+            i = choices.index(cur) if cur in choices else -1
+            self._commit(spec, choices[(i + 1) % len(choices)])
+        else:
+            self.mode = self.EDIT
+            cur = self.value_of(spec)
+            self.buffer = "" if cur is None else str(cur)
+            self.message = "editing — type a value · Enter save · Esc cancel"
+
+    def type_text(self, text: str) -> None:
+        if self.editing:
+            self.buffer += text
+
+    def backspace(self) -> None:
+        if self.editing:
+            self.buffer = self.buffer[:-1]
+
+    def cancel_edit(self) -> None:
+        if self.editing:
+            self.mode = self.NAVIGATE
+            self.buffer = ""
+            self.message = "cancelled"
+
+    def commit_edit(self) -> None:
+        if not self.editing:
+            return
+        spec, raw = self.current(), self.buffer
+        self.mode = self.NAVIGATE
+        self.buffer = ""
+        self._commit(spec, raw)
+
+    def _commit(self, spec: Setting, raw: str) -> None:
+        _ok, msg = self._apply(spec.key, raw)
+        self.message = msg
+
+    def render_lines(self) -> list[tuple[str, str]]:
+        """(style, text) fragments for a prompt_toolkit FormattedTextControl."""
+        out: list[tuple[str, str]] = [
+            ("bold", " Settings  "),
+            ("#7c8f94", "↑/↓ move · Enter toggle/edit · Esc close\n"),
+        ]
+        last_group = ""
+        for i, spec in enumerate(self.settings):
+            if spec.group != last_group:
+                out.append(("bold #7c8f94", f"\n {spec.group}\n"))
+                last_group = spec.group
+            selected = i == self.index
+            if self.editing and selected:
+                shown = self.buffer + "▏"   # ▏ caret
+            else:
+                val = self.value_of(spec)
+                shown = "(unset)" if val is None or val == "" else str(val)
+            marker = "›" if selected else " "  # ›
+            out.append(
+                ("reverse" if selected else "", f" {marker} {spec.key}: {shown}\n")
+            )
+        if self.message:
+            out.append(("#7c8f94", f"\n {self.message}\n"))
+        return out
+
+
 def format_settings(config: object) -> str:
     """Render the current settable settings, grouped, as Rich-markup text."""
     lines = ["[b]Settings[/b] [dim](editable with /config set <key> <value>)[/dim]"]

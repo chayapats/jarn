@@ -24,7 +24,7 @@ import shutil
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
@@ -68,6 +68,9 @@ from jarn.tui.input_queue import InputQueue
 from jarn.tui.logo import splash
 from jarn.tui.toolbar import render_toolbar
 from jarn.version import __version__
+
+if TYPE_CHECKING:
+    from jarn.config.settings import ConfigPanel
 
 Ask = Callable[[str], Awaitable[str]]
 Pick = Callable[[list[tuple[str, ApprovalReply]]], Awaitable[ApprovalReply]]
@@ -162,6 +165,9 @@ class InlineApp:
         self._last_todos_sig: str | None = None    # de-dupe the todo checklist
         self._pager_buffer = Buffer(read_only=True)
         self._pager_window: Window | None = None
+        self._config_open = False                  # interactive /config panel open?
+        self._config_panel: ConfigPanel | None = None
+        self._config_window: Window | None = None
         self._resume_on_start = resume               # show the /resume picker on launch
         self.app: Application | None = None
 
@@ -265,11 +271,22 @@ class InlineApp:
         pager_header = Window(
             FormattedTextControl(self._pager_header), height=1, style="class:bottom-toolbar",
         )
+        # Interactive settings panel overlay (/config). FormattedTextControl is
+        # non-focusable; the global key bindings (gated on _config_open) drive it.
+        self._config_window = Window(
+            FormattedTextControl(self._config_render), wrap_lines=True,
+        )
         top = HSplit([
-            ConditionalContainer(stream, filter=Condition(lambda: not self._expanded)),
+            ConditionalContainer(
+                stream,
+                filter=Condition(lambda: not self._expanded and not self._config_open),
+            ),
             ConditionalContainer(
                 HSplit([pager_header, self._pager_window]),
                 filter=Condition(lambda: self._expanded),
+            ),
+            ConditionalContainer(
+                self._config_window, filter=Condition(lambda: self._config_open)
             ),
         ])
         root = FloatContainer(
@@ -482,6 +499,34 @@ class InlineApp:
             self.app.layout.focus(self.input)  # back to the conversation
             self.app.invalidate()
 
+    # -- interactive settings panel (/config) -------------------------------
+
+    def _config_render(self):
+        """FormattedTextControl source for the settings panel."""
+        if self._config_panel is None:
+            return []
+        return self._config_panel.render_lines()
+
+    def _open_config(self) -> None:
+        """Open the arrow-key settings panel. Saves persist to global config."""
+        from jarn.config.settings import ConfigPanel
+
+        self._config_panel = ConfigPanel(
+            get_config=lambda: self.controller.config,
+            apply=self.controller.set_setting,
+        )
+        self._config_open = True
+        # The input keeps focus; global bindings (gated on _config_open) drive
+        # the panel, so input keys stay inert while it is open.
+        if self.app is not None:
+            self.app.invalidate()
+
+    def _close_config(self) -> None:
+        self._config_open = False
+        self._config_panel = None
+        if self.app is not None:
+            self.app.invalidate()
+
     def _pager_header(self) -> HTML:
         base = (' <b>full output</b> '
                 '<style fg="#7c8f94">— ↑/↓ PgUp/PgDn scroll · Ctrl+O / q / Esc close</style>')
@@ -501,9 +546,19 @@ class InlineApp:
 
     def _build_keys(self) -> KeyBindings:
         kb = KeyBindings()
-        # Input/editing keys only apply when the pager overlay is closed; while it
-        # is open they fall through to the pager's default scroll handling.
-        live = Condition(lambda: not self._expanded)
+        # Input/editing keys only apply when neither overlay (pager / config
+        # panel) is open; while one is open keys drive that overlay instead.
+        live = Condition(lambda: not self._expanded and not self._config_open)
+        cfg_open = Condition(lambda: self._config_open)
+        cfg_edit = Condition(
+            lambda: self._config_open
+            and self._config_panel is not None
+            and self._config_panel.editing
+        )
+        cfg_nav = Condition(
+            lambda: self._config_open
+            and (self._config_panel is None or not self._config_panel.editing)
+        )
 
         @kb.add("enter", filter=live)
         def _submit(event) -> None:
@@ -623,9 +678,50 @@ class InlineApp:
             ))
             event.app.invalidate()
 
+        # -- interactive /config settings panel --------------------------------
+        @kb.add("up", filter=cfg_open)
+        def _cfg_up(event) -> None:
+            if self._config_panel is not None:
+                self._config_panel.move(-1)
+                event.app.invalidate()
+
+        @kb.add("down", filter=cfg_open)
+        def _cfg_down(event) -> None:
+            if self._config_panel is not None:
+                self._config_panel.move(1)
+                event.app.invalidate()
+
+        @kb.add("enter", filter=cfg_open)
+        def _cfg_enter(event) -> None:
+            p = self._config_panel
+            if p is not None:
+                p.commit_edit() if p.editing else p.activate()
+                event.app.invalidate()
+
+        @kb.add("space", filter=cfg_nav)
+        def _cfg_space(event) -> None:
+            if self._config_panel is not None:
+                self._config_panel.activate()
+                event.app.invalidate()
+
+        @kb.add("backspace", filter=cfg_edit)
+        def _cfg_backspace(event) -> None:
+            if self._config_panel is not None:
+                self._config_panel.backspace()
+                event.app.invalidate()
+
+        @kb.add(Keys.Any, filter=cfg_edit)
+        def _cfg_type(event) -> None:
+            data = event.data
+            if self._config_panel is not None and data and len(data) == 1 and data.isprintable():
+                self._config_panel.type_text(data)
+                event.app.invalidate()
+
         @kb.add("c-o")
         def _expand_key(event) -> None:
             self._armed = False
+            if self._config_open:
+                return
             self._collapse() if self._expanded else self._open_pager()
 
         @kb.add("q", filter=Condition(lambda: self._expanded))
@@ -634,6 +730,14 @@ class InlineApp:
 
         @kb.add("escape")
         def _esc_key(event) -> None:
+            if self._config_open:
+                p = self._config_panel
+                if p is not None and p.editing:
+                    p.cancel_edit()      # leave edit mode, panel stays open
+                else:
+                    self._close_config()
+                event.app.invalidate()
+                return
             if self._menu_future is not None and not self._menu_future.done():
                 self._menu_future.set_result(self._menu_cancel)
                 return
@@ -646,6 +750,14 @@ class InlineApp:
 
         @kb.add("c-c")
         def _interrupt(event) -> None:
+            if self._config_open:
+                p = self._config_panel
+                if p is not None and p.editing:
+                    p.cancel_edit()
+                else:
+                    self._close_config()
+                event.app.invalidate()
+                return
             if self._expanded:
                 self._collapse()
                 return
@@ -741,6 +853,11 @@ class InlineApp:
 
     async def _command(self, name: str, args: str) -> None:
         c = self.console
+        # `/config` with no args opens the interactive arrow-key settings panel;
+        # `/config get|set …` still routes to the controller as text below.
+        if name == "config" and not args.strip():
+            self._open_config()
+            return
         await self._ensure_extensions()
         rt = self.controller.runtime
         if rt and name in rt.commands:

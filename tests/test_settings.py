@@ -143,3 +143,98 @@ def test_config_command_registered():
 
     assert builtin_command("config") is not None
     assert route_for("config") == "controller"
+
+
+# -- interactive ConfigPanel state model ------------------------------------
+
+
+def _make_apply(config):
+    """A fake apply() that coerces + writes the value onto ``config`` so the
+    panel's value_of() reflects it (mirrors the real controller.set_setting)."""
+    calls: list[tuple[str, str]] = []
+
+    def apply(key: str, raw: str) -> tuple[bool, str]:
+        calls.append((key, raw))
+        val = settings.coerce(key, raw)
+        obj = config
+        parts = key.split(".")
+        for p in parts[:-1]:
+            obj = getattr(obj, p)
+        if key == "permission_mode":
+            setattr(obj, parts[-1], PermissionMode(val))
+        else:
+            setattr(obj, parts[-1], val)
+        return True, f"saved {key}"
+
+    return apply, calls
+
+
+def _panel(config, apply):
+    return settings.ConfigPanel(get_config=lambda: config, apply=apply)
+
+
+def _index_of(panel, key):
+    return [s.key for s in panel.settings].index(key)
+
+
+def test_panel_move_wraps(base_config):
+    p = _panel(base_config, lambda k, r: (True, "ok"))
+    n = len(p.settings)
+    p.move(-1)
+    assert p.index == n - 1
+    p.move(1)
+    assert p.index == 0
+
+
+def test_panel_toggle_bool(base_config):
+    apply, calls = _make_apply(base_config)
+    base_config.wiki.enabled = False
+    p = _panel(base_config, apply)
+    p.index = _index_of(p, "wiki.enabled")
+    p.activate()
+    assert calls[-1] == ("wiki.enabled", "true") and base_config.wiki.enabled is True
+    p.activate()
+    assert calls[-1] == ("wiki.enabled", "false") and base_config.wiki.enabled is False
+
+
+def test_panel_cycle_enum(base_config):
+    apply, calls = _make_apply(base_config)
+    base_config.ui.theme = "dark"
+    p = _panel(base_config, apply)
+    p.index = _index_of(p, "ui.theme")
+    p.activate()                       # dark -> light (next choice)
+    assert calls[-1] == ("ui.theme", "light") and base_config.ui.theme == "light"
+
+
+def test_panel_edit_str_commits(base_config):
+    apply, calls = _make_apply(base_config)
+    p = _panel(base_config, apply)
+    p.index = _index_of(p, "execution.docker_image")
+    p.activate()
+    assert p.editing
+    p.buffer = ""
+    p.type_text("node:22")
+    p.backspace()                      # node:2
+    p.type_text("0")                   # node:20
+    p.commit_edit()
+    assert not p.editing
+    assert calls[-1] == ("execution.docker_image", "node:20")
+    assert base_config.execution.docker_image == "node:20"
+
+
+def test_panel_cancel_edit_applies_nothing(base_config):
+    apply, calls = _make_apply(base_config)
+    p = _panel(base_config, apply)
+    p.index = _index_of(p, "ui.accent")
+    p.activate()
+    p.type_text("zzz")
+    p.cancel_edit()
+    assert not p.editing and calls == []
+
+
+def test_panel_render_marks_selection(base_config):
+    p = _panel(base_config, lambda k, r: (True, "ok"))
+    frags = p.render_lines()
+    assert any(style == "reverse" for style, _ in frags)   # selected row highlighted
+    text = "".join(t for _, t in frags)
+    assert "Settings" in text and "ui.theme" in text
