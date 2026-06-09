@@ -13,6 +13,7 @@ and survive crashes (partial transcript beats no transcript).
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -26,6 +27,48 @@ from jarn.config import paths
 # Maximum characters retained from a tool output in the transcript.
 # Large outputs (e.g. full file reads) are truncated to keep JSONL files sane.
 _TRANSCRIPT_MAX_TOOL_CHARS = 2_000
+
+#: Placeholder substituted for any matched secret-shaped substring.
+_REDACTED = "[REDACTED]"
+
+#: Patterns matching common secret shapes that may appear in a prompt or reply.
+#: The transcript persists to disk indefinitely and is world-readable to the
+#: same user, so we scrub recognised secrets before writing. This is a defensive
+#: net, not a guarantee — it catches the common vendor key prefixes and
+#: ``NAME=secret`` env-style assignments for sensitive-looking variable names.
+_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Vendor API-key prefixes: sk-..., sk-ant-..., ghp_/gho_/ghs_..., xoxb-...,
+    # AKIA... (AWS access key id), AIza... (Google), glpat-..., etc.
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\b(?:ghp|gho|ghs|ghr|ghu)_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"),
+    re.compile(r"\bglpat-[A-Za-z0-9_-]{16,}\b"),
+    # NAME=value assignments where NAME looks sensitive (KEY/TOKEN/SECRET/PASSWORD).
+    re.compile(
+        r"\b([A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|ACCESS_KEY)[A-Z0-9_]*)"
+        r"\s*[=:]\s*\S+",
+    ),
+)
+
+
+def redact_secrets(text: str) -> str:
+    """Replace recognised secret-shaped substrings in *text* with a placeholder.
+
+    Applied to user prompts and assistant replies before they are written to the
+    on-disk transcript so an accidentally-pasted key is not persisted verbatim.
+    """
+    if not text:
+        return text
+    redacted = text
+    for pat in _SECRET_PATTERNS:
+        if pat.groups:
+            # Keep the variable name, redact only its value.
+            redacted = pat.sub(lambda m: f"{m.group(1)}={_REDACTED}", redacted)
+        else:
+            redacted = pat.sub(_REDACTED, redacted)
+    return redacted
 
 
 def default_db_path(project_root: Path | None = None) -> Path:
@@ -204,16 +247,17 @@ class TranscriptWriter:
     # -- convenience helpers ------------------------------------------------
 
     def write_user(self, text: str, *, ts: float) -> None:
-        """Record a user prompt event."""
-        self.append({"ts": ts, "type": "user", "text": text})
+        """Record a user prompt event (secret-shaped substrings redacted)."""
+        self.append({"ts": ts, "type": "user", "text": redact_secrets(text)})
 
     def write_assistant(self, text: str, *, ts: float) -> None:
         """Record the assistant's final reply text for a turn.
 
         Callers accumulate TEXT chunks and call this once per turn with the
         joined result so each turn produces a single readable assistant line.
+        Secret-shaped substrings are redacted before the line is persisted.
         """
-        self.append({"ts": ts, "type": "assistant", "text": text})
+        self.append({"ts": ts, "type": "assistant", "text": redact_secrets(text)})
 
     def write_tool(
         self,

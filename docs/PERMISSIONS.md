@@ -16,7 +16,7 @@ key from the project tier, it asks you to trust the project (once per root; you'
 re-prompted if those keys change). Gated keys:
 
 `hooks` · `mcp_servers` · `async_subagents` · `providers` · `execution` ·
-`permission_mode` · `permissions.allow`
+`permission_mode` · `policy` · `observability` · `permissions.allow`
 
 Until you trust the project these keys are **ignored** (the rest still applies) and the
 session continues safely. Why it matters: otherwise a hostile repo could add a
@@ -29,6 +29,37 @@ your real `${API_KEY}` — exfiltrating it on the next model call. Decisions liv
 Project-tier prompt extensions are gated by the same boundary: until a project is
 trusted, J.A.R.N. skips project `JARN.md`, project memory (`.jarn/memory`), project
 skills, project commands, and project subagents. Global memory still loads.
+
+### Untrusted floor
+
+On top of stripping capability keys, an **untrusted project is clamped to the
+`review-only` profile** (read-only `plan` mode) at launch. This floor is one-way: it
+cannot be loosened until you `jarn trust` the project — not via project config, not via
+`jarn --profile ci`, not via `/profile`, and not via `/mode` or Shift+Tab (the mode
+clamp lives in the single `apply_mode` choke point, and `/sandbox` is locked too). So
+opening an untrusted repo lets the agent read and plan, but it can't write, run shell, or
+escalate until you explicitly trust it.
+
+## 0b. Policy profiles
+
+A **profile** is a named bundle that sets `permission_mode` + `execution.local_sandbox`
++ `execution.sandbox_allow_network` + `policy.web_tools` together, so you pick one safe
+posture instead of tuning four knobs:
+
+| Profile | Mode | OS sandbox | Network | Web tools | For |
+|---|---|---|---|---|---|
+| `trusted-repo` | ask | off | on | on | everyday work you trust |
+| `review-only` | plan (read-only) | off | on | on | reading/auditing unknown code |
+| `sandbox-required` | ask | require | off | on | running untrusted code, isolated |
+| `ci` | yolo (no prompts) | require | on | on | automation, isolated |
+| `offline` | ask | auto | off | **off** | no network at all (web tools disabled) |
+
+Select with `jarn --profile NAME`, `policy.profile` in config, or `/profile` at runtime.
+**Precedence:** CLI `--profile` > `policy.profile` > raw settings; the untrusted floor
+clamps last and always wins. `policy` is a capability-gated key (stripped from untrusted
+project configs). `jarn doctor` shows the stored and effective profile. Note: `offline`
+disables the **in-process** web tools (`web_search`/`web_fetch`) — they run in the agent
+process and would otherwise bypass the OS sandbox's network denial.
 
 ## 1. Coarse modes
 
@@ -108,6 +139,11 @@ ASK. An `always` approval is persisted to `.jarn/config.yaml` (comment-preservin
 except for guard-dangerous actions which can never be remembered. See
 [ARCHITECTURE.md](ARCHITECTURE.md#the-turn-lifecycle).
 
+When the gated action is a `write_file`/`edit_file`, the modal shows a colored unified
+diff of the change. The diff is **capped at 40 lines** with a dim `… (+N more lines)`
+footer, so creating or rewriting a large file doesn't flood the terminal — you're
+approving the whole change, not reading it line by line.
+
 `web_fetch` additionally enforces an SSRF guard (blocks loopback/private/link-local/
 CGNAT/cloud-metadata targets, re-checked on every redirect; streams with a byte cap;
 honors a `JARN_WEB_FETCH_ALLOW_HOSTS` allowlist).
@@ -143,11 +179,38 @@ for filesystem ops but does **not** sandbox shell execution. So your real protec
 in order: the **project trust boundary** (an untrusted repo can't supply commands/config
 in the first place), then the **permission engine + danger-guard** on every action.
 
-A `sandbox` backend (`execution.backend: sandbox`, `/sandbox on`) isolates execution when
-a sandbox runtime is available. It **fails closed**: if the sandbox can't start, J.A.R.N.
-refuses to silently run on the host. Set `execution.allow_local_fallback: true` to opt
-into host fallback — the status bar then shows `host (no sandbox)` so the downgrade is
-never silent.
+For real isolation there are two routes. The **recommended default for untrusted repos**
+is the lighter **OS sandbox** below (`execution.local_sandbox`) — it needs no extra
+runtime and adds little latency. For stronger, container-grade isolation there is the
+**opt-in Docker backend** (`execution.backend: docker`). Both **fail closed**: if the
+requested isolation can't start, J.A.R.N. refuses to silently run on the host. Set
+`execution.allow_local_fallback: true` to opt into host fallback — the status bar then
+shows `host (no sandbox)` so the downgrade is never silent. The status bar always shows
+the active isolation level (`docker` / `os-sandbox` / `host`), and `jarn doctor` reports it.
+
+A remote `sandbox` backend (`execution.backend: sandbox`, LangSmith) is also available
+when a remote runtime is configured.
+
+### Docker backend (opt-in container isolation)
+
+`execution.backend: docker` runs **every** shell command and filesystem operation inside a
+Docker container. The host is exposed only through a bind-mount of the project root at the
+same absolute path; everything else the agent touches is the container image's own
+filesystem. Escaping requires a container breakout, not just slipping past the danger-guard
+regex. Network is denied (`--network none`) when `execution.sandbox_allow_network: false`.
+Resource limits (`docker_memory` / `docker_pids` / `docker_cpus`) and a non-root
+`docker_user` are available (see [CONFIGURATION.md](CONFIGURATION.md)).
+
+> **What Docker isolation does NOT protect.** It guards *the rest of the host* — not your
+> repo. The project root is bind-mounted **read-write**, so code the agent runs can still
+> read, modify, delete, or (with network on) exfiltrate anything inside the project itself,
+> including `.git/` and any secrets committed there (`.env`, keys). Network isolation is
+> **all-or-nothing** — turning it on to allow `pip`/`npm install` also re-enables
+> exfiltration paths. The default image (`python:3.12-slim`) ships only python3 + `/bin/sh`;
+> point `execution.docker_image` at an image with your toolchain (git/node/compilers) or
+> in-container commands will fail. On Linux, leave nothing surprising: files the agent
+> writes are owned by root unless you set `docker_user`. Docker is therefore an opt-in
+> advanced option, not a substitute for the trust boundary + permission engine.
 
 ### OS sandbox (optional kernel-enforced layer)
 

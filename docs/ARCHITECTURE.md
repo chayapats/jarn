@@ -50,9 +50,12 @@ tracking, memory, the extensibility surfaces, and the terminal front-end (`jarn.
 | `jarn.onboarding` | First-run wizard |
 | `jarn.cli` | `jarn` entry point and subcommands |
 | `jarn.doctor_extensions` | Extension diagnostics for `jarn doctor` (skills, commands, shadowing) |
-| `jarn.os_sandbox` | OS-level kernel sandbox for the local shell backend (`sandbox-exec` on macOS, `bwrap` on Linux) |
-| `jarn.checkpoint` | Auto-checkpoint machinery: snapshot working tree before each turn, `/undo` / `/redo` / `/checkpoints` using private git refs |
-| `jarn.repomap` | Ranked, token-budgeted repo map (stdlib `ast` + light regex for JS/TS/Go/Rust); `repo_map` tool + `/map` command |
+| `jarn.agent.os_sandbox` | OS-level kernel sandbox for the local shell backend (`sandbox-exec` on macOS, `bwrap` on Linux) |
+| `jarn.agent.checkpoint` | Auto-checkpoint machinery: snapshot working tree before each turn, `/undo` / `/redo` / `/checkpoints` using private git refs |
+| `jarn.agent.repomap` | Ranked, token-budgeted repo map (stdlib `ast` + light regex for JS/TS/Go/Rust); `repo_map` tool + `/map` command |
+| `jarn.agent.docker_backend` | Docker container backend (`CancellableDockerSandbox`): every command + file op runs in an isolated container; project root bind-mounted; hardened with in-container cancel, resource limits (`--memory`/`--pids-limit`/`--cpus`), non-root `--user`, and anti-orphan reaper |
+| `jarn.config.profiles` | Named policy presets (`trusted-repo`/`review-only`/`sandbox-required`/`ci`/`offline`) via `policy.profile`, `jarn --profile`, or `/profile`; untrusted projects are clamped to a one-way `review-only` floor enforced in `Controller.apply_mode` |
+| `jarn.config.settings` | Curated scalar settings allowlist (`SETTINGS`), `ConfigStore` with ruamel round-trip persistence to `~/.jarn/config.yaml`, and `ConfigPanel` state model; exposed via `/config` interactive panel and `/config get\|set` scripting |
 | `jarn.memory.wiki` | Markdown wiki knowledge base (`wiki_search`, `wiki_read`, `wiki_write`, `wiki_append` tools + `/wiki` command) |
 | `jarn.headless` | Headless one-shot entry point (`jarn -p`); fail-closed tool gating, `--json` output, stdin support |
 | `jarn.compat` | Cross-agent interop: `AGENTS.md` / `CLAUDE.md` context-file discovery and `.claude/` skill/command dirs |
@@ -108,12 +111,18 @@ can force a confirmation even in YOLO mode.
 - **Local-first, sandbox-capable, fail-closed.** The default backend is
   `CancellableLocalShellBackend` (a `LocalShellBackend` that runs each command in its own
   process session so Esc/Ctrl+C can kill the whole tree) scoped to the project root.
-  `execution.backend: sandbox` switches to an isolated backend; if it can't start, the
-  controller **fails closed** (no silent host fallback unless `allow_local_fallback`).
-  The seam is `agent/builder.py::_make_backend`.
+  `execution.backend: sandbox` switches to the OS-level sandbox (recommended lighter
+  default); `execution.backend: docker` switches to `CancellableDockerSandbox` (full
+  container isolation). If either can't start, the controller **fails closed** (no
+  silent host fallback unless `allow_local_fallback`).
+  `Controller.isolation_level()`, the status bar, and `jarn doctor` report the active
+  isolation (`docker`/`os-sandbox`/`host`). The seam is `agent/builder.py::_make_backend`.
 - **Untrusted projects are gated.** A repo's `.jarn/config.yaml` can't run code or read
   secrets until trusted: `config/trust.py` + `load_config(project_trusted=…)` strip
   capability keys (hooks/MCP/providers/…) until the launcher's trust prompt approves them.
+  An untrusted launch also clamps the active policy to the `review-only` floor
+  (`jarn.config.profiles`); `/mode`, Shift+Tab, `/sandbox`, and `/profile` cannot loosen
+  it until `jarn trust` (or `/trust`) is run.
 
 ## Key files
 
@@ -128,9 +137,12 @@ can force a confirmation even in YOLO mode.
 - `repl_renderer.py` — `TurnRenderer` (streaming Markdown, per-tool durations).
 - `tui/toolbar.py` — adaptive bottom toolbar; `tui/input_queue.py` — FIFO input queue.
 - `tui/palette.py` — theme tokens + `configure_ui(theme, accent)`.
-- `os_sandbox.py` — macOS SBPL / Linux bwrap wrappers; path-injection guard.
-- `checkpoint.py` — pre-turn snapshots via private git refs; undo/redo stack.
-- `repomap.py` — AST + regex source parser; ranked map builder; token budgeting.
+- `agent/os_sandbox.py` — macOS SBPL / Linux bwrap wrappers; path-injection guard.
+- `agent/checkpoint.py` — pre-turn snapshots via private git refs; undo/redo stack.
+- `agent/repomap.py` — AST + regex source parser; ranked map builder; token budgeting.
+- `agent/docker_backend.py` — `CancellableDockerSandbox`; image preflight, resource limits, non-root user, anti-orphan reaper.
+- `config/profiles.py` — named policy presets; untrusted `review-only` floor logic.
+- `config/settings.py` — `SETTINGS` allowlist, `ConfigStore`, `ConfigPanel`; `/config` panel backend.
 - `memory/wiki.py` — wiki page CRUD, slug sanitization, trust-gated project tier.
 - `headless.py` — single-turn agent runner for `jarn -p`; fail-closed tool gate.
 - `compat.py` — context-file resolution order and `.claude/` directory discovery.

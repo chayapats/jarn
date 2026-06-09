@@ -39,6 +39,11 @@ BUILTINS: tuple[BuiltinCommand, ...] = (
     BuiltinCommand("help", "Show available commands and shortcuts.", "controller"),
     BuiltinCommand("init", "Create a JARN.md project context file.", "controller"),
     BuiltinCommand(
+        "config",
+        "View or edit settings: /config, /config get <key>, /config set <key> <value> (persists).",
+        "controller",
+    ),
+    BuiltinCommand(
         "model",
         "Show or switch the active model.",
         "repl",
@@ -55,6 +60,12 @@ BUILTINS: tuple[BuiltinCommand, ...] = (
         "Show or toggle the execution backend (local/sandbox).",
         "controller",
         usage="[on|off]",
+    ),
+    BuiltinCommand(
+        "profile",
+        "Show or apply a policy profile (permission mode + sandbox + web tools).",
+        "controller",
+        usage="[<profile-name>]",
     ),
     BuiltinCommand("cost", "Show session token usage and cost.", "controller"),
     BuiltinCommand(
@@ -78,6 +89,17 @@ BUILTINS: tuple[BuiltinCommand, ...] = (
         usage="[search|show|add|update|delete] ...",
     ),
     BuiltinCommand("permissions", "Show current permission rules and allowlist.", "controller"),
+    BuiltinCommand(
+        "mcp",
+        "Show configured MCP servers with per-server health and last error.",
+        "controller",
+        usage="[status]",
+    ),
+    BuiltinCommand(
+        "trust",
+        "Trust this project root and lift the untrusted review-only floor.",
+        "controller",
+    ),
     BuiltinCommand(
         "queue",
         "Show or manage queued input lines (while a turn is running).",

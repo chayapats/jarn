@@ -28,12 +28,17 @@ It runs entirely in your terminal (a Web UI is on the roadmap, post-launch). Not
 capabilities: **AGENTS.md / CLAUDE.md interop** (works out-of-the-box beside other
 agents), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcripts**,
 **`!` shell escape**, **OS-level execution sandbox** (macOS `sandbox-exec` / Linux
-`bwrap`), **auto-checkpoint + `/undo` / `/redo`**, **repo map** (`/map`), and a
-**wiki knowledge base** (`/wiki`).
+`bwrap`) and **Docker container backend** (`execution.backend: docker`), **policy
+profiles** (`/profile`, `jarn --profile`) with an untrusted `review-only` floor,
+**auto-checkpoint + `/undo` / `/redo`**, **repo map** (`/map`), a **wiki knowledge
+base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists to
+`~/.jarn/config.yaml`), and per-server **MCP health** (`/mcp status`).
 
-> **Status:** v0.2.0 on PyPI. The architecture, configuration, permission
-> engine, and terminal REPL are implemented and tested; live model calls require
-> your own API key. See [CHANGELOG.md](CHANGELOG.md) and [SECURITY.md](SECURITY.md).
+> **Status:** v0.3.0 (Alpha) — prepared, pending publish; v0.2.0 is the latest on
+> PyPI. Adds real container/OS isolation, policy profiles, a smoke-eval harness,
+> and `/mcp` / `/trust`. The architecture, configuration, permission engine, and
+> terminal REPL are implemented and tested; live model calls require your own API
+> key. See [CHANGELOG.md](CHANGELOG.md) and [SECURITY.md](SECURITY.md).
 
 > **Security:** J.A.R.N. runs tools on your **host** by default (real filesystem +
 > shell). A project's `.jarn/config.yaml` can declare hooks, MCP servers, and
@@ -173,9 +178,11 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 |---|---|
 | `/help` | Show available commands and shortcuts. |
 | `/init` | Create a JARN.md project context file. |
+| `/config` | View or edit settings: /config, /config get <key>, /config set <key> <value> (persists). |
 | `/model [/ref]` | Show or switch the active model. |
 | `/mode [plan\|ask\|auto-edit\|yolo]` | Show or switch the permission mode (plan/ask/auto-edit/yolo). |
 | `/sandbox [on\|off]` | Show or toggle the execution backend (local/sandbox). |
+| `/profile [<profile-name>]` | Show or apply a policy profile (permission mode + sandbox + web tools). |
 | `/cost` | Show session token usage and cost. |
 | `/compact` | Summarize and compact the conversation context. |
 | `/expand` | Open the last turn's full tool output in the pager (same as Ctrl+O). |
@@ -185,6 +192,8 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/skills` | List available skills. |
 | `/memory [search\|show\|add\|update\|delete] ...` | List, search, show, add, update, or delete long-term memory. |
 | `/permissions` | Show current permission rules and allowlist. |
+| `/mcp [status]` | Show configured MCP servers with per-server health and last error. |
+| `/trust` | Trust this project root and lift the untrusted review-only floor. |
 | `/queue [clear\|cancel <n>\|move <from> <to>]` | Show or manage queued input lines (while a turn is running). |
 | `/undo` | Revert the last agent turn's file changes. |
 | `/redo` | Re-apply the last undone agent turn's file changes. |
@@ -254,7 +263,7 @@ See [docs/EXTENDING.md](docs/EXTENDING.md) ([quick start](docs/EXTENDING.md#quic
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 602 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 789 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

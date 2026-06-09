@@ -689,3 +689,22 @@ async def test_shell_escape_bare_bang_prints_hint(tmp_path, monkeypatch):
 
 def test_repl_importable():
     from jarn.repl import InlineApp, run_inline  # noqa: F401
+
+
+def test_shell_escape_lexer_colors_bang_line():
+    """A `!` shell-escape line renders in the red `shell-escape` style; a normal
+    line is unstyled."""
+    from prompt_toolkit.document import Document
+
+    from jarn.repl import _ShellEscapeLexer
+
+    lx = _ShellEscapeLexer()
+    assert lx.lex_document(Document("!ls -la"))(0) == [("class:shell-escape", "!ls -la")]
+    assert lx.lex_document(Document("  !rm x"))(0) == [("class:shell-escape", "  !rm x")]
+    assert lx.lex_document(Document("hello"))(0) == [("", "hello")]
+
+
+def test_shell_escape_style_registered():
+    from jarn.tui import palette
+
+    assert "shell-escape" in palette.toolbar_style_dict()

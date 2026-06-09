@@ -1,0 +1,6 @@
+name: implement-stub
+prompt: "Implement slugify() in strutil.py per its docstring so the tests pass."
+checker: "python -m pytest -q"
+timeout_s: 60
+protected:
+  - test_strutil.py

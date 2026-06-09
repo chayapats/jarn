@@ -82,9 +82,9 @@ Full reference: [PERMISSIONS.md](PERMISSIONS.md).
 
 ### Known limitations
 
-- **MCP health UI:** a failed MCP server surfaces once in scrollback (`health=degraded`)
-  and in `jarn doctor` (per-server health). A mid-session `/mcp status` command or
-  toolbar indicator is not shipped yet.
+- **MCP toolbar indicator:** a failed MCP server surfaces in scrollback (`health=degraded`),
+  in `jarn doctor` (per-server health), and via `/mcp status` (per-server health + last
+  error, available at runtime). A persistent toolbar indicator is not shipped yet.
 
 The sections below document each surface in full.
 
@@ -125,11 +125,12 @@ completion, and the README command table all derive from this registry — when 
 a built-in, update `BUILTINS` and keep `README.md` in sync
 (`tests/test_phase3.py::test_readme_commands_match_registry`).
 
-Current built-ins: `/help`, `/init`, `/model`, `/mode`, `/sandbox`, `/cost`,
-`/compact`, `/expand`, `/clear`, `/sessions`, `/resume`, `/skills`, `/memory`,
-`/permissions`, `/queue`, `/undo`, `/redo`, `/checkpoints`, `/map`, `/wiki`,
-`/quit`. The README command table is the authoritative list (kept in sync by the
-parity test). See [README.md § Built-in commands](../README.md#built-in-commands).
+Current built-ins: `/help`, `/init`, `/config`, `/model`, `/mode`, `/sandbox`,
+`/profile`, `/cost`, `/compact`, `/expand`, `/clear`, `/sessions`, `/resume`,
+`/skills`, `/memory`, `/permissions`, `/mcp`, `/trust`, `/queue`, `/undo`, `/redo`,
+`/checkpoints`, `/map`, `/wiki`, `/quit`. The README command table is the
+authoritative list (kept in sync by the parity test). See
+[README.md § Built-in commands](../README.md#built-in-commands).
 
 ### Custom commands
 

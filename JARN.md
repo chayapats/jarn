@@ -20,8 +20,9 @@ plan → act → verify, with a strict permission system in front of every mutat
 - Onboarding: Textual wizard (`jarn.onboarding`) with Rich fallback
 - Source: `src/jarn/` — subsystems: `config`, `providers`, `permissions`, `cost`,
   `memory`, `extensibility`, `agent`, `repl`, `repl_renderer`, `tui`, `observability`,
-  `onboarding`, `cli`, `os_sandbox`, `checkpoint`, `repomap`, `memory/wiki`, `headless`
-- Tests: `tests/` (**602** pytest cases); docs: `docs/` + `README.md`; design: `SPEC.md`
+  `onboarding`, `cli`, `agent/os_sandbox`, `agent/checkpoint`, `agent/repomap`,
+  `agent/docker_backend`, `config/profiles`, `config/settings`, `memory/wiki`, `headless`
+- Tests: `tests/` (**789** pytest cases); docs: `docs/` + `README.md`; design: `SPEC.md`
 
 ## Conventions
 
@@ -34,7 +35,7 @@ plan → act → verify, with a strict permission system in front of every mutat
 
 ```bash
 uv sync --extra dev
-uv run pytest                    # full suite (602 tests)
+uv run pytest                    # full suite (789 tests)
 uv run ruff check src tests      # lint
 uv run mypy src/                 # type-check (CI-gated)
 uv run jarn                      # launch the terminal REPL
@@ -54,18 +55,35 @@ uv run jarn doctor               # diagnose config/providers
 - Front-end tests: `test_repl.py`, `test_ux.py`, `test_phase3.py` (registry/queue/toolbar).
 - `LocalShellBackend` runs on the host; safety is the permission engine + danger-guard,
   not isolation. Don't weaken the guard. An optional OS-level sandbox layer is in
-  `os_sandbox.py` (macOS `sandbox-exec`, Linux `bwrap`); controlled by
-  `execution.local_sandbox`.
-- Auto-checkpoint lives in `checkpoint.py`; `/undo`, `/redo`, `/checkpoints` commands
+  `agent/os_sandbox.py` (macOS `sandbox-exec`, Linux `bwrap`); controlled by
+  `execution.local_sandbox`. `execution.backend: docker` activates
+  `agent/docker_backend.py` (`CancellableDockerSandbox`) for full container isolation;
+  `Controller.isolation_level()` + the status bar + `jarn doctor` report
+  `docker`/`os-sandbox`/`host`.
+- Policy profiles live in `config/profiles.py` — named presets (`trusted-repo`,
+  `review-only`, `sandbox-required`, `ci`, `offline`) via `policy.profile`,
+  `jarn --profile`, or `/profile`. An untrusted project is clamped to the `review-only`
+  floor (enforced in `Controller.apply_mode`); `/mode`, Shift+Tab, `/sandbox`, `/profile`
+  cannot loosen it until `jarn trust` / `/trust` is run.
+- The `/config` settings panel lives in `config/settings.py` (`SETTINGS` allowlist,
+  `ConfigStore`, `ConfigPanel`). `/config` opens an interactive tabbed UI; `/config get|set`
+  works for scripting. Settings persist to `~/.jarn/config.yaml` with validation + rollback.
+- Auto-checkpoint lives in `agent/checkpoint.py`; `/undo`, `/redo`, `/checkpoints` commands
   use private git refs and never move HEAD. Controlled by `git.autocheckpoint`.
-- Repo map is in `repomap.py` (stdlib `ast` + regex; no extra deps); exposed as the
+- Repo map is in `agent/repomap.py` (stdlib `ast` + regex; no extra deps); exposed as the
   `repo_map` tool and `/map` command. Controlled by `context.repo_map`.
 - Wiki knowledge base is in `memory/wiki.py`; four tools (`wiki_search`, `wiki_read`,
   `wiki_write`, `wiki_append`) + `/wiki` command. Controlled by `wiki.enabled`.
 - Headless one-shot entry point is `headless.py`; invoked by `jarn -p "..."`.
-- AGENTS.md / CLAUDE.md interop is in `compat.py`; controlled by `compat.context_files`
+- AGENTS.md / CLAUDE.md interop lives in `jarn.memory.context` (context-file
+  resolution) and `jarn.extensibility` (`.claude/` skill/command discovery);
+  controlled by `CompatConfig` (`jarn.config.schema`) via `compat.context_files`
   and `compat.read_claude_dir`.
 - Keep the reliability core (engine, guard, interrupt→approval flow) well-tested.
-- `jarn doctor` reports loaded extensions (skills/commands/subagents/hooks/MCP) and
-  autocheckpoint/wiki/transcript/repo_map status via `doctor_extensions.py` — useful
-  when onboarding teammates to a repo with `.jarn/`.
+- `jarn doctor` reports loaded extensions (skills/commands/subagents/hooks/MCP),
+  autocheckpoint/wiki/transcript/repo_map status, and active isolation level
+  (`docker`/`os-sandbox`/`host`) via `doctor_extensions.py` — useful when onboarding
+  teammates to a repo with `.jarn/`.
+- `/mcp status` shows per-server MCP health and last error at runtime.
+- `/trust` trusts the current project root and lifts the `review-only` floor by
+  reloading config; an untrusted-launch notice is printed at session start.
