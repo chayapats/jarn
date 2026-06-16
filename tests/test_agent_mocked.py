@@ -292,6 +292,63 @@ async def test_reject_resumes_with_reject():
     assert agent.resumed_with.resume["decisions"][0]["type"] == "reject"
 
 
+class WriteAgent:
+    """Scripts a single ``write_file`` interrupt, then completes on resume."""
+
+    def __init__(self, args):
+        self.calls = 0
+        self.args = args
+        self.resumed_with = None
+
+    async def astream(self, payload, config, stream_mode=None, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            yield ("updates", {"__interrupt__": (
+                _Interrupt({"action_requests": [
+                    {"action": "write_file", "args": self.args}
+                ]}),
+            )})
+        else:
+            from langgraph.types import Command
+            self.resumed_with = payload if isinstance(payload, Command) else None
+            yield ("messages", (_FakeAIChunk("done.", {"input_tokens": 1, "output_tokens": 1}),))
+
+
+@pytest.mark.asyncio
+async def test_edit_before_apply_resumes_with_edit_decision():
+    """An approve carrying ``edited_args`` resumes with a LangGraph ``edit``
+    decision whose ``edited_action`` carries the user's edited content — so the
+    edited content (not the agent's original) is what the tool runs with."""
+    agent = WriteAgent({"file_path": "a.txt", "content": "agent original\n"})
+
+    async def approver(req: ApprovalRequest) -> ApprovalReply:
+        return ApprovalReply(
+            approved=True, scope=RememberScope.ONCE,
+            edited_args={"file_path": "a.txt", "content": "user edited\n"},
+        )
+
+    driver = _driver(agent, approver=approver)
+    await _collect(driver, "write it")
+    decision = agent.resumed_with.resume["decisions"][0]
+    assert decision["type"] == "edit"
+    assert decision["edited_action"]["name"] == "write_file"
+    assert decision["edited_action"]["args"]["content"] == "user edited\n"
+
+
+@pytest.mark.asyncio
+async def test_approve_without_edit_resumes_with_plain_approve():
+    """An ordinary approve (no ``edited_args``) still resumes with a plain
+    ``approve`` decision — the edit path is opt-in."""
+    agent = WriteAgent({"file_path": "a.txt", "content": "x\n"})
+
+    async def approver(req: ApprovalRequest) -> ApprovalReply:
+        return ApprovalReply(approved=True, scope=RememberScope.ONCE)
+
+    driver = _driver(agent, approver=approver)
+    await _collect(driver, "write it")
+    assert agent.resumed_with.resume["decisions"] == [{"type": "approve"}]
+
+
 class AsyncTaskAgent:
     """Scripts an interrupt for a ``start_async_task`` tool call (the remote
     async-subagent launcher), then completes on resume."""

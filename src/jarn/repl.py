@@ -19,8 +19,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import random
+import shlex
 import shutil
+import subprocess
+import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -70,15 +74,25 @@ from jarn.tui.toolbar import render_toolbar
 from jarn.version import __version__
 
 if TYPE_CHECKING:
+    from rich.text import Text
+
     from jarn.config.settings import ConfigPanel
 
 Ask = Callable[[str], Awaitable[str]]
-Pick = Callable[[list[tuple[str, ApprovalReply]]], Awaitable[ApprovalReply]]
+Pick = Callable[[list[tuple[str, object]]], Awaitable[object]]
 _MenuT = TypeVar("_MenuT")
 
-#: Max diff lines shown in a write/edit approval prompt before collapsing the
-#: rest to a "… (+N more lines)" footer, so a large file doesn't flood the TUI.
-_APPROVAL_DIFF_MAX_LINES = 40
+#: Sentinel an approval menu carries for the "view full diff" action: choosing
+#: it opens the complete diff in the pager and re-shows the same prompt — it is
+#: NOT an :class:`ApprovalReply`, so it can never approve or deny.
+_VIEW_FULL_DIFF = object()
+
+#: Sentinel for the "edit before apply" action: choosing it opens the proposed
+#: new content in ``$EDITOR`` and applies the user-edited result. Like
+#: :data:`_VIEW_FULL_DIFF` it is not an :class:`ApprovalReply` — the editor flow
+#: produces the actual reply (an approve carrying ``edited_args``, or a deny when
+#: the editor is aborted).
+_EDIT_BEFORE_APPLY = object()
 
 def run_inline(
     config: Config,
@@ -169,6 +183,9 @@ class InlineApp:
         self._last_todos_sig: str | None = None    # de-dupe the todo checklist
         self._pager_buffer = Buffer(read_only=True)
         self._pager_window: Window | None = None
+        #: Resolved when the pager closes — lets an approval prompt block on the
+        #: user finishing a "view full diff" before it re-shows the menu.
+        self._pager_closed: asyncio.Future[None] | None = None
         self._config_open = False                  # interactive /config panel open?
         self._config_panel: ConfigPanel | None = None
         self._config_window: Window | None = None
@@ -458,8 +475,13 @@ class InlineApp:
             self._menu_cancel = None
             self._set_stream("")
 
-    async def _pick_approval(self, options: list[tuple[str, ApprovalReply]]) -> ApprovalReply:
-        deny = options[-1][1]
+    async def _pick_approval(self, options: list[tuple[str, object]]) -> object:
+        # Cancel → deny. The "View full diff" sentinel may sit last, so find the
+        # deny reply by value rather than assuming it's options[-1].
+        deny = next(
+            v for _, v in options
+            if isinstance(v, ApprovalReply) and not v.approved
+        )
         picked = await self._pick_menu(
             options,
             header="Approve · ↑/↓ · Enter · Esc cancel",
@@ -541,6 +563,54 @@ class InlineApp:
         if self.app is not None:
             self.app.layout.focus(self.input)  # back to the conversation
             self.app.invalidate()
+        # Unblock a "view full diff" approval prompt that's waiting on the close.
+        if self._pager_closed is not None and not self._pager_closed.done():
+            self._pager_closed.set_result(None)
+
+    async def _view_full_diff(self, text: str) -> None:
+        """Show the COMPLETE approval diff in the pager and wait for the user to
+        close it (q / Ctrl+O / Esc). Returns when the pager is dismissed so the
+        caller can re-show the SAME approve/deny prompt — viewing never decides."""
+        self._pager_buffer.set_document(Document(text, 0), bypass_readonly=True)
+        self._expanded = True
+        self._pager_closed = asyncio.get_running_loop().create_future()
+        if self.app is not None and self._pager_window is not None:
+            self.app.layout.focus(self._pager_window)
+            self.app.invalidate()
+        try:
+            await self._pager_closed
+        finally:
+            self._pager_closed = None
+
+    async def _edit_before_apply(self, request: ApprovalRequest) -> ApprovalReply | None:
+        """Open the proposed new content in ``$EDITOR``; apply the edited result.
+
+        Returns an approve-:class:`ApprovalReply` carrying ``edited_args`` (the
+        original tool args with the new content swapped for the user's edit), or
+        ``None`` when the editor is aborted so the caller cancels without applying.
+        """
+        args = request.args or {}
+        field = _editable_field(args)
+        if field is None:  # nothing editable — should not happen (menu gated on it)
+            return None
+        original = str(args.get(field, ""))
+        # Suspend the app so $EDITOR owns the terminal, run it off-thread so the
+        # event loop stays live, then restore the app.
+        from prompt_toolkit.application import run_in_terminal
+
+        suffix = Path(str(args.get("file_path") or args.get("path") or "")).suffix or ".txt"
+        edited = await run_in_terminal(
+            lambda: _edit_text_in_editor(original, suffix=suffix)
+        )
+        if edited is None:
+            return None  # editor aborted — cancel cleanly, apply nothing
+        # Validate: the edited content must still apply. We only ever replace the
+        # *new* content (``content`` for a write, ``new_string`` for an edit) and
+        # never touch ``old_string``, so an edit_file's anchor is unchanged and the
+        # replacement still applies; a write_file overwrites wholesale. Carry the
+        # edited args back so the turn resumes with a LangGraph ``edit`` decision.
+        edited_args = {**args, field: edited}
+        return ApprovalReply(True, RememberScope.ONCE, edited_args=edited_args)
 
     # -- interactive settings panel (/config) -------------------------------
 
@@ -622,6 +692,15 @@ class InlineApp:
                 self._line_future.set_result(text)
                 return
             stripped = text.strip()
+            # /abort must reach the running turn, not wait behind it: dispatch it
+            # immediately instead of queueing so it can cancel the in-flight turn
+            # and roll the working tree back.
+            if self._busy() and parse_input(stripped).name == "abort":
+                self.input.append_to_history()
+                self.input.reset()
+                self.console.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(stripped)}")
+                asyncio.create_task(self._command("abort", ""))
+                return
             if self._busy():
                 # A turn is running; queue the line (echoed dim) to run when it
                 # finishes. Empty lines just clear the input.
@@ -867,7 +946,8 @@ class InlineApp:
                 self._last_tool_outputs = []
                 await _run_turn(
                     self.console, self.controller, text, self._ask,
-                    pick=self._pick_approval,
+                    pick=self._pick_approval, view=self._view_full_diff,
+                    edit=self._edit_before_apply,
                     live_sink=self._set_stream, spinner=False,
                     tool_sink=self._last_tool_outputs,
                 )
@@ -927,7 +1007,8 @@ class InlineApp:
             self._last_tool_outputs = []
             await _run_turn(
                 c, self.controller, rt.commands[name].render(args), self._ask,
-                pick=self._pick_approval,
+                pick=self._pick_approval, view=self._view_full_diff,
+                edit=self._edit_before_apply,
                 live_sink=self._set_stream, spinner=False,
                 tool_sink=self._last_tool_outputs,
             )
@@ -956,6 +1037,12 @@ class InlineApp:
             return
         if name == "queue":
             await self._cmd_queue(args)
+            return
+        if name == "abort":
+            # Stop the running turn (if any) AND revert its edits in one action.
+            if self._busy():
+                self._cancel_turn()
+            c.print(self.controller.abort_rollback())
             return
         if name in ("model", "mode") and not args.strip():
             await self._pick_model_or_mode(name)
@@ -1150,6 +1237,8 @@ async def _run_turn(
     ask: Ask,
     *,
     pick: Pick | None = None,
+    view: Callable[[str], Awaitable[None]] | None = None,
+    edit: Callable[[ApprovalRequest], Awaitable[ApprovalReply | None]] | None = None,
     live_sink: Callable[[str], None] | None = None,
     spinner: bool = True,
     tool_sink: list[tuple[str, str]] | None = None,
@@ -1192,7 +1281,7 @@ async def _run_turn(
     turn_text = controller.enrich_turn_input(text)
 
     async def approver(req: ApprovalRequest) -> ApprovalReply:
-        return await _approve(console, controller, req, ask=ask, pick=pick)
+        return await _approve(console, controller, req, ask=ask, pick=pick, view=view, edit=edit)
 
     renderer = TurnRenderer(
         console, lambda: controller.tracker.total.total_tokens,
@@ -1279,16 +1368,71 @@ async def _run_turn(
     return renderer.tool_outputs
 
 
-def _approval_options(request: ApprovalRequest) -> list[tuple[str, ApprovalReply]]:
-    """Build the Claude Code-style approval menu for a gated action."""
-    options: list[tuple[str, ApprovalReply]] = [
+def _editable_field(args: dict | None) -> str | None:
+    """Which arg holds the proposed new content for a write/edit call.
+
+    ``content`` for a ``write_file`` (full file), ``new_string`` for an
+    ``edit_file`` (the replacement text). Returns ``None`` when neither is
+    present (e.g. a binary write), so edit-before-apply is simply not offered.
+    """
+    if not args:
+        return None
+    if "content" in args:
+        return "content"
+    if "new_string" in args:
+        return "new_string"
+    return None
+
+
+def _edit_text_in_editor(text: str, *, suffix: str = ".txt") -> str | None:
+    """Open ``text`` in ``$EDITOR`` and return the edited result.
+
+    Returns the edited text on a normal save-quit, or ``None`` when the editor is
+    *aborted* (non-zero exit, e.g. vim ``:cq``) so the caller cancels without
+    applying anything. Blocking — call via :func:`asyncio.to_thread` so the event
+    loop stays live.
+    """
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
+    fd, path = tempfile.mkstemp(suffix=suffix, prefix="jarn-edit-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        try:
+            proc = subprocess.run([*shlex.split(editor), path], check=False)
+        except (OSError, ValueError):
+            # Editor missing or unparseable $EDITOR → treat as abort.
+            return None
+        if proc.returncode != 0:
+            return None  # editor aborted — do not apply
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
+def _approval_options(
+    request: ApprovalRequest, *, view_full_diff: bool = False, edit_before_apply: bool = False
+) -> list[tuple[str, object]]:
+    """Build the Claude Code-style approval menu for a gated action.
+
+    ``view_full_diff`` appends a non-reply "View full diff" option (carrying the
+    :data:`_VIEW_FULL_DIFF` sentinel) for over-cap write diffs. ``edit_before_apply``
+    appends an "Edit before apply" option (carrying :data:`_EDIT_BEFORE_APPLY`) for
+    writes whose new content can be opened in ``$EDITOR``.
+    """
+    options: list[tuple[str, object]] = [
         ("Allow once", ApprovalReply(True, RememberScope.ONCE)),
     ]
     if request.result.block_remember_always:
         options.append(("Allow for session", ApprovalReply(True, RememberScope.SESSION)))
     else:
         options.append(("Allow always", ApprovalReply(True, RememberScope.ALWAYS)))
+    if edit_before_apply:
+        options.append(("Edit before apply", _EDIT_BEFORE_APPLY))
     options.append(("Deny", ApprovalReply(False, message="rejected by user")))
+    if view_full_diff:
+        options.append(("View full diff", _VIEW_FULL_DIFF))
     return options
 
 
@@ -1299,6 +1443,8 @@ async def _approve(
     *,
     ask: Ask | None = None,
     pick: Pick | None = None,
+    view: Callable[[str], Awaitable[None]] | None = None,
+    edit: Callable[[ApprovalRequest], Awaitable[ApprovalReply | None]] | None = None,
 ) -> ApprovalReply:
     a = request.action
     what = (f"run: {a.target}" if a.kind is ActionKind.SHELL
@@ -1306,30 +1452,67 @@ async def _approve(
             else f"{a.kind.value}: {a.target}")
     danger = "[red]⚠ DANGEROUS — [/red]" if request.result.dangerous else ""
     console.print(f"\n{danger}[bold]Approve?[/bold] {what}  [{palette.C_DIM}]({request.result.reason})[/{palette.C_DIM}]")
+    full_diff: Text | None = None
+    over_cap = False
     if a.kind is ActionKind.WRITE:
         from jarn.tui.widgets.diff import diff_from_edit_args
 
-        # Cap the diff so writing a large file doesn't flood the prompt; the
-        # full content is what's being approved, not what needs to be read.
-        diff = diff_from_edit_args(request.args or {}, max_lines=_APPROVAL_DIFF_MAX_LINES)
+        # Cap the inline diff so writing a large file doesn't flood the prompt;
+        # the full content is what's being approved, not what needs to be read.
+        cap = controller.config.ui.approval_diff_lines
+        full_diff = diff_from_edit_args(request.args or {})
+        over_cap = full_diff is not None and len(full_diff.plain.splitlines()) > cap
+        diff = diff_from_edit_args(request.args or {}, max_lines=cap)
         if diff is not None:
             console.print(diff)
-    options = _approval_options(request)
+    # Only offer "view full diff" when there's actually more to see *and* a pager
+    # to route it through (interactive sessions thread one in via ``view``).
+    show_view = over_cap and view is not None and full_diff is not None
+    # Offer "edit before apply" only for a write whose new content is editable
+    # *and* when an editor launcher is wired (interactive sessions thread one in
+    # via ``edit``); headless callers never see it.
+    show_edit = (
+        a.kind is ActionKind.WRITE
+        and edit is not None
+        and _editable_field(request.args) is not None
+    )
+    options = _approval_options(request, view_full_diff=show_view, edit_before_apply=show_edit)
     if pick is not None:
-        return await pick(options)
+        while True:
+            picked = await pick(options)
+            if picked is _VIEW_FULL_DIFF:
+                # Viewing must NOT decide: scroll the full diff, then re-prompt.
+                assert view is not None and full_diff is not None
+                await view(full_diff.plain)
+                continue
+            if picked is _EDIT_BEFORE_APPLY:
+                # Open the proposed content in $EDITOR. A clean save → approve with
+                # the edited args; aborting the editor cancels cleanly (deny), so
+                # nothing is applied. Either way the prompt is not re-shown.
+                assert edit is not None
+                reply = await edit(request)
+                if reply is None:
+                    console.print(
+                        f"[{palette.C_DIM}]edit aborted — nothing applied[/{palette.C_DIM}]"
+                    )
+                    return ApprovalReply(False, message="rejected by user")
+                return reply
+            return cast(ApprovalReply, picked)
     # Text fallback for headless tests / non-interactive callers.
+    allow_once = cast(ApprovalReply, options[0][1])
+    deny = ApprovalReply(False, message="rejected by user")
     if ask is None:
-        return options[-1][1]
+        return deny
     choices = ("[a]llow once / [s]ession / [r]eject" if request.result.block_remember_always
                else "[a]llow once / [s]ession / [w] always / [r]eject")
     ans = (await ask(f"  {choices}: ")).strip().lower()
     if ans in ("a", "allow", "y", "yes"):
-        return options[0][1]
+        return allow_once
     if ans in ("s", "session"):
         return ApprovalReply(True, RememberScope.SESSION)
     if ans in ("w", "always") and not request.result.block_remember_always:
         return ApprovalReply(True, RememberScope.ALWAYS)
-    return options[-1][1]
+    return deny
 
 
 def _apply_model_ref(controller: Controller, console: Console, chosen: str) -> None:

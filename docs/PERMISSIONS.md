@@ -95,6 +95,20 @@ would allowlist arbitrary payloads. At runtime an approval can be remembered as:
 - **session** — until you quit (in-memory),
 - **always** — written to the project `.jarn/config.yaml` allowlist.
 
+### Edit before apply
+
+For a file write/edit, the approval menu also offers **Edit before apply**: it opens
+the proposed new content (the full file for `write_file`, the replacement text for
+`edit_file`) in your `$EDITOR`. Save normally and the **edited** content is what lands
+on disk — the turn resumes with the edited tool args, not the agent's original. Abort
+the editor (e.g. a non-zero exit such as vim `:cq`) and the action is cancelled cleanly:
+nothing is written.
+
+> **Per-hunk approval is not implemented.** Edit-before-apply replaces the whole new
+> content/replacement; you cannot accept some hunks of a diff and reject others. Per-hunk
+> partial apply needs hunk parsing + partial diff application and is deferred (tracked by
+> the `# TODO(per-hunk)` marker in `src/jarn/agent/session.py`).
+
 ## 3. The danger-guard (hard floor)
 
 The guard runs *before* modes and rules and cannot be bypassed by an allowlist.

@@ -39,6 +39,14 @@ def test_ui_defaults(tmp_path):
     )
     assert cfg.ui.theme == "dark"
     assert cfg.ui.accent == "cyan"
+    assert cfg.ui.approval_diff_lines == 40  # default cap
+
+
+def test_ui_approval_diff_lines_parsed(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"ui": {"approval_diff_lines": 12}})
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.ui.approval_diff_lines == 12
 
 
 def test_global_loaded(tmp_path):

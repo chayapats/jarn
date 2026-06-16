@@ -750,6 +750,46 @@ def test_redo_enabled_normal_behavior(tmp_path, monkeypatch, base_config):
     ctrl.close()
 
 
+# ---------------------------------------------------------------------------
+# P4.C — /abort = cancel + roll back the turn (rollback half, controller side)
+# ---------------------------------------------------------------------------
+
+
+def test_abort_rollback_disabled_explains_autocheckpoint(tmp_path, monkeypatch, base_config):
+    """abort_rollback() with autocheckpoint off cancels-only and names the fix."""
+    # base_config has git.autocheckpoint = False (the default).
+    assert not base_config.git.autocheckpoint
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    msg = ctrl.abort_rollback()
+    # Turn is still reported cancelled, but rollback is unavailable + actionable.
+    assert "cancel" in msg.lower()
+    assert "autocheckpoint" in msg.lower()
+    assert "/config" in msg
+    ctrl.close()
+
+
+def test_abort_rollback_enabled_reverts_turn_edits(tmp_path, monkeypatch, base_config):
+    """abort_rollback() with a turn-start checkpoint reverts that turn's edits."""
+    base_config.git = GitConfig(autocheckpoint=True)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+
+    root = _repo_with_commit(tmp_path)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    ctrl = Controller(base_config, root)
+
+    # Snapshot at the turn's start (what session.py does before the agent edits).
+    (root / "file.txt").write_text("before\n", encoding="utf-8")
+    ctrl.checkpoint_manager.snapshot("test-turn")
+
+    # The agent edits a file mid-turn; /abort must revert it.
+    (root / "file.txt").write_text("after\n", encoding="utf-8")
+
+    msg = ctrl.abort_rollback()
+    assert "rolled back" in msg.lower()
+    assert (root / "file.txt").read_text(encoding="utf-8") == "before\n"
+    ctrl.close()
+
+
 def test_autocheckpoint_off_hint_shown_once(tmp_path, monkeypatch, base_config):
     """autocheckpoint_off_hint() emits the hint the first time and None thereafter."""
     assert not base_config.git.autocheckpoint

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import subprocess
 from io import StringIO
 
 import pytest
 from rich.console import Console
 
-from jarn.agent.session import ApprovalRequest, Event, EventKind
+from jarn.agent.session import ApprovalReply, ApprovalRequest, Event, EventKind
 from jarn.config.schema import Config, ProviderConfig, ProviderType, RoutingConfig
 from jarn.permissions import Action, ActionKind, Decision, PermissionResult, RememberScope
 from jarn.tui.controller import Controller
@@ -469,6 +471,216 @@ async def test_approve_always_blocked_for_dangerous(tmp_path, monkeypatch):
     ctrl.close()
 
 
+def _write_request(content: str):
+    return ApprovalRequest(
+        action=Action(ActionKind.WRITE, "big.txt"),
+        result=PermissionResult(Decision.ASK, "ask mode"),
+        args={"file_path": "big.txt", "content": content},
+    )
+
+
+@pytest.mark.asyncio
+async def test_view_full_diff_offered_only_over_cap(tmp_path, monkeypatch):
+    """A write diff longer than ui.approval_diff_lines offers the view option;
+    a small one does not."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    ctrl.config.ui.approval_diff_lines = 5
+    console = Console(file=StringIO(), width=80)
+
+    captured: list[list[str]] = []
+
+    async def _pick(options):
+        captured.append([label for label, _ in options])
+        return options[0][1]  # Allow once
+
+    async def _view(_text: str) -> None:  # present but should not be used here
+        raise AssertionError("view must not run when picking allow")
+
+    # Big diff (20 added lines > cap of 5) → view offered.
+    big = "".join(f"line {i}\n" for i in range(20))
+    await repl._approve(console, ctrl, _write_request(big), pick=_pick, view=_view)
+    assert "View full diff" in captured[-1]
+
+    # Small diff (2 lines < cap) → view NOT offered.
+    await repl._approve(
+        console, ctrl, _write_request("a\nb\n"), pick=_pick, view=_view
+    )
+    assert "View full diff" not in captured[-1]
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_view_full_diff_does_not_approve_and_reprompts(tmp_path, monkeypatch):
+    """Choosing [v] routes the COMPLETE diff through the pager and returns to the
+    SAME prompt — it never auto-approves."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    ctrl.config.ui.approval_diff_lines = 5
+    console = Console(file=StringIO(), width=80)
+
+    big = "".join(f"line {i}\n" for i in range(20))
+    request = _write_request(big)
+
+    viewed: list[str] = []
+
+    async def _view(text: str) -> None:
+        viewed.append(text)
+
+    # First pick the view sentinel; on the re-prompt pick Deny.
+    calls = {"n": 0}
+
+    async def _pick(options):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return repl._VIEW_FULL_DIFF
+        return next(v for _, v in options
+                    if isinstance(v, ApprovalReply) and not v.approved)
+
+    reply = await repl._approve(console, ctrl, request, pick=_pick, view=_view)
+    assert calls["n"] == 2  # re-prompted after viewing
+
+    # View ran exactly once, with the COMPLETE diff (all 20 lines present).
+    assert len(viewed) == 1
+    assert "line 0" in viewed[0] and "line 19" in viewed[0]
+    # Viewing did not approve; the second pick (Deny) decided.
+    assert reply.approved is False
+    ctrl.close()
+
+
+# -- edit before apply (P4.B) ----------------------------------------------
+
+def _edit_request(content: str | None = None, *, old=None, new=None):
+    """A write/edit ApprovalRequest. ``content`` → write_file; old/new → edit_file."""
+    if content is not None:
+        args = {"file_path": "f.txt", "content": content}
+    else:
+        args = {"file_path": "f.txt", "old_string": old, "new_string": new}
+    return ApprovalRequest(
+        action=Action(ActionKind.WRITE, "f.txt"),
+        result=PermissionResult(Decision.ASK, "ask mode"),
+        args=args,
+    )
+
+
+def test_editable_field_picks_content_then_new_string():
+    from jarn import repl
+
+    assert repl._editable_field({"content": "x"}) == "content"
+    assert repl._editable_field({"old_string": "a", "new_string": "b"}) == "new_string"
+    assert repl._editable_field({}) is None
+    assert repl._editable_field(None) is None
+
+
+@pytest.mark.asyncio
+async def test_edit_option_offered_only_with_editor_wired(tmp_path, monkeypatch):
+    """[e] Edit before apply appears for an editable write iff an editor launcher
+    is threaded in; never for headless callers (no ``edit``)."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    console = Console(file=StringIO(), width=80)
+    captured: list[list[str]] = []
+
+    async def _pick(options):
+        captured.append([label for label, _ in options])
+        return next(v for _, v in options
+                    if isinstance(v, ApprovalReply) and not v.approved)  # Deny
+
+    async def _edit(_req):
+        raise AssertionError("edit must not run when picking Deny")
+
+    # With an editor wired → option offered.
+    await repl._approve(console, ctrl, _edit_request("hi\n"), pick=_pick, edit=_edit)
+    assert "Edit before apply" in captured[-1]
+
+    # Without one → option absent.
+    await repl._approve(console, ctrl, _edit_request("hi\n"), pick=_pick)
+    assert "Edit before apply" not in captured[-1]
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_edit_then_apply_carries_edited_content(tmp_path, monkeypatch):
+    """Picking [e] and saving in the editor returns an approve whose edited_args
+    carry the USER-edited content — that's what lands, not the agent's original."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    console = Console(file=StringIO(), width=80)
+
+    async def _pick(options):
+        return next(v for v in (o[1] for o in options) if v is repl._EDIT_BEFORE_APPLY)
+
+    async def _edit(req):
+        # Simulate the editor returning user-edited content.
+        field = repl._editable_field(req.args)
+        return ApprovalReply(True, edited_args={**req.args, field: "USER EDIT\n"})
+
+    reply = await repl._approve(
+        console, ctrl, _edit_request("agent original\n"), pick=_pick, edit=_edit
+    )
+    assert reply.approved is True
+    assert reply.edited_args is not None
+    assert reply.edited_args["content"] == "USER EDIT\n"
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_edit_abort_cancels_without_applying(tmp_path, monkeypatch):
+    """Aborting the editor (edit callable returns None) denies cleanly: the reply
+    is a rejection and carries no edited_args, so nothing is applied."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    console = Console(file=StringIO(), width=80)
+
+    async def _pick(options):
+        return next(v for v in (o[1] for o in options) if v is repl._EDIT_BEFORE_APPLY)
+
+    async def _edit(_req):
+        return None  # editor aborted
+
+    reply = await repl._approve(
+        console, ctrl, _edit_request("x\n"), pick=_pick, edit=_edit
+    )
+    assert reply.approved is False
+    assert reply.edited_args is None
+    ctrl.close()
+
+
+def test_edit_text_in_editor_returns_saved_content(tmp_path, monkeypatch):
+    """The $EDITOR launcher writes the proposal to a temp file, runs the editor,
+    and returns whatever the editor saved."""
+    from jarn import repl
+
+    def _fake_editor(argv, **kwargs):
+        # argv == [editor, path]; emulate the user appending a line and saving.
+        path = argv[-1]
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("+appended\n")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setenv("EDITOR", "fake-editor")
+    monkeypatch.setattr(repl.subprocess, "run", _fake_editor)
+    out = repl._edit_text_in_editor("original\n")
+    assert out == "original\n+appended\n"
+
+
+def test_edit_text_in_editor_abort_returns_none(tmp_path, monkeypatch):
+    """A non-zero editor exit (e.g. vim :cq) is treated as an abort → None."""
+    from jarn import repl
+
+    def _fake_editor(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 1)  # aborted
+
+    monkeypatch.setenv("EDITOR", "fake-editor")
+    monkeypatch.setattr(repl.subprocess, "run", _fake_editor)
+    assert repl._edit_text_in_editor("original\n") is None
+
+
 def test_inline_app_constructs(tmp_path, monkeypatch):
     from jarn import repl
 
@@ -684,6 +896,211 @@ async def test_shell_escape_bare_bang_prints_hint(tmp_path, monkeypatch):
     await app._shell_escape("")
     out = buf.getvalue()
     assert "!" in out  # hint mentions the ! prefix
+    app.controller.close()
+
+
+def _git_repo_with_commit(root):
+    """Create a fresh git repo with one commit at ``root``."""
+    def g(*args):
+        subprocess.run(["git", *args], cwd=root, capture_output=True, check=True)
+
+    root.mkdir(parents=True, exist_ok=True)
+    g("init", "-b", "main")
+    g("config", "user.email", "test@jarn.test")
+    g("config", "user.name", "Jarn Test")
+    (root / "README.txt").write_text("init\n", encoding="utf-8")
+    g("add", "README.txt")
+    g("commit", "-m", "init")
+
+
+@pytest.mark.asyncio
+async def test_abort_cancels_running_turn_and_rolls_back(tmp_path, monkeypatch):
+    """/abort stops the in-flight turn AND reverts its edits in one action."""
+    from jarn import repl
+    from jarn.config.schema import GitConfig
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    _git_repo_with_commit(root)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+        git=GitConfig(autocheckpoint=True),
+    )
+    app = repl.InlineApp(cfg, root)
+    buf = StringIO()
+    app.console = Console(file=buf, width=80)
+
+    # Turn-start checkpoint (what session.py snapshots before the agent edits).
+    (root / "file.txt").write_text("before\n", encoding="utf-8")
+    app.controller.checkpoint_manager.snapshot("running-turn")
+    # The running turn edits a file; /abort must revert it.
+    (root / "file.txt").write_text("after\n", encoding="utf-8")
+
+    # Simulate an in-flight turn so _busy() is True and _cancel_turn cancels it.
+    async def _never():
+        await asyncio.sleep(3600)
+
+    app._turn_task = asyncio.create_task(_never())
+    assert app._busy()
+
+    await app._command("abort", "")
+    await asyncio.sleep(0)  # let the loop process the task cancellation
+
+    assert app._turn_task.cancelled() or app._turn_task.done()
+    assert (root / "file.txt").read_text(encoding="utf-8") == "before\n"
+    out = buf.getvalue().lower()
+    assert "cancel" in out and "rolled back" in out
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_abort_without_checkpoint_cancels_and_explains(tmp_path, monkeypatch):
+    """/abort with autocheckpoint off cancels the turn and explains rollback is off."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    assert not cfg.git.autocheckpoint  # default OFF
+    app = repl.InlineApp(cfg, root)
+    buf = StringIO()
+    app.console = Console(file=buf, width=80)
+
+    async def _never():
+        await asyncio.sleep(3600)
+
+    app._turn_task = asyncio.create_task(_never())
+    assert app._busy()
+
+    await app._command("abort", "")
+    await asyncio.sleep(0)  # let the loop process the task cancellation
+
+    assert app._turn_task.cancelled() or app._turn_task.done()
+    out = buf.getvalue().lower()
+    assert "cancel" in out
+    assert "autocheckpoint" in out
+    assert "/config" in buf.getvalue()
+    app.controller.close()
+
+
+def _submit_handler(app):
+    """Return the real `enter`/`_submit` keybinding handler (the keystroke path)."""
+    for binding in app._kb.bindings:
+        if getattr(binding.handler, "__name__", "") == "_submit":
+            return binding.handler
+    raise AssertionError("no _submit binding found")
+
+
+async def _drain_background_tasks(*ignore):
+    """Run the fire-and-forgot task(s) _submit spawned (the /abort command) to
+    completion. Awaits every other pending task except the long-running turn
+    stub(s) in ``ignore`` and this coroutine itself."""
+    self = asyncio.current_task()
+    skip = {self, *ignore}
+    for _ in range(50):
+        pending = [t for t in asyncio.all_tasks() if t not in skip and not t.done()]
+        if not pending:
+            break
+        for t in pending:
+            with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                await asyncio.wait_for(asyncio.shield(t), timeout=1.0)
+    await asyncio.sleep(0)  # let any scheduled cancellation settle
+
+
+@pytest.mark.asyncio
+async def test_submit_abort_cancels_running_turn_through_keystroke(tmp_path, monkeypatch):
+    """Submitting `/abort` through _submit (not _command) while a turn is live
+    cancels the running turn and rolls back — the real keystroke entrypoint.
+
+    Regression guard: _submit must NOT queue /abort behind the running turn
+    (which would leave the cancel branch unreachable until the turn finishes)."""
+    from jarn import repl
+    from jarn.config.schema import GitConfig
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    _git_repo_with_commit(root)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+        git=GitConfig(autocheckpoint=True),
+    )
+    app = repl.InlineApp(cfg, root)
+    buf = StringIO()
+    app.console = Console(file=buf, width=80)
+
+    # Turn-start checkpoint, then a mid-turn edit /abort must revert.
+    (root / "file.txt").write_text("before\n", encoding="utf-8")
+    app.controller.checkpoint_manager.snapshot("running-turn")
+    (root / "file.txt").write_text("after\n", encoding="utf-8")
+
+    async def _never():
+        await asyncio.sleep(3600)
+
+    app._turn_task = asyncio.create_task(_never())
+    turn_task = app._turn_task
+    assert app._busy()
+
+    # Drive the actual submit path: type "/abort" + Enter.
+    app.input.text = "/abort"
+    _submit_handler(app)(event=None)
+    # _submit fire-and-forgets _command via create_task; drain background tasks
+    # (the abort command) so it reaches _cancel_turn and the rollback print.
+    await _drain_background_tasks(turn_task)
+
+    assert turn_task.cancelled() or turn_task.done()
+    assert not app.input.text  # the abort line did NOT stay queued in the input
+    assert (root / "file.txt").read_text(encoding="utf-8") == "before\n"
+    out = buf.getvalue().lower()
+    assert "cancel" in out and "rolled back" in out
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_submit_abort_without_checkpoint_cancels_and_explains(tmp_path, monkeypatch):
+    """Through the real keystroke path, /abort with autocheckpoint off cancels the
+    turn and explains rollback needs autocheckpoint."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    assert not cfg.git.autocheckpoint  # default OFF
+    app = repl.InlineApp(cfg, root)
+    buf = StringIO()
+    app.console = Console(file=buf, width=80)
+
+    async def _never():
+        await asyncio.sleep(3600)
+
+    app._turn_task = asyncio.create_task(_never())
+    turn_task = app._turn_task
+    assert app._busy()
+
+    app.input.text = "/abort"
+    _submit_handler(app)(event=None)
+    await _drain_background_tasks(turn_task)
+
+    assert turn_task.cancelled() or turn_task.done()
+    out = buf.getvalue().lower()
+    assert "cancel" in out
+    assert "autocheckpoint" in out
+    assert "/config" in buf.getvalue()
     app.controller.close()
 
 
