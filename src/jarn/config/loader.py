@@ -322,9 +322,17 @@ def _build_config(raw: dict[str, Any]) -> Config:
     )
 
     ui = raw.get("ui", {}) or {}
+    from jarn.config.schema import _VALID_SPLASH_VALUES
+    splash_raw = str(ui.get("splash", "compact"))
+    if splash_raw not in _VALID_SPLASH_VALUES:
+        raise ConfigError(
+            f"ui.splash must be one of {sorted(_VALID_SPLASH_VALUES)} "
+            f"(got {splash_raw!r})."
+        )
     cfg.ui = UIConfig(
         theme=str(ui.get("theme", "dark")),
         accent=str(ui.get("accent", "cyan")),
+        splash=splash_raw,
     )
 
     compat = raw.get("compat", {}) or {}

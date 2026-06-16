@@ -260,32 +260,60 @@ def _cmd_init(*, force: bool) -> int:
     return 0
 
 
-def _collect_doctor(diag: dict) -> int:
+def _collect_doctor(
+    diag: dict,
+    *,
+    config: Any = None,
+    project_root: Any = None,
+    project_trusted: bool | None = None,
+) -> int:
     """Populate ``diag`` with doctor diagnostics and return the exit code.
 
     Pure data collection — no rendering — so the same diagnostics back both the
     Rich and the ``--json`` output paths.
+
+    When ``config`` is provided (e.g. from the REPL controller), the function
+    uses it directly instead of loading from disk.  ``project_root`` and
+    ``project_trusted`` are also accepted so the caller can pass its live
+    session state.
     """
     from jarn.config import paths
-    from jarn.config.loader import load_config
     from jarn.config.secrets import SecretResolutionError, resolve
     from jarn.providers import ModelFactory, ModelResolutionError
 
     gpath = paths.global_config_path()
     diag["global_config"] = str(gpath)
     diag["global_config_present"] = gpath.is_file()
-    root = paths.find_project_root()
-    diag["project_root"] = str(root) if root else None
 
-    if not gpath.is_file():
-        diag["ok"] = False
-        return 1
+    if config is None:
+        # CLI path: auto-discover root from the filesystem.
+        from jarn.config.loader import load_config
 
-    from jarn.config.trust import is_project_trusted
+        root = paths.find_project_root() if project_root is None else project_root
+        diag["project_root"] = str(root) if root else None
 
-    project_trusted = is_project_trusted(root) if root is not None else True
-    diag["project_trusted"] = project_trusted
-    cfg = load_config(project_root=root, project_trusted=project_trusted)
+        if not gpath.is_file():
+            diag["ok"] = False
+            return 1
+
+        from jarn.config.trust import is_project_trusted
+
+        if project_trusted is None:
+            project_trusted = is_project_trusted(root) if root is not None else True
+        diag["project_trusted"] = project_trusted
+        cfg = load_config(project_root=root, project_trusted=project_trusted)
+    else:
+        # REPL path: use the live config that was already loaded at session start.
+        # The session is running, so the config was already loaded successfully;
+        # mark it present regardless of the on-disk state to show all diagnostics.
+        cfg = config
+        root = project_root
+        diag["project_root"] = str(root) if root else None
+        diag["global_config_present"] = True
+        if project_trusted is None:
+            project_trusted = True
+        diag["project_trusted"] = project_trusted
+
     diag["default_profile"] = cfg.default_profile
     diag["main_model"] = cfg.resolved_main_model()
     diag["permission_mode"] = cfg.permission_mode.value

@@ -65,7 +65,7 @@ from jarn.tui import palette
 from jarn.tui.completion import CompletionProvider
 from jarn.tui.controller import Controller
 from jarn.tui.input_queue import InputQueue
-from jarn.tui.logo import splash
+from jarn.tui.logo import SHORTCUT_HINT, splash, splash_compact
 from jarn.tui.toolbar import render_toolbar
 from jarn.version import __version__
 
@@ -179,8 +179,22 @@ class InlineApp:
 
     async def run(self) -> None:
         c = self.console
-        c.print(splash(__version__, self.config.resolved_main_model(),
-                       self.config.permission_mode.value))
+        _model = self.config.resolved_main_model()
+        _mode = self.config.permission_mode.value
+        _splash_cfg = self.config.ui.splash
+        from jarn.config.paths import global_home
+        _first_run_marker = global_home() / "state" / "first_run_done"
+        _is_first_run = not _first_run_marker.exists()
+        if _is_first_run:
+            _first_run_marker.parent.mkdir(parents=True, exist_ok=True)
+            _first_run_marker.touch()
+            c.print(splash(__version__, _model, _mode))
+        elif _splash_cfg == "full":
+            c.print(splash(__version__, _model, _mode))
+        elif _splash_cfg == "compact":
+            c.print(splash_compact(__version__, _model, _mode))
+        else:  # off
+            c.print(SHORTCUT_HINT)
         c.print(f"[{palette.C_DIM}]terminal mode · Enter send · Shift+Enter newline · "
                 f"Shift+Tab mode · Esc interrupt · Ctrl+O or /expand · Ctrl+C exit[/{palette.C_DIM}]")
         ok, message = self.controller.validate()
@@ -1119,8 +1133,13 @@ async def _run_turn(
         _warn_color, _glyph = (
             (palette.C_ERROR, "✗") if controller.health == "error" else (palette.C_WARN, "⚠")
         )
+        _doctor_hint = (
+            f" [{palette.C_DIM}]— run /doctor[/{palette.C_DIM}]"
+            if controller.health == "error"
+            else ""
+        )
         console.print(
-            f"[{_warn_color}]{_glyph} {_rich_escape(controller.last_error)}[/{_warn_color}]"
+            f"[{_warn_color}]{_glyph} {_rich_escape(controller.last_error)}[/{_warn_color}]{_doctor_hint}"
         )
 
     controller.record_session_title(text, when=time.time())

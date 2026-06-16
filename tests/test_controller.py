@@ -39,6 +39,17 @@ def test_validate_error_on_missing_key(tmp_path, monkeypatch, base_config):
     ctrl.close()
 
 
+def test_error_status_line_shows_doctor_hint(tmp_path, monkeypatch, base_config):
+    """When health is error the status line must show /doctor as an actionable pointer."""
+    base_config.providers["openrouter"].api_key = "${DEFINITELY_UNSET_XYZ}"
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    ctrl.validate()
+    assert ctrl.health == "error"
+    line = ctrl.status_line
+    assert "/doctor" in line, f"expected /doctor in status_line, got: {line!r}"
+    ctrl.close()
+
+
 def test_sandbox_command_mentions_fail_closed(tmp_path, monkeypatch, base_config):
     ctrl = _controller(tmp_path, monkeypatch, base_config)
     result = ctrl.handle_command("sandbox", "on")
@@ -572,4 +583,74 @@ def test_cmd_trust_already_trusted(tmp_path, monkeypatch, base_config):
     out = ctrl.handle_command("trust", "")
     assert "already trusted" in out.text.lower()
     assert out.rebuilt is False
+    ctrl.close()
+
+
+def test_cmd_doctor_shows_provider_and_mode(tmp_path, monkeypatch, base_config):
+    """/doctor returns the same checks as jarn doctor: key state, mode, profile."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    result = ctrl.handle_command("doctor", "")
+
+    # Must not flag rebuilt/quit/clear_screen — it's a read-only diagnostic.
+    assert result.rebuilt is False
+    assert result.quit is False
+    assert result.clear_screen is False
+
+    # The output must mention the permission mode the config has.
+    assert "ask" in result.text.lower()
+
+    # Provider key state must appear.
+    assert "key ok" in result.text.lower() or "openrouter" in result.text.lower()
+
+    # The output must be valid Rich markup (no markup exceptions).
+    buf = StringIO()
+    console = Console(file=buf, force_terminal=True, width=120)
+    console.print(result.text)
+    rendered = buf.getvalue()
+    assert "jarn doctor" in rendered
+    ctrl.close()
+
+
+def test_cmd_doctor_bad_key_shows_warning(tmp_path, monkeypatch, base_config):
+    """/doctor surfaces key errors for providers with invalid keys."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    base_config.providers["openrouter"].api_key = "${DEFINITELY_UNSET_XYZ}"
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    result = ctrl.handle_command("doctor", "")
+    rendered = StringIO()
+    console = Console(file=rendered, force_terminal=True, width=120)
+    console.print(result.text)
+    output = rendered.getvalue()
+    # Should surface a key resolution failure (not "key ok")
+    assert "key ok" not in output.lower() or "DEFINITELY_UNSET_XYZ" in output
+    ctrl.close()
+
+
+def test_cmd_doctor_renders_same_data_as_cli(tmp_path, monkeypatch, base_config):
+    """/doctor renders the same diagnostic blocks as `jarn doctor`, incl. Extensions."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    result = ctrl.handle_command("doctor", "")
+
+    rendered = StringIO()
+    console = Console(file=rendered, force_terminal=True, width=120)
+    console.print(result.text)
+    output = rendered.getvalue()
+
+    # The same section headers the CLI _cmd_doctor renders must be present so
+    # both surfaces show the same data (criterion 1 + the Extensions fidelity gap).
+    for header in ("Providers", "Main model build", "Extensions"):
+        assert header in output, f"/doctor output missing {header!r} block"
+    # Extensions summary counts line is rendered.
+    assert "skills" in output and "mcp" in output
     ctrl.close()

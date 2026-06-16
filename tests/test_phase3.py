@@ -47,7 +47,71 @@ def test_format_help_is_valid_rich_markup():
 
     buf = StringIO()
     Console(file=buf, force_terminal=True, width=100).print(format_help())
-    assert "Built-in commands" in buf.getvalue()
+    rendered = buf.getvalue()
+    # Grouped sections replace the old flat "Built-in commands" header.
+    assert "Daily" in rendered
+    assert "Setup" in rendered
+    assert "Session" in rendered
+
+
+def test_format_help_groups_contain_expected_commands():
+    """Commands appear under the correct group section."""
+    body = format_help()
+    # Verify section ordering: Daily appears before Setup, Setup before Session.
+    assert body.index("[b]Daily[/b]") < body.index("[b]Setup[/b]")
+    assert body.index("[b]Setup[/b]") < body.index("[b]Session[/b]")
+    # Spot-check a few commands per group.
+    setup_pos = body.index("[b]Setup[/b]")
+    session_pos = body.index("[b]Session[/b]")
+    # Daily commands appear before Setup header.
+    assert body.index("/model") < setup_pos
+    assert body.index("/cost") < setup_pos
+    assert body.index("/clear") < setup_pos
+    # Setup commands appear between Setup and Session headers.
+    assert setup_pos < body.index("/config") < session_pos
+    assert setup_pos < body.index("/trust") < session_pos
+    # Session commands appear after Session header.
+    assert body.index("/resume") > session_pos
+    assert body.index("/queue") > session_pos
+
+
+def test_format_help_has_shortcuts_block():
+    """Shortcuts block is present in the rendered help."""
+    body = format_help()
+    assert "[b]Shortcuts[/b]" in body
+    assert "Shift+Tab" in body or "Tab complete" in body
+
+
+def test_format_help_has_toolbar_glyphs_legend():
+    """Toolbar glyphs legend block is rendered with the expected symbols."""
+    body = format_help()
+    assert "[b]Toolbar glyphs[/b]" in body
+    assert "◇" in body   # plan
+    assert "◆" in body   # ask
+    assert "⚡" in body  # auto-edit
+    assert "⚠" in body   # yolo
+    assert "●" in body   # key ok
+    assert "✗" in body   # key fail
+    assert "queue N" in body
+
+
+def test_builtin_command_group_field():
+    """Every builtin has a non-empty group assigned."""
+    from jarn.extensibility.commands import BUILTINS
+
+    for cmd in BUILTINS:
+        assert cmd.group in ("Daily", "Setup", "Session"), (
+            f"/{cmd.name} has unexpected group {cmd.group!r}"
+        )
+
+
+def test_profile_command_entry_unchanged():
+    """P3.A is deferred — the 'profile' command entry must not be renamed."""
+    from jarn.extensibility.commands import BUILTINS
+
+    profile_cmd = next((c for c in BUILTINS if c.name == "profile"), None)
+    assert profile_cmd is not None, "/profile must remain in BUILTINS (P3.A deferred)"
+    assert profile_cmd.group == "Setup"
 
 
 def test_readme_rows_cover_all_builtins():

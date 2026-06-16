@@ -25,6 +25,7 @@ from jarn.config import paths
 from jarn.extensibility.frontmatter import discover, parse
 
 CommandRoute = Literal["controller", "repl", "agent_template"]
+HelpGroup = Literal["Daily", "Setup", "Session"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,95 +34,115 @@ class BuiltinCommand:
     description: str
     route: CommandRoute
     usage: str = ""
+    group: HelpGroup = "Daily"
 
 
 BUILTINS: tuple[BuiltinCommand, ...] = (
-    BuiltinCommand("help", "Show available commands and shortcuts.", "controller"),
-    BuiltinCommand("init", "Create a JARN.md project context file.", "controller"),
-    BuiltinCommand(
-        "config",
-        "View or edit settings: /config, /config get <key>, /config set <key> <value> (persists).",
-        "controller",
-    ),
+    BuiltinCommand("help", "Show available commands and shortcuts.", "controller", group="Daily"),
     BuiltinCommand(
         "model",
         "Show or switch the active model.",
         "repl",
         usage="[/ref]",
+        group="Daily",
     ),
     BuiltinCommand(
         "mode",
         "Show or switch the permission mode (plan/ask/auto-edit/yolo).",
         "repl",
         usage="[plan|ask|auto-edit|yolo]",
+        group="Daily",
+    ),
+    BuiltinCommand("cost", "Show session token usage and cost.", "controller", group="Daily"),
+    BuiltinCommand("undo", "Revert the last agent turn's file changes.", "controller", group="Daily"),
+    BuiltinCommand("redo", "Re-apply the last undone agent turn's file changes.", "controller", group="Daily"),
+    BuiltinCommand(
+        "compact",
+        "Summarize and compact the conversation context.",
+        "repl",
+        group="Daily",
     ),
     BuiltinCommand(
-        "sandbox",
-        "Show or toggle the execution backend (local/sandbox).",
+        "expand",
+        "Open the last turn's full tool output in the pager (same as Ctrl+O).",
+        "repl",
+        group="Daily",
+    ),
+    BuiltinCommand(
+        "memory",
+        "List, search, show, add, update, or delete long-term memory.",
         "controller",
-        usage="[on|off]",
+        usage="[search|show|add|update|delete] ...",
+        group="Daily",
+    ),
+    BuiltinCommand("clear", "Clear the conversation and start a fresh thread.", "controller", group="Daily"),
+    BuiltinCommand(
+        "config",
+        "View or edit settings: /config, /config get <key>, /config set <key> <value> (persists).",
+        "controller",
+        group="Setup",
     ),
     BuiltinCommand(
         "profile",
         "Show or apply a policy profile (permission mode + sandbox + web tools).",
         "controller",
         usage="[<profile-name>]",
-    ),
-    BuiltinCommand("cost", "Show session token usage and cost.", "controller"),
-    BuiltinCommand(
-        "compact",
-        "Summarize and compact the conversation context.",
-        "repl",
+        group="Setup",
     ),
     BuiltinCommand(
-        "expand",
-        "Open the last turn's full tool output in the pager (same as Ctrl+O).",
-        "repl",
-    ),
-    BuiltinCommand("clear", "Clear the conversation and start a fresh thread.", "controller"),
-    BuiltinCommand("sessions", "List and resume previous sessions.", "controller"),
-    BuiltinCommand("resume", "Pick a previous session to resume.", "repl"),
-    BuiltinCommand("skills", "List available skills.", "controller"),
-    BuiltinCommand(
-        "memory",
-        "List, search, show, add, update, or delete long-term memory.",
+        "sandbox",
+        "Show or toggle the execution backend (local/sandbox).",
         "controller",
-        usage="[search|show|add|update|delete] ...",
-    ),
-    BuiltinCommand("permissions", "Show current permission rules and allowlist.", "controller"),
-    BuiltinCommand(
-        "mcp",
-        "Show configured MCP servers with per-server health and last error.",
-        "controller",
-        usage="[status]",
+        usage="[on|off]",
+        group="Setup",
     ),
     BuiltinCommand(
         "trust",
         "Trust this project root and lift the untrusted review-only floor.",
         "controller",
+        group="Setup",
     ),
+    BuiltinCommand(
+        "mcp",
+        "Show configured MCP servers with per-server health and last error.",
+        "controller",
+        usage="[status]",
+        group="Setup",
+    ),
+    BuiltinCommand("skills", "List available skills.", "controller", group="Setup"),
+    BuiltinCommand("init", "Create a JARN.md project context file.", "controller", group="Setup"),
+    BuiltinCommand("permissions", "Show current permission rules and allowlist.", "controller", group="Setup"),
+    BuiltinCommand(
+        "doctor",
+        "Diagnose configuration, providers, and keys.",
+        "controller",
+        group="Setup",
+    ),
+    BuiltinCommand("resume", "Pick a previous session to resume.", "repl", group="Session"),
+    BuiltinCommand("sessions", "List and resume previous sessions.", "controller", group="Session"),
+    BuiltinCommand("checkpoints", "List recent auto-checkpoints.", "controller", group="Session"),
     BuiltinCommand(
         "queue",
         "Show or manage queued input lines (while a turn is running).",
         "repl",
         usage="[clear|cancel <n>|move <from> <to>]",
+        group="Session",
     ),
-    BuiltinCommand("undo", "Revert the last agent turn's file changes.", "controller"),
-    BuiltinCommand("redo", "Re-apply the last undone agent turn's file changes.", "controller"),
-    BuiltinCommand("checkpoints", "List recent auto-checkpoints.", "controller"),
-    BuiltinCommand("quit", "Exit J.A.R.N.", "controller"),
     BuiltinCommand(
         "map",
         "Show the ranked repo map (codebase overview).",
         "controller",
         usage="[focus] [--refresh]",
+        group="Session",
     ),
     BuiltinCommand(
         "wiki",
         "Search or list wiki knowledge-base pages.",
         "controller",
         usage="[search <q>|list]",
+        group="Session",
     ),
+    BuiltinCommand("quit", "Exit J.A.R.N.", "controller", group="Session"),
 )
 
 # Backward-compatible name → description map.
@@ -166,18 +187,38 @@ def completion_catalog(custom: dict[str, Any] | None = None) -> dict[str, str]:
     return catalog
 
 
+_HELP_GROUP_ORDER: tuple[HelpGroup, ...] = ("Daily", "Setup", "Session")
+
+HELP_GLYPH_LEGEND = (
+    "◇ plan · ◆ ask · ⚡ auto-edit · ⚠ yolo · "
+    "● key ok · ✗ key fail · queue N = lines waiting while a turn runs"
+)
+
+
 def format_help(
     custom: dict[str, Any] | None = None,
     *,
     custom_description: Callable[[Any], str] | None = None,
 ) -> str:
-    """Build ``/help`` body (Rich markup)."""
-    lines = ["[b]Built-in commands[/b]"]
+    """Build ``/help`` body (Rich markup), grouped by section."""
+    lines: list[str] = []
+
+    # Group builtins by their group field, preserving BUILTINS declaration order.
+    grouped: dict[str, list[BuiltinCommand]] = {}
     for cmd in BUILTINS:
-        suffix = f" {_escape_rich(cmd.usage)}" if cmd.usage else ""
-        lines.append(
-            f"  [cyan]/{cmd.name}{suffix}[/cyan] — {_escape_rich(cmd.description)}"
-        )
+        grouped.setdefault(cmd.group, []).append(cmd)
+
+    for group_name in _HELP_GROUP_ORDER:
+        cmds = grouped.get(group_name, [])
+        if not cmds:
+            continue
+        lines.append(f"[b]{group_name}[/b]")
+        for cmd in cmds:
+            suffix = f" {_escape_rich(cmd.usage)}" if cmd.usage else ""
+            lines.append(
+                f"  [cyan]/{cmd.name}{suffix}[/cyan] — {_escape_rich(cmd.description)}"
+            )
+
     if custom:
         lines.append("\n[b]Project commands[/b]")
         for command in custom.values():
@@ -190,8 +231,14 @@ def format_help(
             lines.append(
                 f"  [cyan]/{_escape_rich(name)}[/cyan] — {_escape_rich(desc)}"
             )
-    lines.append(f"\n[dim]Shortcuts: {HELP_SHORTCUTS}[/dim]")
-    lines.append(f"[dim]{HELP_COPY_HINT}[/dim]")
+
+    lines.append("\n[b]Shortcuts[/b]")
+    lines.append(f"  [dim]{HELP_SHORTCUTS}[/dim]")
+    lines.append(f"  [dim]{HELP_COPY_HINT}[/dim]")
+
+    lines.append("\n[b]Toolbar glyphs[/b]")
+    lines.append(f"  [dim]{HELP_GLYPH_LEGEND}[/dim]")
+
     return "\n".join(lines)
 
 
