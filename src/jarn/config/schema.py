@@ -218,10 +218,14 @@ class ObservabilityConfig:
     transcript: bool = True       # append-only JSONL session transcript under .jarn/sessions/
 
 
+_VALID_SPLASH_VALUES: frozenset[str] = frozenset({"full", "compact", "off"})
+
+
 @dataclass(slots=True)
 class UIConfig:
     theme: str = "dark"           # dark | light | high-contrast
     accent: str = "cyan"          # brand accent
+    splash: str = "compact"       # full | compact | off
 
 
 @dataclass(slots=True)

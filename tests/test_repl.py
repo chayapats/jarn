@@ -708,3 +708,51 @@ def test_shell_escape_style_registered():
     from jarn.tui import palette
 
     assert "shell-escape" in palette.toolbar_style_dict()
+
+
+@pytest.mark.asyncio
+async def test_error_health_notice_shows_doctor_hint(tmp_path, monkeypatch):
+    """When controller.health is 'error', the startup notice must include '/doctor'."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    # Simulate a provider key failure being already set (as validate() would set it).
+    ctrl.health = "error"
+    ctrl.last_error = "API key missing or invalid"
+    ctrl.health_notice_shown = False
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+    monkeypatch.setattr(ctrl, "make_driver",
+                        lambda approver: _FakeDriver([Event(EventKind.TEXT, "ok"), Event(EventKind.DONE)]))
+
+    console = Console(file=StringIO(), width=120)
+    await repl._run_turn(console, ctrl, "hi", _ask_returning(""))
+    out = console.file.getvalue()
+    assert "/doctor" in out, f"expected /doctor in startup error notice, got: {out!r}"
+    assert ctrl.health_notice_shown is True
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_degraded_health_notice_has_no_doctor_hint(tmp_path, monkeypatch):
+    """Degraded (non-error) health notice must NOT append '/doctor' (only error does)."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    ctrl.health = "degraded"
+    ctrl.last_error = "sandbox unavailable"
+    ctrl.health_notice_shown = False
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+    monkeypatch.setattr(ctrl, "make_driver",
+                        lambda approver: _FakeDriver([Event(EventKind.TEXT, "ok"), Event(EventKind.DONE)]))
+
+    console = Console(file=StringIO(), width=120)
+    await repl._run_turn(console, ctrl, "hi", _ask_returning(""))
+    out = console.file.getvalue()
+    assert "/doctor" not in out, f"degraded notice should not show /doctor, got: {out!r}"
+    ctrl.close()
