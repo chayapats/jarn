@@ -1166,6 +1166,25 @@ class Controller:
             return CommandResult(f"Undone. {result.message}")
         return CommandResult(f"Cannot undo: {result.message}")
 
+    def abort_rollback(self) -> str:
+        """Roll back the working tree to the current turn's start checkpoint.
+
+        Used by ``/abort`` *after* the turn has been cancelled in the REPL.
+        The turn-start snapshot sits on top of the undo stack, so reverting it
+        is exactly :meth:`CheckpointManager.undo`. Degrades gracefully when
+        autocheckpoint is off (no checkpoint to roll back to) — mirroring the
+        ``/undo`` wording that points the user at how to enable it.
+        """
+        if not self.checkpoint_manager.enabled:
+            return (
+                "Turn cancelled. Rollback unavailable — /abort needs autocheckpoint. "
+                "Enable it with /config (git.autocheckpoint: true) or 'jarn config'."
+            )
+        result = self.checkpoint_manager.undo()
+        if result.ok:
+            return f"Turn cancelled and rolled back. {result.message}"
+        return f"Turn cancelled. Cannot roll back: {result.message}"
+
     def _cmd_redo(self, args: str) -> CommandResult:
         """Re-apply the most recently undone agent turn's file changes."""
         if not self.checkpoint_manager.enabled:

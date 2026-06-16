@@ -197,6 +197,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/queue [clear\|cancel <n>\|move <from> <to>]` | Show or manage queued input lines (while a turn is running). |
 | `/undo` | Revert the last agent turn's file changes. |
 | `/redo` | Re-apply the last undone agent turn's file changes. |
+| `/abort` | Cancel the running turn and roll back its file changes. |
 | `/checkpoints` | List recent auto-checkpoints. |
 | `/quit` | Exit J.A.R.N. |
 | `/map [focus] [--refresh]` | Show the ranked repo map (codebase overview). |

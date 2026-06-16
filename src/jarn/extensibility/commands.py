@@ -56,6 +56,7 @@ BUILTINS: tuple[BuiltinCommand, ...] = (
     BuiltinCommand("cost", "Show session token usage and cost.", "controller", group="Daily"),
     BuiltinCommand("undo", "Revert the last agent turn's file changes.", "controller", group="Daily"),
     BuiltinCommand("redo", "Re-apply the last undone agent turn's file changes.", "controller", group="Daily"),
+    BuiltinCommand("abort", "Cancel the running turn and roll back its file changes.", "repl", group="Daily"),
     BuiltinCommand(
         "compact",
         "Summarize and compact the conversation context.",

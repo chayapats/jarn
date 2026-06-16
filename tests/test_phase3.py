@@ -30,7 +30,7 @@ def test_builtin_registry_routes_are_handled():
             assert hasattr(Controller, f"_cmd_{cmd.name.replace('-', '_')}")
         elif cmd.route == "repl":
             assert cmd.name in {
-                "compact", "expand", "resume", "model", "mode", "queue",
+                "compact", "expand", "resume", "model", "mode", "queue", "abort",
             }
 
 

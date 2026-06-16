@@ -333,6 +333,7 @@ def _build_config(raw: dict[str, Any]) -> Config:
         theme=str(ui.get("theme", "dark")),
         accent=str(ui.get("accent", "cyan")),
         splash=splash_raw,
+        approval_diff_lines=int(ui.get("approval_diff_lines", 40)),
     )
 
     compat = raw.get("compat", {}) or {}

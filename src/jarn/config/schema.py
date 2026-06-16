@@ -226,6 +226,10 @@ class UIConfig:
     theme: str = "dark"           # dark | light | high-contrast
     accent: str = "cyan"          # brand accent
     splash: str = "compact"       # full | compact | off
+    #: Max diff lines shown inline in a write/edit approval prompt before the
+    #: rest collapses to a "… (+N more lines)" footer. Over-cap diffs offer a
+    #: [v] view-full-diff option that opens the complete diff in the pager.
+    approval_diff_lines: int = 40
 
 
 @dataclass(slots=True)

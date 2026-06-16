@@ -71,6 +71,14 @@ class ApprovalReply:
     approved: bool
     scope: RememberScope = RememberScope.ONCE
     message: str = ""           # reason shown to the model on rejection
+    #: When the user chose "edit before apply", the tool args edited in $EDITOR.
+    #: The turn resumes with a LangGraph ``edit`` decision carrying these args, so
+    #: the *edited* content lands on disk instead of the agent's original. ``None``
+    #: means a plain approve (run the tool with its original args).
+    # TODO(per-hunk): edit-before-apply replaces the whole new content/replacement.
+    # Per-hunk (partial) approval is deferred — it needs hunk parsing + partial
+    # apply of a unified diff; not implemented in this pass (see fable-todo.md P4.B).
+    edited_args: dict[str, Any] | None = None
 
 
 # approver(request) -> reply
@@ -439,11 +447,22 @@ class SessionDriver:
                         if result.block_remember_always and scope is RememberScope.ALWAYS:
                             scope = RememberScope.SESSION
                         self.engine.remember(action, scope)
-                        yield (
-                            Event(EventKind.APPROVAL, text=f"approved: {name}",
-                                  data={"target": action.target, "scope": scope.value}),
-                            {"type": "approve"},
-                        )
+                        if reply.edited_args is not None:
+                            # Edit-before-apply: resume with a LangGraph ``edit``
+                            # decision so the tool runs with the user-edited args —
+                            # the edited content is what lands on disk.
+                            yield (
+                                Event(EventKind.APPROVAL, text=f"approved (edited): {name}",
+                                      data={"target": action.target, "scope": scope.value}),
+                                {"type": "edit",
+                                 "edited_action": {"name": name, "args": reply.edited_args}},
+                            )
+                        else:
+                            yield (
+                                Event(EventKind.APPROVAL, text=f"approved: {name}",
+                                      data={"target": action.target, "scope": scope.value}),
+                                {"type": "approve"},
+                            )
                     else:
                         self.engine.deny_session(action)
                         yield (
