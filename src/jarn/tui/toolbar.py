@@ -47,6 +47,7 @@ def render_toolbar(
     mode: str,
     cost_line: str,
     cost_status: BudgetStatus,
+    trusted: bool = True,
     queue_count: int = 0,
     context_frac: float | None = None,
     width: int = 120,
@@ -67,12 +68,30 @@ def render_toolbar(
             width=len(mode) + 3,
         ),
     ]
+    if trusted:
+        trust_label = "\U0001f512 trusted"
+        segments.append(
+            ToolbarSegment(
+                palette.styled_fg(palette.C_SUCCESS, _esc(trust_label)),
+                priority=2,
+                width=len(trust_label) + 2,
+            )
+        )
+    else:
+        trust_label = "⚠ untrusted · jarn trust"
+        segments.append(
+            ToolbarSegment(
+                palette.styled_fg(palette.C_WARN, _esc(trust_label)),
+                priority=2,
+                width=len(trust_label) + 2,
+            )
+        )
     if queue_count > 0:
         label = f"queue {queue_count}"
         segments.append(
             ToolbarSegment(
                 palette.styled_fg(palette.C_NOTICE, _esc(label)),
-                priority=2,
+                priority=3,
                 width=len(label) + 2,
             )
         )
@@ -81,14 +100,14 @@ def render_toolbar(
         segments.append(
             ToolbarSegment(
                 palette.styled_fg(_ctx_color(context_frac), _esc(ctx)),
-                priority=3,
+                priority=4,
                 width=len(ctx) + 2,
             )
         )
     segments.append(
         ToolbarSegment(
             palette.styled_fg(_cost_color(cost_status), _esc(cost_line)),
-            priority=4,
+            priority=5,
             width=len(cost_line) + 2,
         )
     )

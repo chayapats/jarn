@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
-from jarn.config.schema import PermissionMode
+from jarn.config.schema import GitConfig, PermissionMode
 from jarn.tui.controller import Controller
 
 
@@ -653,4 +654,152 @@ def test_cmd_doctor_renders_same_data_as_cli(tmp_path, monkeypatch, base_config)
         assert header in output, f"/doctor output missing {header!r} block"
     # Extensions summary counts line is rendered.
     assert "skills" in output and "mcp" in output
+    ctrl.close()
+
+
+# ---------------------------------------------------------------------------
+# P3.B — No-checkpoint UX: /undo and /redo with autocheckpoint disabled
+# ---------------------------------------------------------------------------
+
+def test_undo_disabled_gives_actionable_message(tmp_path, monkeypatch, base_config):
+    """/undo while autocheckpoint is off must name how to enable it."""
+    # base_config has git.autocheckpoint = False (the default)
+    assert not base_config.git.autocheckpoint
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    result = ctrl.handle_command("undo", "")
+    text = result.text
+    # Must explain checkpoints are unavailable and name the fix.
+    assert "autocheckpoint" in text.lower()
+    assert "/config" in text
+    ctrl.close()
+
+
+def test_redo_disabled_gives_actionable_message(tmp_path, monkeypatch, base_config):
+    """/redo while autocheckpoint is off must name how to enable it."""
+    assert not base_config.git.autocheckpoint
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    result = ctrl.handle_command("redo", "")
+    text = result.text
+    assert "autocheckpoint" in text.lower()
+    assert "/config" in text
+    ctrl.close()
+
+
+def _git(args: list[str], cwd: Path) -> None:
+    """Run git in cwd; raises on non-zero exit."""
+    subprocess.run(["git", *args], cwd=cwd, capture_output=True, check=True)
+
+
+def _repo_with_commit(tmp_path: Path) -> Path:
+    """Return a fresh git repo with one commit."""
+    root = tmp_path / "gitrepo"
+    root.mkdir()
+    _git(["init", "-b", "main"], cwd=root)
+    _git(["config", "user.email", "test@jarn.test"], cwd=root)
+    _git(["config", "user.name", "Jarn Test"], cwd=root)
+    (root / "README.txt").write_text("init\n", encoding="utf-8")
+    _git(["add", "README.txt"], cwd=root)
+    _git(["commit", "-m", "init"], cwd=root)
+    return root
+
+
+def test_undo_enabled_normal_behavior(tmp_path, monkeypatch, base_config):
+    """/undo with autocheckpoint ON and a snapshot present must succeed."""
+    base_config.git = GitConfig(autocheckpoint=True)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+
+    root = _repo_with_commit(tmp_path)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    ctrl = Controller(base_config, root)
+
+    # Seed a snapshot so the undo stack is non-empty.
+    (root / "file.txt").write_text("before\n", encoding="utf-8")
+    ctrl.checkpoint_manager.snapshot("test-turn")
+
+    # Modify the file — the undo should restore it.
+    (root / "file.txt").write_text("after\n", encoding="utf-8")
+
+    result = ctrl.handle_command("undo", "")
+    assert result.text.lower().startswith("undone"), (
+        f"Expected 'Undone. ...' but got: {result.text!r}"
+    )
+    assert (root / "file.txt").read_text(encoding="utf-8") == "before\n"
+    ctrl.close()
+
+
+def test_redo_enabled_normal_behavior(tmp_path, monkeypatch, base_config):
+    """/redo with autocheckpoint ON and a redo point present must succeed."""
+    base_config.git = GitConfig(autocheckpoint=True)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+
+    root = _repo_with_commit(tmp_path)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    ctrl = Controller(base_config, root)
+
+    # Snapshot, modify, then undo to create a redo point.
+    (root / "file.txt").write_text("before\n", encoding="utf-8")
+    ctrl.checkpoint_manager.snapshot("test-turn")
+    (root / "file.txt").write_text("after\n", encoding="utf-8")
+    ctrl.checkpoint_manager.undo()
+
+    result = ctrl.handle_command("redo", "")
+    assert result.text.lower().startswith("redone"), (
+        f"Expected 'Redone. ...' but got: {result.text!r}"
+    )
+    assert (root / "file.txt").read_text(encoding="utf-8") == "after\n"
+    ctrl.close()
+
+
+def test_autocheckpoint_off_hint_shown_once(tmp_path, monkeypatch, base_config):
+    """autocheckpoint_off_hint() emits the hint the first time and None thereafter."""
+    assert not base_config.git.autocheckpoint
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    first = ctrl.autocheckpoint_off_hint()
+    assert first is not None
+    assert "autocheckpoint" in first.lower()
+    assert "/config" in first
+
+    # Subsequent calls must be silent.
+    assert ctrl.autocheckpoint_off_hint() is None
+    assert ctrl.autocheckpoint_off_hint() is None
+    ctrl.close()
+
+
+def test_autocheckpoint_off_hint_silent_when_enabled(tmp_path, monkeypatch, base_config):
+    """autocheckpoint_off_hint() returns None when autocheckpoint is on."""
+    base_config.git = GitConfig(autocheckpoint=True)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj2"
+    (root / ".jarn").mkdir(parents=True)
+    ctrl = Controller(base_config, root)
+    assert ctrl.autocheckpoint_off_hint() is None
+    ctrl.close()
+
+
+# ---------------------------------------------------------------------------
+# P3.C — peek_next_mode (yolo transition guard helper)
+# ---------------------------------------------------------------------------
+
+
+def test_peek_next_mode_returns_next_without_applying(tmp_path, monkeypatch, base_config):
+    """peek_next_mode() returns the would-be next mode without changing the current mode."""
+    base_config.permission_mode = PermissionMode.AUTO_EDIT
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    assert ctrl.config.permission_mode.value == "auto-edit"
+    nxt = ctrl.peek_next_mode()
+    # auto-edit → yolo is the next in the cycle
+    assert nxt == "yolo"
+    # mode must NOT have changed
+    assert ctrl.config.permission_mode.value == "auto-edit"
+    ctrl.close()
+
+
+def test_peek_next_mode_wraps_from_yolo_to_plan(tmp_path, monkeypatch, base_config):
+    """After yolo, peek_next_mode() returns plan (wrap-around)."""
+    base_config.permission_mode = PermissionMode.YOLO
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    assert ctrl.peek_next_mode() == "plan"
+    # still yolo
+    assert ctrl.config.permission_mode.value == "yolo"
     ctrl.close()

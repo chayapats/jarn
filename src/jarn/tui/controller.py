@@ -94,6 +94,8 @@ class Controller:
         # Set once the degraded/error state has been surfaced to the user, so the
         # TUI shows it a single time per session rather than on every turn.
         self.health_notice_shown = False
+        # One-time per-session hint that /undo is unavailable (autocheckpoint off).
+        self._autocheckpoint_hint_shown = False
         # Per-server MCP health, populated by ensure_runtime: name -> "ok"/"error".
         self.mcp_health: dict[str, str] = {}
         self.mcp_errors: dict[str, str] = {}
@@ -445,6 +447,12 @@ class Controller:
         self.engine.mode = target
         self.runtime = None
         return target.value
+
+    def peek_next_mode(self) -> str:
+        """Return the mode that cycle_mode() *would* advance to, without applying it."""
+        order = list(PermissionMode)
+        idx = order.index(self.config.permission_mode)
+        return order[(idx + 1) % len(order)].value
 
     def cycle_mode(self) -> str:
         """Advance to the next permission mode (plan→ask→auto-edit→yolo→plan).
@@ -1148,6 +1156,11 @@ class Controller:
         Capturing the current state as a redo-point first guarantees that undo
         is itself reversible: the user can always /redo to get back here.
         """
+        if not self.checkpoint_manager.enabled:
+            return CommandResult(
+                "No checkpoints — /undo needs autocheckpoint. "
+                "Enable it with /config (git.autocheckpoint: true) or 'jarn config'."
+            )
         result = self.checkpoint_manager.undo()
         if result.ok:
             return CommandResult(f"Undone. {result.message}")
@@ -1155,6 +1168,11 @@ class Controller:
 
     def _cmd_redo(self, args: str) -> CommandResult:
         """Re-apply the most recently undone agent turn's file changes."""
+        if not self.checkpoint_manager.enabled:
+            return CommandResult(
+                "No checkpoints — /redo needs autocheckpoint. "
+                "Enable it with /config (git.autocheckpoint: true) or 'jarn config'."
+            )
         result = self.checkpoint_manager.redo()
         if result.ok:
             return CommandResult(f"Redone. {result.message}")
@@ -1182,6 +1200,23 @@ class Controller:
                 f"{marker}[dim]{entry.sha[:12]}[/dim] {_escape_markup(entry.label)}"
             )
         return CommandResult("\n".join(lines))
+
+    def autocheckpoint_off_hint(self) -> str | None:
+        """Return a one-time per-session hint when autocheckpoint is off.
+
+        Call after the agent writes a file.  Returns the hint string on the
+        first call in a session; returns ``None`` on all subsequent calls (so
+        callers can gate ``console.print`` on a truthy return value).
+        """
+        if self.checkpoint_manager.enabled:
+            return None
+        if self._autocheckpoint_hint_shown:
+            return None
+        self._autocheckpoint_hint_shown = True
+        return (
+            "Hint: /undo is unavailable while autocheckpoint is off. "
+            "Enable it with /config (git.autocheckpoint: true) or 'jarn config'."
+        )
 
     def _cmd_map(self, args: str) -> CommandResult:
         """Build and display the ranked repo map.

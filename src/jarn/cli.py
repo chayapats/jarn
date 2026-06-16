@@ -206,6 +206,12 @@ def _cmd_headless(
         cfg.default_model = model_override
     if permission_mode_override:
         cfg.permission_mode = PermissionMode(permission_mode_override)
+        if permission_mode_override == "yolo":
+            print(
+                "warning: running in yolo mode — no approval prompts"
+                " (danger-guard still blocks catastrophic actions).",
+                file=sys.stderr,
+            )
 
     # Apply the effective policy profile (CLI > config) and clamp untrusted.
     # A profile overrides the trust-relevant knobs (incl. permission_mode), so

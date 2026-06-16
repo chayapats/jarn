@@ -409,6 +409,7 @@ class InlineApp:
             mode=cfg.permission_mode.value,
             cost_line=tracker.summary_line(),
             cost_status=tracker.status(),
+            trusted=self.controller.project_trusted,
             queue_count=len(self._input_queue),
             context_frac=ctx_frac,
             width=width,
@@ -465,6 +466,30 @@ class InlineApp:
             cancel_returns=deny,
         )
         return deny if picked is None else picked
+
+    async def _confirm_yolo(self) -> bool:
+        """Prompt the user to confirm entering yolo mode.  Returns True iff confirmed."""
+        answer = await self._ask(
+            "yolo = no approval prompts (danger-guard still blocks catastrophic actions)."
+            " Continue? [y/N] "
+        )
+        return answer.strip().lower() == "y"
+
+    async def _confirm_and_cycle_yolo(self) -> None:
+        """Async helper for Shift+Tab: confirm yolo, then apply it (or skip)."""
+        if not await self._confirm_yolo():
+            self.console.print(f"[{palette.C_DIM}]yolo cancelled — mode unchanged.[/{palette.C_DIM}]")
+            return
+        new = self.controller.cycle_mode()
+        self._armed = False
+        color = palette.MODE_COLOR.get(new, "#22d3ee")
+        glyph = palette.MODE_GLYPH.get(new, "◆")
+        self._flash(HTML(
+            f'<style fg="{color}"><b>{glyph} {new}</b></style> '
+            f'<style fg="#7c8f94">mode</style>'
+        ))
+        if self.app is not None:
+            self.app.invalidate()
 
     async def _render_todos(self) -> None:
         """Print the current plan checklist into scrollback after a turn, de-duped
@@ -684,6 +709,12 @@ class InlineApp:
 
         @kb.add("s-tab", filter=live)
         def _cycle_mode(event) -> None:
+            next_mode = self.controller.peek_next_mode()
+            if next_mode == "yolo":
+                # Entering yolo requires async confirmation; hand off to a task.
+                asyncio.get_event_loop().create_task(self._confirm_and_cycle_yolo())
+                event.app.invalidate()
+                return
             new = self.controller.cycle_mode()
             self._armed = False
             color = palette.MODE_COLOR.get(new, "#22d3ee")
@@ -929,6 +960,14 @@ class InlineApp:
         if name in ("model", "mode") and not args.strip():
             await self._pick_model_or_mode(name)
             return
+        if (
+            name == "mode"
+            and args.strip() == "yolo"
+            and self.controller.config.permission_mode.value != "yolo"
+            and not await self._confirm_yolo()
+        ):
+            c.print(f"[{palette.C_DIM}]yolo cancelled — mode unchanged.[/{palette.C_DIM}]")
+            return
         result = self.controller.handle_command(name, args)
         c.print(result.text)
         if result.rebuilt:
@@ -1043,6 +1082,13 @@ class InlineApp:
         if what == "model":
             _apply_model_ref(self.controller, c, str(chosen))
         else:
+            if (
+                chosen == "yolo"
+                and self.controller.config.permission_mode.value != "yolo"
+                and not await self._confirm_yolo()
+            ):
+                c.print(f"[{palette.C_DIM}]yolo cancelled — mode unchanged.[/{palette.C_DIM}]")
+                return
             _apply_mode_ref(self.controller, c, str(chosen))
 
     async def _replay_transcript(self) -> None:
