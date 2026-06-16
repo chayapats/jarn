@@ -171,6 +171,46 @@ def test_toolbar_shows_queue_and_collapses_narrow():
     assert "ask" in narrow.value
 
 
+def test_toolbar_trusted_shows_lock():
+    result = render_toolbar(
+        model="openrouter/claude",
+        mode="ask",
+        cost_line="$0.00 · 0 tok · 0 calls",
+        cost_status=BudgetStatus.OK,
+        trusted=True,
+        width=120,
+    )
+    assert "trusted" in result.value
+    assert "untrusted" not in result.value
+
+
+def test_toolbar_untrusted_shows_warning_and_pointer():
+    result = render_toolbar(
+        model="openrouter/claude",
+        mode="ask",
+        cost_line="$0.00 · 0 tok · 0 calls",
+        cost_status=BudgetStatus.OK,
+        trusted=False,
+        width=120,
+    )
+    assert "untrusted" in result.value
+    assert "jarn trust" in result.value
+
+
+def test_toolbar_trust_segment_survives_narrow():
+    """Trust segment has priority 2; cost (priority 5) drops before trust does."""
+    # At width=60 the cost segment drops but model, mode, and trust all fit.
+    narrow = render_toolbar(
+        model="m",
+        mode="ask",
+        cost_line="$0.00 · 1000 tok · 99 calls · very long cost line",
+        cost_status=BudgetStatus.OK,
+        trusted=False,
+        width=60,
+    )
+    assert "untrusted" in narrow.value
+
+
 def test_no_color_plain_toolbar(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     palette.configure_ui(theme="dark", accent="cyan")

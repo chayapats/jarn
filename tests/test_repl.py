@@ -756,3 +756,163 @@ async def test_degraded_health_notice_has_no_doctor_hint(tmp_path, monkeypatch):
     out = console.file.getvalue()
     assert "/doctor" not in out, f"degraded notice should not show /doctor, got: {out!r}"
     ctrl.close()
+
+
+# ---------------------------------------------------------------------------
+# P3.C — yolo transition guard
+# ---------------------------------------------------------------------------
+
+
+def _make_inline_app(tmp_path, monkeypatch):
+    """Create a minimal InlineApp with a fake console for testing."""
+    from jarn import repl
+    from jarn.config.schema import Config, ProviderConfig, ProviderType, RoutingConfig
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    app.console = Console(file=StringIO(), width=80)
+    return app
+
+
+@pytest.mark.asyncio
+async def test_confirm_yolo_returns_true_on_y(tmp_path, monkeypatch):
+    """`_confirm_yolo` returns True when the user types 'y'."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    # Inject a fake _ask that always returns "y"
+    async def _fake_ask(prompt: str) -> str:
+        return "y"
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+    assert await app._confirm_yolo() is True
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_confirm_yolo_returns_false_on_n(tmp_path, monkeypatch):
+    """`_confirm_yolo` returns False when the user types 'n' (or anything other than 'y')."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    async def _fake_ask(prompt: str) -> str:
+        return "n"
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+    assert await app._confirm_yolo() is False
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_confirm_yolo_returns_false_on_empty(tmp_path, monkeypatch):
+    """`_confirm_yolo` defaults to False on empty input (the [y/N] default is N)."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    async def _fake_ask(prompt: str) -> str:
+        return ""
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+    assert await app._confirm_yolo() is False
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_command_mode_yolo_confirmed(tmp_path, monkeypatch):
+    """`/mode yolo` applies yolo when user confirms with 'y'."""
+    from jarn.config.schema import PermissionMode
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    # Start in ask mode
+    assert app.controller.config.permission_mode.value == "ask"
+
+    async def _fake_ask(prompt: str) -> str:
+        return "y"
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+
+    await app._command("mode", "yolo")
+    assert app.controller.config.permission_mode == PermissionMode.YOLO
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_command_mode_yolo_declined_keeps_previous(tmp_path, monkeypatch):
+    """`/mode yolo` keeps the previous mode when user declines."""
+    from jarn.config.schema import PermissionMode
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    assert app.controller.config.permission_mode.value == "ask"
+
+    async def _fake_ask(prompt: str) -> str:
+        return "n"
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+
+    await app._command("mode", "yolo")
+    # Mode must remain ask
+    assert app.controller.config.permission_mode == PermissionMode.ASK
+    out = app.console.file.getvalue()
+    assert "cancelled" in out.lower()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_command_mode_yolo_no_reprompt_when_already_yolo(tmp_path, monkeypatch):
+    """`/mode yolo` when already in yolo does NOT re-prompt (transition-only guard)."""
+    from jarn.config.schema import PermissionMode
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    # Set mode to yolo directly (simulating already being in yolo)
+    app.controller.config.permission_mode = PermissionMode.YOLO
+    app.controller.engine.mode = PermissionMode.YOLO
+
+    ask_calls: list[str] = []
+    async def _tracking_ask(prompt: str) -> str:
+        ask_calls.append(prompt)
+        return "n"
+    monkeypatch.setattr(app, "_ask", _tracking_ask)
+
+    await app._command("mode", "yolo")
+    # No confirmation prompt when already in yolo
+    assert ask_calls == [], "should not prompt when already in yolo mode"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_confirm_and_cycle_yolo_confirmed(tmp_path, monkeypatch):
+    """`_confirm_and_cycle_yolo` applies yolo when confirmed."""
+    from jarn.config.schema import PermissionMode
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    # Put mode at auto-edit so next cycle = yolo
+    app.controller.config.permission_mode = PermissionMode.AUTO_EDIT
+    app.controller.engine.mode = PermissionMode.AUTO_EDIT
+
+    async def _fake_ask(prompt: str) -> str:
+        return "y"
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+    # _flash and app.invalidate are no-ops in tests (app is None)
+    monkeypatch.setattr(app, "_flash", lambda *a, **k: None)
+
+    await app._confirm_and_cycle_yolo()
+    assert app.controller.config.permission_mode == PermissionMode.YOLO
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_confirm_and_cycle_yolo_declined_keeps_mode(tmp_path, monkeypatch):
+    """`_confirm_and_cycle_yolo` does NOT advance mode when declined."""
+    from jarn.config.schema import PermissionMode
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.controller.config.permission_mode = PermissionMode.AUTO_EDIT
+    app.controller.engine.mode = PermissionMode.AUTO_EDIT
+
+    async def _fake_ask(prompt: str) -> str:
+        return "n"
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+    monkeypatch.setattr(app, "_flash", lambda *a, **k: None)
+
+    await app._confirm_and_cycle_yolo()
+    # Mode must remain auto-edit
+    assert app.controller.config.permission_mode == PermissionMode.AUTO_EDIT
+    out = app.console.file.getvalue()
+    assert "cancelled" in out.lower()
+    app.controller.close()
