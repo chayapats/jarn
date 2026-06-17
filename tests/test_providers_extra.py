@@ -214,6 +214,18 @@ def test_list_remote_models_unreachable_returns_empty():
         assert list_remote_models(prov) == []
 
 
+def test_slug_hint_is_provider_aware():
+    """The did-you-mean hint names the right convention per provider and is not
+    misleadingly anthropic/openrouter-specific for other providers."""
+    from jarn.providers.models import _slug_hint
+
+    assert "dashes" in _slug_hint(ProviderType.ANTHROPIC)
+    assert "dots" in _slug_hint(ProviderType.OPENROUTER)
+    generic = _slug_hint(ProviderType.GOOGLE)
+    assert "OpenRouter uses dots" not in generic
+    assert "dot-vs-dash" in generic
+
+
 def test_list_remote_models_http_error_returns_empty():
     from jarn.providers import list_remote_models
 

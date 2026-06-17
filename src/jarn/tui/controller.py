@@ -254,6 +254,7 @@ class Controller:
                 summarizer_ref,
                 int(usage.get("input_tokens", 0)),
                 int(usage.get("output_tokens", 0)),
+                tool="(compact)",
             )
         return summary
 
@@ -702,9 +703,9 @@ class Controller:
         )
 
     def _cmd_preset(self, args: str) -> CommandResult:
-        """Expand a preset — a launch-time shortcut that sets /mode + /sandbox at
-        once — and echo exactly what it set. /mode and /sandbox remain the live
-        axes; /preset is optional sugar."""
+        """Expand a preset — a launch-time shortcut that sets mode + OS sandbox +
+        network at once — and echo exactly what it set. /mode and /sandbox remain
+        the live axes; /preset is optional sugar."""
         from jarn.config.loader import ConfigError
         from jarn.config.profiles import PROFILE_NAMES, resolve_effective_profile
 
@@ -713,7 +714,7 @@ class Controller:
             current = self.config.policy.profile or "none"
             return CommandResult(
                 f"Current preset: {current}. Available: {available}. "
-                "A preset is a shortcut that sets /mode + /sandbox together."
+                "A preset bundles mode + OS sandbox + network into one pick."
             )
         choice = args.strip()
         # resolve_effective_profile expands the chosen preset (raising on an

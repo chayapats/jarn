@@ -161,6 +161,7 @@ def run_wizard(*, force: bool = False) -> Path | None:
     env_hit = _detect_env_key()
     recommended = _recommended_provider(env_hit)
     default_profile = recommended
+    use_env = False
 
     if env_hit is not None:
         env_provider, env_var = env_hit
@@ -193,8 +194,9 @@ def run_wizard(*, force: bool = False) -> Path | None:
         "Default provider profile", choices=list(_PROFILES), default=default_profile
     )
 
-    # Pass env_hit only when the chosen profile matches the detected env provider.
-    key_env_hit = env_hit if (env_hit is not None and profile == env_hit[0]) else None
+    # Pass env_hit only when the user ACCEPTED it earlier AND the chosen profile
+    # matches the detected env provider — a decline must not silently reuse the key.
+    key_env_hit = env_hit if (use_env and env_hit is not None and profile == env_hit[0]) else None
     api_key_ref = _configure_key(profile, env_hit=key_env_hit)
     base_url = _configure_base_url(profile) if profile_needs_base_url(profile) else None
     default_model = _prompt_model(profile)
