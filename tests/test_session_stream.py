@@ -59,3 +59,41 @@ def test_handle_update_chunk_unwraps_overwrite_messages():
     assert len(events) == 1
     assert events[0].kind is EventKind.TOOL_START
     assert events[0].text == "web_fetch"
+
+
+# -- resume payload: single bundled vs multi keyed-by-interrupt-id -----------
+
+
+def test_resume_payload_single_interrupt_is_bundled():
+    """One pending interrupt resumes with the legacy bundled {"decisions": [...]}."""
+    from jarn.agent.session import _resume_payload
+
+    cmd = _resume_payload([("abc", [{"type": "approve"}, {"type": "reject"}])])
+    assert cmd.resume == {"decisions": [{"type": "approve"}, {"type": "reject"}]}
+
+
+def test_resume_payload_multiple_interrupts_keyed_by_id():
+    """Multiple pending interrupts (e.g. one per subagent) must resume keyed by
+    interrupt id — otherwise LangGraph raises "you must specify the interrupt id
+    when resuming"."""
+    from jarn.agent.session import _resume_payload
+
+    cmd = _resume_payload([
+        ("id1", [{"type": "approve"}]),
+        ("id2", [{"type": "reject", "message": "no"}]),
+    ])
+    assert cmd.resume == {
+        "id1": {"decisions": [{"type": "approve"}]},
+        "id2": {"decisions": [{"type": "reject", "message": "no"}]},
+    }
+
+
+def test_resume_payload_falls_back_to_bundled_without_ids():
+    """If an interrupt id is missing, fall back to the bundled form (defensive)."""
+    from jarn.agent.session import _resume_payload
+
+    cmd = _resume_payload([
+        ("id1", [{"type": "approve"}]),
+        (None, [{"type": "approve"}]),
+    ])
+    assert cmd.resume == {"decisions": [{"type": "approve"}, {"type": "approve"}]}
