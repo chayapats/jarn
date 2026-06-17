@@ -269,6 +269,47 @@ def _exit_plan_mode_tool():
     return exit_plan_mode
 
 
+def _suggest_memory_tool():
+    """The ``suggest_memory`` tool — propose a long-term memory for the user to keep.
+
+    The tool body runs only *after* the user approves (the session driver gates it
+    behind a memory-approval interrupt and the approver does the actual write via
+    the memory store, respecting the global/project tier and trust gating), so its
+    return value is simply the confirmation the model reads.
+    """
+    from langchain_core.tools import tool
+
+    @tool
+    def suggest_memory(
+        name: str,
+        description: str,
+        body: str,
+        type: str = "project",
+        scope: str = "project",
+    ) -> str:
+        """Suggest a durable memory for the user to approve, edit, or decline.
+
+        Call this when you learn something worth remembering across sessions — a
+        stable user preference, a project convention, or a hard-won fact — and want
+        it persisted. The user reviews your suggestion and chooses to save it (as is
+        or edited) or decline; nothing is written unless they approve. Do not use
+        this for transient, turn-local details.
+
+        Args:
+            name: Short title for the memory (used as its filename/slug).
+            description: One-line summary shown in the memory index.
+            body: The memory content in concise markdown.
+            type: Memory category — one of user, feedback, project, reference.
+            scope: Where to store it — "global" (all projects) or "project".
+        """
+        return (
+            "Memory saved with the user's approval. Continue with the task; you can "
+            "rely on this being remembered in future sessions."
+        )
+
+    return suggest_memory
+
+
 def _async_subagent_specs(config: Config) -> list[Any]:
     """Build DeepAgents ``AsyncSubAgent`` dicts from config (Agent Protocol)."""
     specs: list[Any] = []
@@ -393,6 +434,12 @@ def build_runtime(
     # by the session driver so it is callable *in* plan mode (the engine would
     # otherwise deny it like any other non-read action).
     tools = [*tools, _exit_plan_mode_tool()]
+
+    # Memory-suggestion tool: lets the agent propose a durable memory for the user
+    # to approve. Like exit_plan_mode it is gated as an interrupt (below) and
+    # special-cased by the driver — the approver does the write on approval, so the
+    # tool itself never touches the store and is safe in any mode.
+    tools = [*tools, _suggest_memory_tool()]
 
     # Subagents may restrict themselves to a subset of the extra (web/MCP) tools;
     # pass the available set so to_spec can resolve names and reject typos.

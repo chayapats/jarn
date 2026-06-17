@@ -86,6 +86,16 @@ required. `exit_plan_mode` is the one gated tool that is *callable in plan mode*
 like any other non-read action). The default landing mode is `plan.exit_mode`
 (default `auto-edit`).
 
+### Agent-suggested memory
+
+The agent can propose a durable memory with the `suggest_memory` tool. Like
+`exit_plan_mode`, the session driver routes it straight to the approver (it never
+mutates the store itself), so it is safe in any mode. You see a **"Save this memory?"**
+prompt — save, edit-then-save (opens the body in `$EDITOR`), or decline. On approval
+the memory is written through the same store and tier gating as `/memory add`: a
+**project** write is refused on an **untrusted project** (the prompt explains `/trust`);
+declining writes nothing.
+
 ---
 
 ## 3. Sandbox — where code runs

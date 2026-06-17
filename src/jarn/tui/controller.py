@@ -17,7 +17,7 @@ from rich.markup import escape as _escape_markup
 
 from jarn.agent.builder import JarnRuntime, build_runtime
 from jarn.agent.checkpoint import CheckpointManager
-from jarn.agent.session import Approver, SessionDriver
+from jarn.agent.session import Approver, SessionDriver, SuggestedMemory
 from jarn.config.schema import Config, PermissionMode
 from jarn.cost import CostTracker
 from jarn.extensibility.commands import format_help
@@ -1450,6 +1450,34 @@ class Controller:
             target = "write" if write else "read"
             return None, f"No project root found; cannot {target} project memory."
         return store, None
+
+    def save_suggested_memory(self, suggestion: SuggestedMemory) -> tuple[bool, str]:
+        """Persist an agent-suggested (and user-approved) memory via the store.
+
+        Routes through the same scope + trust gating as ``/memory add``: a project
+        write is refused on an untrusted project. Returns ``(saved, message)`` so
+        the approver can report the outcome to the user without raising."""
+        from jarn.memory.store import MEMORY_TYPES, Memory
+
+        name = suggestion.name.strip()
+        if not name:
+            return False, "Memory has no name; nothing saved."
+        mem_type = suggestion.type.strip() or "project"
+        if mem_type not in MEMORY_TYPES:
+            return False, (
+                f"Unknown memory type {mem_type!r}; "
+                f"choose one of: {', '.join(MEMORY_TYPES)}."
+            )
+        scope = suggestion.scope.strip().lower() or "project"
+        store, error = self._memory_store_for_scope(scope, write=True)
+        if error or store is None:
+            return False, error or "Memory store unavailable."
+        description = suggestion.description.strip() or name
+        body = suggestion.body.strip() or description
+        path = store.save(
+            Memory(name=name, description=description, body=body, type=mem_type)
+        )
+        return True, f"Saved {scope} memory: {path.name}"
 
     def _cmd_permissions(self, args: str) -> CommandResult:
         r = self.config.permissions

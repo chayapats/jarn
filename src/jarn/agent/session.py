@@ -66,6 +66,24 @@ class Event:
 # -- approval contract ------------------------------------------------------
 
 @dataclass(slots=True)
+class SuggestedMemory:
+    """A memory the agent proposes for the user to approve, edit, or decline.
+
+    Carried on an :class:`ApprovalRequest` when the agent calls ``suggest_memory``.
+    The approver surfaces a "Save this memory?" prompt and, on approval, writes it
+    through the existing :class:`~jarn.memory.MemoryStore` (respecting the global
+    vs project tier and the project's trust gating)."""
+
+    name: str
+    description: str
+    body: str
+    type: str = "project"
+    #: ``"global"`` or ``"project"`` — which store tier to write to. Project writes
+    #: are refused on an untrusted project (the approver reports why).
+    scope: str = "project"
+
+
+@dataclass(slots=True)
 class ApprovalRequest:
     action: Action
     result: PermissionResult
@@ -75,6 +93,10 @@ class ApprovalRequest:
     #: from ``exit_plan_mode`` rather than an ordinary tool approval. The approver
     #: shows the plan and, on approval, escalates the permission mode.
     plan: str | None = None
+    #: Set when this is an agent memory suggestion (``suggest_memory``) rather than
+    #: an ordinary tool approval. The approver shows it and, on approval, writes it
+    #: through the memory store.
+    suggested_memory: SuggestedMemory | None = None
 
 
 @dataclass(slots=True)
@@ -472,6 +494,44 @@ class SessionDriver:
                             {"type": "reject",
                              "message": reply.message
                              or "Keep refining the plan; call exit_plan_mode again when ready."},
+                        )
+                    continue
+
+                # Memory suggestion: suggest_memory proposes a memory for the user
+                # to approve. It never mutates the world on its own (the approver
+                # does the write on approval), so it bypasses the engine and routes
+                # straight to the approver — an approve resumes the tool (its return
+                # is the model's confirmation), a reject keeps the agent going
+                # without writing anything.
+                if name == "suggest_memory":
+                    suggestion = SuggestedMemory(
+                        name=str(args.get("name", "")).strip(),
+                        description=str(args.get("description", "")).strip(),
+                        body=str(args.get("body", "")).strip(),
+                        type=str(args.get("type", "project")).strip() or "project",
+                        scope=str(args.get("scope", "project")).strip() or "project",
+                    )
+                    reply = await self.approver(
+                        ApprovalRequest(
+                            action=Action(ActionKind.READ, target="memory", tool=name),
+                            result=PermissionResult(Decision.ASK, "memory suggested"),
+                            description=req.get("description", ""),
+                            args=args,
+                            suggested_memory=suggestion,
+                        )
+                    )
+                    if reply.approved:
+                        yield (
+                            Event(EventKind.APPROVAL, text="memory saved",
+                                  data={"target": "memory"}),
+                            {"type": "approve"},
+                        )
+                    else:
+                        yield (
+                            Event(EventKind.APPROVAL, text="memory not saved",
+                                  data={"target": "memory"}),
+                            {"type": "reject",
+                             "message": reply.message or "User declined to save the memory."},
                         )
                     continue
 
