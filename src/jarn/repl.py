@@ -1360,6 +1360,9 @@ class InlineApp:
             # loop stays responsive.
             c.print(await asyncio.to_thread(self.controller.abort_rollback))
             return
+        if name == "key":
+            await self._cmd_key(args)
+            return
         if name == "model" and args.strip() in ("refresh", "list"):
             await self._refresh_models()
             return
@@ -1415,6 +1418,41 @@ class InlineApp:
         )
         await self._render_todos()
         self._maybe_autocheckpoint_hint()
+
+    async def _cmd_key(self, args: str) -> None:
+        """`/key`: set/replace the API key for the current provider in-session.
+
+        With no argument we prompt for the key (kept off the input history /
+        scrollback by capturing it through the region prompt rather than the
+        echoed command line). The secret goes to the OS keychain and the
+        provider's config is pointed at a ``keychain:jarn/<provider>`` reference;
+        the runtime is dropped so the next turn rebuilds with the new key."""
+        c = self.console
+        provider = self.controller.current_provider()
+        if not provider:
+            c.print(
+                f"[{palette.C_ERROR}]No active provider — configure a model first "
+                f"with /model or run jarn setup.[/{palette.C_ERROR}]"
+            )
+            return
+        inline = args.strip()
+        if inline:
+            # Inline keys are convenient but land in shell/REPL history — warn.
+            c.print(
+                f"[{palette.C_WARN}]Heads up: an inline key is visible in your "
+                f"scrollback/history. Prefer /key with no argument next time."
+                f"[/{palette.C_WARN}]"
+            )
+            secret = inline
+        else:
+            secret = await self._ask(f"Paste the {provider} API key (Enter to cancel): ")
+        if not secret.strip():
+            c.print(f"[{palette.C_DIM}]No key entered — unchanged.[/{palette.C_DIM}]")
+            return
+        result = self.controller.set_provider_key(secret, provider=provider)
+        c.print(result.text)
+        if result.rebuilt:
+            self.controller.runtime = None
 
     # -- queue --------------------------------------------------------------
 

@@ -678,6 +678,70 @@ class Controller:
         self.runtime = None  # force rebuild on next turn
         return CommandResult(f"Model set to {args.strip()} (rebuilding).", rebuilt=True)
 
+    def current_provider(self) -> str | None:
+        """Profile name of the provider serving the active main model.
+
+        A model ref is ``<profile>/<model-id>``; the profile keys
+        ``config.providers``. Returns ``None`` when no model is configured."""
+        from jarn.providers.models import parse_model_ref
+
+        ref = self.config.resolved_main_model()
+        if not ref:
+            return None
+        return parse_model_ref(ref, default_profile=self.config.default_profile).profile
+
+    def set_provider_key(self, raw_key: str, *, provider: str | None = None) -> CommandResult:
+        """Set the API key for ``provider`` (defaults to the current provider).
+
+        The secret is stored in the OS keychain (never inlined into committed
+        config) and the provider's ``api_key`` is pointed at a
+        ``keychain:jarn/<provider>`` reference — the same shape the onboarding
+        wizard writes. The reference is persisted to the global config so it
+        survives a restart, and the runtime is dropped so the next turn rebuilds
+        with the new key."""
+        import contextlib
+
+        from jarn.config import paths
+        from jarn.config.secrets import store_keychain
+        from jarn.config.settings import ConfigStore
+
+        prov = (provider or self.current_provider() or "").strip()
+        if not prov:
+            return CommandResult(
+                "No active provider to set a key for — configure a model first "
+                "with /model or run jarn setup."
+            )
+        if prov not in self.config.providers:
+            return CommandResult(
+                f"Provider {prov!r} isn't configured. Run jarn setup to add it, "
+                "then use /key to update its API key."
+            )
+        secret = raw_key.strip()
+        if not secret:
+            return CommandResult("No key entered — unchanged.")
+
+        ref = f"keychain:jarn/{prov}"
+        try:
+            store_keychain("jarn", prov, secret)
+        except Exception as exc:  # noqa: BLE001 - surface any keyring backend failure
+            return CommandResult(
+                f"Couldn't store the key in the OS keychain: {_escape_markup(str(exc))}"
+            )
+        # Update the live config and persist the *reference* (not the secret) so a
+        # restart still finds the key. Best-effort persistence: even if the file
+        # write fails the in-session key already works.
+        self.config.providers[prov].api_key = ref
+        # Persistence is best-effort: even if the file write fails the in-session
+        # key already works.
+        with contextlib.suppress(Exception):
+            ConfigStore(paths.global_config_path()).set(f"providers.{prov}.api_key", ref)
+        self.runtime = None  # force rebuild on next turn with the new key
+        return CommandResult(
+            f"Updated the {prov} API key (stored in the OS keychain). Rebuilding "
+            "on the next turn.",
+            rebuilt=True,
+        )
+
     def _cmd_mode(self, args: str) -> CommandResult:
         if not args.strip():
             return CommandResult(f"Current mode: {self.config.permission_mode.value}")
