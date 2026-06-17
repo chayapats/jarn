@@ -249,12 +249,21 @@ class SessionDriver:
                 seen_intr.add(key)
                 unique_interrupts.append(intr)
 
-            decisions = []
-            async for ev, decision in self._resolve_interrupts(unique_interrupts):
-                if ev is not None:
-                    yield ev
-                decisions.append(decision)
-            payload = Command(resume={"decisions": decisions})
+            # Resolve each interrupt's gated calls, grouped BY interrupt so the
+            # resume can be addressed per interrupt id. With subagents, each
+            # subagent raises its own HITL interrupt — so more than one can be
+            # pending at once, and LangGraph then requires a resume keyed by
+            # interrupt id (see _resume_payload).
+            resolved: list[tuple[Any, list[Any]]] = []
+            for intr in unique_interrupts:
+                iid = getattr(intr, "id", None)
+                intr_decisions: list[Any] = []
+                async for ev, decision in self._resolve_interrupts([intr]):
+                    if ev is not None:
+                        yield ev
+                    intr_decisions.append(decision)
+                resolved.append((iid, intr_decisions))
+            payload = _resume_payload(resolved)
 
     # -- stream handling ----------------------------------------------------
 
@@ -646,6 +655,29 @@ def _text_of(content: Any) -> str:
                 out.append(block.get("text", ""))
         return "".join(out)
     return ""
+
+
+def _resume_payload(resolved: list[tuple[Any, list[Any]]]) -> Command:
+    """Build the LangGraph resume ``Command`` for the pending interrupt(s).
+
+    ``resolved`` is ``[(interrupt_id, decisions), ...]`` — one entry per unique
+    pending interrupt, in resolution order.
+
+    A SINGLE pending interrupt resumes with the bundled ``{"decisions": [...]}``
+    value its HITL middleware expects. With MULTIPLE pending interrupts (each
+    delegated subagent raises its own), LangGraph requires the resume to be a map
+    keyed by interrupt id — otherwise it raises *"When there are multiple pending
+    interrupts, you must specify the interrupt id when resuming."*
+    (``langgraph/pregel/_loop.py``). The id is an xxh3-128 hexdigest, which is how
+    LangGraph recognises the value as a per-interrupt resume map.
+    """
+    keyed = [(iid, decisions) for iid, decisions in resolved if iid is not None]
+    if len(resolved) > 1 and len(keyed) == len(resolved):
+        return Command(resume={iid: {"decisions": decisions} for iid, decisions in keyed})
+    # Single interrupt (or, defensively, ids unavailable): the legacy bundled
+    # resume — flatten every decision into one list.
+    decisions = [d for _, ds in resolved for d in ds]
+    return Command(resume={"decisions": decisions})
 
 
 def _action_requests(interrupt: Any) -> list[dict[str, Any]]:
