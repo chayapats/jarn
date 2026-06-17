@@ -588,6 +588,49 @@ def test_is_retryable_error_classifies():
     assert not _is_retryable_error(_Bad("bad request"))
 
 
+def test_is_auth_error_classifies():
+    from jarn.agent.session import _is_auth_error, _is_retryable_error
+
+    # Raw SDK string from a rejected Anthropic key (the reported symptom).
+    raw = ("Error code: 401 - {'type': 'error', 'error': {'type': "
+           "'authentication_error', 'message': 'invalid x-api-key'}}")
+    assert _is_auth_error(Exception(raw))
+    # An auth rejection must NOT be classified as retryable (no model rotation).
+    assert not _is_retryable_error(Exception(raw))
+
+    assert _is_auth_error(Exception("401 Unauthorized"))
+    assert _is_auth_error(Exception("Incorrect API key provided"))
+
+    class _AuthErr(Exception):
+        status_code = 401
+
+    assert _is_auth_error(_AuthErr("nope"))
+    # Unrelated/transient errors are not auth errors.
+    assert not _is_auth_error(Exception("Rate limit exceeded (429)"))
+    assert not _is_auth_error(ValueError("unknown model ref"))
+
+
+@pytest.mark.asyncio
+async def test_run_turn_tags_auth_error_with_provider():
+    """A 401/auth failure on the first astream call is tagged auth=True (and NOT
+    retryable) with the provider profile derived from the main model ref."""
+    class _BoomAgent:
+        async def astream(self, payload, config, **kw):
+            raise RuntimeError(
+                "Error code: 401 - {'error': {'message': 'invalid x-api-key'}}"
+            )
+            yield  # unreachable; makes this an async generator
+
+    driver = SessionDriver(agent=_BoomAgent(), engine=PermissionEngine(),
+                           tracker=CostTracker(), thread_id="t",
+                           main_model_ref="anthropic/claude-opus-4-8")
+    events = [e async for e in driver.run_turn("hi")]
+    errs = [e for e in events if e.kind is EventKind.ERROR]
+    assert errs and errs[0].data.get("auth") is True
+    assert errs[0].data.get("retryable") is False
+    assert errs[0].data.get("provider") == "anthropic"
+
+
 @pytest.mark.asyncio
 async def test_post_edit_hook_emits_notice_on_failure(tmp_path):
     """post_edit hook failure surfaces as a NOTICE (report-only, tool already ran)."""

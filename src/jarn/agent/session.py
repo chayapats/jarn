@@ -236,10 +236,14 @@ class SessionDriver:
                 # Tag retryable provider failures (rate-limit/timeout/5xx/etc.)
                 # so the front-end can transparently fall back to another model
                 # — but only when nothing has been emitted yet (it decides that).
-                yield Event(
-                    EventKind.ERROR, text=str(exc),
-                    data={"retryable": _is_retryable_error(exc)},
-                )
+                # Auth/401 failures are *not* retryable (rotating models won't fix a
+                # rejected key); tag them so the front-end can show a friendly,
+                # actionable message naming the provider instead of the raw SDK JSON.
+                data: dict[str, Any] = {"retryable": _is_retryable_error(exc)}
+                if _is_auth_error(exc):
+                    data["auth"] = True
+                    data["provider"] = _provider_of_ref(self.main_model_ref)
+                yield Event(EventKind.ERROR, text=str(exc), data=data)
                 return
 
             if not interrupts:
@@ -619,6 +623,45 @@ def _is_retryable_error(exc: BaseException) -> bool:
         return True
     msg = str(exc).lower()
     return any(h in msg for h in _RETRYABLE_MSG_HINTS)
+
+
+#: Exception-name fragments and message phrases that mark a provider failure as an
+#: authentication/authorization rejection — an invalid/expired/missing API key.
+#: Rotating to another model won't fix this, so it is handled separately from the
+#: retryable heuristic above (see ``_is_retryable_error``).
+_AUTH_NAME_HINTS = ("authenticationerror", "permissiondenied", "unauthorized")
+_AUTH_MSG_HINTS = ("invalid x-api-key", "invalid api key", "invalid_api_key",
+                   "incorrect api key", "authentication_error", "authentication error",
+                   "unauthorized", "no auth credentials", "missing api key",
+                   "expired api key", "invalid bearer token", "permission denied")
+
+
+def _is_auth_error(exc: BaseException) -> bool:
+    """Heuristic: is this a 401/403 auth rejection (bad/expired/missing key)?
+
+    Matches on a numeric ``status_code`` of 401/403, the exception type name, or
+    known message phrases. Kept deliberately narrow so a generic "permission"
+    string in an unrelated tool result doesn't get misclassified.
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and status in (401, 403):
+        return True
+    name = type(exc).__name__.lower()
+    if any(h in name for h in _AUTH_NAME_HINTS):
+        return True
+    msg = str(exc).lower()
+    if "401" in msg or "403" in msg:
+        return True
+    return any(h in msg for h in _AUTH_MSG_HINTS)
+
+
+def _provider_of_ref(ref: str) -> str:
+    """Best-effort provider/profile name from a model ref (e.g. ``anthropic`` from
+    ``anthropic/claude-opus-4-8``). Returns ``""`` when it can't be determined so
+    the caller can fall back to a generic phrasing."""
+    if not ref or ref == "unknown":
+        return ""
+    return ref.split("/", 1)[0] if "/" in ref else ""
 
 
 def _looks_like_git_commit(command: str) -> bool:
