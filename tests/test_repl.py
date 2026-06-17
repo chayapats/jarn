@@ -1666,3 +1666,25 @@ def test_gen_stat_reports_tok_per_second(tmp_path, monkeypatch):
     assert "~100 tok" in stat
     assert "tok/s" in stat                            # ~50 tok/s
     app.controller.close()
+
+
+def test_gen_stat_shows_prompt_tokens_while_thinking(tmp_path, monkeypatch):
+    """Before any output streams, show the prompt size (real input delta) — not a
+    tok/s rate, which is meaningless during prompt processing."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app._turn_base_input = 0
+    app.controller.tracker.total.input_tokens = 1234   # provider reported the prompt
+    assert app._first_token_at is None                 # still thinking
+    stat = app._gen_stat()
+    assert "prompt 1234 tok" in stat and "tok/s" not in stat
+    app.controller.close()
+
+
+def test_gen_stat_thinking_proxies_context_when_prompt_unknown(tmp_path, monkeypatch):
+    """LM Studio doesn't report input until the end — fall back to the prior
+    context size as a ~prompt proxy while thinking."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app._turn_base_input = 0
+    app.controller.tracker.context_tokens = 5000
+    assert "prompt ~5000 tok" in app._gen_stat()
+    app.controller.close()

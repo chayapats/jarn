@@ -3,6 +3,61 @@
 All notable changes to J.A.R.N. are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+A customer-feedback remediation pass (19 tasks across onboarding, permissions,
+approvals, cost/context surfacing, and docs) plus follow-up fixes. Test count:
+789 → 989.
+
+### Added
+
+- **Current-date awareness** — the assembled system prompt states the local
+  date/time, so time-sensitive requests ("find today's news") are no longer
+  anchored to the model's training cutoff.
+- **Context-% gauge for local models** — the toolbar `ctx N%` gauge resolves the
+  window for LM Studio (`/api/v0/models`) and Ollama (`/api/show`), so it shows
+  for local models, not only curated cloud ones.
+- **Live token/throughput while generating** — the spinner/stream footer shows
+  the prompt size while processing, then output tokens + a real tok/s rate while
+  generating (estimated from the streamed text when the provider streams without
+  per-chunk usage, e.g. LM Studio).
+- **`/doctor` in the REPL** (same checks as `jarn doctor`, inline); **`/memory
+  dump`** (one "what the agent knows" view); **`/abort`** (cancel the turn and
+  roll back its edits); **`/preset`** / `--preset` (canonical mode+sandbox
+  shortcut).
+- **Approvals**: `[v]` view-full-diff through the pager and `[e]`
+  edit-before-apply in the menu; **`/compact` preview + confirm**;
+  `ui.approval_diff_lines` makes the inline diff cap configurable.
+- **Onboarding**: env-key detection + recommended provider + cloud/local/custom
+  hints in the wizard; model-slug "did you mean"; local-model discovery (Ollama /
+  LM Studio); a one-time unpriced-model warning.
+- **Surfacing**: per-tool cost breakdown in `/cost`; web-search source hosts
+  inline; grouped `/help` + toolbar glyph legend; always-visible trust indicator;
+  `ui.splash: full|compact|off`.
+
+### Changed
+
+- **Unified permission model (P3.A)** — `permission_mode` + `policy.profile`
+  collapse into one model: **Mode** (`/mode`), **Sandbox** (`/sandbox`), **Trust**
+  (`/trust`), and **Presets** as launch-time shortcuts. `/profile`, `--profile`,
+  and `policy.profile` are deprecated aliases of `/preset`/`--preset` (still work,
+  with a one-time notice). The untrusted floor is now a direct clamp,
+  byte-for-byte equivalent to the old `review-only` floor (pinned by an
+  equivalence test). `docs/PERMISSIONS.md` rewritten around the one model.
+- Entering **yolo** prints a prominent confirmation banner; `/undo` /`/redo` give
+  an actionable message when autocheckpoint is off.
+
+### Fixed
+
+- **Multiple subagent interrupts** — resuming more than one pending HITL interrupt
+  is keyed by interrupt id (LangGraph 1.x requirement), fixing the "you must
+  specify the interrupt id when resuming" error when several subagents need
+  approval at once.
+- **Rapid Shift+Tab → yolo** no longer stacks confirmation prompts that fight over
+  the input and hang.
+- A mid-turn failure now logs the **full traceback** to `~/.jarn/logs/jarn.log`
+  instead of showing only a one-line message.
+
 ## [0.3.0] - 2026-06-09
 
 Still **alpha** (`Development Status :: 3 - Alpha`). v1.0.0 is not yet earned —

@@ -56,8 +56,12 @@ base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists 
 - **Bring your own model** — 13 providers (OpenRouter, Anthropic, OpenAI, Google,
   Mistral, Groq, DeepSeek, Together, Fireworks, xAI, Ollama, LM Studio, plus a generic
   OpenAI-compatible endpoint) with per-task routing so subagents can use cheaper models.
-- **Cost-aware** — live token/cost tracking with a per-session budget that can warn
-  or hard-stop.
+- **Cost- & context-aware** — live token/cost tracking (with a per-tool breakdown)
+  and a per-session budget that can warn or hard-stop; a context-% gauge and live
+  generation throughput (tok/s) that work for local models (LM Studio / Ollama)
+  too, not just priced cloud ones.
+- **Date-aware** — the current local date/time is injected into the system prompt,
+  so "today"-relative requests don't anchor to the model's training cutoff.
 - **Extensible** — skills, slash commands, custom subagents, lifecycle hooks, and MCP
   servers, all configured through plain files in `~/.jarn` and `.jarn/`.
 
