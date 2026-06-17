@@ -11,6 +11,13 @@ approvals, cost/context surfacing, and docs) plus follow-up fixes. Test count:
 
 ### Added
 
+- **Background processes** — `run_in_background` / `check_background` /
+  `kill_background` / `list_background` tools let the agent start a dev server,
+  watcher, or long build and keep working instead of blocking on output (the
+  ordinary `execute` blocks with a 120s timeout). Output streams to a per-process
+  log; `/ps` lists them and `/ps kill <id>` stops one. Gated like shell (the
+  danger-guard inspects the command); local backend only (`execution.background`,
+  default on) — not registered under docker/sandbox; all terminated on exit.
 - **Plan-mode handoff** — in read-only `plan` mode the agent now researches, then
   calls a new `exit_plan_mode` tool to present a concrete plan. You approve it
   (arrow-key picker: proceed in auto-edit / proceed asking / keep planning) and the

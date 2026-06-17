@@ -78,11 +78,24 @@ def interrupt_map(
     return {t: True for t in gated}
 
 
+#: Background-process tools. Starting one runs a shell command, so it is gated
+#: exactly like ``execute`` (SHELL → danger-guard inspects the command). Inspecting
+#: / killing / listing only touch processes the agent itself started, so they are
+#: read-only controls that never need a prompt.
+BACKGROUND_START_TOOL = "run_in_background"
+BACKGROUND_CONTROL_TOOLS = ("check_background", "kill_background", "list_background")
+
+
 def tool_to_action(tool_name: str, args: dict[str, Any]) -> Action:
     """Map a tool call to an Action the permission engine can evaluate."""
     if tool_name == "execute":
         command = args.get("command") or args.get("cmd") or _stringify(args)
         return Action(ActionKind.SHELL, target=str(command), tool=tool_name)
+    if tool_name == BACKGROUND_START_TOOL:
+        command = args.get("command") or args.get("cmd") or _stringify(args)
+        return Action(ActionKind.SHELL, target=str(command), tool=tool_name)
+    if tool_name in BACKGROUND_CONTROL_TOOLS:
+        return Action(ActionKind.READ, target=str(args.get("id", "") or "bg"), tool=tool_name)
     if tool_name in ("write_file", "edit_file"):
         path = args.get("file_path") or args.get("path") or args.get("filename") or ""
         return Action(ActionKind.WRITE, target=str(path), tool=tool_name)

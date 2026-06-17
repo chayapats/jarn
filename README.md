@@ -206,6 +206,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/commit` | Draft a commit message from the current diff and commit (with approval). |
 | `/review` | Review the current working-tree diff for bugs and quality (read-only). |
 | `/checkpoints` | List recent auto-checkpoints. |
+| `/ps [kill <id>]` | List or kill background processes (from run_in_background). |
 | `/quit` | Exit J.A.R.N. |
 | `/map [focus] [--refresh]` | Show the ranked repo map (codebase overview). |
 | `/wiki [search <q>\|list]` | Search or list wiki knowledge-base pages. |

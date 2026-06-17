@@ -142,6 +142,13 @@ BUILTINS: tuple[BuiltinCommand, ...] = (
     BuiltinCommand("sessions", "List and resume previous sessions.", "controller", group="Session"),
     BuiltinCommand("checkpoints", "List recent auto-checkpoints.", "controller", group="Session"),
     BuiltinCommand(
+        "ps",
+        "List or kill background processes (from run_in_background).",
+        "controller",
+        usage="[kill <id>]",
+        group="Session",
+    ),
+    BuiltinCommand(
         "queue",
         "Show or manage queued input lines (while a turn is running).",
         "repl",

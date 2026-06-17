@@ -292,6 +292,7 @@ def _build_config(raw: dict[str, Any]) -> Config:
         )
     cfg.execution = ExecutionConfig(
         backend=backend_raw,
+        background=_normalize_bool(ex.get("background", True), "execution.background"),
         sandbox_provider=str(ex.get("sandbox_provider", "langsmith")),
         docker_image=str(ex.get("docker_image", "python:3.12")),
         multimodal=_normalize_bool(ex.get("multimodal", True), "execution.multimodal"),
