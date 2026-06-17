@@ -701,7 +701,10 @@ class Controller:
             rebuilt=True,
         )
 
-    def _cmd_profile(self, args: str) -> CommandResult:
+    def _cmd_preset(self, args: str) -> CommandResult:
+        """Expand a preset — a launch-time shortcut that sets /mode + /sandbox at
+        once — and echo exactly what it set. /mode and /sandbox remain the live
+        axes; /preset is optional sugar."""
         from jarn.config.loader import ConfigError
         from jarn.config.profiles import PROFILE_NAMES, resolve_effective_profile
 
@@ -709,10 +712,11 @@ class Controller:
         if not args.strip():
             current = self.config.policy.profile or "none"
             return CommandResult(
-                f"Current policy profile: {current}. Available: {available}."
+                f"Current preset: {current}. Available: {available}. "
+                "A preset is a shortcut that sets /mode + /sandbox together."
             )
         choice = args.strip()
-        # resolve_effective_profile applies the chosen profile (raising on an
+        # resolve_effective_profile expands the chosen preset (raising on an
         # unknown name) AND clamps untrusted sessions to the floor — a single
         # apply path, so the REPL can never loosen an untrusted session.
         try:
@@ -720,15 +724,29 @@ class Controller:
                 self.config, project_trusted=self.project_trusted, cli_profile=choice
             )
         except ConfigError:
-            return CommandResult(f"Unknown profile {choice!r}. Choose one of: {available}")
+            return CommandResult(f"Unknown preset {choice!r}. Choose one of: {available}")
         self.config.policy.profile = effective or ""
         self.engine.mode = self.config.permission_mode
         self.runtime = None  # mode/sandbox/web-tools changes require a rebuild
+        # Echo the expansion so the user sees what the preset actually set.
+        expansion = (
+            f"mode={self.config.permission_mode.value}, "
+            f"sandbox={self.config.execution.local_sandbox}, "
+            f"network={'on' if self.config.execution.sandbox_allow_network else 'off'}"
+        )
         suffix = ""
         if effective != choice:
             suffix = f" (clamped to {effective} — project untrusted)"
         return CommandResult(
-            f"Policy profile set to {effective}{suffix} (rebuilding).", rebuilt=True
+            f"preset '{effective}'{suffix} → {expansion} (rebuilding).", rebuilt=True
+        )
+
+    def _cmd_profile(self, args: str) -> CommandResult:
+        """Deprecated alias of /preset (kept working for back-compat)."""
+        result = self._cmd_preset(args)
+        return CommandResult(
+            f"(/profile is deprecated — use /preset.) {result.text}",
+            rebuilt=result.rebuilt,
         )
 
     def _cmd_mcp(self, args: str) -> CommandResult:
@@ -1486,18 +1504,17 @@ class Controller:
 
         lines.append(f"default profile: {_escape_markup(diag.get('default_profile', ''))}")
         lines.append(f"main model: {_escape_markup(diag.get('main_model', ''))}")
-        lines.append(f"permission mode: {_escape_markup(diag.get('permission_mode', ''))}")
-
-        _stored = diag.get("policy_profile", "none")
-        _effective = diag.get("effective_profile", _stored)
-        _profile_str = (
-            f"{_stored} (effective: {_effective} — project untrusted)"
-            if _effective != _stored
-            else _stored
+        _mode = diag.get("permission_mode", "")
+        _eff_mode = diag.get("effective_mode", _mode)
+        _mode_str = (
+            _mode if _eff_mode == _mode
+            else f"{_mode} · effective: {_eff_mode} (after trust clamp)"
         )
+        lines.append(f"mode: {_escape_markup(_mode_str)}")
+
         web_tools_str = "on" if diag.get("web_tools", True) else "off"
         lines.append(
-            f"policy profile: {_escape_markup(_profile_str)}"
+            f"preset (deprecated): {_escape_markup(diag.get('policy_profile', 'none'))}"
             f" · web tools: {web_tools_str}"
         )
 
