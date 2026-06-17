@@ -271,3 +271,70 @@ async def test_setup_wizard_back_navigation(tmp_path, monkeypatch):
         await pilot.press("escape")    # back → provider
         await pilot.pause()
         assert app.step == "provider"
+
+
+async def _goto_ollama_model_step(pilot, app):
+    """Drive the wizard provider→base_url→model for the local 'ollama' provider."""
+    from jarn.config.defaults import ALL_PROVIDERS
+
+    ollama_idx = list(ALL_PROVIDERS).index("ollama")
+    ol = app.query_one("#step-list")
+    ol.highlighted = ollama_idx
+    await pilot.press("enter")          # provider: ollama → base_url
+    await pilot.pause()
+    assert app.step == "base_url"
+    await pilot.press("enter")          # accept default Ollama URL → model
+    await pilot.pause()
+    assert app.step == "model"
+
+
+@pytest.mark.asyncio
+async def test_wizard_model_step_offers_arrow_select_when_endpoint_reachable(tmp_path, monkeypatch):
+    """A reachable Ollama endpoint → the model step is an arrow-key OptionList."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    from unittest.mock import patch
+
+    from textual.widgets import OptionList
+
+    from jarn.onboarding.tui_wizard import SetupApp
+
+    # Mock discovery so no real network call happens.
+    with patch("jarn.providers.list_remote_models", return_value=["qwen3-coder:30b", "llama3:8b"]):
+        app = SetupApp()
+        async with app.run_test(size=(90, 40)) as pilot:
+            await pilot.pause()
+            await _goto_ollama_model_step(pilot, app)
+            # The model step is now a selectable list, not a free-text Input.
+            lst = app.query_one("#step-list", OptionList)
+            labels = [str(opt.prompt) for opt in lst._options]
+            assert any("qwen3-coder:30b" in lbl for lbl in labels)
+            assert any("llama3:8b" in lbl for lbl in labels)
+            assert any("manually" in lbl.lower() for lbl in labels)
+            # Pick the first discovered model via arrow-select.
+            lst.highlighted = 0
+            await pilot.press("enter")
+            await pilot.pause()
+    assert app.answers["model"] == "ollama/qwen3-coder:30b"
+
+
+@pytest.mark.asyncio
+async def test_wizard_model_step_degrades_to_manual_when_unreachable(tmp_path, monkeypatch):
+    """An unreachable endpoint (empty list) → free-text Input, never blocks."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    from unittest.mock import patch
+
+    from textual.widgets import Input
+
+    from jarn.onboarding.tui_wizard import SetupApp
+
+    with patch("jarn.providers.list_remote_models", return_value=[]):
+        app = SetupApp()
+        async with app.run_test(size=(90, 40)) as pilot:
+            await pilot.pause()
+            await _goto_ollama_model_step(pilot, app)
+            # No discovered models → manual entry input is present.
+            inp = app.query_one("#step-input", Input)
+            inp.value = "my-local-model"
+            await pilot.press("enter")
+            await pilot.pause()
+    assert app.answers["model"] == "ollama/my-local-model"

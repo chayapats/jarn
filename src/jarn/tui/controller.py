@@ -434,6 +434,30 @@ class Controller:
                 add(models["subagent"], name)
         return list(seen.items())
 
+    def discover_models(self) -> list[tuple[str, str]]:
+        """Probe configured local endpoints for their served models.
+
+        Returns ``(qualified_ref, profile)`` for every model reported by a local
+        provider (Ollama / LM Studio / openai_compatible). Fails open: providers
+        that are unreachable contribute nothing, so the list is simply empty when
+        no endpoint answers — the caller then falls back to manual entry.
+        """
+        from jarn.config.schema import ProviderType
+        from jarn.providers import list_remote_models, qualify_model_ref
+
+        local = {ProviderType.OLLAMA, ProviderType.LMSTUDIO, ProviderType.OPENAI_COMPATIBLE}
+        out: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for name, prov in self.config.providers.items():
+            if prov.type not in local:
+                continue
+            for model_id in list_remote_models(prov):
+                ref = qualify_model_ref(model_id, name)
+                if ref not in seen:
+                    seen.add(ref)
+                    out.append((ref, name))
+        return out
+
     def mode_choices(self) -> list[tuple[str, str]]:
         hints = {
             "plan": "read-only",

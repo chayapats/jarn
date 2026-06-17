@@ -195,6 +195,20 @@ class SetupApp(App):
         default_id = strip_profile(default_full, prov)
         if prov == CUSTOM_OPENAI_PROFILE and default_id == "your-model":
             default_id = "gpt-4o"
+
+        # For local/custom endpoints, probe the live endpoint for its served
+        # models and offer an arrow-key pick (preferred over blind typing). Fails
+        # open to free-text entry when the endpoint is unreachable or empty.
+        discovered = self._discover_models(prov)
+        if discovered:
+            items = [(m, m) for m in discovered]
+            items.append(("__manual__", "Enter a model id manually…"))
+            await self._set(
+                f"Pick a model served by {prov}  ({len(discovered)} found)",
+                self._option_list(items, default_id if default_id in discovered else None),
+            )
+            return
+
         if prov == CUSTOM_OPENAI_PROFILE:
             title = "Model id on your endpoint  (e.g. gpt-4o, qwen3-coder)"
         else:
@@ -202,6 +216,20 @@ class SetupApp(App):
                 f"Model id for {prov}  (e.g. deepseek/deepseek-v4-flash for OpenRouter)"
             )
         await self._set(title, Input(value=default_id, id="step-input"))
+
+    def _discover_models(self, prov: str) -> list[str]:
+        """Probe a local endpoint for its served models (``[]`` on any failure)."""
+        if not profile_needs_base_url(prov):
+            return []
+        from jarn.config.schema import ProviderConfig, ProviderType
+        from jarn.providers import list_remote_models
+
+        base_url = self.answers.get("base_url") or PROVIDER_BASE_URLS.get(prov)
+        try:
+            ptype = ProviderType(prov)
+        except ValueError:
+            return []
+        return list_remote_models(ProviderConfig(type=ptype, base_url=base_url))
 
     async def _step_theme(self) -> None:
         await self._set("Theme?", self._option_list(_THEMES, self.answers.get("theme", "dark")))
@@ -242,6 +270,13 @@ class SetupApp(App):
             if key == "env":
                 self._set_env_key_ref()
             await self._goto(self._next_after_storage(key))
+        elif step == "model":
+            if key == "__manual__":
+                # Drop the discovered list and render the free-text input instead.
+                await self._set_manual_model_input()
+            else:
+                self._set_model(key)
+                await self._goto("theme")
         elif step == "theme":
             self.answers["theme"] = key
             self.theme = theme_name_for(key)
@@ -273,16 +308,30 @@ class SetupApp(App):
             self._base_url_error = None
             await self._goto("model")
         elif self.step == "model":
-            from jarn.providers import qualify_model_ref, strip_profile
-
-            prov = self.answers["provider"]
-            default_id = strip_profile(
-                DEFAULT_MODELS.get(prov, DEFAULT_MODELS["openrouter"])["main"], prov
-            )
-            if prov == CUSTOM_OPENAI_PROFILE and default_id == "your-model":
-                default_id = "gpt-4o"
-            self.answers["model"] = qualify_model_ref(value or default_id, prov)
+            self._set_model(value)
             await self._goto("theme")
+
+    def _set_model(self, value: str) -> None:
+        from jarn.providers import qualify_model_ref, strip_profile
+
+        prov = self.answers["provider"]
+        default_id = strip_profile(
+            DEFAULT_MODELS.get(prov, DEFAULT_MODELS["openrouter"])["main"], prov
+        )
+        if prov == CUSTOM_OPENAI_PROFILE and default_id == "your-model":
+            default_id = "gpt-4o"
+        self.answers["model"] = qualify_model_ref(value or default_id, prov)
+
+    async def _set_manual_model_input(self) -> None:
+        from jarn.providers import strip_profile
+
+        prov = self.answers["provider"]
+        default_id = strip_profile(
+            DEFAULT_MODELS.get(prov, DEFAULT_MODELS["openrouter"])["main"], prov
+        )
+        if prov == CUSTOM_OPENAI_PROFILE and default_id == "your-model":
+            default_id = "gpt-4o"
+        await self._set(f"Model id for {prov}", Input(value=default_id, id="step-input"))
 
     def _set_env_key_ref(self) -> None:
         prov = self.answers["provider"]
