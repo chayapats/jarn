@@ -9,7 +9,8 @@ assistant paragraph previews in a small region just above the input.
 The agent turn runs as a **cancellable task**, so **Esc** (or Ctrl+C) interrupts
 mid-stream while the input stays live. Enter sends, Shift+Enter (Ctrl+J) inserts a
 newline, Shift+Tab cycles the permission mode, Tab completes ``/commands`` and
-``@files``, ↑/↓ navigate history, Ctrl+O expands the last tool output. Approvals
+``@`` mentions (``@file``, ``@folder:``, ``@symbol:``), ↑/↓ navigate history,
+Ctrl+O expands the last tool output. Approvals
 and pickers are app-native (captured through the same input). It reuses the
 UI-agnostic :class:`~jarn.tui.controller.Controller` and
 :class:`~jarn.agent.session.SessionDriver`.

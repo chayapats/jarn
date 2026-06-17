@@ -79,6 +79,73 @@ def test_completion_catalog_includes_builtins():
     assert catalog["help"] == next(c.description for c in BUILTINS if c.name == "help")
 
 
+# ---------------------------------------------------------------------------
+# Rich @-mentions: @folder: and @symbol: (first slice)
+# ---------------------------------------------------------------------------
+
+
+def test_folder_mention_lists_dirs_only(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "README.md").write_text("x", encoding="utf-8")
+    cands = _provider(tmp_path).complete("@folder:sr")
+    labels = [c.label for c in cands]
+    assert "@src/" in labels
+    assert not any("README" in label for label in labels)
+    assert all(c.kind == "folder" for c in cands)
+
+
+def test_folder_mention_replacement(tmp_path):
+    (tmp_path / "src").mkdir()
+    cands = _provider(tmp_path).complete("look at @folder:sr")
+    chosen = next(c for c in cands if c.label == "@src/")
+    assert chosen.replacement == "look at @src/"
+
+
+def test_symbol_mention_matches_class_and_func(tmp_path):
+    src = "class Foo:\n    def bar(self):\n        pass\n\n\ndef top():\n    pass\n"
+    (tmp_path / "mod.py").write_text(src, encoding="utf-8")
+    import jarn.agent.repomap as repomap_mod
+
+    repomap_mod._SYMBOL_INDEX_CACHE.clear()
+
+    cands = _provider(tmp_path).complete("@symbol:Fo")
+    foo = next(c for c in cands if "Foo" in c.label)
+    assert foo.kind == "symbol"
+    assert foo.replacement == "@mod.py:Foo"
+    assert foo.description == "mod.py"
+
+    method_cands = _provider(tmp_path).complete("@symbol:ba")
+    bar = next(c for c in method_cands if "bar" in c.label)
+    assert "Foo" in bar.label  # container shown in the menu label
+    assert bar.replacement == "@mod.py:bar"
+    assert bar.description == "mod.py"
+
+
+def test_symbol_mention_case_insensitive_and_capped(tmp_path):
+    funcs = "\n\n".join(f"def sym_{i}():\n    pass" for i in range(50))
+    (tmp_path / "many.py").write_text(funcs, encoding="utf-8")
+    import jarn.agent.repomap as repomap_mod
+
+    repomap_mod._SYMBOL_INDEX_CACHE.clear()
+
+    cands = _provider(tmp_path).complete("@symbol:SYM")  # uppercase -> matches sym_*
+    assert len(cands) > 0
+    assert len(cands) <= 12
+
+
+def test_bare_at_still_files_unchanged(tmp_path):
+    """Regression guard: bare @ stays file completion, byte-for-byte."""
+    (tmp_path / "README.md").write_text("x", encoding="utf-8")
+    cands = _provider(tmp_path).complete("@READ")
+    assert any(c.label == "@README.md" for c in cands)
+    assert all(c.kind == "file" for c in cands)
+
+
+def test_unknown_kind_prefix_no_crash(tmp_path):
+    """An unknown @kind: token must not raise (falls through to file resolver)."""
+    assert _provider(tmp_path).complete("@bogus:x") == []
+
+
 def test_consecutive_keystrokes_reuse_cached_listing(tmp_path, monkeypatch):
     """Typing successive characters in the same directory must not re-scan it."""
     (tmp_path / "alpha.py").write_text("x", encoding="utf-8")

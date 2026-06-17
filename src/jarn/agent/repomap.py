@@ -115,6 +115,19 @@ class FileEntry:
     score: float = 0.0
 
 
+@dataclass(slots=True, frozen=True)
+class SymbolRef:
+    """A single named symbol located in the repo, for @symbol completion.
+
+    ``container`` is the enclosing class name for a method (one level deep,
+    matching :func:`_extract_python`); it is empty for top-level symbols.
+    """
+
+    name: str
+    rel: str                              # relative path string (from root, posix)
+    container: str = ""
+
+
 def _extract_python(text: str) -> list[str]:
     """Extract module-level class/def/async-def names (and class methods one
     level deep) using ``ast``.  Robust and immune to regex edge cases."""
@@ -306,6 +319,16 @@ def _count_tokens(text: str) -> int:
 # Caching
 # ---------------------------------------------------------------------------
 
+#: Module-level in-process cache for the symbol index, keyed by
+#: ``_cache_key(root, _cheap_signature(files))``.  The REPL completer builds a
+#: fresh ``CompletionProvider`` on EVERY keystroke, so the symbol index MUST be
+#: cached here (process-global), NOT on the provider, or a large repo would be
+#: re-scanned per character and stall the UI.  Same cheap signature (file count
+#: + max mtime) as the on-disk repo-map cache — edits within the same mtime
+#: second can be missed, which is acceptable for an authoring aid.
+_SYMBOL_INDEX_CACHE: dict[str, list[SymbolRef]] = {}
+
+
 def _cache_key(root: Path, signature: str) -> str:
     h = hashlib.sha256(f"{root}:{signature}".encode()).hexdigest()[:16]
     return h
@@ -380,6 +403,44 @@ def build_repo_map(
     map_text = _render(root, ranked, token_budget=token_budget)
     _save_cache(cp, map_text)
     return map_text
+
+
+def build_symbol_index(root: Path) -> list[SymbolRef]:
+    """Return a flat list of :class:`SymbolRef` for every symbol under *root*.
+
+    Reuses :func:`_discover_files` (git-ls-files / .gitignore-aware, noise-dir
+    filtered) and :func:`_extract_symbols` (Python via ``ast`` including
+    one-level methods; JS/TS/Go/Rust via regex), so language coverage matches
+    :func:`build_repo_map`.  Python method entries arrive as ``"  .name"`` and
+    are normalized into ``name=method, container=<enclosing class>``.
+
+    The result is cached in the process-global :data:`_SYMBOL_INDEX_CACHE`
+    keyed by ``root`` + a cheap signature (file count + max mtime), so the
+    per-keystroke REPL completer does an O(prefix-match) lookup rather than an
+    O(repo) re-scan.  See the cache docstring for the staleness tradeoff.
+    """
+    files = _discover_files(root)
+    key = _cache_key(root, _cheap_signature(files))
+    cached = _SYMBOL_INDEX_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    refs: list[SymbolRef] = []
+    for p in files:
+        try:
+            rel = p.relative_to(root).as_posix()
+        except ValueError:
+            rel = str(p)
+        container = ""
+        for sym in _extract_symbols(p):
+            if sym.startswith("  ."):
+                # A class method (one level deep); attach to the last class.
+                refs.append(SymbolRef(name=sym[3:], rel=rel, container=container))
+            else:
+                container = sym  # a subsequent "  .method" belongs to this name
+                refs.append(SymbolRef(name=sym, rel=rel, container=""))
+    _SYMBOL_INDEX_CACHE[key] = refs
+    return refs
 
 
 def _build_entries(root: Path, files: list[Path]) -> list[FileEntry]:
