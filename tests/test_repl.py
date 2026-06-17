@@ -283,6 +283,73 @@ async def test_turn_does_not_retry_after_output(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_auth_error_surfaces_friendly_message(tmp_path, monkeypatch):
+    """A 401/auth ERROR is mapped to a friendly, actionable message naming the
+    provider — not the raw SDK JSON, which is kept only as dim detail."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)  # routing.main = "openrouter/m"
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+
+    raw = "Error code: 401 - {'error': {'message': 'invalid x-api-key'}}"
+    driver = _FakeDriver([
+        Event(EventKind.ERROR, raw, {"retryable": False, "auth": True,
+                                     "provider": "openrouter"}),
+    ])
+    monkeypatch.setattr(ctrl, "make_driver", lambda approver: driver)
+
+    console = Console(file=StringIO(), width=100)
+    await repl._run_turn(console, ctrl, "hi", _ask_returning(""))
+    out = console.file.getvalue()
+    flat = " ".join(out.split())  # collapse console line-wrapping
+    assert "was rejected (401)" in flat
+    assert "openrouter" in flat
+    assert "/key" in flat and "jarn setup" in flat
+    # raw detail stays available (dim), but the message is no longer just the JSON
+    assert not out.strip().startswith("Error code: 401")
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_non_auth_error_message_unchanged(tmp_path, monkeypatch):
+    """A non-auth error is surfaced verbatim (no friendly remapping)."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+
+    driver = _FakeDriver([
+        Event(EventKind.TEXT, "partial"),
+        Event(EventKind.ERROR, "boom: something broke", {"retryable": False}),
+    ])
+    monkeypatch.setattr(ctrl, "make_driver", lambda approver: driver)
+
+    console = Console(file=StringIO(), width=80)
+    await repl._run_turn(console, ctrl, "hi", _ask_returning(""))
+    out = console.file.getvalue()
+    assert "boom: something broke" in out
+    assert "was rejected (401)" not in out
+    ctrl.close()
+
+
+def test_friendly_auth_error_falls_back_to_generic_without_provider():
+    """With no provider, the message degrades gracefully to a generic phrasing
+    and still keeps the raw detail dim."""
+    from jarn import repl
+
+    msg = repl._friendly_auth_error("Error code: 401 - invalid x-api-key", "")
+    assert "was rejected (401)" in msg
+    assert "/key" in msg and "jarn setup" in msg
+    assert "invalid x-api-key" in msg  # raw detail preserved
+
+
+@pytest.mark.asyncio
 async def test_fallback_retry_no_duplicate_human_message(tmp_path, monkeypatch):
     """End-to-end: a real flaky model fails the first call, the turn rotates to a
     fallback and recovers — leaving exactly ONE human message in the thread
