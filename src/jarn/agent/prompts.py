@@ -7,6 +7,8 @@ appended at build time.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 BASE_SYSTEM_PROMPT = """\
 You are J.A.R.N. — "Just A Reliable Nerd" — a terminal-based coding agent.
 
@@ -48,6 +50,23 @@ NOT a web page; format for readability there):
 - When something is clearer shown than described (architecture, flow, layout),
   draw a small ASCII diagram inside a fenced code block (boxes, →/│ arrows, trees).
 """
+
+
+def date_context(now: datetime | None = None) -> str:
+    """A context block stating the current local date/time.
+
+    The model's training has a cutoff and otherwise has no idea what "today" is,
+    which makes time-sensitive requests ("find today's news") unreliable. Computed
+    at session build, so it reflects the day the session started."""
+    dt = now or datetime.now().astimezone()
+    stamp = f"{dt:%A, %Y-%m-%d %H:%M}".rstrip()
+    tz = f"{dt:%Z}".strip()
+    if tz:
+        stamp = f"{stamp} {tz}"
+    return (
+        f"Current date and time: {stamp}. "
+        'Treat this as "today"/"now" — do not rely on your training cutoff for the date.'
+    )
 
 
 def build_system_prompt(*context_blocks: str) -> str:

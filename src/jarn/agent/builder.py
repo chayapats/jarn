@@ -309,6 +309,7 @@ def build_runtime(
         system_prompt = system_prompt_override
     else:
         system_prompt = prompts.build_system_prompt(
+            prompts.date_context(),
             assemble_system_context(
                 root,
                 project_trusted=project_trusted,

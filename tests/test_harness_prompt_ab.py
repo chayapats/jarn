@@ -3,6 +3,7 @@ A/B J.A.R.N.'s harness prompt against a bare tool-using agent (same model/tools)
 
 from __future__ import annotations
 
+from datetime import UTC
 from unittest.mock import patch
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -37,3 +38,28 @@ def test_empty_override_yields_empty_prompt(tmp_path):
     # agent instructions still apply downstream — that's the "no harness" arm).
     rt = _build(tmp_path, "")
     assert rt.system_prompt == ""
+
+
+def test_date_context_states_the_current_date():
+    from datetime import datetime
+
+    from jarn.agent.prompts import date_context
+
+    block = date_context(datetime(2026, 6, 17, 9, 30, tzinfo=UTC))
+    assert "2026-06-17" in block
+    assert "Wednesday" in block
+    assert "today" in block.lower()
+
+
+def test_jarn_prompt_injects_the_current_date(tmp_path):
+    """The JARN system prompt tells the agent today's date, so time-sensitive
+    requests ("find today's news") aren't anchored to the training cutoff."""
+    rt = _build(tmp_path, None)
+    assert "Current date and time:" in rt.system_prompt
+
+
+def test_override_arm_has_no_date_injection(tmp_path):
+    """The eval baseline (override) stays the pure controlled prompt — no date —
+    so the A/B isolates the harness prompt."""
+    rt = _build(tmp_path, "You are a coding assistant. Use the tools.")
+    assert "Current date and time:" not in rt.system_prompt
