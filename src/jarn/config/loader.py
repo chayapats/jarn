@@ -27,6 +27,7 @@ from jarn.config.schema import (
     ObservabilityConfig,
     PermissionMode,
     PermissionRules,
+    PlanConfig,
     PolicyConfig,
     ProviderConfig,
     ProviderType,
@@ -58,6 +59,7 @@ _KNOWN_TOP_LEVEL_KEYS = {
     "compat",
     "git",
     "wiki",
+    "plan",
 }
 
 _TRUE_STRINGS = {"true", "yes", "on", "1"}
@@ -365,6 +367,17 @@ def _build_config(raw: dict[str, Any]) -> Config:
 
     wiki = raw.get("wiki", {}) or {}
     cfg.wiki = _build_wiki_config(wiki)
+
+    plan = raw.get("plan", {}) or {}
+    from jarn.config.schema import _VALID_EXIT_MODES
+
+    exit_mode_raw = str(plan.get("exit_mode", "auto-edit"))
+    if exit_mode_raw not in _VALID_EXIT_MODES:
+        raise ConfigError(
+            f"plan.exit_mode must be one of "
+            f"{sorted(_VALID_EXIT_MODES)} (got {exit_mode_raw!r})."
+        )
+    cfg.plan = PlanConfig(exit_mode=exit_mode_raw)
 
     return cfg
 

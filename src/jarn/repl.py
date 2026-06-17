@@ -1687,6 +1687,8 @@ async def _approve(
     view: Callable[[str], Awaitable[None]] | None = None,
     edit: Callable[[ApprovalRequest], Awaitable[ApprovalReply | None]] | None = None,
 ) -> ApprovalReply:
+    if request.plan is not None:
+        return await _approve_plan(console, controller, request, ask=ask, pick=pick)
     a = request.action
     what = (f"run: {a.target}" if a.kind is ActionKind.SHELL
             else f"write: {a.target}" if a.kind is ActionKind.WRITE
@@ -1754,6 +1756,68 @@ async def _approve(
     if ans in ("w", "always") and not request.result.block_remember_always:
         return ApprovalReply(True, RememberScope.ALWAYS)
     return deny
+
+
+async def _approve_plan(
+    console: Console,
+    controller: Controller,
+    request: ApprovalRequest,
+    *,
+    ask: Ask | None = None,
+    pick: Pick | None = None,
+) -> ApprovalReply:
+    """Plan-mode handoff approval: show the plan, pick the mode to proceed in.
+
+    On approval the live permission mode is escalated through
+    ``controller.apply_mode`` (which clamps to the review-only floor on an
+    untrusted project), so the rest of the turn can carry out the plan.
+    """
+    from rich.markdown import Markdown
+
+    plan = request.plan or ""
+    console.print(f"\n[{palette.C_NOTICE}]▶ Plan ready for review[/{palette.C_NOTICE}]")
+    if plan.strip():
+        console.print(Markdown(plan))
+    if not controller.project_trusted:
+        console.print(
+            f"[{palette.C_WARN}]⚠ Project is untrusted — approving keeps read-only "
+            f"plan mode; run /trust to allow edits.[/{palette.C_WARN}]"
+        )
+
+    auto = ("Approve → proceed in auto-edit",
+            ApprovalReply(True, plan_mode_target="auto-edit"))
+    askm = ("Approve → proceed, ask before each action",
+            ApprovalReply(True, plan_mode_target="ask"))
+    keep = ("Keep planning (don't execute yet)",
+            ApprovalReply(False,
+                          message="Keep refining the plan; call exit_plan_mode again when ready."))
+    ordered: list[tuple[str, object]] = (
+        [auto, askm, keep]
+        if controller.config.plan.exit_mode == "auto-edit"
+        else [askm, auto, keep]
+    )
+
+    if pick is not None:
+        picked = await pick(ordered)
+        reply = cast(ApprovalReply, picked)
+    elif ask is not None:
+        ans = (await ask("  [a]pprove auto-edit / [k] approve ask / [n] keep planning: ")).strip().lower()
+        reply = auto[1] if ans in ("a", "approve", "y", "yes") else askm[1] if ans in ("k", "ask") else keep[1]
+    else:
+        return ApprovalReply(False, message="auto-denied (no approver)")
+
+    if reply.approved and reply.plan_mode_target:
+        applied = controller.apply_mode(reply.plan_mode_target)
+        if applied != reply.plan_mode_target:
+            console.print(
+                f"[{palette.C_WARN}]mode clamped to {applied} — project untrusted "
+                f"(/trust to allow edits).[/{palette.C_WARN}]"
+            )
+        else:
+            console.print(
+                f"[{palette.C_NOTICE}]plan approved → {applied} mode[/{palette.C_NOTICE}]"
+            )
+    return reply
 
 
 def _apply_model_ref(controller: Controller, console: Console, chosen: str) -> None:

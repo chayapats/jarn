@@ -208,6 +208,10 @@ context:
   # repo_map: tool        # off | tool (on-demand via repo_map tool) | auto (also in system prompt)
   # repo_map_tokens: 1024  # token budget for map output (must be > 0)
 
+# Plan-mode handoff: which mode `exit_plan_mode` escalates to once you approve a plan.
+plan:
+  exit_mode: auto-edit    # ask | auto-edit (the approval picker still offers the other)
+
 # Execution backend (shell commands). Defaults to local; see docs/CONFIGURATION.md.
 # OS-level sandbox is opt-in — enabling it changes execution behaviour.
 # execution:
