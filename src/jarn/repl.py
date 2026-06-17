@@ -1809,6 +1809,26 @@ async def _run_turn(
                     resume = True  # user message is already in state; don't re-send
                     continue
             if pending_error.data.get("auth"):
+                # A 401 is non-retryable on the *same* provider (reusing a
+                # rejected key just 401s again), but a configured fallback on a
+                # different provider with a resolvable key is exactly the case
+                # where switching helps — try that before dead-ending.
+                if not produced:
+                    new_ref = controller.rotate_to_keyed_fallback()
+                    if new_ref:
+                        try:
+                            await controller.ensure_runtime()
+                        except Exception as exc:  # noqa: BLE001
+                            renderer.on_notice(
+                                f"[{palette.C_ERROR}]fallback unavailable: {exc}[/{palette.C_ERROR}]"
+                            )
+                            break
+                        renderer.on_notice(
+                            f"[{palette.C_NOTICE}]auth failed, retrying with {new_ref}…"
+                            f"[/{palette.C_NOTICE}]"
+                        )
+                        resume = True  # user message is already in state; don't re-send
+                        continue
                 provider = pending_error.data.get("provider") or _provider_hint(controller)
                 renderer.on_notice(_friendly_auth_error(pending_error.text, provider))
             else:

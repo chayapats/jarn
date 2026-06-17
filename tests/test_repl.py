@@ -338,6 +338,82 @@ async def test_non_auth_error_message_unchanged(tmp_path, monkeypatch):
     ctrl.close()
 
 
+@pytest.mark.asyncio
+async def test_auth_error_rotates_to_keyed_fallback(tmp_path, monkeypatch):
+    """A 401 on the primary rotates to a configured fallback on a different
+    provider that has a good key, and the turn completes there."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="primary",
+        providers={
+            "primary": ProviderConfig(type=ProviderType.OPENROUTER, api_key="bad"),
+            "backup": ProviderConfig(type=ProviderType.ANTHROPIC, api_key="good"),
+        },
+        routing=RoutingConfig(main="primary/m", fallback=["backup/m"]),
+    )
+    ctrl = Controller(cfg, root)
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+
+    raw = "Error code: 401 - {'error': {'message': 'invalid x-api-key'}}"
+    first = _FakeDriver([
+        Event(EventKind.ERROR, raw, {"retryable": False, "auth": True,
+                                     "provider": "primary"}),
+    ])
+    second = _FakeDriver([Event(EventKind.TEXT, "recovered."), Event(EventKind.DONE)])
+    seq = [first, second]
+    monkeypatch.setattr(ctrl, "make_driver", lambda approver: seq.pop(0))
+
+    console = Console(file=StringIO(), width=100)
+    await repl._run_turn(console, ctrl, "hi", _ask_returning(""))
+    out = console.file.getvalue()
+    flat = " ".join(out.split())
+    assert "auth failed, retrying with backup/m" in flat
+    assert "recovered." in flat
+    assert "was rejected (401)" not in flat   # rotated instead of dead-ending
+    assert second.resumed is True             # resume from state, no duplicate user msg
+    assert ctrl.config.routing.main == "primary/m"  # reset to primary on success
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_auth_error_dead_ends_without_viable_fallback(tmp_path, monkeypatch):
+    """With no viable fallback, a 401 still dead-ends with the friendly message."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)  # single provider, no fallback
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+
+    raw = "Error code: 401 - {'error': {'message': 'invalid x-api-key'}}"
+    calls = {"n": 0}
+
+    def _make(approver):
+        calls["n"] += 1
+        return _FakeDriver([
+            Event(EventKind.ERROR, raw, {"retryable": False, "auth": True,
+                                         "provider": "openrouter"}),
+        ])
+    monkeypatch.setattr(ctrl, "make_driver", _make)
+
+    console = Console(file=StringIO(), width=100)
+    await repl._run_turn(console, ctrl, "hi", _ask_returning(""))
+    out = console.file.getvalue()
+    flat = " ".join(out.split())
+    assert calls["n"] == 1                     # no rotation attempted
+    assert "was rejected (401)" in flat
+    assert "auth failed, retrying" not in flat
+    ctrl.close()
+
+
 def test_friendly_auth_error_falls_back_to_generic_without_provider():
     """With no provider, the message degrades gracefully to a generic phrasing
     and still keeps the raw detail dim."""
