@@ -143,6 +143,29 @@ def test_cmd_cost_shows_top_burners(tmp_path, monkeypatch, base_config):
     ctrl.close()
 
 
+def test_cmd_cost_shows_cache_line_when_present(tmp_path, monkeypatch, base_config):
+    """/cost surfaces a cache line with read/write token counts when a turn cached."""
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    ctrl.tracker.record(
+        "claude-opus-4-8", 100, 50,
+        cache_read_tokens=1234, cache_creation_tokens=567,
+    )
+    text = ctrl.handle_command("cost", "").text
+    assert "cache" in text
+    assert "1,234 read" in text
+    assert "567 write" in text
+    ctrl.close()
+
+
+def test_cmd_cost_hides_cache_line_without_cache_usage(tmp_path, monkeypatch, base_config):
+    """No cache usage -> no cache line (the output is unchanged for non-cache turns)."""
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    ctrl.tracker.record("claude-opus-4-8", 100, 50)
+    text = ctrl.handle_command("cost", "").text
+    assert "read ·" not in text
+    ctrl.close()
+
+
 def test_record_turn_emits_numeric_event(tmp_path, monkeypatch, base_config):
     """record_turn writes a 'turn' event with numeric props (telemetry on)."""
     import json

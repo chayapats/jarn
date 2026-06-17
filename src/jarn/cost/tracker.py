@@ -27,6 +27,11 @@ class Usage:
     cost_usd: float = 0.0
     calls: int = 0
     unpriced_calls: int = 0
+    # Prompt-cache tokens (subset of the provider's reported input). Tracked
+    # separately so the breakdown can show cache reuse; they are already priced
+    # into ``cost_usd`` by ``pricing.cost_of``.
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
 
     @property
     def total_tokens(self) -> int:
@@ -61,6 +66,8 @@ class CostTracker:
         input_tokens: int,
         output_tokens: int,
         tool: str | None = None,
+        cache_read_tokens: int = 0,
+        cache_creation_tokens: int = 0,
     ) -> Usage:
         """Record one model call; returns the updated total usage.
 
@@ -69,8 +76,19 @@ class CostTracker:
         for a plain reply). Attributing to a single tool bucket — never one per
         tool-call — keeps ``sum(per_tool) == total`` exactly, the same invariant
         ``per_model`` already holds, so the breakdown never double-counts.
+
+        ``cache_read_tokens`` / ``cache_creation_tokens`` are the prompt-cache
+        portions of this call's input; they are priced into the returned cost and
+        tracked per bucket so ``/cost`` can surface cache reuse. When both are 0
+        (no cache usage), totals are identical to the pre-cache behavior.
         """
-        cost = pricing.cost_of(model_id, input_tokens, output_tokens)
+        cost = pricing.cost_of(
+            model_id,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+        )
         unpriced = cost is None
         cost = cost or 0.0
 
@@ -81,6 +99,8 @@ class CostTracker:
             u.output_tokens += output_tokens
             u.cost_usd += cost
             u.calls += 1
+            u.cache_read_tokens += cache_read_tokens
+            u.cache_creation_tokens += cache_creation_tokens
             if unpriced:
                 u.unpriced_calls += 1
         # Largest single prompt seen ~= current context fill (reset per thread).
