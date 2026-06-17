@@ -91,9 +91,20 @@ async def test_setup_wizard_branches_local_skips_key(tmp_path, monkeypatch):
         assert app.step == "model"
 
 
+def _clear_provider_env(monkeypatch) -> None:
+    from jarn.config.defaults import PROVIDER_ENV_VARS
+
+    for ev in PROVIDER_ENV_VARS.values():
+        monkeypatch.delenv(ev, raising=False)
+
+
 @pytest.mark.asyncio
 async def test_setup_wizard_full_flow_saves(tmp_path, monkeypatch):
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    # The env key is present, so the env reference resolves and the wizard does
+    # not have to stop to capture a key (openrouter becomes the detected hit).
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
     from jarn.config import paths
     from jarn.config.loader import load_config
     from jarn.onboarding.tui_wizard import SetupApp
@@ -105,9 +116,9 @@ async def test_setup_wizard_full_flow_saves(tmp_path, monkeypatch):
     app = SetupApp()
     async with app.run_test(size=(90, 40)) as pilot:
         await pilot.pause()
-        await step(pilot, "provider")   # openrouter (first) → storage
-        assert app.step == "storage"
-        await step(pilot, "storage")    # env (first) → model
+        # openrouter is the detected env hit + recommended → selecting it reuses
+        # the ${ENV} reference and skips straight past the storage prompt.
+        await step(pilot, "provider")   # openrouter → model (storage skipped)
         assert app.step == "model"
         await step(pilot, "model")      # accept prefilled default → theme
         assert app.step == "theme"
@@ -127,15 +138,16 @@ async def test_wizard_openrouter_with_slashed_model(tmp_path, monkeypatch):
     """Regression: provider=openrouter + model 'deepseek/deepseek-v4-flash'
     must route through openrouter, not the deepseek provider."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
     from jarn.config.loader import load_config
     from jarn.onboarding.tui_wizard import SetupApp
 
     app = SetupApp()
     async with app.run_test(size=(90, 40)) as pilot:
         await pilot.pause()
-        await pilot.press("enter")          # provider: openrouter (first)
-        await pilot.pause()
-        await pilot.press("enter")          # storage: env (first)
+        # openrouter is the detected hit → storage prompt is skipped.
+        await pilot.press("enter")          # provider: openrouter → model
         await pilot.pause()
         # model step: type an OpenRouter model id that contains a slash
         inp = app.query_one("#step-input")
@@ -159,6 +171,9 @@ async def test_wizard_openrouter_with_slashed_model(tmp_path, monkeypatch):
 async def test_setup_wizard_openai_compatible_custom_endpoint(tmp_path, monkeypatch):
     """Custom OpenAI-compatible: key + base_url + model are all persisted."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _clear_provider_env(monkeypatch)
+    # env reference resolves so the env storage path proceeds without a key prompt.
+    monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "sk-compat-env")
     from jarn.config import paths
     from jarn.config.defaults import ALL_PROVIDERS
     from jarn.config.loader import load_config
@@ -171,10 +186,9 @@ async def test_setup_wizard_openai_compatible_custom_endpoint(tmp_path, monkeypa
         await pilot.pause()
         ol = app.query_one("#step-list")
         ol.highlighted = compat_idx
-        await pilot.press("enter")          # provider → storage
-        await pilot.pause()
-        assert app.step == "storage"
-        await pilot.press("enter")          # env → base_url
+        # openai_compatible's env var is set → detected hit reuses the ${ENV}
+        # reference and skips the storage prompt, landing on base_url.
+        await pilot.press("enter")          # provider → base_url
         await pilot.pause()
         assert app.step == "base_url"
         inp = app.query_one("#step-input")
