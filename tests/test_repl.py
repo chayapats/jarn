@@ -1348,6 +1348,18 @@ async def test_confirm_yolo_returns_false_on_empty(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_confirm_yolo_prints_visible_banner(tmp_path, monkeypatch):
+    """The yolo confirm prints a prominent scrollback banner (not just the faint
+    region-above-input ask) so the y/N decision can't be missed."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(app, "_ask", _ask_returning("y"))
+    assert await app._confirm_yolo() is True
+    out = app.console.file.getvalue()
+    assert "YOLO mode" in out  # the banner landed in visible scrollback
+    app.controller.close()
+
+
+@pytest.mark.asyncio
 async def test_command_mode_yolo_confirmed(tmp_path, monkeypatch):
     """`/mode yolo` applies yolo when user confirms with 'y'."""
     from jarn.config.schema import PermissionMode

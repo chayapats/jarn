@@ -505,11 +505,16 @@ class InlineApp:
 
     async def _confirm_yolo(self) -> bool:
         """Prompt the user to confirm entering yolo mode.  Returns True iff confirmed."""
-        answer = await self._ask(
-            "yolo = no approval prompts (danger-guard still blocks catastrophic actions)."
-            " Continue? [y/N] "
+        # Print a prominent banner into the visible scrollback first — the inline
+        # ask renders in the faint region above the input, which is easy to miss;
+        # the user must clearly see this is a y/N decision.
+        self.console.print(
+            f"[{palette.C_ERROR}]⚠  Entering YOLO mode[/{palette.C_ERROR}] "
+            f"[{palette.C_DIM}]— no approval prompts; the danger-guard still blocks "
+            f"catastrophic actions.[/{palette.C_DIM}]"
         )
-        return answer.strip().lower() == "y"
+        answer = await self._ask("Type 'y' to confirm yolo, anything else to cancel [y/N]: ")
+        return answer.strip().lower() in ("y", "yes")
 
     async def _confirm_and_cycle_yolo(self) -> None:
         """Async helper for Shift+Tab: confirm yolo, then apply it (or skip)."""
