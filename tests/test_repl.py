@@ -1415,6 +1415,127 @@ async def test_submit_abort_without_checkpoint_cancels_and_explains(tmp_path, mo
     app.controller.close()
 
 
+def _esc_handler(app):
+    """Return the real `escape` keybinding handler (the Esc keystroke path)."""
+    for binding in app._kb.bindings:
+        if getattr(binding.handler, "__name__", "") == "_esc_key":
+            return binding.handler
+    raise AssertionError("no _esc_key binding found")
+
+
+def _app_with_running_edited_turn(tmp_path, monkeypatch, *, autocheckpoint):
+    """An InlineApp with an in-flight turn that already applied a file edit.
+
+    Returns (app, buf, turn_task). The turn task is a never-finishing stub so
+    _busy() is True and the cancel path fires."""
+    from jarn import repl
+    from jarn.config.schema import GitConfig
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    if autocheckpoint:
+        _git_repo_with_commit(root)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+        git=GitConfig(autocheckpoint=autocheckpoint),
+    )
+    app = repl.InlineApp(cfg, root)
+    buf = StringIO()
+    app.console = Console(file=buf, width=80)
+    # The running turn applied a file edit: the live tool sink carries it.
+    app._last_tool_outputs = [("edit_file", "patched file.txt")]
+
+    async def _never():
+        await asyncio.sleep(3600)
+
+    app._turn_task = asyncio.create_task(_never())
+    return app, buf, app._turn_task
+
+
+@pytest.mark.asyncio
+async def test_esc_after_edits_with_checkpoint_offers_rollback(tmp_path, monkeypatch):
+    """Esc cancelling a turn that made edits states the edits remain and offers
+    rollback via /abort when a turn-start checkpoint exists. It must NOT touch
+    the files itself (that's /abort's job)."""
+    app, buf, turn_task = _app_with_running_edited_turn(
+        tmp_path, monkeypatch, autocheckpoint=True
+    )
+    assert app._busy()
+
+    _esc_handler(app)(event=None)
+    await asyncio.sleep(0)
+
+    assert turn_task.cancelled() or turn_task.done()
+    out = buf.getvalue().lower()
+    assert "still on disk" in out
+    assert "/abort" in buf.getvalue()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_esc_after_edits_without_checkpoint_explains_revert(tmp_path, monkeypatch):
+    """Esc after edits with autocheckpoint off still says edits remain and points
+    at /abort + how to enable rollback."""
+    app, buf, turn_task = _app_with_running_edited_turn(
+        tmp_path, monkeypatch, autocheckpoint=False
+    )
+    assert not app.controller.config.git.autocheckpoint  # default OFF
+    assert app._busy()
+
+    _esc_handler(app)(event=None)
+    await asyncio.sleep(0)
+
+    assert turn_task.cancelled() or turn_task.done()
+    out = buf.getvalue()
+    assert "still on disk" in out.lower()
+    assert "/abort" in out
+    assert "autocheckpoint" in out.lower()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_esc_with_no_edits_is_unchanged(tmp_path, monkeypatch):
+    """Esc cancelling a turn that made NO file edits prints no edits-remain note."""
+    app, buf, turn_task = _app_with_running_edited_turn(
+        tmp_path, monkeypatch, autocheckpoint=True
+    )
+    app._last_tool_outputs = [("read_file", "just looked")]  # no write/edit
+    assert app._busy()
+
+    _esc_handler(app)(event=None)
+    await asyncio.sleep(0)
+
+    assert turn_task.cancelled() or turn_task.done()
+    assert "still on disk" not in buf.getvalue().lower()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_abort_does_not_add_edits_remain_note(tmp_path, monkeypatch):
+    """/abort rolls edits back, so it must NOT print the contradictory
+    "edits still on disk" Esc note (regression guard for the shared cancel path)."""
+    app, buf, _turn_task = _app_with_running_edited_turn(
+        tmp_path, monkeypatch, autocheckpoint=True
+    )
+    # Give /abort a real turn-start checkpoint to revert to.
+    root = app.controller.project_root
+    (root / "file.txt").write_text("before\n", encoding="utf-8")
+    app.controller.checkpoint_manager.snapshot("running-turn")
+    (root / "file.txt").write_text("after\n", encoding="utf-8")
+    assert app._busy()
+
+    await app._command("abort", "")
+    await asyncio.sleep(0)
+
+    out = buf.getvalue().lower()
+    assert "rolled back" in out
+    assert "still on disk" not in out
+    app.controller.close()
+
+
 def test_repl_importable():
     from jarn.repl import InlineApp, run_inline  # noqa: F401
 

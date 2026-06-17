@@ -1380,6 +1380,35 @@ class Controller:
             return f"Turn cancelled and rolled back. {result.message}"
         return f"Turn cancelled. Cannot roll back: {result.message}"
 
+    def can_rollback_turn(self) -> bool:
+        """Whether a turn-start checkpoint is available to roll back to.
+
+        Autocheckpoint snapshots the working tree before each agent turn (see
+        ``SessionDriver._run``), so when autocheckpoint is on in a git repo there
+        is a checkpoint ``/abort`` can revert to."""
+        return self.checkpoint_manager.enabled and self.checkpoint_manager.is_repo
+
+    def cancel_edit_note(self) -> str | None:
+        """Message for an Esc/Ctrl+C cancel that left this turn's file edits on
+        disk.
+
+        Esc cancels the turn but does *not* revert edits (unlike ``/abort``).
+        Return text that says edits remain and how to revert them, offering
+        rollback when a turn-start checkpoint exists. Returns ``None`` only when
+        nothing actionable can be said (no rollback path) — but we always at
+        least point at ``/abort``, so this currently always returns a string.
+        """
+        if self.can_rollback_turn():
+            return (
+                "Edits from this turn are still on disk. "
+                "Run /abort to roll them back, or /undo later."
+            )
+        return (
+            "Edits from this turn are still on disk. "
+            "/abort can roll them back once autocheckpoint is on "
+            "(enable it with /config: git.autocheckpoint: true)."
+        )
+
     def _cmd_redo(self, args: str) -> CommandResult:
         """Re-apply the most recently undone agent turn's file changes."""
         if not self.checkpoint_manager.enabled:

@@ -366,17 +366,33 @@ class InlineApp:
     def _busy(self) -> bool:
         return self._turn_task is not None and not self._turn_task.done()
 
-    def _cancel_turn(self) -> None:
+    def _cancel_turn(self, *, note_edits: bool = False) -> None:
         """Cancel the running turn AND kill any shell process it spawned.
 
         Cancelling the asyncio task alone leaves a host subprocess (e.g. a long
         ``sleep``/build) running; terminating the backend's process tree makes
-        Esc/Ctrl+C actually stop the work."""
+        Esc/Ctrl+C actually stop the work.
+
+        ``note_edits`` is set by the Esc/Ctrl+C path (not ``/abort``, which
+        rolls back itself): when the cancelled turn already applied file edits,
+        those edits stay on disk, so we print a clear note that they remain and
+        how to revert them (``/abort`` rolls them back; offered when a
+        turn-start checkpoint exists)."""
         if self._turn_task is not None:
             self._turn_task.cancel()
         killed = self.controller.terminate_shells()
         if killed:
             self.console.print(f"[{palette.C_DIM}]stopped {killed} running command(s)[/{palette.C_DIM}]")
+        if note_edits and self._turn_made_edits():
+            note = self.controller.cancel_edit_note()
+            if note:
+                self.console.print(f"[{palette.C_DIM}]{_rich_escape(note)}[/{palette.C_DIM}]")
+
+    def _turn_made_edits(self) -> bool:
+        """Whether the just-cancelled turn applied a file edit (write/edit) —
+        detected from the live tool-output sink, same signal as the
+        /undo-unavailable hint."""
+        return any(n in ("write_file", "edit_file") for n, _ in self._last_tool_outputs)
 
     def _set_stream(self, text: str) -> None:
         """Show ``text`` in the live region above the input (in-progress prose or
@@ -628,7 +644,7 @@ class InlineApp:
     def _maybe_autocheckpoint_hint(self) -> None:
         """After a turn that wrote a file, show the one-time /undo-unavailable
         hint when autocheckpoint is off (no-op otherwise; self-gates per session)."""
-        if any(n in ("write_file", "edit_file") for n, _ in self._last_tool_outputs):
+        if self._turn_made_edits():
             hint = self.controller.autocheckpoint_off_hint()
             if hint:
                 self.console.print(f"[{palette.C_DIM}]{_rich_escape(hint)}[/{palette.C_DIM}]")
@@ -1087,7 +1103,7 @@ class InlineApp:
             if self._expanded:
                 self._collapse()
             elif self._busy():
-                self._cancel_turn()
+                self._cancel_turn(note_edits=True)
             elif self.input.text:
                 self.input.reset()
 
@@ -1105,7 +1121,7 @@ class InlineApp:
                 self._collapse()
                 return
             if self._busy():
-                self._cancel_turn()  # cancel the running turn
+                self._cancel_turn(note_edits=True)  # cancel the running turn
                 return
             if self.input.text:
                 self.input.reset()  # first Ctrl+C clears the input
