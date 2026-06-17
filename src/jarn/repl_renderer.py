@@ -112,6 +112,29 @@ class TurnRenderer:
             self._live.start()
         self._live.update(Markdown(self._buf, code_theme=palette.CODE_THEME))
 
+    def _live_show_reasoning(self) -> None:
+        """Stream the in-progress thinking text into the live region so it appears
+        as it arrives, instead of dumping the whole block when the phase ends."""
+        body = self._rbuf.strip()
+        if not body:
+            return
+        if self._live_sink is not None:
+            self._live_sink(f"✻ thinking\n{body}")
+            return
+        if not self.console.is_terminal:
+            return
+        if self._live is None:
+            self._live = Live(
+                console=self.console,
+                transient=True,
+                refresh_per_second=12,
+                vertical_overflow="visible",
+            )
+            self._live.start()
+        preview = Text("✻ thinking\n", style=palette.C_DIM)
+        preview.append(body, style=palette.C_DIM)
+        self._live.update(preview)
+
     def _live_clear(self) -> None:
         if self._live_sink is not None:
             self._live_sink("")
@@ -127,6 +150,8 @@ class TurnRenderer:
 
     def on_reasoning(self, text: str) -> None:
         self._rbuf += text
+        self._unspin()
+        self._live_show_reasoning()
 
     def _commit_reasoning(self) -> None:
         if self._rbuf.strip():
