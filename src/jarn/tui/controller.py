@@ -383,6 +383,67 @@ class Controller:
             self.config.default_model = self._candidates[0]
             self.runtime = None
 
+    def _ref_has_resolvable_key(self, ref: str) -> bool:
+        """True if ``ref``'s provider has a usable (resolvable, non-empty) key.
+
+        Used to decide whether rotating to a fallback on an *auth* failure is
+        worthwhile: a fallback whose own key is missing/unresolvable would just
+        401 again, so it isn't a viable target. Local providers (Ollama / LM
+        Studio) need no key and always count as viable. Resolution failures
+        (``${ENV}`` not set, no keychain entry) fail closed → not viable."""
+        from jarn.config.schema import ProviderType
+        from jarn.config.secrets import SecretResolutionError, resolve
+        from jarn.providers import parse_model_ref
+
+        try:
+            parsed = parse_model_ref(ref, default_profile=self.config.default_profile)
+        except Exception:  # noqa: BLE001 - malformed ref → not viable
+            return False
+        provider = self.config.providers.get(parsed.profile)
+        if provider is None:
+            return False
+        if provider.type in (ProviderType.OLLAMA, ProviderType.LMSTUDIO):
+            return True  # local endpoints need no key
+        try:
+            return bool(resolve(provider.api_key))
+        except SecretResolutionError:
+            return False
+
+    def rotate_to_keyed_fallback(self) -> str | None:
+        """Rotate to the next fallback on a *different* provider that has a key.
+
+        Auth (401) failures are not retryable on the same provider — a rejected
+        key won't fix itself by reusing it. But a configured ``routing.fallback``
+        on a *different* provider with a resolvable key is exactly the case where
+        switching providers helps. This advances the rotation cursor past any
+        same-provider or keyless candidates to the first viable one, mutating the
+        same routing state as :meth:`rotate_to_fallback` (so a later success
+        ``reset_model_rotation`` still returns to the primary). Returns the new
+        ref, or ``None`` when no viable fallback remains."""
+        from jarn.providers import parse_model_ref
+
+        def _profile(ref: str) -> str:
+            try:
+                return parse_model_ref(
+                    ref, default_profile=self.config.default_profile
+                ).profile
+            except Exception:  # noqa: BLE001
+                return ref
+
+        current = self._candidates[self._candidate_idx] if self._candidates else ""
+        current_profile = _profile(current)
+        idx = self._candidate_idx + 1
+        while idx < len(self._candidates):
+            cand = self._candidates[idx]
+            if _profile(cand) != current_profile and self._ref_has_resolvable_key(cand):
+                self._candidate_idx = idx
+                self.config.routing.main = cand
+                self.config.default_model = cand
+                self.runtime = None  # rebuild with the new model
+                return cand
+            idx += 1
+        return None
+
     def record_session_title(self, title: str, *, when: float) -> None:
         self.sessions.touch(self.thread_id, title, when=when)
 
