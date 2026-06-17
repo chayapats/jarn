@@ -57,7 +57,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-09** (v0.3.0 prepared
 - [x] `jarn` / `setup` / `init` / `doctor` (`--json`) CLI
 - [x] Strict config validation (typed bools, numeric ranges, unknown top-level keys rejected)
 - [x] Local rotating logs, opt-in LangSmith tracing
-- [x] `uv`/PyPI packaging, 789 tests (+ packaging gate), clean lint + `mypy` CI
+- [x] `uv`/PyPI packaging, 1054 tests (+ packaging gate), clean lint + `mypy` CI
 - [x] `jarn doctor` extension diagnostics — skills, commands, subagents, hooks, MCP
   (shadowing, builtin renames, untrusted skips); `uv.lock` tracked for team installs
 
@@ -86,6 +86,28 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-09** (v0.3.0 prepared
   audio/video; binary-aware approval diff; `execution.multimodal` flag
 - [x] **Turn-level fallback model-swap** — on a turn that fails before producing
   output, rotate through `routing.fallback` and retry transparently
+
+## v0.4.0 — competitive-gaps round (unreleased)
+
+Five user pain points closed versus other harnesses (Claude Code / Cursor / Cline /
+Aider). See the design spec under `docs/superpowers/specs/`.
+
+- [x] **Local prompt-cache keep-warm** — cloud caching is already automatic (the
+  agent engine adds Anthropic cache-control; other cloud providers cache by prefix
+  server-side), so the gap was local: `routing.keep_alive` keeps an Ollama / LM Studio
+  model + its KV/prefix cache resident between turns (Ollama `keep_alive` / LM Studio
+  request `ttl`). `routing.prompt_cache: auto|off` (default `auto`) gates it.
+- [x] **Plan-mode handoff** — `exit_plan_mode` tool: in read-only `plan` mode the agent
+  presents a plan, you approve it (auto-edit / ask / keep planning), and the session
+  escalates and executes in the same turn (clamped on untrusted repos). `plan.exit_mode`
+  (default `auto-edit`).
+- [x] **`/commit` + `/review`** — `/commit` drafts a conventional message from the diff
+  and runs `git commit` (via approval; no push); `/review` seeds a read-only diff review.
+- [x] **Background processes** — `run_in_background` / `check_background` /
+  `kill_background` / `list_background` tools + `/ps`; local backend only
+  (`execution.background`, default `true`), gated like shell, terminated on exit.
+- [x] **Image paste (macOS)** — `Ctrl+V` grabs a clipboard image into `.jarn/pastes/`
+  and inserts it as an `@path` the multimodal `read_file` loads (pngpaste / AppleScript).
 
 ## v0.3.0 — prepared (Alpha, unreleased)
 

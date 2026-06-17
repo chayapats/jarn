@@ -73,6 +73,19 @@ allowed; in `auto-edit` it downgrades to *ask*.
 Built-in web tools (`web_search`, `web_fetch`) auto-allow in `auto-edit`; other
 network (MCP, async subagents) still prompt `ask`.
 
+### Plan-mode handoff
+
+`plan` is not a dead end. In plan mode the agent researches read-only, then calls
+the `exit_plan_mode` tool to present a concrete plan. You review it and pick how to
+proceed (arrow-key picker): **auto-edit**, **ask**, or **keep planning**. On
+approval the live mode is escalated through the same clamped choke point as every
+other mode change (`Controller.apply_mode`) — so an **untrusted project can never
+be escalated past the `plan` floor** this way; the picker explains that `/trust` is
+required. `exit_plan_mode` is the one gated tool that is *callable in plan mode*
+(the session driver routes it to the approver instead of letting the engine deny it
+like any other non-read action). The default landing mode is `plan.exit_mode`
+(default `auto-edit`).
+
 ---
 
 ## 3. Sandbox — where code runs
