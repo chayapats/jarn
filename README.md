@@ -203,6 +203,8 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/undo` | Revert the last agent turn's file changes. |
 | `/redo` | Re-apply the last undone agent turn's file changes. |
 | `/abort` | Cancel the running turn and roll back its file changes. |
+| `/commit` | Draft a commit message from the current diff and commit (with approval). |
+| `/review` | Review the current working-tree diff for bugs and quality (read-only). |
 | `/checkpoints` | List recent auto-checkpoints. |
 | `/quit` | Exit J.A.R.N. |
 | `/map [focus] [--refresh]` | Show the ranked repo map (codebase overview). |

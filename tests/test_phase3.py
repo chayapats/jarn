@@ -31,6 +31,7 @@ def test_builtin_registry_routes_are_handled():
         elif cmd.route == "repl":
             assert cmd.name in {
                 "compact", "expand", "resume", "model", "mode", "queue", "abort",
+                "commit", "review",
             }
 
 

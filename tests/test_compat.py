@@ -212,11 +212,11 @@ def test_jarn_command_overrides_claude_command(tmp_path: Path, monkeypatch) -> N
     root = tmp_path / "proj"
     (root / ".jarn").mkdir(parents=True)
 
-    _write_command(root / ".claude" / "commands", "review", "claude review")
-    _write_command(root / ".jarn" / "commands", "review", "jarn review")
+    _write_command(root / ".claude" / "commands", "summarize", "claude summarize")
+    _write_command(root / ".jarn" / "commands", "summarize", "jarn summarize")
 
     cmds = load_commands(root, read_claude_dir=True)
-    assert cmds["review"].description == "jarn review"
+    assert cmds["summarize"].description == "jarn summarize"
 
 
 def test_builtin_name_still_shadow_protected(tmp_path: Path, monkeypatch) -> None:
