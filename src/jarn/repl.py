@@ -25,6 +25,7 @@ import random
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
@@ -1007,6 +1008,10 @@ class InlineApp:
                 self._config_panel.type_text(data)
                 event.app.invalidate()
 
+        @kb.add("c-v", filter=live)
+        def _paste_image_key(event) -> None:
+            self._paste_clipboard_image()
+
         @kb.add("c-o")
         def _expand_key(event) -> None:
             self._armed = False
@@ -1156,6 +1161,44 @@ class InlineApp:
         # (Esc can still fire while the command runs).
         response = await asyncio.to_thread(backend.execute, command)
         c.print(response.output)
+
+    def _paste_clipboard_image(self) -> None:
+        """Ctrl+V: grab an image from the clipboard and insert it as an ``@path``.
+
+        Saves the clipboard image under ``.jarn/pastes/`` and inserts an ``@``
+        reference so the agent's multimodal ``read_file`` picks it up on send.
+        macOS only; otherwise (or with no image on the clipboard) it points the
+        user at the save-and-``@``-reference fallback. Runs the (possibly slow)
+        clipboard read off the event loop.
+        """
+        if sys.platform != "darwin":
+            self._set_stream(
+                "image paste is macOS-only for now — save the file and use @path"
+            )
+            return
+
+        async def _job() -> None:
+            from jarn.tui.clipboard import save_clipboard_image
+
+            root = self.controller.project_root or Path(".")
+            path = await asyncio.to_thread(save_clipboard_image, root)
+            if path is None:
+                self._set_stream(
+                    "no image on the clipboard — copy a screenshot, or save it and use @path"
+                )
+            else:
+                try:
+                    rel = path.relative_to(root)
+                except ValueError:
+                    rel = path
+                self.input.insert_text(f"@{rel} ")
+                self.console.print(
+                    f"[{palette.C_NOTICE}]📎 attached {_rich_escape(str(rel))}[/{palette.C_NOTICE}]"
+                )
+            if self.app is not None:
+                self.app.invalidate()
+
+        asyncio.create_task(_job())
 
     # -- commands -----------------------------------------------------------
 
