@@ -180,7 +180,8 @@ class InlineApp:
         self._turn_start: float | None = None     # for the elapsed timer
         self._thinking_word = ""
         self._turn_stream_chars = 0   # streamed output chars this turn (live tok estimate)
-        self._turn_base_tokens = 0    # tracker total at turn start (to detect live usage)
+        self._turn_base_output = 0    # tracker output tokens at turn start (real-usage delta)
+        self._first_token_at: float | None = None   # first streamed delta (for tok/s)
         self._flash_html: HTML | None = None       # transient region message
         self._flash_until = 0.0
         self._expanded = False                     # pager overlay open?
@@ -384,6 +385,14 @@ class InlineApp:
         if self._menu_future is not None and self._menu_options:
             return self._menu_html()
         if self._stream_text:
+            if self._busy():
+                # Streamed text replaces the spinner, so carry the live token/rate
+                # stat as a dim footer — otherwise the counter vanishes the moment
+                # output starts (the gap users hit with local models).
+                return HTML(
+                    f"{_esc(self._stream_text)}\n"
+                    f'<style fg="{palette.C_DIM}">{_esc(self._gen_stat())} · esc to interrupt</style>'
+                )
             return self._stream_text
         if self._busy():
             return self._thinking_line()
@@ -415,27 +424,40 @@ class InlineApp:
         )
         return HTML("\n".join(lines))
 
+    def _gen_stat(self) -> str:
+        """Live generation stat: output tokens this turn + tok/s.
+
+        Uses the provider's real output-token delta when it reports usage during
+        the stream (e.g. Anthropic); otherwise a ``~`` estimate from the streamed
+        text (~4 chars/token), so a local model (LM Studio) — which streams
+        without per-chunk usage — still shows the counter moving. The rate is
+        measured from the first streamed token, so it reflects generation speed,
+        not prompt-processing latency."""
+        est = self._turn_stream_chars // 4
+        real = self.controller.tracker.total.output_tokens - self._turn_base_output
+        gen, approx = (real, "") if real > 0 else (est, "~")
+        out = f"{approx}{gen} tok"
+        if self._first_token_at is not None and gen > 0:
+            dur = time.monotonic() - self._first_token_at
+            if dur >= 0.5:
+                out += f" · {gen / dur:.0f} tok/s"
+        return out
+
     def _thinking_line(self) -> HTML:
         start = self._turn_start or time.monotonic()
         elapsed = int(time.monotonic() - start)
         frame = palette.SPINNER_FRAMES[int(time.monotonic() * 5) % len(palette.SPINNER_FRAMES)]
-        total = self.controller.tracker.total.total_tokens
-        if total > self._turn_base_tokens:
-            # The provider reports usage live (e.g. Anthropic) — show the real total.
-            toks = f"{total} tok"
-        else:
-            # No live usage yet (LM Studio / OpenAI-compatible stream without
-            # per-chunk usage) — show a rough estimate from the streamed text so
-            # the counter still moves while the agent is generating. ~4 chars/token.
-            toks = f"~{self._turn_base_tokens + self._turn_stream_chars // 4} tok"
         word = self._thinking_word or "Working"
         return HTML(
             f'{palette.styled_fg(palette.C_TOOL, frame)} '
-            f'{palette.styled_fg(palette.C_DIM, f"{word}… ({elapsed}s · {toks} · esc to interrupt)")}'
+            f'{palette.styled_fg(palette.C_DIM, f"{word}… ({elapsed}s · {self._gen_stat()} · esc to interrupt)")}'
         )
 
     def _count_stream_chars(self, delta: str) -> None:
-        """Accumulate streamed output chars this turn for the live token estimate."""
+        """Accumulate streamed output chars this turn (for the live token estimate),
+        stamping the first delta so tok/s measures generation, not prefill."""
+        if self._first_token_at is None:
+            self._first_token_at = time.monotonic()
         self._turn_stream_chars += len(delta)
 
     # -- prompt chrome ------------------------------------------------------
@@ -845,7 +867,8 @@ class InlineApp:
                 self._turn_start = time.monotonic()
                 self._thinking_word = random.choice(palette.THINKING_WORDS)
                 self._turn_stream_chars = 0
-                self._turn_base_tokens = self.controller.tracker.total.total_tokens
+                self._turn_base_output = self.controller.tracker.total.output_tokens
+                self._first_token_at = None
                 self._turn_task = asyncio.create_task(self._handle(send))
 
         @kb.add("c-j", filter=live)
@@ -1042,7 +1065,8 @@ class InlineApp:
             self._turn_start = time.monotonic()
             self._thinking_word = random.choice(palette.THINKING_WORDS)
             self._turn_stream_chars = 0
-            self._turn_base_tokens = self.controller.tracker.total.total_tokens
+            self._turn_base_output = self.controller.tracker.total.output_tokens
+            self._first_token_at = None
             self._turn_task = asyncio.create_task(self._handle(item.payload))
 
     async def _handle(self, text: str) -> None:

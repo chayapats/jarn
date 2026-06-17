@@ -1633,24 +1633,36 @@ async def test_rapid_yolo_confirm_requests_are_deduped(tmp_path, monkeypatch):
     app.controller.close()
 
 
-def test_thinking_line_estimates_tokens_when_provider_reports_none(tmp_path, monkeypatch):
+def test_gen_stat_estimates_output_tokens_when_provider_reports_none(tmp_path, monkeypatch):
     """LM Studio / OpenAI-compatible stream without per-chunk usage, so the live
-    token counter would sit at 0 — fall back to a ~estimate from streamed text."""
+    counter would sit at 0 — fall back to a ~estimate from the streamed text."""
     app = _make_inline_app(tmp_path, monkeypatch)
-    app._turn_base_tokens = 0           # tracker stays flat → no live usage
+    app._turn_base_output = 0           # tracker stays flat → no live usage
     app._count_stream_chars("x" * 40)   # ~10 tokens (40 // 4)
-    assert "~10 tok" in str(app._thinking_line().value)
+    assert "~10 tok" in app._gen_stat()
     app.controller.close()
 
 
-def test_thinking_line_uses_real_total_when_provider_reports_usage(tmp_path, monkeypatch):
+def test_gen_stat_uses_real_output_when_provider_reports_usage(tmp_path, monkeypatch):
     """When the provider DOES report usage live (e.g. Anthropic), show the real
-    running total and don't add the estimate on top (no double-count)."""
+    output-token delta and ignore the estimate (no double-count, no '~')."""
     app = _make_inline_app(tmp_path, monkeypatch)
-    app._turn_base_tokens = 0
-    app.controller.tracker.total.input_tokens = 100
-    app.controller.tracker.total.output_tokens = 50   # grew this turn → 150
-    app._count_stream_chars("x" * 400)                # estimate must be ignored
-    line = str(app._thinking_line().value)
-    assert "150 tok" in line and "~150" not in line
+    app._turn_base_output = 0
+    app.controller.tracker.total.output_tokens = 50   # generated this turn
+    app._count_stream_chars("x" * 400)                # estimate (100) must be ignored
+    stat = app._gen_stat()
+    assert "50 tok" in stat and "~" not in stat
+
+
+def test_gen_stat_reports_tok_per_second(tmp_path, monkeypatch):
+    """The rate is measured from the first streamed token (generation speed)."""
+    import time as _time
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app._turn_base_output = 0
+    app._count_stream_chars("x" * 400)               # ~100 tokens
+    app._first_token_at = _time.monotonic() - 2.0    # 2s of generation
+    stat = app._gen_stat()
+    assert "~100 tok" in stat
+    assert "tok/s" in stat                            # ~50 tok/s
     app.controller.close()
