@@ -188,6 +188,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/model [/ref\|refresh]` | Show or switch the active model; /model refresh re-queries local endpoints. |
 | `/mode [plan\|ask\|auto-edit\|yolo]` | Show or switch the permission mode (plan/ask/auto-edit/yolo). |
 | `/sandbox [on\|off]` | Show or toggle the execution backend (local/sandbox). |
+| `/key [<key>]` | Set or replace the API key for the current provider (stored in the keychain). |
 | `/preset [<preset-name>]` | Show or apply a preset — a shortcut that sets mode + sandbox at once. |
 | `/profile [<preset-name>]` | Deprecated alias of /preset (kept working). |
 | `/cost` | Show session token usage and cost. |
@@ -196,6 +197,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/clear` | Clear the conversation and start a fresh thread. |
 | `/sessions` | List and resume previous sessions. |
 | `/resume` | Pick a previous session to resume. |
+| `/rewind` | Rewind the conversation to an earlier turn and continue (forks a new thread). |
 | `/skills` | List available skills. |
 | `/memory [search\|show\|add\|update\|delete\|dump] ...` | List, search, show, add, update, delete, or dump long-term memory. |
 | `/permissions` | Show current permission rules and allowlist. |
