@@ -176,11 +176,32 @@ def _build_config(raw: dict[str, Any]) -> Config:
     cfg.providers = _build_providers(raw.get("providers", {}))
 
     routing = raw.get("routing", {}) or {}
+    from jarn.config.schema import _VALID_PROMPT_CACHE
+
+    # YAML 1.1 parses a bare ``off``/``on`` as a boolean, so ``prompt_cache: off``
+    # arrives as ``False`` — map it back to the intended string rather than
+    # rejecting a perfectly natural spelling.
+    prompt_cache_val = routing.get("prompt_cache", "auto")
+    if isinstance(prompt_cache_val, bool):
+        prompt_cache_val = "off" if prompt_cache_val is False else "auto"
+    prompt_cache_raw = str(prompt_cache_val)
+    if prompt_cache_raw not in _VALID_PROMPT_CACHE:
+        raise ConfigError(
+            f"routing.prompt_cache must be one of "
+            f"{sorted(_VALID_PROMPT_CACHE)} (got {prompt_cache_raw!r})."
+        )
+    keep_alive_raw = _coerce_int(routing.get("keep_alive", 1800), "routing.keep_alive")
+    if keep_alive_raw < 0:
+        raise ConfigError(
+            f"routing.keep_alive must be >= 0 (got {keep_alive_raw})."
+        )
     cfg.routing = RoutingConfig(
         main=routing.get("main"),
         subagent=routing.get("subagent"),
         summarizer=routing.get("summarizer"),
         fallback=list(routing.get("fallback", []) or []),
+        prompt_cache=prompt_cache_raw,
+        keep_alive=keep_alive_raw,
     )
 
     budget = raw.get("budget", {}) or {}

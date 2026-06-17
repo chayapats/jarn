@@ -191,6 +191,8 @@ routing:
   subagent: {models["subagent"]}
   summarizer: {models["summarizer"]}
   fallback: []          # ordered list of model refs tried on primary failure
+  prompt_cache: auto    # auto | off — cache the prompt prefix where supported
+  keep_alive: 1800      # secs to keep a local model + KV cache warm (Ollama/LM Studio)
 
 # Session cost guardrails.
 budget:
