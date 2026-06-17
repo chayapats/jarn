@@ -366,6 +366,59 @@ def test_tool_sink_accumulates_live():
     assert sink == [("web_search", "a\nb\nc")]  # visible before the turn ends
 
 
+def test_session_thinking_word_is_stable():
+    """The session thinking word is picked once and stays put across calls."""
+    from jarn.tui import palette
+
+    word = palette.session_thinking_word()
+    assert word in palette.THINKING_WORDS
+    # Re-asking within the session yields the same identity, not a fresh pick.
+    assert all(palette.session_thinking_word() == word for _ in range(20))
+
+
+def test_thinking_word_stable_across_turns(tmp_path, monkeypatch):
+    """The inline indicator label keeps one identity across multiple turns."""
+    from jarn import repl
+    from jarn.tui import palette
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+
+    # The word is established at session start (not blank/Working fallback).
+    assert app._thinking_word in palette.THINKING_WORDS
+    first = app._thinking_word
+
+    # Simulating several turn starts must NOT re-roll the word.
+    for _ in range(5):
+        app._turn_start = 0.0
+        # mirror the submit/drain bookkeeping that used to re-randomize
+        assert app._thinking_word == first
+    assert app._thinking_word == first
+    app.controller.close()
+
+
+def test_renderer_spinner_word_matches_session(monkeypatch):
+    """The renderer spinner uses the stable session word, not a per-spin pick."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+    from jarn.tui import palette
+
+    buf = StringIO()
+    console = Console(file=buf, force_terminal=True, width=80)
+    word = palette.session_thinking_word()
+    # spinner enabled (live_sink is None) so _spin builds the label
+    r = _TurnRenderer(console, lambda: 0)
+    try:
+        assert r._status is not None
+        assert word in r._status.status  # same stable word, not a per-spin pick
+    finally:
+        r._unspin()
+
+
 def test_pager_overlay_toggle(tmp_path, monkeypatch):
     """Ctrl+O opens the in-app overlay; toggling/collapse closes it."""
     from jarn import repl

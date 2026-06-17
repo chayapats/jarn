@@ -21,7 +21,6 @@ import asyncio
 import contextlib
 import logging
 import os
-import random
 import shlex
 import shutil
 import subprocess
@@ -179,7 +178,9 @@ class InlineApp:
         self._menu_cancel: object | None = None
         self._stream_text = ""                    # in-progress region above input
         self._turn_start: float | None = None     # for the elapsed timer
-        self._thinking_word = ""
+        # One stable thinking word per session (don't re-roll every turn — the
+        # churning label reads as noise). Shared with the renderer spinner.
+        self._thinking_word = palette.session_thinking_word()
         self._turn_stream_chars = 0   # streamed output chars this turn (live tok estimate)
         self._turn_base_output = 0    # tracker output tokens at turn start (real-usage delta)
         self._turn_base_input = 0     # tracker input tokens at turn start (prompt-size delta)
@@ -879,7 +880,6 @@ class InlineApp:
                 else:
                     self.console.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(stripped)}")
                 self._turn_start = time.monotonic()
-                self._thinking_word = random.choice(palette.THINKING_WORDS)
                 self._turn_stream_chars = 0
                 self._turn_base_output = self.controller.tracker.total.output_tokens
                 self._turn_base_input = self.controller.tracker.total.input_tokens
@@ -1082,7 +1082,6 @@ class InlineApp:
             # `» queued: …` marker at submit time (see _submit). Re-echoing it as
             # `› …` on drain would put two scrollback lines per queued input.
             self._turn_start = time.monotonic()
-            self._thinking_word = random.choice(palette.THINKING_WORDS)
             self._turn_stream_chars = 0
             self._turn_base_output = self.controller.tracker.total.output_tokens
             self._turn_base_input = self.controller.tracker.total.input_tokens

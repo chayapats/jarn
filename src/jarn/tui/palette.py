@@ -10,6 +10,7 @@ inline REPL matches the theme chosen during setup.
 from __future__ import annotations
 
 import os
+import random
 from dataclasses import dataclass
 from typing import Literal
 
@@ -160,6 +161,21 @@ THINKING_WORDS = [
     "Tinkering",
     "Wrangling",
 ]
+
+_session_thinking_word: str | None = None
+
+
+def session_thinking_word() -> str:
+    """Return the thinking-indicator label for this session.
+
+    Picked once (lazily) and cached so the indicator keeps one identity across
+    turns instead of churning a fresh ``random.choice`` every turn. All
+    indicators (REPL prompt line + renderer spinner) share this one word.
+    """
+    global _session_thinking_word
+    if _session_thinking_word is None:
+        _session_thinking_word = random.choice(THINKING_WORDS)
+    return _session_thinking_word
 
 
 def no_color() -> bool:

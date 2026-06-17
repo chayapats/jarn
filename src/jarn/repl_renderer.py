@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -84,7 +83,7 @@ class TurnRenderer:
         if not self._spinner_enabled:
             return
         if self._status is None and self._live is None:
-            word = random.choice(palette.THINKING_WORDS)
+            word = palette.session_thinking_word()
             n = self._tokens()
             label = f"{word}… {n} tok" if n else f"{word}…"
             self._status = self.console.status(
