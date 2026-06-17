@@ -199,6 +199,12 @@ remembered as:
 - **session** — until you quit (in-memory),
 - **always** — written to the project `.jarn/config.yaml` allowlist.
 
+The interactive approval menu accepts a **single keypress** as well as the
+`↑/↓ · Enter` arrow picker: press **`y`** or **`a`** to allow once, **`n`** or
+**`d`** to deny — no arrow+Enter needed across a multi-edit turn. The arrow
+picker (and the **View full diff** / **Edit before apply** options) still work
+exactly as before.
+
 ### Edit before apply
 
 For a file write/edit, the approval menu also offers **Edit before apply**: it opens

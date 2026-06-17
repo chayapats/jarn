@@ -524,6 +524,94 @@ async def test_approve_always_blocked_for_dangerous(tmp_path, monkeypatch):
     ctrl.close()
 
 
+class _KeyEvent:
+    """Minimal stand-in for a prompt_toolkit key event (only ``.data`` is read)."""
+
+    def __init__(self, char: str):
+        self.data = char
+
+
+def _fastkey_handler(app):
+    """Return the `_menu_fastkey` keybinding handler (the y/a/n/d keystroke path)."""
+    for binding in app._kb.bindings:
+        if getattr(binding.handler, "__name__", "") == "_menu_fastkey":
+            return binding.handler
+    raise AssertionError("no _menu_fastkey binding found")
+
+
+def _inline_app(tmp_path, monkeypatch):
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    return repl.InlineApp(cfg, root)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key,approved,scope", [
+    ("y", True, RememberScope.ONCE),
+    ("a", True, RememberScope.ONCE),
+    ("n", False, None),
+    ("d", False, None),
+])
+async def test_pick_approval_one_key_resolves_instantly(tmp_path, monkeypatch, key, approved, scope):
+    """A single y/a/n/d keypress resolves the approval picker with no arrow+Enter."""
+    from jarn import repl
+
+    app = _inline_app(tmp_path, monkeypatch)
+    options = repl._approval_options(_request())
+    handler = _fastkey_handler(app)
+    task = asyncio.create_task(app._pick_approval(options))
+    await asyncio.sleep(0)  # let _pick_menu install the future + fastkeys
+    assert app._menu_fastkeys is not None  # approval menu wired the fast-path
+
+    handler(_KeyEvent(key))
+    picked = await task
+    assert isinstance(picked, ApprovalReply)
+    assert picked.approved is approved
+    if approved:
+        assert picked.scope is scope
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_pick_approval_arrow_then_enter_still_works(tmp_path, monkeypatch):
+    """Arrow navigation + Enter still confirms a non-default option (no regression)."""
+    from jarn import repl
+
+    app = _inline_app(tmp_path, monkeypatch)
+    options = repl._approval_options(_request())  # [allow once, allow always, deny]
+    task = asyncio.create_task(app._pick_approval(options))
+    await asyncio.sleep(0)
+    app._menu_index = 1  # "Allow always" via ↑/↓
+    app._menu_future.set_result(app._menu_options[1][1])
+    picked = await task
+    assert isinstance(picked, ApprovalReply)
+    assert picked.approved is True
+    assert picked.scope is RememberScope.ALWAYS
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_menu_fastkey_types_normally_outside_approval_menu(tmp_path, monkeypatch):
+    """With no fast-key menu active, y/a/n/d type into the input — editing intact.
+
+    (Async so the buffer's complete-while-typing has a running loop to schedule on.)"""
+    app = _inline_app(tmp_path, monkeypatch)
+    assert app._menu_fastkeys is None
+    handler = _fastkey_handler(app)
+    for ch in "andy":
+        handler(_KeyEvent(ch))
+    assert app.input.text == "andy"
+    app.controller.close()
+
+
 def _write_request(content: str):
     return ApprovalRequest(
         action=Action(ActionKind.WRITE, "big.txt"),
