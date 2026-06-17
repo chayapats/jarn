@@ -74,11 +74,12 @@ class RoutingConfig:
     summarizer: str | None = None
     #: Ordered fallback chain tried when the primary model errors.
     fallback: list[str] = field(default_factory=list)
-    #: Prompt caching: ``"auto"`` (default) enables it for every model that
-    #: supports it — an Anthropic cache-control middleware on the main loop,
-    #: automatic server-side prefix caching for the other cloud providers, and a
-    #: keep-warm lever for local servers (see ``keep_alive``). ``"off"`` disables
-    #: all of the above (no middleware, no keep-warm injection).
+    #: Prompt caching. Cloud caching is automatic — the agent engine adds
+    #: Anthropic cache-control breakpoints for Anthropic models, and the other
+    #: cloud providers cache by prefix server-side. The lever JARN adds is the
+    #: *local* keep-warm (``keep_alive``) so Ollama / LM Studio don't drop their
+    #: KV cache between turns. ``"auto"`` (default) applies the keep-warm; ``"off"``
+    #: skips it (cloud caching is the engine/provider default and stays on).
     prompt_cache: str = "auto"
     #: Seconds to keep a *local* model + its KV/prefix cache resident between
     #: turns. Wired to Ollama's ``keep_alive`` and LM Studio's request ``ttl``.

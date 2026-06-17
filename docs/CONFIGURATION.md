@@ -207,11 +207,11 @@ routing:
   subagent: openrouter/anthropic/claude-haiku-4-5   # delegated subagents (cheaper)
   summarizer: openrouter/anthropic/claude-haiku-4-5 # context summarization
   fallback: []                                      # tried on primary failure
-  prompt_cache: auto   # auto | off. Caches the prompt prefix wherever the model
-                       #   supports it: an Anthropic cache-control middleware on
-                       #   the main loop; automatic server-side prefix caching for
-                       #   the other cloud providers; and a keep-warm lever for
-                       #   local servers (see keep_alive). off disables all three.
+  prompt_cache: auto   # auto | off. Cloud caching is automatic — the agent engine
+                       #   adds Anthropic cache-control, and other cloud providers
+                       #   cache by prefix server-side. The lever this controls is
+                       #   the LOCAL keep-warm (keep_alive): auto applies it, off
+                       #   skips it (cloud caching still stays on either way).
   keep_alive: 1800     # seconds to keep a LOCAL model + its KV/prefix cache
                        #   resident between turns. Maps to Ollama's keep_alive and
                        #   LM Studio's request ttl; without it those servers unload

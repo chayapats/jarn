@@ -6,8 +6,10 @@ All notable changes to J.A.R.N. are documented here. Format follows
 ## [Unreleased]
 
 A customer-feedback remediation pass (19 tasks across onboarding, permissions,
-approvals, cost/context surfacing, and docs) plus follow-up fixes. Test count:
-789 → 989.
+approvals, cost/context surfacing, and docs) plus follow-up fixes, then a
+competitive-gaps round closing five user pain points versus other harnesses:
+prompt caching, plan-mode handoff, `/commit` + `/review`, background processes,
+and macOS image paste. Test count: 789 → 1054.
 
 ### Added
 
@@ -34,13 +36,13 @@ approvals, cost/context surfacing, and docs) plus follow-up fixes. Test count:
   normal approval path; nothing is pushed). `/review` seeds a read-only review of
   the current diff for correctness bugs and quality. Both embed the diff in the
   seeded turn so the agent skips a tool round-trip.
-- **Prompt caching (`routing.prompt_cache: auto`, default on)** — caches the
-  prompt prefix wherever the model supports it: an `AnthropicPromptCachingMiddleware`
-  on the main loop for Anthropic models, automatic server-side prefix caching for
-  the other cloud providers, and a keep-warm lever for local servers
-  (`routing.keep_alive` → Ollama `keep_alive` / LM Studio request `ttl`) so they
-  don't unload the model and drop the KV cache between turns. Cuts cost and
-  first-token latency on repeated context.
+- **Local prompt-cache keep-warm (`routing.prompt_cache: auto`, default on)** —
+  cloud caching is already automatic (the agent engine adds Anthropic cache-control;
+  other cloud providers cache by prefix server-side). What was missing was the local
+  side: `routing.keep_alive` now keeps an Ollama / LM Studio model + its KV/prefix
+  cache resident between turns (Ollama `keep_alive` / LM Studio request `ttl`), so a
+  local model doesn't unload on idle and recompute the whole prompt next turn. Cuts
+  cost and first-token latency on repeated context.
 - **Current-date awareness** — the assembled system prompt states the local
   date/time, so time-sensitive requests ("find today's news") are no longer
   anchored to the model's training cutoff.
