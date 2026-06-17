@@ -176,6 +176,10 @@ class InlineApp:
         self._menu_index = 0
         self._menu_header = ""
         self._menu_cancel: object | None = None
+        # Single-keypress fast-path for the *approval* menu only: maps a typed
+        # char (e.g. "y"/"a" → allow, "n"/"d" → deny) to the option value it
+        # resolves to. None for every other picker, so letter keys type normally.
+        self._menu_fastkeys: dict[str, object] | None = None
         self._stream_text = ""                    # in-progress region above input
         self._turn_start: float | None = None     # for the elapsed timer
         # One stable thinking word per session (don't re-roll every turn — the
@@ -524,12 +528,17 @@ class InlineApp:
         *,
         header: str = "",
         cancel_returns: _MenuT | None = None,
+        fastkeys: dict[str, _MenuT] | None = None,
     ) -> _MenuT | None:
-        """Claude Code-style menu: ↑/↓ to highlight, Enter to confirm, Esc cancel."""
+        """Claude Code-style menu: ↑/↓ to highlight, Enter to confirm, Esc cancel.
+
+        ``fastkeys`` maps a single typed char to the option value it resolves to
+        immediately (no arrow+Enter) — used by the approval menu for y/a/n/d."""
         self._menu_options = cast(list[tuple[str, object]], options)
         self._menu_index = 0
         self._menu_header = header
         self._menu_cancel = cancel_returns
+        self._menu_fastkeys = cast("dict[str, object] | None", fastkeys)
         self._menu_future = asyncio.get_running_loop().create_future()
         if self.app is not None:
             self.app.invalidate()
@@ -540,6 +549,7 @@ class InlineApp:
             self._menu_options = []
             self._menu_header = ""
             self._menu_cancel = None
+            self._menu_fastkeys = None
             self._set_stream("")
 
     async def _pick_approval(self, options: list[tuple[str, object]]) -> object:
@@ -549,10 +559,20 @@ class InlineApp:
             v for _, v in options
             if isinstance(v, ApprovalReply) and not v.approved
         )
+        # Allow-once is the first allow reply (options[0] by construction).
+        allow = next(
+            v for _, v in options
+            if isinstance(v, ApprovalReply) and v.approved
+        )
+        # Single-keypress fast-path: y/a approve (allow once), n/d deny — no
+        # arrow+Enter needed across a multi-edit turn. Arrow nav + Enter and the
+        # "View full diff"/"Edit before apply" options keep working unchanged.
+        fastkeys: dict[str, object] = {"y": allow, "a": allow, "n": deny, "d": deny}
         picked = await self._pick_menu(
             options,
-            header="Approve · ↑/↓ · Enter · Esc cancel",
+            header="Approve · y/a allow · n/d deny · ↑/↓ · Enter · Esc cancel",
             cancel_returns=deny,
+            fastkeys=fastkeys,
         )
         return deny if picked is None else picked
 
@@ -933,6 +953,34 @@ class InlineApp:
                 return
             buf = self.input
             buf.complete_next() if buf.complete_state else buf.auto_down()
+
+        def _menu_fastkey(event) -> None:
+            """Single-keypress accept/deny for the approval menu: a mapped char
+            (y/a/n/d) resolves the picker instantly. When no fast-key menu is up
+            — or the char isn't mapped — the key types normally into the input so
+            ordinary editing is never swallowed."""
+            char = event.data
+            keys = self._menu_fastkeys
+            if (
+                self._menu_future is not None
+                and not self._menu_future.done()
+                and keys is not None
+                and char in keys
+            ):
+                value = keys[char]
+                label = next(
+                    (lbl for lbl, v in self._menu_options if v is value),
+                    char,
+                )
+                self.console.print(
+                    f"[{palette.C_DIM}]› {_rich_escape(label)}[/{palette.C_DIM}]"
+                )
+                self._menu_future.set_result(value)
+                return
+            self.input.insert_text(char)
+
+        for _fk in ("y", "a", "n", "d"):
+            kb.add(_fk, filter=live)(_menu_fastkey)
 
         @kb.add("s-tab", filter=live)
         def _cycle_mode(event) -> None:
