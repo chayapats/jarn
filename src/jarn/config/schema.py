@@ -61,6 +61,9 @@ class ProviderConfig:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+_VALID_PROMPT_CACHE: frozenset[str] = frozenset({"auto", "off"})
+
+
 @dataclass(slots=True)
 class RoutingConfig:
     """Per-task model routing. Values are fully-qualified model refs of the form
@@ -71,6 +74,18 @@ class RoutingConfig:
     summarizer: str | None = None
     #: Ordered fallback chain tried when the primary model errors.
     fallback: list[str] = field(default_factory=list)
+    #: Prompt caching: ``"auto"`` (default) enables it for every model that
+    #: supports it — an Anthropic cache-control middleware on the main loop,
+    #: automatic server-side prefix caching for the other cloud providers, and a
+    #: keep-warm lever for local servers (see ``keep_alive``). ``"off"`` disables
+    #: all of the above (no middleware, no keep-warm injection).
+    prompt_cache: str = "auto"
+    #: Seconds to keep a *local* model + its KV/prefix cache resident between
+    #: turns. Wired to Ollama's ``keep_alive`` and LM Studio's request ``ttl``.
+    #: Without it those servers unload the model on idle and drop the prefix
+    #: cache, so the next turn recomputes from scratch. ``0`` leaves it to the
+    #: provider's own default. Ignored when ``prompt_cache`` is ``"off"``.
+    keep_alive: int = 1800
 
 
 @dataclass(slots=True)

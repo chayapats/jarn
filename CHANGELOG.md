@@ -11,6 +11,13 @@ approvals, cost/context surfacing, and docs) plus follow-up fixes. Test count:
 
 ### Added
 
+- **Prompt caching (`routing.prompt_cache: auto`, default on)** — caches the
+  prompt prefix wherever the model supports it: an `AnthropicPromptCachingMiddleware`
+  on the main loop for Anthropic models, automatic server-side prefix caching for
+  the other cloud providers, and a keep-warm lever for local servers
+  (`routing.keep_alive` → Ollama `keep_alive` / LM Studio request `ttl`) so they
+  don't unload the model and drop the KV cache between turns. Cuts cost and
+  first-token latency on repeated context.
 - **Current-date awareness** — the assembled system prompt states the local
   date/time, so time-sensitive requests ("find today's news") are no longer
   anchored to the model's training cutoff.

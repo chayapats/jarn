@@ -91,6 +91,32 @@ def suggest_slug(provider_type: ProviderType, slug: str) -> str | None:
     return None
 
 
+def prompt_cache_strategy(provider_type: ProviderType) -> str:
+    """How prompt caching is achieved for ``provider_type``.
+
+    Caching is not one mechanism: Anthropic needs explicit ``cache_control``
+    breakpoints (a middleware), the other cloud providers cache by exact prefix
+    automatically on their servers, and local llama.cpp servers (Ollama / LM
+    Studio) reuse a KV/prefix cache automatically *as long as the model stays
+    resident* — so the only lever we have there is keeping it warm.
+
+    Returns one of:
+      ``"middleware"``        — add ``AnthropicPromptCachingMiddleware`` (Anthropic).
+      ``"server_auto"``       — nothing to do; the provider caches server-side.
+      ``"ollama_keepalive"``  — pass ``keep_alive`` to keep Ollama's cache warm.
+      ``"lmstudio_ttl"``      — pass request ``ttl`` to keep LM Studio loaded.
+    """
+    if provider_type is ProviderType.ANTHROPIC:
+        return "middleware"
+    if provider_type is ProviderType.OLLAMA:
+        return "ollama_keepalive"
+    if provider_type is ProviderType.LMSTUDIO:
+        return "lmstudio_ttl"
+    # OPENAI_COMPATIBLE is an unknown custom endpoint — don't risk injecting a
+    # non-standard ttl into a strict server; treat as automatic/no-op.
+    return "server_auto"
+
+
 @dataclass(frozen=True, slots=True)
 class ModelRef:
     profile: str
@@ -354,6 +380,8 @@ class ModelFactory:
         else:  # pragma: no cover - exhaustive by enum
             raise ModelResolutionError(f"Unsupported provider type: {provider.type}")
 
+        self._inject_keep_warm(provider.type, kwargs)
+
         try:
             return init_chat_model(ref.model_id, model_provider=model_provider, **kwargs)
         except Exception as exc:  # noqa: BLE001 - surface a clean message
@@ -362,3 +390,22 @@ class ModelFactory:
             raise ModelResolutionError(
                 f"Model {ref.model_id!r} not found for provider {provider.type.value!r}{suffix}"
             ) from exc
+
+    def _inject_keep_warm(self, provider_type: ProviderType, kwargs: dict[str, Any]) -> None:
+        """Keep a local model + its prefix cache resident between turns.
+
+        For Ollama this is the ``keep_alive`` kwarg; for LM Studio it is a
+        request-body ``ttl`` (merged into ``extra_body`` without clobbering any
+        user-provided keys). No-op when prompt caching is off, ``keep_alive`` is
+        0, or the provider caches server-side / via middleware.
+        """
+        routing = self.config.routing
+        if routing.prompt_cache == "off" or routing.keep_alive <= 0:
+            return
+        strategy = prompt_cache_strategy(provider_type)
+        if strategy == "ollama_keepalive":
+            kwargs.setdefault("keep_alive", routing.keep_alive)
+        elif strategy == "lmstudio_ttl":
+            extra_body = dict(kwargs.get("extra_body") or {})
+            extra_body.setdefault("ttl", routing.keep_alive)
+            kwargs["extra_body"] = extra_body
