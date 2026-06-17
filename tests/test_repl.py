@@ -1631,3 +1631,26 @@ async def test_rapid_yolo_confirm_requests_are_deduped(tmp_path, monkeypatch):
     assert app._yolo_confirm_inflight is False  # flag cleared, so a later press works
     assert app.controller.config.permission_mode is PermissionMode.AUTO_EDIT
     app.controller.close()
+
+
+def test_thinking_line_estimates_tokens_when_provider_reports_none(tmp_path, monkeypatch):
+    """LM Studio / OpenAI-compatible stream without per-chunk usage, so the live
+    token counter would sit at 0 — fall back to a ~estimate from streamed text."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app._turn_base_tokens = 0           # tracker stays flat → no live usage
+    app._count_stream_chars("x" * 40)   # ~10 tokens (40 // 4)
+    assert "~10 tok" in str(app._thinking_line().value)
+    app.controller.close()
+
+
+def test_thinking_line_uses_real_total_when_provider_reports_usage(tmp_path, monkeypatch):
+    """When the provider DOES report usage live (e.g. Anthropic), show the real
+    running total and don't add the estimate on top (no double-count)."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app._turn_base_tokens = 0
+    app.controller.tracker.total.input_tokens = 100
+    app.controller.tracker.total.output_tokens = 50   # grew this turn → 150
+    app._count_stream_chars("x" * 400)                # estimate must be ignored
+    line = str(app._thinking_line().value)
+    assert "150 tok" in line and "~150" not in line
+    app.controller.close()

@@ -179,6 +179,8 @@ class InlineApp:
         self._stream_text = ""                    # in-progress region above input
         self._turn_start: float | None = None     # for the elapsed timer
         self._thinking_word = ""
+        self._turn_stream_chars = 0   # streamed output chars this turn (live tok estimate)
+        self._turn_base_tokens = 0    # tracker total at turn start (to detect live usage)
         self._flash_html: HTML | None = None       # transient region message
         self._flash_until = 0.0
         self._expanded = False                     # pager overlay open?
@@ -417,12 +419,24 @@ class InlineApp:
         start = self._turn_start or time.monotonic()
         elapsed = int(time.monotonic() - start)
         frame = palette.SPINNER_FRAMES[int(time.monotonic() * 5) % len(palette.SPINNER_FRAMES)]
-        toks = self.controller.tracker.total.total_tokens
+        total = self.controller.tracker.total.total_tokens
+        if total > self._turn_base_tokens:
+            # The provider reports usage live (e.g. Anthropic) — show the real total.
+            toks = f"{total} tok"
+        else:
+            # No live usage yet (LM Studio / OpenAI-compatible stream without
+            # per-chunk usage) — show a rough estimate from the streamed text so
+            # the counter still moves while the agent is generating. ~4 chars/token.
+            toks = f"~{self._turn_base_tokens + self._turn_stream_chars // 4} tok"
         word = self._thinking_word or "Working"
         return HTML(
             f'{palette.styled_fg(palette.C_TOOL, frame)} '
-            f'{palette.styled_fg(palette.C_DIM, f"{word}… ({elapsed}s · {toks} tok · esc to interrupt)")}'
+            f'{palette.styled_fg(palette.C_DIM, f"{word}… ({elapsed}s · {toks} · esc to interrupt)")}'
         )
+
+    def _count_stream_chars(self, delta: str) -> None:
+        """Accumulate streamed output chars this turn for the live token estimate."""
+        self._turn_stream_chars += len(delta)
 
     # -- prompt chrome ------------------------------------------------------
 
@@ -830,6 +844,8 @@ class InlineApp:
                     self.console.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(stripped)}")
                 self._turn_start = time.monotonic()
                 self._thinking_word = random.choice(palette.THINKING_WORDS)
+                self._turn_stream_chars = 0
+                self._turn_base_tokens = self.controller.tracker.total.total_tokens
                 self._turn_task = asyncio.create_task(self._handle(send))
 
         @kb.add("c-j", filter=live)
@@ -1025,6 +1041,8 @@ class InlineApp:
             )
             self._turn_start = time.monotonic()
             self._thinking_word = random.choice(palette.THINKING_WORDS)
+            self._turn_stream_chars = 0
+            self._turn_base_tokens = self.controller.tracker.total.total_tokens
             self._turn_task = asyncio.create_task(self._handle(item.payload))
 
     async def _handle(self, text: str) -> None:
@@ -1045,6 +1063,7 @@ class InlineApp:
                     edit=self._edit_before_apply,
                     live_sink=self._set_stream, spinner=False,
                     tool_sink=self._last_tool_outputs,
+                    token_sink=self._count_stream_chars,
                 )
                 await self._render_todos()
                 self._maybe_autocheckpoint_hint()
@@ -1118,6 +1137,7 @@ class InlineApp:
                 edit=self._edit_before_apply,
                 live_sink=self._set_stream, spinner=False,
                 tool_sink=self._last_tool_outputs,
+                token_sink=self._count_stream_chars,
             )
             await self._render_todos()
             self._maybe_autocheckpoint_hint()
@@ -1381,6 +1401,7 @@ async def _run_turn(
     live_sink: Callable[[str], None] | None = None,
     spinner: bool = True,
     tool_sink: list[tuple[str, str]] | None = None,
+    token_sink: Callable[[str], None] | None = None,
 ) -> list[tuple[str, str]]:
     """Stream a turn; return the turn's expandable ``(tool, full output)`` pairs.
 
@@ -1442,9 +1463,13 @@ async def _run_turn(
             async for event in driver.run_turn(payload, resume=resume):
                 if event.kind is EventKind.TEXT:
                     renderer.on_text(event.text)
+                    if token_sink is not None:
+                        token_sink(event.text)
                     produced = True
                 elif event.kind is EventKind.REASONING:
                     renderer.on_reasoning(event.text)
+                    if token_sink is not None:
+                        token_sink(event.text)
                     produced = True
                 elif event.kind is EventKind.TOOL_START:
                     renderer.on_tool(
