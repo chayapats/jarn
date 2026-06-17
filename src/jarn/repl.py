@@ -96,6 +96,11 @@ _VIEW_FULL_DIFF = object()
 #: the editor is aborted).
 _EDIT_BEFORE_APPLY = object()
 
+#: Sentinel for the "edit then save" action on a suggested-memory prompt: choosing
+#: it opens the memory body in ``$EDITOR`` and saves the edited result. Like the
+#: others it is not an :class:`ApprovalReply` — the editor flow produces the reply.
+_EDIT_MEMORY = object()
+
 def run_inline(
     config: Config,
     project_root: Path | None,
@@ -1933,6 +1938,10 @@ async def _approve(
 ) -> ApprovalReply:
     if request.plan is not None:
         return await _approve_plan(console, controller, request, ask=ask, pick=pick)
+    if request.suggested_memory is not None:
+        return await _approve_suggested_memory(
+            console, controller, request, ask=ask, pick=pick, edit=edit
+        )
     a = request.action
     what = (f"run: {a.target}" if a.kind is ActionKind.SHELL
             else f"write: {a.target}" if a.kind is ActionKind.WRITE
@@ -2062,6 +2071,75 @@ async def _approve_plan(
                 f"[{palette.C_NOTICE}]plan approved → {applied} mode[/{palette.C_NOTICE}]"
             )
     return reply
+
+
+async def _approve_suggested_memory(
+    console: Console,
+    controller: Controller,
+    request: ApprovalRequest,
+    *,
+    ask: Ask | None = None,
+    pick: Pick | None = None,
+    edit: Callable[[ApprovalRequest], Awaitable[ApprovalReply | None]] | None = None,
+) -> ApprovalReply:
+    """Memory-suggestion approval: show it, then save / edit-and-save / decline.
+
+    On approval the memory is written through ``controller.save_suggested_memory``
+    (same scope + trust gating as ``/memory add``); declining writes nothing. The
+    returned :class:`ApprovalReply` only signals the agent — its ``approved`` flag
+    is set iff the memory was actually saved.
+    """
+    suggestion = request.suggested_memory
+    assert suggestion is not None
+    console.print(f"\n[{palette.C_NOTICE}]▶ Suggested memory[/{palette.C_NOTICE}] "
+                  f"[{palette.C_DIM}]({suggestion.scope}, {suggestion.type})[/{palette.C_DIM}]")
+    console.print(f"  [b]{_rich_escape(suggestion.name)}[/b] — "
+                  f"{_rich_escape(suggestion.description)}")
+    if suggestion.body.strip():
+        console.print(Markdown(suggestion.body))
+
+    save = ("Save this memory", True)
+    edit_save = ("Edit, then save", _EDIT_MEMORY)
+    decline = ("Don't save", False)
+
+    choice: object
+    if pick is not None:
+        # Only offer "edit" when there's an editor wired (interactive sessions),
+        # matching how edit-before-apply is gated for writes.
+        options: list[tuple[str, object]] = [save]
+        if edit is not None:
+            options.append(edit_save)
+        options.append(decline)
+        choice = await pick(options)
+    elif ask is not None:
+        ans = (await ask("  Save this memory? [y/N/edit]: ")).strip().lower()
+        choice = (
+            _EDIT_MEMORY if ans in ("e", "edit")
+            else ans in ("y", "yes")
+        )
+    else:
+        return ApprovalReply(False, message="auto-denied (no approver)")
+
+    if choice is _EDIT_MEMORY:
+        edited = await asyncio.to_thread(
+            _edit_text_in_editor, suggestion.body, suffix=".md"
+        )
+        if edited is None:
+            console.print(
+                f"[{palette.C_DIM}]edit aborted — memory not saved[/{palette.C_DIM}]"
+            )
+            return ApprovalReply(False, message="User declined to save the memory.")
+        suggestion.body = edited.strip()
+        choice = True
+
+    if choice is not True:
+        console.print(f"[{palette.C_DIM}]memory not saved[/{palette.C_DIM}]")
+        return ApprovalReply(False, message="User declined to save the memory.")
+
+    saved, message = controller.save_suggested_memory(suggestion)
+    colour = palette.C_NOTICE if saved else palette.C_WARN
+    console.print(f"[{colour}]{_rich_escape(message)}[/{colour}]")
+    return ApprovalReply(saved, message="" if saved else message)
 
 
 def _apply_model_ref(controller: Controller, console: Console, chosen: str) -> None:

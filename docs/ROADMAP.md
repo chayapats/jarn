@@ -112,6 +112,12 @@ Aider). See the design spec under `docs/superpowers/specs/`.
   (no quit + edit env/keychain + restart). Prompts for the key, stores it in the OS
   keychain, points config at a `keychain:jarn/<provider>` reference (never an inlined
   secret), and rebuilds the runtime so the next turn uses it.
+- [x] **Agent-suggested memory** — `suggest_memory` tool: the agent proposes a durable
+  memory (name / description / body / type / scope) and the REPL surfaces a "Save this
+  memory?" prompt (save / edit-then-save / decline). On approval it writes through the
+  existing memory store, respecting the global vs project tier and the project's trust
+  gating (project writes refused on an untrusted repo); declining writes nothing. Gated
+  and special-cased by the session driver exactly like `exit_plan_mode`.
 
 ## v0.3.0 — prepared (Alpha, unreleased)
 
