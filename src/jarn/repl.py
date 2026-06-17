@@ -1078,9 +1078,9 @@ class InlineApp:
             item = self._input_queue.pop_next()
             if item is None:
                 return
-            self.console.print(
-                f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(item.display)}"
-            )
+            # No prompt echo here: the line was already echoed once with the
+            # `» queued: …` marker at submit time (see _submit). Re-echoing it as
+            # `› …` on drain would put two scrollback lines per queued input.
             self._turn_start = time.monotonic()
             self._thinking_word = random.choice(palette.THINKING_WORDS)
             self._turn_stream_chars = 0

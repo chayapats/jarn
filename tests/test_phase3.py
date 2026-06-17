@@ -232,8 +232,7 @@ async def test_parallel_tool_durations_by_call_id():
     assert "3 lines" in out and "5 lines" in out
 
 
-@pytest.mark.asyncio
-async def test_queue_command_list(tmp_path, monkeypatch):
+def _make_app(tmp_path, monkeypatch):
     from jarn import repl
     from jarn.config.schema import Config, ProviderConfig, ProviderType, RoutingConfig
 
@@ -245,7 +244,12 @@ async def test_queue_command_list(tmp_path, monkeypatch):
         providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
         routing=RoutingConfig(main="openrouter/m"),
     )
-    app = repl.InlineApp(cfg, root)
+    return repl.InlineApp(cfg, root)
+
+
+@pytest.mark.asyncio
+async def test_queue_command_list(tmp_path, monkeypatch):
+    app = _make_app(tmp_path, monkeypatch)
     app._input_queue.append("first", "first")
     app._input_queue.append("second", "second")
     buf = StringIO()
@@ -253,3 +257,26 @@ async def test_queue_command_list(tmp_path, monkeypatch):
     await app._cmd_queue("")
     out = buf.getvalue()
     assert "1. first" in out and "2. second" in out
+
+
+@pytest.mark.asyncio
+async def test_drain_queue_does_not_re_echo_line(tmp_path, monkeypatch):
+    """A queued line is echoed once (the `» queued:` marker at submit time); the
+    drain that starts its turn must NOT print a second `›` scrollback line."""
+    app = _make_app(tmp_path, monkeypatch)
+    app._input_queue.append("hello world", "hello world")
+    buf = StringIO()
+    app.console = Console(file=buf, width=80)
+
+    async def _noop(_text: str) -> None:
+        return None
+
+    monkeypatch.setattr(app, "_handle", _noop)
+    app._drain_queue()
+    assert app._turn_task is not None
+    await app._turn_task  # let the (mocked) turn finish
+
+    out = buf.getvalue()
+    # No duplicate prompt echo on drain.
+    assert "› hello world" not in out
+    assert "hello world" not in out
