@@ -84,10 +84,17 @@ BUILTINS: tuple[BuiltinCommand, ...] = (
         group="Setup",
     ),
     BuiltinCommand(
-        "profile",
-        "Show or apply a policy profile (permission mode + sandbox + web tools).",
+        "preset",
+        "Show or apply a preset — a shortcut that sets mode + sandbox at once.",
         "controller",
-        usage="[<profile-name>]",
+        usage="[<preset-name>]",
+        group="Setup",
+    ),
+    BuiltinCommand(
+        "profile",
+        "Deprecated alias of /preset (kept working).",
+        "controller",
+        usage="[<preset-name>]",
         group="Setup",
     ),
     BuiltinCommand(
