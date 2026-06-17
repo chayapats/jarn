@@ -241,6 +241,10 @@ context:
 
 # ── Execution backend ────────────────────────────────────────────────────
 execution:
+  background: true         # register run/check/kill/list_background tools so the agent
+                           #   can run a dev server / watcher / long build without blocking
+                           #   the turn. Local backend only (a host process would escape a
+                           #   container); /ps lists them. Gated like shell.
   backend: local           # local | docker | sandbox  (toggle at runtime with /sandbox)
                            # local  — run on the host (permission engine is the only
                            #          authorizer; NO isolation)

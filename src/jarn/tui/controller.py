@@ -1386,6 +1386,29 @@ class Controller:
             return CommandResult(f"Redone. {result.message}")
         return CommandResult(f"Cannot redo: {result.message}")
 
+    def _cmd_ps(self, args: str) -> CommandResult:
+        """List background processes, or ``/ps kill <id>`` to stop one."""
+        from jarn.agent.background import manager
+
+        mgr = manager()
+        parts = args.split()
+        if parts and parts[0] == "kill":
+            if len(parts) < 2:
+                return CommandResult("Usage: /ps kill <id>")
+            ok = mgr.kill(parts[1])
+            return CommandResult(
+                f"Killed {parts[1]}." if ok else f"No background process {parts[1]!r}."
+            )
+        procs = mgr.list()
+        if not procs:
+            return CommandResult("No background processes.")
+        lines = ["[b]Background processes[/b]"]
+        for p in procs:
+            state = "running" if p["running"] else f"exited ({p['exit_code']})"
+            lines.append(f"  [cyan]{p['id']}[/cyan] [dim][{state}][/dim] {_escape_markup(p['command'])}")
+        lines.append("[dim]/ps kill <id> to stop one[/dim]")
+        return CommandResult("\n".join(lines))
+
     def _cmd_checkpoints(self, args: str) -> CommandResult:
         """List recent auto-checkpoints available for /undo."""
         if not self.checkpoint_manager.enabled:

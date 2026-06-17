@@ -412,6 +412,14 @@ def build_runtime(
             system_prompt, root, token_budget=config.context.repo_map_tokens
         )
 
+    # Background-process tools (run/check/kill/list_background). Local backend
+    # only: under docker/sandbox a host process would escape the container, so we
+    # don't register them there. Gated like shell via the permission bridge.
+    if config.execution.backend == "local" and config.execution.background:
+        from jarn.agent.background import build_background_tools
+
+        tools = [*tools, *build_background_tools(root or Path.cwd())]
+
     # Plan-mode handoff tool: lets the agent present a plan and request approval
     # to leave read-only plan mode. Gated as an interrupt (below) and special-cased
     # by the session driver so it is callable *in* plan mode (the engine would

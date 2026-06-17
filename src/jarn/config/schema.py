@@ -120,6 +120,11 @@ class ExecutionConfig:
     (requires an available sandbox runtime — see docs)."""
 
     backend: str = "local"            # local | sandbox | docker
+    #: Register the background-process tools (run/check/kill/list_background) so the
+    #: agent can run a dev server / watcher / long build without blocking the turn.
+    #: Local backend only — under docker/sandbox the tools are not registered (a
+    #: host process would escape the container). Default on.
+    background: bool = True
     sandbox_provider: str = "langsmith"  # langsmith (remote); docker is its own backend
     # Container image for ``backend: docker``. Must ship python3 + /bin/sh
     # (BaseSandbox derives glob/edit/read via inline python3 scripts). Non-slim
