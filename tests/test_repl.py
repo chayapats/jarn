@@ -1596,3 +1596,38 @@ async def test_turn_failure_points_at_log_traceback(tmp_path, monkeypatch):
     assert "langgraph boom" in out                 # concise message still shown
     assert "full traceback" in out and "jarn.log" in out  # pointer to the log
     app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_rapid_yolo_confirm_requests_are_deduped(tmp_path, monkeypatch):
+    """Rapid Shift+Tab→yolo presses must not stack confirmations that fight over
+    the single _line_future and hang. Only ONE confirmation runs; repeats while
+    it is in flight are dropped."""
+    from jarn.config.schema import PermissionMode
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.controller.config.permission_mode = PermissionMode.AUTO_EDIT
+    app.controller.engine.mode = PermissionMode.AUTO_EDIT
+
+    asks: list[str] = []
+    gate = asyncio.Event()
+
+    async def _fake_ask(prompt: str) -> str:
+        asks.append(prompt)
+        await gate.wait()   # hold the confirmation open
+        return "n"
+
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+
+    app._request_yolo_confirm()
+    app._request_yolo_confirm()   # ignored — a confirmation is already in flight
+    app._request_yolo_confirm()
+    await asyncio.sleep(0.02)      # let the single task reach _ask
+    assert app._yolo_confirm_inflight is True
+    assert len(asks) == 1          # exactly one confirmation, not three
+
+    gate.set()                     # let it resolve (declined → mode unchanged)
+    await asyncio.sleep(0.02)
+    assert app._yolo_confirm_inflight is False  # flag cleared, so a later press works
+    assert app.controller.config.permission_mode is PermissionMode.AUTO_EDIT
+    app.controller.close()

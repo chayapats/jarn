@@ -156,6 +156,9 @@ def test_headless_yolo_prints_warning_to_stderr(tmp_path, monkeypatch, capsys):
     gp = _make_headless_config(tmp_path)
     monkeypatch.setattr(paths, "global_config_path", lambda: gp)
     monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
+    # This test is about the yolo warning, not trust — keep it deterministic and
+    # non-interactive regardless of the cwd's ambient trust state.
+    monkeypatch.setattr(cli_mod, "_resolve_project_trust", lambda *a, **k: True)
 
     # Patch run_headless so the test doesn't actually run the agent
     def _fake_run_headless(*a, **k):
@@ -187,6 +190,8 @@ def test_headless_non_yolo_no_warning(tmp_path, monkeypatch, capsys):
     gp = _make_headless_config(tmp_path)
     monkeypatch.setattr(paths, "global_config_path", lambda: gp)
     monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
+    # Deterministic, non-interactive regardless of the cwd's ambient trust state.
+    monkeypatch.setattr(cli_mod, "_resolve_project_trust", lambda *a, **k: True)
 
     import jarn.headless as hd
 
