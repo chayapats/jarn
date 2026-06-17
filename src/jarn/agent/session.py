@@ -267,7 +267,8 @@ class SessionDriver:
         # under the tool call mirrors Claude Code's "⎿ result" affordance.
         if mtype == "tool":
             full = _text_of(getattr(msg, "content", "")).strip()
-            data: dict[str, Any] = {"summary": _tool_summary(full)}
+            tool_name = getattr(msg, "name", "") or ""
+            data: dict[str, Any] = {"summary": _tool_summary(full, tool_name)}
             tool_call_id = getattr(msg, "tool_call_id", None)
             if tool_call_id:
                 data["tool_call_id"] = str(tool_call_id)
@@ -367,6 +368,7 @@ class SessionDriver:
                 self._resolve_model_ref(msg),
                 int(usage.get("input_tokens", 0)),
                 int(usage.get("output_tokens", 0)),
+                tool=_first_tool_name(msg),
             )
 
     def _resolve_model_ref(self, msg: Any) -> str:
@@ -511,6 +513,22 @@ def _reasoning_of(msg: Any) -> str:
     return "".join(parts)
 
 
+def _first_tool_name(msg: Any) -> str | None:
+    """The tool a model call requested, for per-tool cost attribution.
+
+    The usage-bearing AI chunk also carries the (accumulated) tool calls it
+    decided on — ``tool_calls`` on a complete message, ``tool_call_chunks`` while
+    streaming. The first named call labels this call's cost; ``None`` (a plain
+    reply) falls back to ``RESPONSE_TOOL`` in the tracker so totals reconcile.
+    """
+    for attr in ("tool_calls", "tool_call_chunks"):
+        for call in getattr(msg, attr, None) or []:
+            name = call.get("name") if isinstance(call, dict) else None
+            if name:
+                return str(name)
+    return None
+
+
 #: Substrings / exception-name fragments that mark a provider error as worth a
 #: model fallback (transient or capacity-related, not a logic bug).
 _RETRYABLE_NAME_HINTS = ("timeout", "connecterror", "connectionerror", "ratelimit",
@@ -573,8 +591,37 @@ def _hook_detail(result: Any) -> str:
     return f"exit {getattr(result, 'exit_code', '?')}"
 
 
-def _tool_summary(content: str) -> str:
+def _web_search_summary(content: str) -> str:
+    """Richer one-line summary for web_search results: count + top source hosts."""
+    import re as _re
+    from urllib.parse import urlparse as _urlparse
+
+    # Count result entries (each starts with "- <Title>") by counting "  https?://" lines.
+    urls = _re.findall(r"^\s{2}(https?://[^\s]+)", content, _re.MULTILINE)
+    if not urls:
+        # Fallback: no URLs found — use generic summary.
+        return _tool_summary(content)
+    count = len(urls)
+    # Build a deduplicated list of hosts in order of first appearance.
+    seen: dict[str, None] = {}
+    for u in urls:
+        host = _urlparse(u).netloc or u
+        # Strip www. prefix for compactness.
+        if host.startswith("www."):
+            host = host[4:]
+        seen[host] = None
+    hosts = list(seen.keys())
+    # Show up to 3 hosts; append "…" when there are more.
+    shown = hosts[:3]
+    suffix = ", …" if len(hosts) > 3 else ""
+    hosts_str = ", ".join(shown) + suffix
+    return f"🔍 {count} result{'s' if count != 1 else ''} · {hosts_str}"
+
+
+def _tool_summary(content: str, tool_name: str = "") -> str:
     """A compact one-line summary of a tool result (never the full payload)."""
+    if tool_name == "web_search":
+        return _web_search_summary(content)
     txt = content.strip()
     if not txt:
         return "(no output)"

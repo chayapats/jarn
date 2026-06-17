@@ -4,6 +4,7 @@ from jarn.memory.context import (
     assemble_system_context,
     init_template,
     project_context_text,
+    resolve_context_file,
     write_jarn_md,
 )
 from jarn.memory.sessions import (
@@ -40,6 +41,7 @@ __all__ = [
     "new_thread_id",
     "open_checkpointer",
     "project_context_text",
+    "resolve_context_file",
     "slugify",
     "write_jarn_md",
 ]

@@ -220,6 +220,17 @@ class InlineApp:
                 f"[{palette.C_ERROR}]Provider not ready: {_rich_escape(message)}"
                 f"[/{palette.C_ERROR}]  [{palette.C_DIM}]run `jarn setup`[/{palette.C_DIM}]"
             )
+        # Startup notice: name the context file loaded into the system prompt.
+        if self.controller.project_trusted and self.controller.project_root is not None:
+            from jarn.memory.context import resolve_context_file
+            _ctx_path = resolve_context_file(
+                self.controller.project_root,
+                context_files=self.config.compat.context_files,
+            )
+            if _ctx_path is not None:
+                c.print(
+                    f"[{palette.C_DIM}]context: {_ctx_path.name}[/{palette.C_DIM}]"
+                )
         # One-time untrusted-project notice: the review-only floor is active and
         # capability keys were stripped. Surfaced once in scrollback (not per turn)
         # so the user knows why modes are clamped and how to unlock.

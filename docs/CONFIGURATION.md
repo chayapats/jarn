@@ -408,6 +408,33 @@ compat:
 
 Both settings have sensible defaults and the section can be omitted entirely.
 
+### Context-file precedence
+
+J.A.R.N. loads **exactly one** context file per project — whichever name it
+finds first in the project root. The default resolution order is:
+
+| Priority | Filename | Origin |
+|---|---|---|
+| 1 (highest) | `JARN.md` | J.A.R.N. native |
+| 2 | `AGENTS.md` | OpenAI Codex / other agents |
+| 3 (lowest) | `CLAUDE.md` | Claude Code |
+
+**First present wins** — if `JARN.md` exists it is loaded and the others are
+ignored, even if they also exist. At session start J.A.R.N. prints a one-line
+notice naming the file that was loaded (e.g. `context: CLAUDE.md`) so you
+always know which one is active.
+
+To use a different file or order, set `compat.context_files` explicitly:
+
+```yaml
+compat:
+  context_files: ["MYCONTEXT.md", "AGENTS.md"]
+```
+
+The project context file is subject to the same trust gate as all other
+project-tier content — it is skipped (not injected) until the project is
+trusted.
+
 ## Secrets
 
 | Form | Resolves to |

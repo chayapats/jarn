@@ -936,6 +936,14 @@ class Controller:
             lines.append(
                 f"  {_escape_markup(model)}: ${usage.cost_usd:.4f} · {usage.total_tokens:,} tok"
             )
+        top = t.top_tools()
+        if top:
+            lines.append(f"[{palette.C_DIM}]top burners (by tool)[/{palette.C_DIM}]")
+            for tool, usage in top:
+                lines.append(
+                    f"  {_escape_markup(tool)}: ${usage.cost_usd:.4f} · "
+                    f"{usage.total_tokens:,} tok · {usage.calls} calls"
+                )
         return CommandResult("\n".join(lines))
 
     def _cmd_compact(self, args: str) -> CommandResult:
@@ -998,9 +1006,12 @@ class Controller:
             return self._memory_update(parts[1:])
         if subcommand == "delete":
             return self._memory_delete(parts[1:])
+        if subcommand in ("dump", "context"):
+            return self._memory_dump()
         return CommandResult(
-            "Usage: /memory [search|show|add|update|delete] ...\n"
+            "Usage: /memory [search|show|add|update|delete|dump] ...\n"
             "Examples:\n"
+            "  /memory dump\n"
             "  /memory search pytest\n"
             "  /memory add project project \"Test style\" \"Use pytest\" \"Prefer parametrized tests.\"\n"
             "  /memory show project test-style\n"
@@ -1047,6 +1058,95 @@ class Controller:
             )
             if hit.memory.body:
                 lines.append(_format_memory_body(hit.memory.body))
+        return CommandResult("\n".join(lines))
+
+    def _memory_dump(self) -> CommandResult:
+        """Render everything that gets injected into the system prompt for this project."""
+        from jarn.memory import MemoryStore
+        from jarn.memory.context import DEFAULT_CONTEXT_FILES, project_context_text
+
+        sep = f"[{palette.C_DIM}]{'─' * 48}[/{palette.C_DIM}]"
+        lines: list[str] = ["[b]Memory context dump[/b] [dim](what the agent sees)[/dim]"]
+
+        # 1. Global MEMORY.md index
+        lines.append(f"\n{sep}")
+        lines.append(f"[b][{palette.C_NOTICE}]Global memory index[/{palette.C_NOTICE}][/b]")
+        global_store = MemoryStore.global_store()
+        global_index = global_store.index_text().strip()
+        if global_index and "—" in global_index:
+            lines.append(_escape_markup(global_index))
+        else:
+            lines.append(f"[{palette.C_DIM}](empty)[/{palette.C_DIM}]")
+
+        # 2. Project MEMORY.md index
+        lines.append(f"\n{sep}")
+        lines.append(f"[b][{palette.C_NOTICE}]Project memory index[/{palette.C_NOTICE}][/b]")
+        if not self.project_trusted and self.project_root is not None:
+            lines.append(
+                f"[{palette.C_DIM}]Skipped — project untrusted (`jarn trust` to enable).[/{palette.C_DIM}]"
+            )
+        else:
+            project_store = MemoryStore.project_store(self.project_root)
+            if project_store:
+                project_index = project_store.index_text().strip()
+                if project_index and "—" in project_index:
+                    lines.append(_escape_markup(project_index))
+                else:
+                    lines.append(f"[{palette.C_DIM}](empty)[/{palette.C_DIM}]")
+            else:
+                lines.append(f"[{palette.C_DIM}](no project root)[/{palette.C_DIM}]")
+
+        # 3. Loaded context file (JARN.md / AGENTS.md / CLAUDE.md)
+        lines.append(f"\n{sep}")
+        names = (
+            self.config.compat.context_files
+            if self.config.compat.context_files
+            else DEFAULT_CONTEXT_FILES
+        )
+        ctx_text = project_context_text(self.project_root, context_files=names) if self.project_trusted else None
+        # Determine which file was loaded
+        ctx_filename: str | None = None
+        if self.project_trusted and self.project_root is not None:
+            for name in names:
+                if (self.project_root / name).is_file():
+                    ctx_filename = name
+                    break
+        label = f"Context file ({ctx_filename})" if ctx_filename else "Context file"
+        lines.append(f"[b][{palette.C_NOTICE}]{_escape_markup(label)}[/{palette.C_NOTICE}][/b]")
+        if ctx_text:
+            lines.append(_escape_markup(ctx_text.strip()))
+        elif not self.project_trusted and self.project_root is not None:
+            lines.append(
+                f"[{palette.C_DIM}]Skipped — project untrusted.[/{palette.C_DIM}]"
+            )
+        else:
+            lines.append(f"[{palette.C_DIM}](no context file found — run /init to create JARN.md)[/{palette.C_DIM}]")
+
+        # 4. Top-k recall — what recall_block(...) would surface per turn. Real
+        # injection is query-dependent (enrich_turn_input), so we recall against a
+        # representative query built from the stored memories to show live hits.
+        lines.append(f"\n{sep}")
+        lines.append(
+            f"[b][{palette.C_NOTICE}]Top-k recall (representative)[/{palette.C_NOTICE}][/b]"
+        )
+        query = " ".join(
+            f"{m.name} {m.description}"
+            for _scope, store in self._memory_read_stores()
+            for m in store.load_all()
+        )
+        recall_hits: list[tuple[str, RecallHit]] = (
+            self._memory_search_hits(query, k=3) if query.strip() else []
+        )
+        if recall_hits:
+            for scope, hit in recall_hits:
+                lines.append(
+                    f"  [cyan]{_escape_markup(hit.memory.name)}[/cyan] "
+                    f"[dim]({scope}, {hit.score:.2f})[/dim] — "
+                    f"{_escape_markup(hit.memory.description)}"
+                )
+        else:
+            lines.append(f"[{palette.C_DIM}](no memories to recall)[/{palette.C_DIM}]")
+
         return CommandResult("\n".join(lines))
 
     def _memory_show(self, parts: list[str]) -> CommandResult:

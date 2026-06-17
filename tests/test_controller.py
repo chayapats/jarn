@@ -128,6 +128,21 @@ def test_all_builtin_command_outputs_render_through_rich(
     ctrl.close()
 
 
+def test_cmd_cost_shows_top_burners(tmp_path, monkeypatch, base_config):
+    """/cost gains a per-tool 'top burners' section ranked by cost."""
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    ctrl.tracker.record("claude-opus-4-8", 2_000_000, 0, tool="execute")    # $10
+    ctrl.tracker.record("claude-opus-4-8", 1_000_000, 0, tool="web_fetch")  # $5
+    ctrl.tracker.record("claude-opus-4-8", 10, 5)  # plain reply
+
+    text = ctrl.handle_command("cost", "").text
+    assert "top burners" in text
+    # Ranked by cost: the costliest tool appears before the cheaper one.
+    assert text.index("execute") < text.index("web_fetch")
+    assert "$10.0000" in text
+    ctrl.close()
+
+
 def test_record_turn_emits_numeric_event(tmp_path, monkeypatch, base_config):
     """record_turn writes a 'turn' event with numeric props (telemetry on)."""
     import json
