@@ -11,6 +11,11 @@ approvals, cost/context surfacing, and docs) plus follow-up fixes. Test count:
 
 ### Added
 
+- **Image paste (macOS)** — **Ctrl+V** grabs a screenshot/image from the clipboard,
+  saves it under `.jarn/pastes/`, and inserts it as an `@path` so the agent's
+  multimodal `read_file` loads it on send — no more save-to-disk-then-type-the-path.
+  Uses `pngpaste` if installed, else an AppleScript fallback; degrades to a hint on
+  other platforms or an empty clipboard.
 - **Background processes** — `run_in_background` / `check_background` /
   `kill_background` / `list_background` tools let the agent start a dev server,
   watcher, or long build and keep working instead of blocking on output (the

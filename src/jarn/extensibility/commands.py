@@ -179,7 +179,8 @@ _BUILTIN_BY_NAME: dict[str, BuiltinCommand] = {cmd.name: cmd for cmd in BUILTINS
 
 HELP_SHORTCUTS = (
     "Tab complete · ↑/↓ history · Shift+Tab mode · "
-    "Ctrl+O or /expand last output · Esc cancel turn · Ctrl+C twice to quit · "
+    "Ctrl+O or /expand last output · Ctrl+V paste image (macOS) · "
+    "Esc cancel turn · Ctrl+C twice to quit · "
     "! <cmd> run shell command directly"
 )
 HELP_COPY_HINT = "Copy: drag-select + ⌘C in your terminal (native scrollback)."

@@ -161,6 +161,8 @@ preview appear inline.
 - **Shift+Tab** cycles the permission mode (plan → ask → auto-edit → yolo); the new
   mode flashes on the input border and stays in the status bar.
 - **Ctrl+O** (or **`/expand`**) opens the last turn's full tool output in the pager.
+- **Ctrl+V** (macOS) pastes an image/screenshot from the clipboard — it's saved under
+  `.jarn/pastes/` and inserted as an `@path` the agent reads on send.
 - **Esc** cancels the running turn. **Ctrl+C** cancels a turn / clears the input,
   and **twice in a row** exits (Claude Code-style). **Ctrl+Q** also quits.
 - **Copy text:** the terminal owns selection — just **drag to select and ⌘C**
