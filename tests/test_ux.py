@@ -149,7 +149,12 @@ async def test_wizard_openrouter_with_slashed_model(tmp_path, monkeypatch):
         # openrouter is the detected hit → storage prompt is skipped.
         await pilot.press("enter")          # provider: openrouter → model
         await pilot.pause()
-        # model step: type an OpenRouter model id that contains a slash
+        # model step: a curated cloud pick-list — drop to the custom entry and
+        # type an OpenRouter model id that contains a slash.
+        ol = app.query_one("#step-list")
+        ol.highlighted = len(ol._options) - 1   # the "enter manually" entry
+        await pilot.press("enter")
+        await pilot.pause()
         inp = app.query_one("#step-input")
         inp.value = "deepseek/deepseek-v4-flash"
         await pilot.press("enter")
@@ -312,8 +317,12 @@ async def test_wizard_model_step_offers_arrow_select_when_endpoint_reachable(tmp
 
     from jarn.onboarding.tui_wizard import SetupApp
 
-    # Mock discovery so no real network call happens.
-    with patch("jarn.providers.list_remote_models", return_value=["qwen3-coder:30b", "llama3:8b"]):
+    # Mock discovery so no real network call happens (patch the name the wizard
+    # imported, which is what _discover_models calls).
+    with patch(
+        "jarn.onboarding.tui_wizard.list_remote_models",
+        return_value=["qwen3-coder:30b", "llama3:8b"],
+    ):
         app = SetupApp()
         async with app.run_test(size=(90, 40)) as pilot:
             await pilot.pause()
@@ -341,7 +350,7 @@ async def test_wizard_model_step_degrades_to_manual_when_unreachable(tmp_path, m
 
     from jarn.onboarding.tui_wizard import SetupApp
 
-    with patch("jarn.providers.list_remote_models", return_value=[]):
+    with patch("jarn.onboarding.tui_wizard.list_remote_models", return_value=[]):
         app = SetupApp()
         async with app.run_test(size=(90, 40)) as pilot:
             await pilot.pause()
