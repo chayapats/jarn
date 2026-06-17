@@ -512,6 +512,50 @@ def test_stable_cut_respects_code_fences():
     assert _stable_cut(s) == s.index("\n\nafter") + 2
 
 
+def test_live_sink_suppresses_incremental_flush():
+    """With a live_sink, prose is NOT recommitted per blank line — the live preview
+    is the single source of truth mid-run, and the whole run lands in scrollback
+    exactly once at finish() (no grey-raw-then-recommit double render)."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+
+    console = Console(file=StringIO(), width=80)
+    r = _TurnRenderer(console, live_sink=lambda _s: None, spinner=False)
+    r.on_text("paragraph_one\n\nparagraph_two\n\n")
+    # Nothing recommitted to scrollback yet — only the live preview has it.
+    assert "paragraph_one" not in console.file.getvalue()
+    r.finish()
+    out = console.file.getvalue()
+    assert out.count("paragraph_one") == 1  # committed exactly once
+    assert out.count("paragraph_two") == 1
+
+
+def test_live_sink_commits_once_before_tool():
+    """A prose run accumulated before a tool call commits to scrollback once,
+    and BEFORE the tool glyph — the on_tool seam preserves interleaving."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+
+    console = Console(file=StringIO(), width=80)
+    r = _TurnRenderer(console, live_sink=lambda _s: None, spinner=False)
+    r.on_text("answer_body\n\n")
+    r.on_tool("read_file", {"path": "x"})
+    out = console.file.getvalue()
+    assert out.count("answer_body") == 1
+    assert out.index("answer_body") < out.index("read_file")
+
+
+def test_live_sink_carries_growing_buffer():
+    """The live_sink receives the whole growing markdown buffer each delta, so the
+    preview can render the full block (not just the latest fragment)."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+
+    seen: list[str] = []
+    r = _TurnRenderer(Console(file=StringIO(), width=80),
+                      live_sink=seen.append, spinner=False)
+    r.on_text("a")
+    r.on_text("b")
+    assert "a" in seen and "ab" in seen[-1]
+
+
 def _request(dangerous=False, block_always=False):
     return ApprovalRequest(
         action=Action(ActionKind.SHELL, "npm test"),
@@ -1024,6 +1068,85 @@ def test_app_builds(tmp_path, monkeypatch):
     built = app._build_app()
     assert built is not None  # layout/keybindings/toolbar all assemble
     assert app._toolbar() is not None
+    app.controller.close()
+
+
+def test_stream_control_renders_markdown_live(tmp_path, monkeypatch):
+    """While busy, the live region renders the streamed buffer as FORMATTED
+    markdown (Rich -> ANSI), not the dim escaped raw source — no double render."""
+    from prompt_toolkit.formatted_text import ANSI
+
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+    monkeypatch.setattr(app, "_busy", lambda: True)
+    app._stream_text = "# Heading\n\nbody **bold**"
+    result = app._stream_control()
+    assert isinstance(result, ANSI)
+    # The rendered fragments are NOT the raw markdown source: the literal "# "
+    # heading prefix and "**" bold markers are consumed by the formatter.
+    rendered = result.value
+    assert "# Heading" not in rendered
+    assert "**bold**" not in rendered
+    assert "Heading" in rendered and "bold" in rendered
+    app.controller.close()
+
+
+def test_stream_control_no_eight_line_clip(tmp_path, monkeypatch):
+    """The preview Window is no longer hard-clipped at 8 lines — a long live block
+    can grow past the old fold (content-sized, no max==8)."""
+    from prompt_toolkit.layout.containers import Window
+
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+    built = app._build_app()
+
+    def _windows(container):
+        if isinstance(container, Window):
+            yield container
+            return
+        for child in getattr(container, "children", []) or []:
+            yield from _windows(child)
+        content = getattr(container, "content", None)
+        if content is not None and content is not container:
+            yield from _windows(content)
+
+    maxes = [w.height.max for w in _windows(built.layout.container)
+             if getattr(w.height, "max", None) is not None]
+    assert 8 not in maxes  # the old hard 8-line preview clip is gone
+    app.controller.close()
+
+
+def test_stream_control_plain_prompt_not_markdown(tmp_path, monkeypatch):
+    """A picker/_ask prompt (not busy, _line_future pending) renders as the plain
+    string, NOT markdown — guards the regression where a prompt gets markdownified."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+    assert app._busy() is False
+    prompt = "Pick a model # 1"
+    app._stream_text = prompt
+    result = app._stream_control()
+    assert result == prompt  # plain string, unchanged
     app.controller.close()
 
 

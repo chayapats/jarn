@@ -170,6 +170,14 @@ class TurnRenderer:
         self._live_show()
 
     def _flush_stable(self) -> None:
+        # With a live_sink (inline REPL) the live preview renders the whole growing
+        # buffer as one FORMATTED markdown block, so do NOT recommit per blank line
+        # — that double-renders (live preview + scrollback) and shows raw markup
+        # mid-construct. The whole run commits to scrollback exactly once via the
+        # existing _commit_text() seams (on_tool / on_notice / finish / cancel).
+        # The terminal-fallback Rich Live path (no sink) keeps the per-paragraph cut.
+        if self._live_sink is not None:
+            return
         cut = stable_cut(self._buf)
         if cut <= 0:
             return
