@@ -269,38 +269,6 @@ def _exit_plan_mode_tool():
     return exit_plan_mode
 
 
-def _prompt_cache_middleware(config: Config) -> list[Any]:
-    """Agent middleware enabling prompt caching, by main-model provider.
-
-    Anthropic needs explicit ``cache_control`` breakpoints — supplied by
-    ``AnthropicPromptCachingMiddleware`` on the main loop. Other cloud providers
-    cache server-side automatically (no middleware), and local servers are kept
-    warm in the model factory (see ``ModelFactory._inject_keep_warm``). Returns
-    an empty list when caching is off, the main model isn't Anthropic, or the
-    optional dependency is missing — caching must never block a session.
-    """
-    from jarn.providers.models import parse_model_ref, prompt_cache_strategy
-
-    if config.routing.prompt_cache == "off":
-        return []
-    main_ref = config.resolved_main_model()
-    if not main_ref:
-        return []
-    try:
-        parsed = parse_model_ref(main_ref, default_profile=config.default_profile)
-    except Exception:  # noqa: BLE001 - a bad ref is surfaced elsewhere
-        return []
-    provider = config.providers.get(parsed.profile)
-    if provider is None or prompt_cache_strategy(provider.type) != "middleware":
-        return []
-    try:
-        from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
-    except ImportError:
-        logger.warning("jarn: langchain_anthropic missing — prompt caching disabled.")
-        return []
-    return [AnthropicPromptCachingMiddleware(ttl="5m", unsupported_model_behavior="ignore")]
-
-
 def _async_subagent_specs(config: Config) -> list[Any]:
     """Build DeepAgents ``AsyncSubAgent`` dicts from config (Agent Protocol)."""
     specs: list[Any] = []
@@ -458,7 +426,12 @@ def build_runtime(
     )
 
     backend = _make_backend(config, root)
-    middleware = _prompt_cache_middleware(config)
+    # Prompt caching for Anthropic is handled by deepagents itself — it adds an
+    # AnthropicPromptCachingMiddleware unconditionally (a no-op for non-Anthropic
+    # models). Passing our own would be a *duplicate* and create_agent rejects
+    # that. JARN's caching contribution is the local keep-warm wired in the model
+    # factory (see ModelFactory._inject_keep_warm); cloud providers cache
+    # server-side. So no extra middleware is passed here.
     agent = create_deep_agent(
         model=model,
         backend=backend,
@@ -467,7 +440,6 @@ def build_runtime(
         interrupt_on=interrupts or None,
         checkpointer=checkpointer,
         tools=tools or None,
-        middleware=middleware,
     )
 
     return JarnRuntime(

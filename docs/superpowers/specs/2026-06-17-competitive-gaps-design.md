@@ -19,9 +19,16 @@ Decisions locked with the product owner:
 **Mechanism differs by provider — one strategy resolver:**
 Add `prompt_cache_strategy(provider_type) -> {"middleware","server_auto","ollama_keepalive","lmstudio_ttl","none"}` in `providers/models.py`.
 
+> **Implementation correction:** deepagents 0.6.8 `create_deep_agent` already adds
+> `AnthropicPromptCachingMiddleware` *unconditionally* (no-op for non-Anthropic), so
+> JARN passing its own is a duplicate that `create_agent` rejects at startup. We do
+> **not** add middleware; cloud Anthropic caching is on by default via the engine.
+> JARN's actual contribution is the local keep-warm below. (Caught by a real
+> `build_runtime` smoke test the mocked unit tests couldn't see.)
+
 | Provider | Strategy | Action |
 |---|---|---|
-| Anthropic | `middleware` | add `AnthropicPromptCachingMiddleware` (langchain_anthropic 1.4.4) to `create_deep_agent(middleware=[...])` |
+| Anthropic | `middleware` | cache-control added by deepagents itself — JARN does nothing |
 | OpenAI/OpenRouter/DeepSeek/Groq/Together/Fireworks/xAI/Google/Mistral | `server_auto` | nothing — provider caches by exact prefix server-side |
 | Ollama | `ollama_keepalive` | pass `keep_alive` to `ChatOllama` so model + KV cache stay resident |
 | LM Studio / openai_compatible(local) | `lmstudio_ttl` | pass `extra_body={"ttl": <secs>}` to `ChatOpenAI` so LM Studio doesn't unload the model |

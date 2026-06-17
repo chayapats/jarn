@@ -101,7 +101,8 @@ def prompt_cache_strategy(provider_type: ProviderType) -> str:
     resident* — so the only lever we have there is keeping it warm.
 
     Returns one of:
-      ``"middleware"``        — add ``AnthropicPromptCachingMiddleware`` (Anthropic).
+      ``"middleware"``        — Anthropic; cache-control is added by the agent
+                                engine (deepagents) itself, so JARN does nothing.
       ``"server_auto"``       — nothing to do; the provider caches server-side.
       ``"ollama_keepalive"``  — pass ``keep_alive`` to keep Ollama's cache warm.
       ``"lmstudio_ttl"``      — pass request ``ttl`` to keep LM Studio loaded.

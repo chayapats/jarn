@@ -111,7 +111,11 @@ def test_lmstudio_ttl_does_not_clobber_user_extra_body():
     assert kwargs["extra_body"]["ttl"] == 1800
 
 
-# -- Anthropic middleware wiring in build_runtime ----------------------------
+# -- real build_runtime compiles (regression for the duplicate-middleware bug) --
+#
+# deepagents adds AnthropicPromptCachingMiddleware itself (unconditionally), so
+# JARN must NOT add a second — create_agent rejects duplicate middleware. These
+# do a *real* build (create_deep_agent is NOT mocked) so the crash is caught.
 
 def _anthropic_cfg():
     return Config(
@@ -121,45 +125,29 @@ def _anthropic_cfg():
     )
 
 
-def _build_capture(cfg, tmp_path):
-    captured: dict = {}
-
-    def fake_cda(**kwargs):
-        captured.update(kwargs)
-        return object()
-
+def _real_build(cfg, tmp_path):
     fake = GenericFakeChatModel(messages=iter([]))
     from jarn.agent import builder
 
-    with patch("jarn.providers.models.ModelFactory.build", return_value=fake), patch(
-        "deepagents.create_deep_agent", side_effect=fake_cda
-    ):
-        builder.build_runtime(cfg, project_root=tmp_path)
-    return captured
+    with patch("jarn.providers.models.ModelFactory.build", return_value=fake):
+        return builder.build_runtime(cfg, project_root=tmp_path)
 
 
-def _has_caching_mw(middleware):
-    from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
-
-    return any(isinstance(x, AnthropicPromptCachingMiddleware) for x in (middleware or ()))
-
-
-def test_build_runtime_anthropic_adds_caching_middleware(tmp_path):
-    captured = _build_capture(_anthropic_cfg(), tmp_path)
-    assert _has_caching_mw(captured.get("middleware"))
+def test_build_runtime_anthropic_compiles(tmp_path):
+    rt = _real_build(_anthropic_cfg(), tmp_path)
+    assert type(rt.agent).__name__ == "CompiledStateGraph"
 
 
-def test_build_runtime_off_omits_middleware(tmp_path):
+def test_build_runtime_anthropic_off_compiles(tmp_path):
     cfg = _anthropic_cfg()
     cfg.routing.prompt_cache = "off"
-    captured = _build_capture(cfg, tmp_path)
-    assert not _has_caching_mw(captured.get("middleware"))
+    rt = _real_build(cfg, tmp_path)
+    assert type(rt.agent).__name__ == "CompiledStateGraph"
 
 
-def test_build_runtime_server_auto_omits_middleware(base_config, tmp_path):
-    # base_config main is openrouter/... -> server_auto, no Anthropic middleware.
-    captured = _build_capture(base_config, tmp_path)
-    assert not _has_caching_mw(captured.get("middleware"))
+def test_build_runtime_server_auto_compiles(base_config, tmp_path):
+    rt = _real_build(base_config, tmp_path)
+    assert type(rt.agent).__name__ == "CompiledStateGraph"
 
 
 # -- config validation -------------------------------------------------------
