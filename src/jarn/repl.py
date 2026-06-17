@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import logging
 import os
 import shlex
@@ -36,7 +37,7 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition
-from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.formatted_text import ANSI, HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -181,6 +182,10 @@ class InlineApp:
         # resolves to. None for every other picker, so letter keys type normally.
         self._menu_fastkeys: dict[str, object] | None = None
         self._stream_text = ""                    # in-progress region above input
+        # Cache for the live markdown->ANSI render: _stream_control runs on every
+        # prompt_toolkit redraw (refresh_interval + invalidate per delta), so cache
+        # (source, rendered_ansi) and only re-render when the buffer actually grew.
+        self._stream_md_cache: tuple[str, str] | None = None
         self._turn_start: float | None = None     # for the elapsed timer
         # One stable thinking word per session (don't re-roll every turn — the
         # churning label reads as noise). Shared with the renderer spinner.
@@ -306,9 +311,15 @@ class InlineApp:
         # dont_extend_height so each window sizes to its CONTENT (not the screen):
         # otherwise the windows expand to their max and the input floats up the
         # screen with a gap above the toolbar.
+        # No hard max: the live block is a transient FORMATTED markdown render of
+        # the in-progress run (prose commits to scrollback once at the run seam),
+        # so an unclosed fence / long paragraph is no longer clipped at 8 lines.
+        # dont_extend_height keeps it content-sized so the input stays at the
+        # bottom. (Slice 2: add a terminal-height-aware cap only if a very tall
+        # live block pushes the input off-screen on short terminals — measure first.)
         stream = Window(
             FormattedTextControl(self._stream_control),
-            height=Dimension(min=0, max=8), wrap_lines=True,
+            height=Dimension(min=0), wrap_lines=True,
             dont_extend_height=True, style=f"fg:{palette.C_DIM}",
         )
         prompt = Window(
@@ -401,6 +412,33 @@ class InlineApp:
         if self.app is not None:
             self.app.invalidate()
 
+    def _render_stream_md(self, source: str) -> str:
+        """Render the growing markdown buffer to an ANSI string for the live region.
+
+        Uses a force_terminal capture Console at the SAME width as ``self.console``
+        (the scrollback console) so the live block wraps identically to the
+        committed block — no reflow jump when the run finally commits. Cached on
+        the source string: _stream_control runs on every redraw, so we only re-run
+        the Rich render when the buffer actually changed (O(buffer) per change, not
+        per frame)."""
+        if self._stream_md_cache is not None and self._stream_md_cache[0] == source:
+            return self._stream_md_cache[1]
+        width = min(shutil.get_terminal_size((100, 24)).columns, 100)
+        buf = io.StringIO()
+        cap = Console(force_terminal=True, width=width, file=buf)
+        cap.print(Markdown(source.strip(), code_theme=palette.CODE_THEME), end="")
+        rendered = buf.getvalue().rstrip("\n")
+        self._stream_md_cache = (source, rendered)
+        return rendered
+
+    def _render_dim_ansi(self, text: str) -> str:
+        """Render a one-line dim footer to an ANSI string (palette colour may be a
+        name or hex, so let Rich emit the escape rather than hand-building it)."""
+        buf = io.StringIO()
+        cap = Console(force_terminal=True, width=self.console.width, file=buf)
+        cap.print(f"[{palette.C_DIM}]{_rich_escape(text)}[/{palette.C_DIM}]", end="")
+        return buf.getvalue().rstrip("\n")
+
     def _stream_control(self):
         """Region above the input: in-progress text, an animated thinking
         indicator while the model works, a transient flash (mode change, etc.),
@@ -409,13 +447,18 @@ class InlineApp:
             return self._menu_html()
         if self._stream_text:
             if self._busy():
-                # Streamed text replaces the spinner, so carry the live token/rate
-                # stat as a dim footer — otherwise the counter vanishes the moment
-                # output starts (the gap users hit with local models).
-                return HTML(
-                    f"{_esc(self._stream_text)}\n"
-                    f'<style fg="{palette.C_DIM}">{_esc(self._gen_stat())} · esc to interrupt</style>'
+                # The streamed assistant prose renders LIVE as one growing
+                # FORMATTED markdown block (Rich -> ANSI), not dim escaped raw
+                # source — that kills the grey-raw-then-recommit double render and
+                # the mid-construct literal markup. The dim gen-stat footer (live
+                # token/rate) stays, since streamed text replaces the spinner.
+                rendered = self._render_stream_md(self._stream_text)
+                footer = self._render_dim_ansi(
+                    f"{self._gen_stat()} · esc to interrupt"
                 )
+                return ANSI(f"{rendered}\n{footer}")
+            # Not busy: a picker / _ask prompt lives here as PLAIN text — never
+            # markdown-rendered (it isn't markdown and must show verbatim).
             return self._stream_text
         if self._busy():
             return self._thinking_line()
