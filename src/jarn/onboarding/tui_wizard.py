@@ -39,6 +39,12 @@ from jarn.onboarding.wizard import (
     profile_needs_base_url,
     validate_config,
 )
+from jarn.providers import (
+    list_remote_models,
+    qualify_model_ref,
+    strip_profile,
+    suggest_slug,
+)
 from jarn.tui.logo import TAGLINE
 from jarn.tui.theme import ALL_THEMES, theme_name_for
 
@@ -58,6 +64,22 @@ def _provider_hint(name: str) -> str:
 
 
 _PROVIDER_HINTS = {p: _provider_hint(p) for p in ALL_PROVIDERS}
+
+
+def _curated_cloud_models(provider: str) -> list[str]:
+    """A small curated pick-list of model ids for a cloud ``provider``.
+
+    Drawn from :data:`DEFAULT_MODELS` (main / subagent / summarizer), with the
+    leading profile stripped so the value matches what the user would type, and
+    deduplicated while preserving first-seen order. Empty for unknown providers.
+    """
+    models = DEFAULT_MODELS.get(provider)
+    if not models:
+        return []
+    seen: dict[str, None] = {}
+    for full in models.values():
+        seen.setdefault(strip_profile(full, provider), None)
+    return list(seen)
 
 
 class SetupApp(App):
@@ -84,6 +106,12 @@ class SetupApp(App):
         self.result_path: Path | None = None
         self._base_url_error: str | None = None
         self._cancelled = False
+        # Model-step transient state: force the free-text box (after picking the
+        # "enter manually" entry), the slug-hint shown on the last submit, and the
+        # value that hint was about (resubmitting it unchanged accepts the slug).
+        self._model_manual = False
+        self._model_hint: str | None = None
+        self._model_hinted_value: str | None = None
         # Probe the environment so we can offer an existing key and tag the
         # recommended provider (parity with the plain-text wizard).
         self.env_hit: tuple[str, str] | None = _detect_env_key()
@@ -108,6 +136,12 @@ class SetupApp(App):
     async def _goto(self, step: str, *, push: bool = True) -> None:
         if push and self.step != step:
             self.history.append(self.step)
+        if step == "model" and self.step != "model":
+            # Fresh arrival at the model step (not an in-place re-render): start
+            # from the pick-list, with no stale manual/hint state.
+            self._model_manual = False
+            self._model_hint = None
+            self._model_hinted_value = None
         self.step = step
         await self._render_step()
 
@@ -259,31 +293,78 @@ class SetupApp(App):
             Input(value=default, placeholder="http://localhost:11434", id="step-input"),
         )
 
-    async def _step_model(self) -> None:
-        from jarn.providers import strip_profile
-
-        prov = self.answers["provider"]
+    def _default_model_id(self, prov: str) -> str:
         default_full = self.answers.get("model") or DEFAULT_MODELS.get(
             prov, DEFAULT_MODELS["openrouter"]
         )["main"]
         default_id = strip_profile(default_full, prov)
         if prov == CUSTOM_OPENAI_PROFILE and default_id == "your-model":
             default_id = "gpt-4o"
+        return default_id
 
-        # For local/custom endpoints, probe the live endpoint for its served
-        # models and offer an arrow-key pick (preferred over blind typing). Fails
-        # open to free-text entry when the endpoint is unreachable or empty.
-        discovered = self._discover_models(prov)
-        if discovered:
-            items = [(m, m) for m in discovered]
+    async def _step_model(self) -> None:
+        prov = self.answers["provider"]
+        default_id = self._default_model_id(prov)
+
+        # Picked "enter manually" / came back to override a slug hint → free-text.
+        if self._model_manual:
+            await self._model_text_input(prov, default_id)
+            return
+
+        # Local / custom endpoints: probe the live endpoint for its served models
+        # and offer an arrow-key pick (preferred over blind typing).
+        if profile_needs_base_url(prov):
+            discovered = self._discover_models(prov)
+            if discovered:
+                items = [(m, m) for m in discovered]
+                items.append(("__manual__", "Enter a model id manually…"))
+                await self._set(
+                    f"Pick a model served by {prov}  ({len(discovered)} found)",
+                    self._option_list(
+                        items, default_id if default_id in discovered else None
+                    ),
+                )
+                return
+            # Unreachable / empty endpoint: nudge instead of a silent blind box,
+            # then still degrade to manual entry.
+            endpoint = self.answers.get("base_url") or PROVIDER_BASE_URLS.get(prov, "")
+            await self._model_text_input(prov, default_id, unreachable=endpoint)
+            return
+
+        # Cloud providers: a small curated pick-list + a custom free-text entry
+        # (the project's "list + enter your own" preference) so the user isn't
+        # blind-typing a slug they can't see.
+        curated = _curated_cloud_models(prov)
+        if curated:
+            items = [(m, m) for m in curated]
             items.append(("__manual__", "Enter a model id manually…"))
             await self._set(
-                f"Pick a model served by {prov}  ({len(discovered)} found)",
-                self._option_list(items, default_id if default_id in discovered else None),
+                f"Pick a model for {prov}  (or enter your own)",
+                self._option_list(
+                    items, default_id if default_id in curated else None,
+                    highlight=default_id if default_id in curated else None,
+                ),
             )
             return
 
-        if prov == CUSTOM_OPENAI_PROFILE:
+        await self._model_text_input(prov, default_id)
+
+    async def _model_text_input(
+        self, prov: str, default_id: str, *, unreachable: str | None = None
+    ) -> None:
+        """Render the free-text model box, optionally with an unreachable-endpoint
+        nudge or a dot-vs-dash slug-correction hint."""
+        if unreachable:
+            server = "Ollama" if prov == "ollama" else (
+                "LM Studio" if prov == "lmstudio" else "your endpoint"
+            )
+            title = (
+                f"couldn't reach {unreachable} — is {server} running?"
+                f"  Enter a model id for {prov} manually"
+            )
+        elif self._model_hint:
+            title = f"Model id for {prov} — {self._model_hint}"
+        elif prov == CUSTOM_OPENAI_PROFILE:
             title = "Model id on your endpoint  (e.g. gpt-4o, qwen3-coder)"
         else:
             title = (
@@ -296,7 +377,6 @@ class SetupApp(App):
         if not profile_needs_base_url(prov):
             return []
         from jarn.config.schema import ProviderConfig, ProviderType
-        from jarn.providers import list_remote_models
 
         base_url = self.answers.get("base_url") or PROVIDER_BASE_URLS.get(prov)
         try:
@@ -354,8 +434,11 @@ class SetupApp(App):
             await self._goto(self._next_after_storage(key))
         elif step == "model":
             if key == "__manual__":
-                # Drop the discovered list and render the free-text input instead.
-                await self._set_manual_model_input()
+                # Drop the pick-list and render the free-text input instead.
+                self._model_manual = True
+                self._model_hint = None
+                self._model_hinted_value = None
+                await self._render_step()
             else:
                 self._set_model(key)
                 await self._goto("theme")
@@ -390,30 +473,40 @@ class SetupApp(App):
             self._base_url_error = None
             await self._goto("model")
         elif self.step == "model":
+            prov = self.answers["provider"]
+            # Dot-vs-dash slug trap: if the typed slug looks like the wrong form,
+            # surface the suggestion inline once. Resubmitting the same value
+            # unchanged accepts it (the user's deliberate call).
+            if value and value != self._model_hinted_value:
+                hint = self._slug_hint(prov, value)
+                if hint:
+                    self._model_hint = hint
+                    self._model_hinted_value = value
+                    self._model_manual = True
+                    await self._render_step()
+                    return
+            self._model_hint = None
+            self._model_hinted_value = None
             self._set_model(value)
             await self._goto("theme")
 
     def _set_model(self, value: str) -> None:
-        from jarn.providers import qualify_model_ref, strip_profile
-
         prov = self.answers["provider"]
-        default_id = strip_profile(
-            DEFAULT_MODELS.get(prov, DEFAULT_MODELS["openrouter"])["main"], prov
-        )
-        if prov == CUSTOM_OPENAI_PROFILE and default_id == "your-model":
-            default_id = "gpt-4o"
-        self.answers["model"] = qualify_model_ref(value or default_id, prov)
+        self.answers["model"] = qualify_model_ref(value or self._default_model_id(prov), prov)
 
-    async def _set_manual_model_input(self) -> None:
-        from jarn.providers import strip_profile
+    def _slug_hint(self, prov: str, slug: str) -> str | None:
+        """A dot-vs-dash ``suggest_slug`` hint for ``slug`` under ``prov`` (or None).
 
-        prov = self.answers["provider"]
-        default_id = strip_profile(
-            DEFAULT_MODELS.get(prov, DEFAULT_MODELS["openrouter"])["main"], prov
-        )
-        if prov == CUSTOM_OPENAI_PROFILE and default_id == "your-model":
-            default_id = "gpt-4o"
-        await self._set(f"Model id for {prov}", Input(value=default_id, id="step-input"))
+        Only meaningful for providers backed by a known :class:`ProviderType`;
+        custom endpoints serve arbitrary ids so no hint is offered there.
+        """
+        from jarn.config.schema import ProviderType
+
+        try:
+            ptype = ProviderType(prov)
+        except ValueError:
+            return None
+        return suggest_slug(ptype, qualify_model_ref(slug, prov).split("/", 1)[-1])
 
     def _set_env_key_ref(self) -> None:
         prov = self.answers["provider"]
