@@ -612,6 +612,51 @@ class InlineApp:
         edited_args = {**args, field: edited}
         return ApprovalReply(True, RememberScope.ONCE, edited_args=edited_args)
 
+    async def _cmd_compact(self) -> None:
+        """Manual ``/compact``: generate the summary, render it for review, then
+        ask before replacing the thread. ``y`` applies, ``edit`` opens the
+        summary in ``$EDITOR`` first, anything else declines and keeps the
+        original context fully intact. (Auto-compact stays non-interactive — it
+        calls ``controller.compact()`` directly.)"""
+        c = self.console
+        c.print(f"[{palette.C_DIM}]compacting…[/{palette.C_DIM}]")
+        try:
+            summary = await self.controller.compact_preview()
+        except Exception as exc:  # noqa: BLE001
+            c.print(
+                f"[{palette.C_ERROR}]compact failed: {_rich_escape(str(exc))}"
+                f"[/{palette.C_ERROR}]"
+            )
+            return
+        if not summary:
+            c.print("Nothing to compact yet.")
+            return
+        c.print(f"[{palette.C_NOTICE}]Proposed compaction:[/{palette.C_NOTICE}]")
+        c.print(_rich_escape(summary))
+        answer = (await self._ask("Apply this compaction? [y/N/edit] ")).strip().lower()
+        if answer in ("e", "edit"):
+            from prompt_toolkit.application import run_in_terminal
+
+            edited = await run_in_terminal(
+                lambda: _edit_text_in_editor(summary, suffix=".md")
+            )
+            if edited is None:  # editor aborted — keep the original context intact
+                c.print(f"[{palette.C_DIM}]Compaction cancelled.[/{palette.C_DIM}]")
+                return
+            summary = edited
+        elif answer not in ("y", "yes"):
+            c.print(f"[{palette.C_DIM}]Compaction cancelled.[/{palette.C_DIM}]")
+            return
+        try:
+            await self.controller.compact_apply(summary)
+        except Exception as exc:  # noqa: BLE001
+            c.print(
+                f"[{palette.C_ERROR}]compact failed: {_rich_escape(str(exc))}"
+                f"[/{palette.C_ERROR}]"
+            )
+            return
+        c.print(f"[{palette.C_NOTICE}]Compacted.[/{palette.C_NOTICE}]")
+
     # -- interactive settings panel (/config) -------------------------------
 
     def _config_render(self):
@@ -1015,19 +1060,7 @@ class InlineApp:
             await self._render_todos()
             return
         if name == "compact":
-            c.print(f"[{palette.C_DIM}]compacting…[/{palette.C_DIM}]")
-            try:
-                summary = await self.controller.compact()
-                c.print(
-                    f"[{palette.C_NOTICE}]Compacted.[/{palette.C_NOTICE}] {_rich_escape(summary)}"
-                    if summary
-                    else "Nothing to compact yet."
-                )
-            except Exception as exc:  # noqa: BLE001
-                c.print(
-                    f"[{palette.C_ERROR}]compact failed: {_rich_escape(str(exc))}"
-                    f"[/{palette.C_ERROR}]"
-                )
+            await self._cmd_compact()
             return
         if name == "expand":  # same as Ctrl+O — reliable even if the key is eaten
             self._open_pager()

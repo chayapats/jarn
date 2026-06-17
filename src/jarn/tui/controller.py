@@ -215,9 +215,12 @@ class Controller:
         state = await rt.agent.aget_state(self._config())
         return list((getattr(state, "values", {}) or {}).get("messages", []) or [])
 
-    async def compact(self) -> str:
-        """Summarize the current thread and continue in a fresh thread seeded
-        with the summary (the richer ``/compact``). Returns the summary text."""
+    async def compact_preview(self) -> str:
+        """Generate the compaction summary for the current thread *without*
+        applying it. Records the summarizer call's cost. Returns the summary
+        text (``""`` when there's nothing to compact). The manual ``/compact``
+        command renders this and asks the user before calling
+        :meth:`compact_apply`."""
         rt = await self.ensure_runtime()
         state = await rt.agent.aget_state(self._config())
         messages = (getattr(state, "values", {}) or {}).get("messages", []) if state else []
@@ -252,7 +255,13 @@ class Controller:
                 int(usage.get("input_tokens", 0)),
                 int(usage.get("output_tokens", 0)),
             )
+        return summary
 
+    async def compact_apply(self, summary: str) -> None:
+        """Replace the conversation thread with ``summary``: start a fresh
+        thread and seed it with the summary. The destructive half of compaction
+        — call only after the user confirms (manual) or unconditionally (auto)."""
+        rt = await self.ensure_runtime()
         self.new_thread()
         from langchain_core.messages import HumanMessage
 
@@ -260,6 +269,18 @@ class Controller:
             self._config(),
             {"messages": [HumanMessage(content=f"[Summary of prior conversation]\n{summary}")]},
         )
+
+    async def compact(self) -> str:
+        """Summarize the current thread and continue in a fresh thread seeded
+        with the summary (the richer ``/compact``). Generates *and* applies in
+        one step — used by the non-interactive auto-compact path. The manual
+        ``/compact`` command splits this into :meth:`compact_preview` +
+        :meth:`compact_apply` so the user can review before applying. Returns the
+        summary text."""
+        summary = await self.compact_preview()
+        if not summary:
+            return ""
+        await self.compact_apply(summary)
         return summary
 
     def terminate_shells(self) -> int:
