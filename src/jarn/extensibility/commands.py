@@ -41,9 +41,9 @@ BUILTINS: tuple[BuiltinCommand, ...] = (
     BuiltinCommand("help", "Show available commands and shortcuts.", "controller", group="Daily"),
     BuiltinCommand(
         "model",
-        "Show or switch the active model.",
+        "Show or switch the active model; /model refresh re-queries local endpoints.",
         "repl",
-        usage="[/ref]",
+        usage="[/ref|refresh]",
         group="Daily",
     ),
     BuiltinCommand(

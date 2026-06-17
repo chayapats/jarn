@@ -1077,6 +1077,9 @@ class InlineApp:
                 self._cancel_turn()
             c.print(self.controller.abort_rollback())
             return
+        if name == "model" and args.strip() in ("refresh", "list"):
+            await self._refresh_models()
+            return
         if name in ("model", "mode") and not args.strip():
             await self._pick_model_or_mode(name)
             return
@@ -1210,6 +1213,37 @@ class InlineApp:
                 c.print(f"[{palette.C_DIM}]yolo cancelled — mode unchanged.[/{palette.C_DIM}]")
                 return
             _apply_mode_ref(self.controller, c, str(chosen))
+
+    async def _refresh_models(self) -> None:
+        """Re-query local endpoints (Ollama / LM Studio) and pick from the result.
+
+        Degrades to manual entry with a note when no endpoint answers, so it never
+        leaves the user stuck.
+        """
+        c = self.console
+        # Probing can block briefly on the network; keep the event loop live.
+        discovered = await asyncio.to_thread(self.controller.discover_models)
+        if not discovered:
+            c.print(
+                f"[{palette.C_DIM}]No local models found — is Ollama/LM Studio running? "
+                f"Use /model to pick a configured model or paste a ref.[/{palette.C_DIM}]"
+            )
+            custom = (await self._ask("Paste model ref (blank to cancel): ")).strip()
+            if custom:
+                _apply_model_ref(self.controller, c, custom)
+            return
+        options: list[tuple[str, str | None]] = [
+            (f"{ref}  ({profile})", ref) for ref, profile in discovered
+        ]
+        options.append(("Cancel", None))
+        chosen = await self._pick_menu(
+            options,
+            header="Pick model · ↑/↓ · Enter · Esc cancel",
+            cancel_returns=None,
+        )
+        if chosen is None:
+            return
+        _apply_model_ref(self.controller, c, str(chosen))
 
     async def _replay_transcript(self) -> None:
         try:

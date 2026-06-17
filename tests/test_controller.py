@@ -843,3 +843,43 @@ def test_peek_next_mode_wraps_from_yolo_to_plan(tmp_path, monkeypatch, base_conf
     # still yolo
     assert ctrl.config.permission_mode.value == "yolo"
     ctrl.close()
+
+
+def test_discover_models_queries_local_ollama_provider(tmp_path, monkeypatch, base_config):
+    """discover_models() probes the configured Ollama endpoint and qualifies refs."""
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    urls = []
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"models": [{"name": "qwen3-coder:30b"}, {"name": "llama3:8b"}]}
+
+    def _get(url, *a, **k):
+        urls.append(url)
+        return _Resp()
+
+    with patch("httpx.get", _get):
+        out = ctrl.discover_models()
+    # Returned refs are qualified under the provider profile name ("ollama").
+    assert ("ollama/qwen3-coder:30b", "ollama") in out
+    assert ("ollama/llama3:8b", "ollama") in out
+    # Only the local (ollama) provider was probed, not the cloud openrouter one.
+    assert urls == ["http://localhost:11434/api/tags"]
+    ctrl.close()
+
+
+def test_discover_models_empty_when_endpoint_unreachable(tmp_path, monkeypatch, base_config):
+    """Unreachable endpoint -> [] so the caller falls back to manual entry."""
+    import httpx
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    def _boom(*a, **k):
+        raise httpx.ConnectError("no endpoint")
+
+    with patch("httpx.get", _boom):
+        assert ctrl.discover_models() == []
+    ctrl.close()

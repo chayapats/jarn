@@ -179,7 +179,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/help` | Show available commands and shortcuts. |
 | `/init` | Create a JARN.md project context file. |
 | `/config` | View or edit settings: /config, /config get <key>, /config set <key> <value> (persists). |
-| `/model [/ref]` | Show or switch the active model. |
+| `/model [/ref\|refresh]` | Show or switch the active model; /model refresh re-queries local endpoints. |
 | `/mode [plan\|ask\|auto-edit\|yolo]` | Show or switch the permission mode (plan/ask/auto-edit/yolo). |
 | `/sandbox [on\|off]` | Show or toggle the execution backend (local/sandbox). |
 | `/profile [<profile-name>]` | Show or apply a policy profile (permission mode + sandbox + web tools). |

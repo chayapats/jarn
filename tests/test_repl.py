@@ -1448,3 +1448,60 @@ async def test_confirm_and_cycle_yolo_declined_keeps_mode(tmp_path, monkeypatch)
     out = app.console.file.getvalue()
     assert "cancelled" in out.lower()
     app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_command_model_refresh_picks_discovered_model(tmp_path, monkeypatch):
+    """`/model refresh` re-queries local endpoints and applies the picked model."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    # An ollama provider must be configured for the discovered ref to be
+    # recognised as already-qualified (otherwise it'd reroute to the default).
+    app.controller.config.providers["ollama"] = ProviderConfig(
+        type=ProviderType.OLLAMA, base_url="http://localhost:11434"
+    )
+
+    async def _noop_ext() -> None:
+        return None
+    monkeypatch.setattr(app, "_ensure_extensions", _noop_ext)
+    # discover_models is mocked → no real network.
+    monkeypatch.setattr(
+        app.controller,
+        "discover_models",
+        lambda: [("ollama/qwen3-coder:30b", "ollama"), ("ollama/llama3:8b", "ollama")],
+    )
+
+    task = asyncio.create_task(app._command("model", "refresh"))
+    # Wait until the picker registers its options, then select the first model.
+    for _ in range(50):
+        await asyncio.sleep(0)
+        if app._menu_future is not None and app._menu_options:
+            break
+    assert app._menu_options[0][1] == "ollama/qwen3-coder:30b"
+    app._menu_future.set_result(app._menu_options[0][1])
+    await task
+
+    assert app.controller.config.resolved_main_model() == "ollama/qwen3-coder:30b"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_command_model_refresh_degrades_to_manual_when_unreachable(tmp_path, monkeypatch):
+    """`/model refresh` with no reachable endpoint prints a note + offers manual entry."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    async def _noop_ext() -> None:
+        return None
+    monkeypatch.setattr(app, "_ensure_extensions", _noop_ext)
+    monkeypatch.setattr(app.controller, "discover_models", lambda: [])
+
+    async def _fake_ask(prompt: str) -> str:
+        return "openrouter/manual-model"
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+
+    await app._command("model", "refresh")
+
+    out = app.console.file.getvalue()
+    assert "No local models found" in out
+    # The manually-entered ref is applied (never blocks the user).
+    assert app.controller.config.resolved_main_model() == "openrouter/manual-model"
+    app.controller.close()

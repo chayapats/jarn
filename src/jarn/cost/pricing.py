@@ -25,12 +25,37 @@ from __future__ import annotations
 
 import json
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
 from jarn.config import paths
+
+# Set of model ids for which the unpriced warning has already been emitted this
+# process lifetime.  Kept at module level so repeated calls never re-warn.
+_WARNED_UNPRICED: set[str] = set()
+
+
+class UnpricedModelWarning(UserWarning):
+    """Emitted once per model when no price is found in any pricing source."""
+
+
+def warn_unpriced(model_id: str) -> None:
+    """Emit a one-time ``UnpricedModelWarning`` for *model_id*.
+
+    The warning is suppressed after the first call for each model id so
+    high-frequency cost recording paths never produce repeated noise.
+    """
+    if model_id in _WARNED_UNPRICED:
+        return
+    _WARNED_UNPRICED.add(model_id)
+    warnings.warn(
+        f"⚠ No price for {model_id} — cost will be counted as $0",
+        UnpricedModelWarning,
+        stacklevel=2,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +279,7 @@ def context_window(model_id: str) -> int:
 def cost_of(model_id: str, input_tokens: int, output_tokens: int) -> float | None:
     price = lookup(model_id)
     if price is None:
+        warn_unpriced(model_id)
         return None
     return (
         input_tokens / 1_000_000 * price.input_per_mtok

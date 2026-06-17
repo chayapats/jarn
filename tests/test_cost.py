@@ -139,3 +139,54 @@ def test_summary_line_multi_model_breakdown():
     assert "claude-haiku-4-5 $" in line
     # The base aggregate line is still present.
     assert "calls" in line and "tok" in line
+
+
+# -- P2.B: unpriced model warning -------------------------------------------
+
+def test_unpriced_warning_emitted_once(recwarn):
+    """cost_of emits UnpricedModelWarning exactly once per unknown model id."""
+    from jarn.cost.pricing import _WARNED_UNPRICED, UnpricedModelWarning, cost_of
+
+    model = "totally-unknown-model-p2b-test"
+    _WARNED_UNPRICED.discard(model)  # reset dedup state
+
+    result = cost_of(model, 1000, 1000)
+    assert result is None  # unpriced -> None
+
+    warns = [w for w in recwarn.list if issubclass(w.category, UnpricedModelWarning)]
+    assert len(warns) == 1
+    assert model in str(warns[0].message)
+    assert "$0" in str(warns[0].message)
+
+    # Second call must NOT emit another warning.
+    cost_of(model, 2000, 2000)
+    warns_after = [w for w in recwarn.list if issubclass(w.category, UnpricedModelWarning)]
+    assert len(warns_after) == 1, "Warning should not repeat for the same model"
+
+
+def test_unpriced_warning_dedup_per_model(recwarn):
+    """Each distinct unknown model gets its own one-time warning."""
+    from jarn.cost.pricing import _WARNED_UNPRICED, UnpricedModelWarning, cost_of
+
+    for slug in ("unknown-alpha-p2b", "unknown-beta-p2b"):
+        _WARNED_UNPRICED.discard(slug)
+
+    cost_of("unknown-alpha-p2b", 1, 1)
+    cost_of("unknown-beta-p2b", 1, 1)
+    cost_of("unknown-alpha-p2b", 1, 1)  # repeat — must not re-warn
+
+    warns = [w for w in recwarn.list if issubclass(w.category, UnpricedModelWarning)]
+    slugs_warned = [str(w.message) for w in warns]
+    assert any("unknown-alpha-p2b" in s for s in slugs_warned)
+    assert any("unknown-beta-p2b" in s for s in slugs_warned)
+    assert len(warns) == 2, "Two models → two warnings, no duplicates"
+
+
+def test_priced_model_no_warning(recwarn):
+    """No warning is emitted for a model whose price is known."""
+    from jarn.cost.pricing import UnpricedModelWarning, cost_of  # noqa: F401
+
+    result = cost_of("claude-opus-4-8", 1_000_000, 1_000_000)
+    assert result is not None
+    warns = [w for w in recwarn.list if issubclass(w.category, UnpricedModelWarning)]
+    assert len(warns) == 0
