@@ -42,21 +42,41 @@ class BudgetExceeded(RuntimeError):
         return f"Session budget exceeded: ${self.spent:.4f} / ${self.limit:.2f}"
 
 
+# Bucket label for model calls that produced a plain answer rather than a tool
+# call (so per-tool totals still reconcile to the grand total).
+RESPONSE_TOOL = "(response)"
+
+
 @dataclass(slots=True)
 class CostTracker:
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     total: Usage = field(default_factory=Usage)
     per_model: dict[str, Usage] = field(default_factory=dict)
+    per_tool: dict[str, Usage] = field(default_factory=dict)
     context_tokens: int = 0
 
-    def record(self, model_id: str, input_tokens: int, output_tokens: int) -> Usage:
-        """Record one model call; returns the updated total usage."""
+    def record(
+        self,
+        model_id: str,
+        input_tokens: int,
+        output_tokens: int,
+        tool: str | None = None,
+    ) -> Usage:
+        """Record one model call; returns the updated total usage.
+
+        Each call is attributed to exactly one ``per_model`` bucket *and* exactly
+        one ``per_tool`` bucket (the tool this call requested, or ``RESPONSE_TOOL``
+        for a plain reply). Attributing to a single tool bucket — never one per
+        tool-call — keeps ``sum(per_tool) == total`` exactly, the same invariant
+        ``per_model`` already holds, so the breakdown never double-counts.
+        """
         cost = pricing.cost_of(model_id, input_tokens, output_tokens)
         unpriced = cost is None
         cost = cost or 0.0
 
-        bucket = self.per_model.setdefault(model_id, Usage())
-        for u in (bucket, self.total):
+        model_bucket = self.per_model.setdefault(model_id, Usage())
+        tool_bucket = self.per_tool.setdefault(tool or RESPONSE_TOOL, Usage())
+        for u in (model_bucket, tool_bucket, self.total):
             u.input_tokens += input_tokens
             u.output_tokens += output_tokens
             u.cost_usd += cost
@@ -66,6 +86,13 @@ class CostTracker:
         # Largest single prompt seen ~= current context fill (reset per thread).
         self.context_tokens = max(self.context_tokens, input_tokens)
         return self.total
+
+    def top_tools(self, limit: int = 5) -> list[tuple[str, Usage]]:
+        """The biggest per-tool cost contributors, most expensive first."""
+        ranked = sorted(
+            self.per_tool.items(), key=lambda kv: kv[1].cost_usd, reverse=True
+        )
+        return ranked[:limit]
 
     # -- budget -------------------------------------------------------------
 

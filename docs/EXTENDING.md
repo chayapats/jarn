@@ -16,6 +16,31 @@ conflicts). Working examples live in [`examples/`](../examples).
   config.yaml (hooks, mcp)         config.yaml (hooks, mcp, rules)
 ```
 
+## Which surface should I use?
+
+| Surface | Use when… |
+|---|---|
+| **Skills** | You want the agent to *automatically* apply a reusable workflow or constraint (e.g. "always back up before running migrations"). The skill file is injected into the system prompt so the model applies it without being told every time. |
+| **Custom commands** | You want a user-invoked slash command (`/review`, `/deploy`) that sends a fixed prompt template with substituted arguments. The agent only uses it when you call it explicitly — it is never auto-triggered. |
+| **Subagents** | You need the main agent to delegate a self-contained task to a specialist (e.g. a test-writer that runs independently). Subagents have their own system prompt, optional model, and optional tool restrictions. |
+| **Hooks** | You want shell commands to run automatically on lifecycle events (`post_edit`, `pre_commit`, `session_end`, …) without the agent deciding to run them — e.g. auto-lint after every file edit. |
+| **MCP** | You want to expose external tools (APIs, databases, file servers) to the agent via the Model Context Protocol. MCP tools appear alongside built-ins and go through the permission engine. |
+
+### Skills vs. custom commands
+
+The two markdown-file surfaces look similar but serve opposite automation modes:
+
+- **Skills** are *agent-driven*: the agent reads the skill catalog at startup and
+  decides when to apply a skill based on the task at hand. Use them for standing
+  instructions the agent should always follow ("never delete without a backup",
+  "prefer functional style in this repo").
+- **Custom commands** are *user-driven*: only run when you type `/command-name
+  [args]`. Use them for repeatable prompts you want to fire on demand ("review
+  my staged diff", "write a changelog entry for this PR").
+
+If you find yourself typing the same prompt repeatedly → custom command.
+If you want the agent to follow a rule without being reminded → skill.
+
 ## Quick start: wire skill + hook + MCP
 
 End-to-end path for contributors — copy the shipped examples, launch J.A.R.N., and

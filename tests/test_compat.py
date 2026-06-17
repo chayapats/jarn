@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
+
+from rich.console import Console
 
 from jarn.config.loader import load_config
 from jarn.extensibility.commands import load_commands
 from jarn.extensibility.skills import load_skills
-from jarn.memory.context import assemble_system_context, project_context_text
+from jarn.memory.context import assemble_system_context, project_context_text, resolve_context_file
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -456,3 +459,103 @@ def test_build_runtime_forwards_context_files(
     assert captured_context.get("kwargs", {}).get("context_files") == ["AGENTS.md"], (
         "build_runtime did not forward compat.context_files to assemble_system_context"
     )
+
+
+# ── resolve_context_file + startup echo (P5.D) ───────────────────────────────
+
+
+def test_resolve_context_file_jarn_md(tmp_path: Path) -> None:
+    """resolve_context_file returns JARN.md when it exists (highest priority)."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "JARN.md").write_text("# J", encoding="utf-8")
+    (root / "AGENTS.md").write_text("# A", encoding="utf-8")
+    result = resolve_context_file(root)
+    assert result is not None
+    assert result.name == "JARN.md"
+
+
+def test_resolve_context_file_agents_md_fallback(tmp_path: Path) -> None:
+    """resolve_context_file falls back to AGENTS.md when JARN.md is absent."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "AGENTS.md").write_text("# A", encoding="utf-8")
+    result = resolve_context_file(root)
+    assert result is not None
+    assert result.name == "AGENTS.md"
+
+
+def test_resolve_context_file_claude_md_fallback(tmp_path: Path) -> None:
+    """resolve_context_file falls back to CLAUDE.md as last resort."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "CLAUDE.md").write_text("# C", encoding="utf-8")
+    result = resolve_context_file(root)
+    assert result is not None
+    assert result.name == "CLAUDE.md"
+
+
+def test_resolve_context_file_none_when_absent(tmp_path: Path) -> None:
+    """resolve_context_file returns None when none of the candidates exist."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    assert resolve_context_file(root) is None
+
+
+def test_resolve_context_file_custom_order(tmp_path: Path) -> None:
+    """A custom context_files order is respected by resolve_context_file."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "CLAUDE.md").write_text("# C", encoding="utf-8")
+    (root / "AGENTS.md").write_text("# A", encoding="utf-8")
+    result = resolve_context_file(root, context_files=["CLAUDE.md", "AGENTS.md"])
+    assert result is not None
+    assert result.name == "CLAUDE.md"
+
+
+def _render_startup_echo(root: Path, context_files: list[str] | None = None) -> str:
+    """Reproduce the startup-echo logic from repl.py run() in isolation."""
+    out = StringIO()
+    console = Console(file=out, highlight=False, markup=False, width=120)
+    from jarn.tui import palette
+    ctx_path = resolve_context_file(root, context_files=context_files)
+    if ctx_path is not None:
+        console.print(
+            f"[{palette.C_DIM}]context: {ctx_path.name}[/{palette.C_DIM}]"
+        )
+    return out.getvalue()
+
+
+def test_startup_echo_names_loaded_context_file(tmp_path: Path) -> None:
+    """Startup echo prints the name of the context file that was loaded."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "JARN.md").write_text("# JARN context", encoding="utf-8")
+    output = _render_startup_echo(root)
+    assert "JARN.md" in output
+
+
+def test_startup_echo_names_agents_md_when_jarn_absent(tmp_path: Path) -> None:
+    """Startup echo names AGENTS.md when JARN.md is not present."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "AGENTS.md").write_text("# Agents context", encoding="utf-8")
+    output = _render_startup_echo(root)
+    assert "AGENTS.md" in output
+
+
+def test_startup_echo_names_claude_md_as_last_resort(tmp_path: Path) -> None:
+    """Startup echo names CLAUDE.md when it is the only context file present."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "CLAUDE.md").write_text("# Claude context", encoding="utf-8")
+    output = _render_startup_echo(root)
+    assert "CLAUDE.md" in output
+
+
+def test_startup_echo_silent_when_no_context_file(tmp_path: Path) -> None:
+    """Startup echo is silent when no context file exists."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    output = _render_startup_echo(root)
+    assert "context:" not in output

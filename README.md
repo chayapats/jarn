@@ -190,7 +190,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/sessions` | List and resume previous sessions. |
 | `/resume` | Pick a previous session to resume. |
 | `/skills` | List available skills. |
-| `/memory [search\|show\|add\|update\|delete] ...` | List, search, show, add, update, or delete long-term memory. |
+| `/memory [search\|show\|add\|update\|delete\|dump] ...` | List, search, show, add, update, delete, or dump long-term memory. |
 | `/permissions` | Show current permission rules and allowlist. |
 | `/mcp [status]` | Show configured MCP servers with per-server health and last error. |
 | `/trust` | Trust this project root and lift the untrusted review-only floor. |

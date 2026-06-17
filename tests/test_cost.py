@@ -141,6 +141,67 @@ def test_summary_line_multi_model_breakdown():
     assert "calls" in line and "tok" in line
 
 
+# -- P5.C: per-tool cost breakdown ------------------------------------------
+
+def test_per_tool_attribution():
+    """Cost is bucketed per tool name alongside per-model, with a default bucket
+    for plain replies (no tool)."""
+    from jarn.cost.tracker import RESPONSE_TOOL
+
+    t = CostTracker()
+    t.record("claude-opus-4-8", 1_000_000, 0, tool="execute")   # priced -> $5.00
+    t.record("claude-opus-4-8", 1_000_000, 0, tool="execute")   # $5.00 again
+    t.record("claude-opus-4-8", 1_000_000, 0, tool="web_fetch")  # $5.00
+    t.record("claude-opus-4-8", 1_000, 500)                      # no tool -> reply
+    assert set(t.per_tool) == {"execute", "web_fetch", RESPONSE_TOOL}
+    execute = t.per_tool["execute"]
+    assert execute.calls == 2 and execute.input_tokens == 2_000_000
+    assert t.per_tool["web_fetch"].calls == 1
+    assert t.per_tool[RESPONSE_TOOL].calls == 1
+
+
+def test_per_tool_totals_reconcile_with_grand_total():
+    """The per-tool totals must sum EXACTLY to the same grand total — no
+    double-counting, no drift — and match the per-model totals too."""
+    t = CostTracker()
+    t.record("claude-opus-4-8", 1000, 500, tool="execute")
+    t.record("claude-haiku-4-5", 200, 100, tool="read_file")
+    t.record("claude-opus-4-8", 1000, 500, tool="execute")
+    t.record("claude-opus-4-8", 7, 3)  # plain reply
+
+    cost_via_tool = sum(u.cost_usd for u in t.per_tool.values())
+    cost_via_model = sum(u.cost_usd for u in t.per_model.values())
+    calls_via_tool = sum(u.calls for u in t.per_tool.values())
+    in_via_tool = sum(u.input_tokens for u in t.per_tool.values())
+    out_via_tool = sum(u.output_tokens for u in t.per_tool.values())
+
+    assert cost_via_tool == t.total.cost_usd == cost_via_model
+    assert calls_via_tool == t.total.calls == 4
+    assert in_via_tool == t.total.input_tokens
+    assert out_via_tool == t.total.output_tokens
+
+
+def test_top_tools_ranks_by_cost():
+    """top_tools returns the biggest cost contributors first, capped to limit."""
+    t = CostTracker()
+    t.record("claude-opus-4-8", 2_000_000, 0, tool="execute")    # $10.00
+    t.record("claude-opus-4-8", 1_000_000, 0, tool="web_fetch")  # $5.00
+    t.record("claude-opus-4-8", 100_000, 0, tool="read_file")    # $0.50
+    top = t.top_tools(limit=2)
+    assert [name for name, _ in top] == ["execute", "web_fetch"]
+    assert top[0][1].cost_usd == 10.0
+
+
+def test_per_tool_default_bucket_when_no_tool():
+    """A call with no tool lands in the response bucket so totals still close."""
+    from jarn.cost.tracker import RESPONSE_TOOL
+
+    t = CostTracker()
+    t.record("claude-opus-4-8", 1000, 500)
+    assert list(t.per_tool) == [RESPONSE_TOOL]
+    assert t.per_tool[RESPONSE_TOOL].cost_usd == t.total.cost_usd
+
+
 # -- P2.B: unpriced model warning -------------------------------------------
 
 def test_unpriced_warning_emitted_once(recwarn):

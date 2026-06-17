@@ -71,9 +71,9 @@ BUILTINS: tuple[BuiltinCommand, ...] = (
     ),
     BuiltinCommand(
         "memory",
-        "List, search, show, add, update, or delete long-term memory.",
+        "List, search, show, add, update, delete, or dump long-term memory.",
         "controller",
-        usage="[search|show|add|update|delete] ...",
+        usage="[search|show|add|update|delete|dump] ...",
         group="Daily",
     ),
     BuiltinCommand("clear", "Clear the conversation and start a fresh thread.", "controller", group="Daily"),
