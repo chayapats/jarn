@@ -9,10 +9,48 @@ A customer-feedback remediation pass (19 tasks across onboarding, permissions,
 approvals, cost/context surfacing, and docs) plus follow-up fixes, then a
 competitive-gaps round closing five user pain points versus other harnesses:
 prompt caching, plan-mode handoff, `/commit` + `/review`, background processes,
-and macOS image paste. Test count: 789 → 1054.
+and macOS image paste; then a UX-polish round (16 fixes from an end-to-end
+user-journey audit) covering live in-place streaming, onboarding key capture,
+in-session auth recovery, faster approvals, cache-aware cost, suggested memory,
+rich `@`-mentions, and conversation rewind. Test count: 789 → 1154.
 
 ### Added
 
+- **`/rewind` — branch the conversation to an earlier turn** — pick an earlier
+  user turn (arrow-key picker), optionally edit that turn's prompt, and continue
+  from there. The rewind *forks* onto a new thread (via the same messages-reducer
+  mechanism `/compact` uses), so the original session stays intact and resumable
+  in `/resume` — nothing is destroyed. First slice rewinds the **conversation
+  only**: file edits made after the chosen turn are **not** reverted; the picker
+  and the post-rewind notice point at `/undo` for those. Linking the rewind to the
+  git-checkpoint stack so file edits revert atomically is a deferred slice.
+- **Live in-place markdown streaming** — assistant output renders as one growing
+  *formatted* block in the input region and commits to scrollback once per prose
+  run, instead of streaming as dim raw markdown that re-rendered paragraph by
+  paragraph. Removes the double-echo flicker, the 8-line preview clip, and literal
+  mid-construct markup (open code fences, tables).
+- **Core-loop polish** — one-key accept/deny in the approval menu; reasoning text
+  streams live during a thinking phase; a steady thinking-word indicator; queued
+  input echoes once (not twice); `@file` completion no longer rescans the directory
+  on every keystroke; Esc-cancel now states that file edits remain and points at
+  rollback (`/abort`).
+- **Onboarding that secures a usable key** — the TUI setup wizard now detects an
+  existing `*_API_KEY` in your environment, tags a recommended provider, offers a
+  model pick-list with a custom-entry fallback for cloud providers, nudges when a
+  local endpoint (Ollama / LM Studio) is unreachable, and prompts for/validates a
+  key before finishing so the first turn works.
+- **In-session auth recovery** — an invalid/expired key now surfaces a friendly
+  "key rejected (401) — fix with /key, jarn setup, or your env var" message instead
+  of raw SDK JSON; **`/key`** sets or replaces the current provider's key (keychain)
+  and rebuilds the runtime without restarting; an auth failure now rotates to a
+  configured `routing.fallback` provider instead of dead-ending.
+- **Cache-aware cost** — prompt-cache read/write tokens are tracked and shown in
+  `/cost` (cloud cache pricing where known); totals still reconcile when a turn has
+  no cache usage.
+- **Suggested memory** — the agent can propose a memory the user approves
+  (`y / N / edit`) before it is written via the existing store (tier + trust gated).
+- **Rich `@`-mentions (first slice)** — `@folder` and `@symbol` resolve alongside
+  `@path` through an extensible resolver registry; `@url` / `@docs` are deferred.
 - **Image paste (macOS)** — **Ctrl+V** grabs a screenshot/image from the clipboard,
   saves it under `.jarn/pastes/`, and inserts it as an `@path` so the agent's
   multimodal `read_file` loads it on send — no more save-to-disk-then-type-the-path.
