@@ -21,7 +21,7 @@ conflicts). Working examples live in [`examples/`](../examples).
 | Surface | Use when… |
 |---|---|
 | **Skills** | You want the agent to *automatically* apply a reusable workflow or constraint (e.g. "always back up before running migrations"). The skill file is injected into the system prompt so the model applies it without being told every time. |
-| **Custom commands** | You want a user-invoked slash command (`/review`, `/deploy`) that sends a fixed prompt template with substituted arguments. The agent only uses it when you call it explicitly — it is never auto-triggered. |
+| **Custom commands** | You want a user-invoked slash command (`/explain`, `/deploy`) that sends a fixed prompt template with substituted arguments. The agent only uses it when you call it explicitly — it is never auto-triggered. |
 | **Subagents** | You need the main agent to delegate a self-contained task to a specialist (e.g. a test-writer that runs independently). Subagents have their own system prompt, optional model, and optional tool restrictions. |
 | **Hooks** | You want shell commands to run automatically on lifecycle events (`post_edit`, `pre_commit`, `session_end`, …) without the agent deciding to run them — e.g. auto-lint after every file edit. |
 | **MCP** | You want to expose external tools (APIs, databases, file servers) to the agent via the Model Context Protocol. MCP tools appear alongside built-ins and go through the permission engine. |
@@ -60,7 +60,7 @@ From your project root:
 ```bash
 mkdir -p .jarn/skills .jarn/commands .jarn/agents
 cp examples/skills/safe-refactor.md .jarn/skills/
-cp examples/commands/review.md      .jarn/commands/
+cp examples/commands/explain.md     .jarn/commands/
 cp examples/agents/test-writer.md   .jarn/agents/
 cp examples/project.config.yaml     .jarn/config.yaml
 ```
@@ -89,7 +89,7 @@ uv run jarn
 | Surface | How to verify |
 |---|---|
 | **Skill** | `/skills` lists `safe-refactor` (auto-triggered; description is in the system catalog). |
-| **Command** | `/review the auth module` sends the review template with args substituted. |
+| **Command** | `/explain the auth module` sends the explain template with args substituted. |
 | **Subagent** | Ask the agent to delegate to `test-writer` via the `task` tool. |
 | **Hook** | After the agent edits a `.py` file, `post_edit` runs `ruff check --fix .` (non-blocking). `pre_commit` with `blocking: true` aborts on non-zero exit. |
 | **MCP** | Uncomment the block in `.jarn/config.yaml` (or merge from `mcp-filesystem.snippet.yaml`), restart. MCP tools appear alongside built-ins. A failed server is skipped; runtime may show `degraded` — per-server `health` is mirrored on config but not shown in the toolbar yet. |
@@ -164,14 +164,16 @@ replaced by your arguments.
 
 ```markdown
 ---
-name: review
-description: Review the staged diff for bugs.
+name: explain
+description: Explain how a piece of code works.
 ---
-Review the staged git diff. Focus on correctness and edge cases: $ARGS
+Explain how this code works, end to end. Cite file:line: $ARGS
 ```
 
-`/review the auth module` → sends *"Review the staged git diff… : the auth module"*.
-Custom commands cannot shadow built-ins (a `cost.md` loads as `/cost-custom`).
+`/explain the auth module` → sends *"Explain how this code works… : the auth module"*.
+Custom commands cannot shadow built-ins (a `cost.md` loads as `/cost-custom`; and
+`/commit` / `/review` are now built in, so a custom `review.md` loads as
+`/review-custom`).
 
 ## 3. Custom subagents
 

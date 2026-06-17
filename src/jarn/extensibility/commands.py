@@ -58,6 +58,18 @@ BUILTINS: tuple[BuiltinCommand, ...] = (
     BuiltinCommand("redo", "Re-apply the last undone agent turn's file changes.", "controller", group="Daily"),
     BuiltinCommand("abort", "Cancel the running turn and roll back its file changes.", "repl", group="Daily"),
     BuiltinCommand(
+        "commit",
+        "Draft a commit message from the current diff and commit (with approval).",
+        "repl",
+        group="Daily",
+    ),
+    BuiltinCommand(
+        "review",
+        "Review the current working-tree diff for bugs and quality (read-only).",
+        "repl",
+        group="Daily",
+    ),
+    BuiltinCommand(
         "compact",
         "Summarize and compact the conversation context.",
         "repl",

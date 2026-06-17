@@ -1184,6 +1184,9 @@ class InlineApp:
         if name == "compact":
             await self._cmd_compact()
             return
+        if name in ("commit", "review"):
+            await self._cmd_git_seed(name)
+            return
         if name == "expand":  # same as Ctrl+O — reliable even if the key is eaten
             self._open_pager()
             return
@@ -1228,6 +1231,41 @@ class InlineApp:
             self.controller.runtime = None
         if result.quit and self.app is not None:
             self.app.exit()
+
+    async def _cmd_git_seed(self, which: str) -> None:
+        """`/commit` and `/review`: gather the diff and seed an agent turn.
+
+        The diff is embedded in the prompt so the agent skips a tool round-trip.
+        ``/commit`` then drives a real ``git commit`` through the normal approval
+        path; ``/review`` is a read-only review.
+        """
+        from jarn.agent.git_commands import commit_prompt, gather_diff, review_prompt
+
+        c = self.console
+        root = self.controller.project_root or Path(".")
+        diff = await asyncio.to_thread(gather_diff, root)
+        if not diff.is_repo:
+            c.print(f"[{palette.C_ERROR}]Not a git repository.[/{palette.C_ERROR}]")
+            return
+        prompt = commit_prompt(diff) if which == "commit" else review_prompt(diff)
+        if prompt is None:
+            what = "commit" if which == "commit" else "review"
+            c.print(
+                f"[{palette.C_DIM}]Nothing to {what} — the working tree is clean."
+                f"[/{palette.C_DIM}]"
+            )
+            return
+        self._last_tool_outputs = []
+        await _run_turn(
+            c, self.controller, prompt, self._ask,
+            pick=self._pick_approval, view=self._view_full_diff,
+            edit=self._edit_before_apply,
+            live_sink=self._set_stream, spinner=False,
+            tool_sink=self._last_tool_outputs,
+            token_sink=self._count_stream_chars,
+        )
+        await self._render_todos()
+        self._maybe_autocheckpoint_hint()
 
     # -- queue --------------------------------------------------------------
 

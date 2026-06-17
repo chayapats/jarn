@@ -11,6 +11,11 @@ approvals, cost/context surfacing, and docs) plus follow-up fixes. Test count:
 
 ### Added
 
+- **`/commit` and `/review`** — `/commit` gathers the working-tree diff, has the
+  agent draft a conventional commit message, and runs `git commit` (through the
+  normal approval path; nothing is pushed). `/review` seeds a read-only review of
+  the current diff for correctness bugs and quality. Both embed the diff in the
+  seeded turn so the agent skips a tool round-trip.
 - **Prompt caching (`routing.prompt_cache: auto`, default on)** — caches the
   prompt prefix wherever the model supports it: an `AnthropicPromptCachingMiddleware`
   on the main loop for Anthropic models, automatic server-side prefix caching for
