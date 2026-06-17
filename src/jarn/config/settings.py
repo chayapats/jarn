@@ -57,8 +57,9 @@ SETTINGS: tuple[Setting, ...] = (
     _s("permission_mode", "enum", "Safety", "Permission mode",
        "How much to confirm before edits / shell / network.",
        ("plan", "ask", "auto-edit", "yolo")),
-    _s("policy.profile", "enum", "Safety", "Safety profile",
-       "A one-pick preset that sets several safety knobs at once.",
+    _s("policy.profile", "enum", "Safety", "Preset (deprecated)",
+       "Deprecated launch-time preset that sets mode + sandbox at once; "
+       "prefer setting those directly. Use /preset or --preset.",
        ("", "trusted-repo", "review-only", "sandbox-required", "ci", "offline")),
     _s("policy.web_tools", "bool", "Safety", "Web tools",
        "Let the agent use web search & fetch."),
@@ -101,6 +102,11 @@ SETTINGS: tuple[Setting, ...] = (
        "Color theme.", ("dark", "light", "high-contrast")),
     _s("ui.accent", "str", "Appearance", "Accent color",
        "Brand accent color (e.g. cyan, magenta)."),
+    _s("ui.splash", "enum", "Appearance", "Splash",
+       "Startup banner: full / compact / off (first run always shows full once).",
+       ("full", "compact", "off")),
+    _s("ui.approval_diff_lines", "int", "Appearance", "Approval diff lines",
+       "Max diff lines shown inline before a write approval offers 'View full diff'."),
 )
 
 _BY_KEY: dict[str, Setting] = {s.key: s for s in SETTINGS}

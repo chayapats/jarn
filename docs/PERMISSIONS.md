@@ -285,12 +285,12 @@ effects) on the host after you cancel.
 
 A **preset** is a launch-time shortcut that expands to a (Mode + Sandbox) combination
 once and prints what it set. Presets are not a persistent axis — they are sugar over
-Mode and Sandbox. Select with `jarn --preset NAME`, `policy.preset` in config (a
-capability-gated key), or `/preset` in the REPL. `jarn doctor` shows the stored and
-effective preset.
+Mode and Sandbox. Select with `jarn --preset NAME` or `/preset` in the REPL. To
+persist a preset's effect, set Mode + Sandbox directly in config (a preset is just a
+shortcut for those). `jarn doctor` shows the stored and effective settings.
 
-**Precedence:** CLI `--preset` > `policy.preset` > raw settings; the untrusted floor
-clamps last and always wins.
+**Precedence:** CLI `--preset` > the deprecated `policy.profile` config key > raw
+settings; the untrusted floor clamps last and always wins.
 
 | Preset | Mode | OS sandbox | Network | Web tools | For |
 |---|---|---|---|---|---|
@@ -307,8 +307,10 @@ in the agent process and would otherwise bypass the OS sandbox's network denial.
 
 `/profile`, `--profile` (CLI), and `policy.profile` (config key) are **deprecated
 aliases** for the preset concept. They still work but emit a deprecation notice at
-startup. The canonical names are `--preset` / `/preset` and `policy.preset`.
-`--permission-mode` is kept as a hidden alias for `--mode`.
+startup. The canonical names are `--preset` / `/preset`; `policy.profile` remains the
+(deprecated) config key — there is no `policy.preset`, since a preset is a launch-time
+shortcut, not a persistent axis. `--permission-mode` is kept as a hidden alias for
+`--mode`.
 
 ---
 

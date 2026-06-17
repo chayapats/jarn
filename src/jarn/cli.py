@@ -258,12 +258,6 @@ def _cmd_headless(
         cfg.default_model = model_override
     if permission_mode_override:
         cfg.permission_mode = PermissionMode(permission_mode_override)
-        if permission_mode_override == "yolo":
-            print(
-                "warning: running in yolo mode — no approval prompts"
-                " (danger-guard still blocks catastrophic actions).",
-                file=sys.stderr,
-            )
 
     # Expand the effective preset (CLI > config) and clamp untrusted. A preset
     # sets the trust-relevant knobs (incl. the mode), so warn when both were
@@ -283,6 +277,15 @@ def _cmd_headless(
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
+    # Warn about yolo only when it actually survives the untrusted clamp, so an
+    # untrusted run (pinned to plan) is never mislabelled as "no approval prompts".
+    if cfg.permission_mode == PermissionMode.YOLO:
+        print(
+            "warning: running in yolo mode — no approval prompts"
+            " (danger-guard still blocks catastrophic actions).",
+            file=sys.stderr,
+        )
 
     from jarn.headless import run_headless
 

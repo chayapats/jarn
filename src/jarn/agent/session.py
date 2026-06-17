@@ -605,7 +605,9 @@ def _web_search_summary(content: str) -> str:
     # Build a deduplicated list of hosts in order of first appearance.
     seen: dict[str, None] = {}
     for u in urls:
-        host = _urlparse(u).netloc or u
+        # .hostname (not .netloc) so a credential-bearing URL never leaks its
+        # user:pass@ userinfo (or :port) into the inline summary.
+        host = _urlparse(u).hostname or _urlparse(u).netloc or u
         # Strip www. prefix for compactness.
         if host.startswith("www."):
             host = host[4:]

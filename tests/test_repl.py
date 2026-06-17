@@ -1505,3 +1505,63 @@ async def test_command_model_refresh_degrades_to_manual_when_unreachable(tmp_pat
     # The manually-entered ref is applied (never blocks the user).
     assert app.controller.config.resolved_main_model() == "openrouter/manual-model"
     app.controller.close()
+
+
+# -- review follow-up fixes (P4.C /abort, P3.B hint, P3.A clamp display) ----
+
+
+@pytest.mark.asyncio
+async def test_cmd_abort_idle_does_not_rollback(tmp_path, monkeypatch):
+    """/abort while no turn is running must NOT silently undo the last turn."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    called: list[bool] = []
+    monkeypatch.setattr(app.controller, "abort_rollback",
+                        lambda: (called.append(True), "rolled back")[1])
+    assert not app._busy()
+    await app._command("abort", "")
+    assert called == []  # idle → no rollback
+    assert "nothing to abort" in app.console.file.getvalue().lower()
+    app.controller.close()
+
+
+def test_autocheckpoint_hint_fires_on_write(tmp_path, monkeypatch):
+    """The one-time hint is shown after a turn that wrote a file."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(app.controller, "autocheckpoint_off_hint", lambda: "ENABLE UNDO HINT")
+    app._last_tool_outputs = [("write_file", "x")]
+    app._maybe_autocheckpoint_hint()
+    assert "ENABLE UNDO HINT" in app.console.file.getvalue()
+    app.controller.close()
+
+
+def test_autocheckpoint_hint_silent_without_write(tmp_path, monkeypatch):
+    """No write in the turn → the hint is never even queried."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    called: list[int] = []
+    monkeypatch.setattr(app.controller, "autocheckpoint_off_hint",
+                        lambda: (called.append(1), "H")[1])
+    app._last_tool_outputs = [("read_file", "x")]
+    app._maybe_autocheckpoint_hint()
+    assert called == []
+    app.controller.close()
+
+
+def test_apply_mode_ref_reports_clamp_on_untrusted(tmp_path, monkeypatch):
+    """The /mode picker shows the CLAMPED mode (plan), not the requested one."""
+    from jarn import repl
+    from jarn.config.schema import Config, ProviderConfig, ProviderType, RoutingConfig
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    ctrl = Controller(cfg, root, project_trusted=False)
+    console = Console(file=StringIO(), width=80)
+    repl._apply_mode_ref(ctrl, console, "yolo")
+    out = console.file.getvalue()
+    assert "plan" in out and "clamped" in out.lower()
+    ctrl.close()

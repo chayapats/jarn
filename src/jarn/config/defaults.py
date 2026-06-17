@@ -229,6 +229,7 @@ ui:
   theme: dark           # dark | light | high-contrast
   accent: cyan
   splash: compact       # full | compact (default) | off
+  approval_diff_lines: 40   # max diff lines inline before "View full diff" in an approval
 
 # ── Cross-vendor interop ──────────────────────────────────────────────────────
 # Controls which context file is auto-loaded and whether ~/.claude / .claude/

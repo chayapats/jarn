@@ -203,8 +203,11 @@ class InlineApp:
         _first_run_marker = global_home() / "state" / "first_run_done"
         _is_first_run = not _first_run_marker.exists()
         if _is_first_run:
-            _first_run_marker.parent.mkdir(parents=True, exist_ok=True)
-            _first_run_marker.touch()
+            # Recording the marker is best-effort: a read-only home must re-show
+            # the full splash next time, never crash startup.
+            with contextlib.suppress(OSError):
+                _first_run_marker.parent.mkdir(parents=True, exist_ok=True)
+                _first_run_marker.touch()
             c.print(splash(__version__, _model, _mode))
         elif _splash_cfg == "full":
             c.print(splash(__version__, _model, _mode))
@@ -523,6 +526,14 @@ class InlineApp:
         ))
         if self.app is not None:
             self.app.invalidate()
+
+    def _maybe_autocheckpoint_hint(self) -> None:
+        """After a turn that wrote a file, show the one-time /undo-unavailable
+        hint when autocheckpoint is off (no-op otherwise; self-gates per session)."""
+        if any(n in ("write_file", "edit_file") for n, _ in self._last_tool_outputs):
+            hint = self.controller.autocheckpoint_off_hint()
+            if hint:
+                self.console.print(f"[{palette.C_DIM}]{_rich_escape(hint)}[/{palette.C_DIM}]")
 
     async def _render_todos(self) -> None:
         """Print the current plan checklist into scrollback after a turn, de-duped
@@ -1008,6 +1019,7 @@ class InlineApp:
                     tool_sink=self._last_tool_outputs,
                 )
                 await self._render_todos()
+                self._maybe_autocheckpoint_hint()
         except asyncio.CancelledError:
             self.console.print(f"\n[{palette.C_DIM}]interrupted[/{palette.C_DIM}]")
         except Exception as exc:  # noqa: BLE001
@@ -1069,6 +1081,7 @@ class InlineApp:
                 tool_sink=self._last_tool_outputs,
             )
             await self._render_todos()
+            self._maybe_autocheckpoint_hint()
             return
         if name == "compact":
             await self._cmd_compact()
@@ -1083,10 +1096,19 @@ class InlineApp:
             await self._cmd_queue(args)
             return
         if name == "abort":
-            # Stop the running turn (if any) AND revert its edits in one action.
-            if self._busy():
-                self._cancel_turn()
-            c.print(self.controller.abort_rollback())
+            # Stop the running turn AND revert its edits in one action. When idle
+            # there is no turn to abort — don't silently undo the last one; point
+            # at /undo instead.
+            if not self._busy():
+                c.print(
+                    f"[{palette.C_DIM}]Nothing to abort — no turn is running. "
+                    f"Use /undo to revert the last turn's edits.[/{palette.C_DIM}]"
+                )
+                return
+            self._cancel_turn()
+            # abort_rollback runs a blocking git restore; offload it so the event
+            # loop stays responsive.
+            c.print(await asyncio.to_thread(self.controller.abort_rollback))
             return
         if name == "model" and args.strip() in ("refresh", "list"):
             await self._refresh_models()
@@ -1612,8 +1634,14 @@ def _apply_model_ref(controller: Controller, console: Console, chosen: str) -> N
 
 def _apply_mode_ref(controller: Controller, console: Console, chosen: str) -> None:
     try:
-        controller.apply_mode(PermissionMode(chosen).value)
-        console.print(f"[{palette.C_NOTICE}]mode → {chosen}[/{palette.C_NOTICE}]")
+        applied = controller.apply_mode(PermissionMode(chosen).value)
+        if applied != chosen:
+            console.print(
+                f"[{palette.C_NOTICE}]mode → {applied}[/{palette.C_NOTICE}] "
+                f"[{palette.C_DIM}](clamped — project untrusted)[/{palette.C_DIM}]"
+            )
+        else:
+            console.print(f"[{palette.C_NOTICE}]mode → {applied}[/{palette.C_NOTICE}]")
     except ValueError:
         console.print(f"[{palette.C_ERROR}]unknown mode {chosen!r}[/{palette.C_ERROR}]")
 

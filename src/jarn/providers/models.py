@@ -26,6 +26,15 @@ class ModelResolutionError(RuntimeError):
     """Raised when a model ref cannot be turned into a chat model."""
 
 
+def _slug_hint(provider_type: ProviderType) -> str:
+    """A provider-appropriate dot-vs-dash convention note for a slug suggestion."""
+    if provider_type is ProviderType.ANTHROPIC:
+        return "Anthropic uses dashes; OpenRouter uses dots."
+    if provider_type is ProviderType.OPENROUTER:
+        return "OpenRouter uses dots; Anthropic API uses dashes."
+    return "check the dot-vs-dash version separators for this provider."
+
+
 def suggest_slug(provider_type: ProviderType, slug: str) -> str | None:
     """Return a corrected slug suggestion when dot/dash confusion is likely.
 
@@ -72,24 +81,12 @@ def suggest_slug(provider_type: ProviderType, slug: str) -> str | None:
     # Check candidate against all known slugs (both provider-specific and global)
     all_known = known_slugs | provider_slugs
     if candidate in all_known:
-        if provider_type is ProviderType.OPENROUTER:
-            hint = "OpenRouter uses dots; Anthropic API uses dashes."
-        elif provider_type is ProviderType.ANTHROPIC:
-            hint = "Anthropic uses dashes; OpenRouter uses dots."
-        else:
-            hint = "OpenRouter uses dots; Anthropic API uses dashes."
-        return f"did you mean {candidate!r}? ({hint})"
+        return f"did you mean {candidate!r}? ({_slug_hint(provider_type)})"
 
     # Partial match: check if candidate appears as a substring of a known slug
     for known in all_known:
         if candidate in known or known in candidate:
-            if provider_type is ProviderType.OPENROUTER:
-                hint = "OpenRouter uses dots; Anthropic API uses dashes."
-            elif provider_type is ProviderType.ANTHROPIC:
-                hint = "Anthropic uses dashes; OpenRouter uses dots."
-            else:
-                hint = "OpenRouter uses dots; Anthropic API uses dashes."
-            return f"did you mean {known!r}? ({hint})"
+            return f"did you mean {known!r}? ({_slug_hint(provider_type)})"
 
     return None
 
