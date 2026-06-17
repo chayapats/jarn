@@ -898,3 +898,31 @@ def test_discover_models_empty_when_endpoint_unreachable(tmp_path, monkeypatch, 
     with patch("httpx.get", _boom):
         assert ctrl.discover_models() == []
     ctrl.close()
+
+
+def test_main_context_window_queries_local_once_and_caches(tmp_path, monkeypatch):
+    """A local model's context window (not in the curated table) is fetched from
+    its endpoint once and cached, so the toolbar gauge can show a real %."""
+    from jarn.config.schema import Config, ProviderConfig, ProviderType, RoutingConfig
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="lmstudio",
+        providers={"lmstudio": ProviderConfig(
+            type=ProviderType.LMSTUDIO, base_url="http://localhost:1234/v1")},
+        routing=RoutingConfig(main="lmstudio/mystery-local-7b"),
+    )
+    ctrl = Controller(cfg, root)
+    calls: list[str] = []
+
+    def _fake(provider, model_id):
+        calls.append(model_id)
+        return 8192
+
+    monkeypatch.setattr("jarn.providers.remote_context_window", _fake)
+    assert ctrl._main_context_window() == 8192
+    assert ctrl._main_context_window() == 8192       # served from cache
+    assert calls == ["mystery-local-7b"]             # endpoint queried exactly once
+    ctrl.close()

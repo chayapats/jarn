@@ -266,3 +266,70 @@ def test_list_remote_models_malformed_payload_returns_empty():
     prov = ProviderConfig(type=ProviderType.LMSTUDIO, base_url="http://localhost:1234/v1")
     with patch("httpx.get", get):
         assert list_remote_models(prov) == []
+
+
+# -- remote_context_window (local-model context size for the gauge) ---------
+
+
+def test_remote_context_window_lmstudio_prefers_loaded():
+    """LM Studio: query the native /api/v0 API and prefer loaded over max."""
+    from jarn.providers import remote_context_window
+
+    prov = ProviderConfig(type=ProviderType.LMSTUDIO, base_url="http://localhost:1234/v1")
+    payload = {"data": [
+        {"id": "other", "loaded_context_length": 999},
+        {"id": "qwen", "loaded_context_length": 8192, "max_context_length": 32768},
+    ]}
+    get, urls = _capture_get(payload)
+    with patch("httpx.get", get):
+        assert remote_context_window(prov, "qwen") == 8192
+    assert urls == ["http://localhost:1234/api/v0/models"]  # native API, not /v1
+
+
+def test_remote_context_window_lmstudio_falls_back_to_max():
+    from jarn.providers import remote_context_window
+
+    prov = ProviderConfig(type=ProviderType.LMSTUDIO, base_url="http://localhost:1234/v1")
+    get, _ = _capture_get({"data": [{"id": "qwen", "max_context_length": 16384}]})
+    with patch("httpx.get", get):
+        assert remote_context_window(prov, "qwen") == 16384
+
+
+def test_remote_context_window_ollama_reads_model_info():
+    from jarn.providers import remote_context_window
+
+    prov = ProviderConfig(type=ProviderType.OLLAMA, base_url="http://localhost:11434")
+    payload = {"model_info": {"general.architecture": "qwen2", "qwen2.context_length": 4096}}
+    posts: list[str] = []
+
+    def _post(url, *a, **k):
+        posts.append(url)
+        return _FakeResp(payload)
+
+    with patch("httpx.post", _post):
+        assert remote_context_window(prov, "qwen2.5") == 4096
+    assert posts == ["http://localhost:11434/api/show"]
+
+
+def test_remote_context_window_model_not_found_returns_none():
+    from jarn.providers import remote_context_window
+
+    prov = ProviderConfig(type=ProviderType.LMSTUDIO, base_url="http://localhost:1234/v1")
+    get, _ = _capture_get({"data": [{"id": "other", "loaded_context_length": 8192}]})
+    with patch("httpx.get", get):
+        assert remote_context_window(prov, "qwen") is None
+
+
+def test_remote_context_window_unreachable_returns_none():
+    """A connection error must degrade to None (hide the gauge), never raise."""
+    import httpx
+
+    from jarn.providers import remote_context_window
+
+    prov = ProviderConfig(type=ProviderType.LMSTUDIO, base_url="http://localhost:1234/v1")
+
+    def _boom(*a, **k):
+        raise httpx.ConnectError("no endpoint")
+
+    with patch("httpx.get", _boom):
+        assert remote_context_window(prov, "qwen") is None

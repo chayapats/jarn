@@ -194,6 +194,54 @@ def list_remote_models(provider: ProviderConfig) -> list[str]:
     return names
 
 
+def remote_context_window(provider: ProviderConfig, model_id: str) -> int | None:
+    """Query a local provider's endpoint for ``model_id``'s context-window size.
+
+    - ``lmstudio`` → ``GET {host}/api/v0/models`` (LM Studio's native REST API):
+      prefer ``loaded_context_length`` (the size actually loaded), else
+      ``max_context_length``.
+    - ``ollama``   → ``POST {base}/api/show`` (``model_info`` ``"<arch>.context_length"``).
+
+    Lets the toolbar show a real context % for a local model whose window isn't in
+    the curated table. Must *fail open*: returns ``None`` on any error (no
+    endpoint, timeout, bad payload, unsupported provider) so the caller falls back
+    to the curated/override window or simply hides the gauge. Never raises; short
+    timeout.
+    """
+    base = (provider.base_url or "").strip().rstrip("/")
+    if not base:
+        return None
+    try:
+        import httpx
+
+        if provider.type is ProviderType.OLLAMA:
+            resp = httpx.post(
+                f"{base}/api/show", json={"name": model_id}, timeout=_DISCOVERY_TIMEOUT_SECS
+            )
+            resp.raise_for_status()
+            info = (resp.json() or {}).get("model_info", {}) or {}
+            for key, val in info.items():
+                if key.endswith(".context_length") and isinstance(val, int) and val > 0:
+                    return val
+            return None
+
+        if provider.type is ProviderType.LMSTUDIO:
+            # LM Studio's native REST API (with context lengths) lives at /api/v0;
+            # the configured base_url carries the OpenAI-compat /v1 suffix.
+            host = base[: -len("/v1")] if base.endswith("/v1") else base
+            resp = httpx.get(f"{host}/api/v0/models", timeout=_DISCOVERY_TIMEOUT_SECS)
+            resp.raise_for_status()
+            for entry in (resp.json() or {}).get("data", []) or []:
+                if not isinstance(entry, dict) or entry.get("id") != model_id:
+                    continue
+                win = entry.get("loaded_context_length") or entry.get("max_context_length")
+                return win if isinstance(win, int) and win > 0 else None
+            return None
+    except Exception:  # noqa: BLE001 - network/parse errors degrade to "unknown"
+        return None
+    return None
+
+
 # Providers served through ChatOpenAI (model_provider="openai") + a base_url.
 _OPENAI_COMPATIBLE = {
     ProviderType.OPENAI,
