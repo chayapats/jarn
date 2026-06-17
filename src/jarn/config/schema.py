@@ -266,6 +266,22 @@ class GitConfig:
     checkpoint_mode: str = "shadow"   # "shadow" | "commit"
 
 
+_VALID_EXIT_MODES: frozenset[str] = frozenset({"ask", "auto-edit"})
+
+
+@dataclass(slots=True)
+class PlanConfig:
+    """Plan-mode handoff.
+
+    When the agent calls ``exit_plan_mode`` from read-only ``plan`` mode and the
+    user approves, the session escalates to ``exit_mode`` so the plan can be
+    carried out in the same turn. The approval picker still offers the other
+    editing mode; this is just the highlighted default.
+    """
+
+    exit_mode: str = "auto-edit"   # ask | auto-edit
+
+
 @dataclass(slots=True)
 class WikiConfig:
     """Per-project (and global) markdown knowledge base.
@@ -323,6 +339,7 @@ class Config:
     compat: CompatConfig = field(default_factory=CompatConfig)
     git: GitConfig = field(default_factory=GitConfig)
     wiki: WikiConfig = field(default_factory=WikiConfig)
+    plan: PlanConfig = field(default_factory=PlanConfig)
 
     def resolved_main_model(self) -> str | None:
         """The model used for the top-level agent loop."""

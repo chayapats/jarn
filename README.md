@@ -220,6 +220,11 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `auto-edit` | ✅ | ✅ in-scope | ask | ✅ *(read-only)* |
 | `yolo` | ✅ | ✅ | ✅ | ✅ |
 
+In **`plan`** mode the agent researches read-only, then presents a concrete plan
+(`exit_plan_mode`). Approve it and J.A.R.N. escalates the mode (default `auto-edit`,
+configurable via `plan.exit_mode`; the picker also offers `ask`) and carries the plan
+out in the same turn — no manual mode switch. Untrusted projects stay clamped to `plan`.
+
 The **danger-guard** overrides all modes: `rm -rf` (incl. `rm -r -f` / `--recursive
 --force`), force-push, `git reset --hard`, `mkfs`, fork bombs, out-of-scope writes, etc.
 always require explicit confirmation (or are blocked outright). **Esc/Ctrl+C** cancels a

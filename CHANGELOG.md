@@ -11,6 +11,12 @@ approvals, cost/context surfacing, and docs) plus follow-up fixes. Test count:
 
 ### Added
 
+- **Plan-mode handoff** — in read-only `plan` mode the agent now researches, then
+  calls a new `exit_plan_mode` tool to present a concrete plan. You approve it
+  (arrow-key picker: proceed in auto-edit / proceed asking / keep planning) and the
+  session escalates the permission mode and carries the plan out *in the same turn*
+  — no manual `/mode` switch and re-prompt. Untrusted projects stay clamped to the
+  review-only floor (`/trust` to lift). Default landing mode: `plan.exit_mode`.
 - **`/commit` and `/review`** — `/commit` gathers the working-tree diff, has the
   agent draft a conventional commit message, and runs `git commit` (through the
   normal approval path; nothing is pushed). `/review` seeds a read-only review of

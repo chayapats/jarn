@@ -239,6 +239,36 @@ def _make_backend(config: Config, project_root: Path | None):
     return _make_local_backend(project_root, config)
 
 
+def _exit_plan_mode_tool():
+    """The ``exit_plan_mode`` tool — present a plan and request approval to act.
+
+    The tool body runs only *after* the user approves (the session driver gates
+    it behind a plan-approval interrupt), so its return value is simply the
+    "go" signal the model reads to start executing.
+    """
+    from langchain_core.tools import tool
+
+    @tool
+    def exit_plan_mode(plan: str) -> str:
+        """Present your implementation plan and ask to leave read-only plan mode.
+
+        Call this ONLY when the session is in plan mode and you have finished
+        researching and have a concrete, step-by-step plan. The user reviews the
+        plan and, on approval, the session switches to an editing mode — then
+        carry the plan out, verifying as you go. Do not call this in other modes
+        or just to display text.
+
+        Args:
+            plan: The proposed plan as concise markdown (numbered steps).
+        """
+        return (
+            "Plan approved by the user. You are now in an editing mode — "
+            "implement the plan step by step and verify as you go."
+        )
+
+    return exit_plan_mode
+
+
 def _prompt_cache_middleware(config: Config) -> list[Any]:
     """Agent middleware enabling prompt caching, by main-model provider.
 
@@ -381,6 +411,12 @@ def build_runtime(
         system_prompt = _inject_repo_map(
             system_prompt, root, token_budget=config.context.repo_map_tokens
         )
+
+    # Plan-mode handoff tool: lets the agent present a plan and request approval
+    # to leave read-only plan mode. Gated as an interrupt (below) and special-cased
+    # by the session driver so it is callable *in* plan mode (the engine would
+    # otherwise deny it like any other non-read action).
+    tools = [*tools, _exit_plan_mode_tool()]
 
     # Subagents may restrict themselves to a subset of the extra (web/MCP) tools;
     # pass the available set so to_spec can resolve names and reject typos.

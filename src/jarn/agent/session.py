@@ -26,7 +26,14 @@ from langgraph.types import Command, Overwrite
 
 from jarn.agent.permissions_bridge import tool_to_action
 from jarn.cost import BudgetExceeded, CostTracker
-from jarn.permissions import Action, Decision, PermissionEngine, PermissionResult, RememberScope
+from jarn.permissions import (
+    Action,
+    ActionKind,
+    Decision,
+    PermissionEngine,
+    PermissionResult,
+    RememberScope,
+)
 
 # LangChain message ``.type`` values that represent assistant output.
 _ASSISTANT_TYPES = {"ai", "AIMessageChunk"}
@@ -64,6 +71,10 @@ class ApprovalRequest:
     result: PermissionResult
     description: str = ""
     args: dict[str, Any] = field(default_factory=dict)
+    #: Set (to the proposed plan text) when this is a plan-mode handoff request
+    #: from ``exit_plan_mode`` rather than an ordinary tool approval. The approver
+    #: shows the plan and, on approval, escalates the permission mode.
+    plan: str | None = None
 
 
 @dataclass(slots=True)
@@ -79,6 +90,10 @@ class ApprovalReply:
     # Per-hunk (partial) approval is deferred — it needs hunk parsing + partial
     # apply of a unified diff; not implemented in this pass (see fable-todo.md P4.B).
     edited_args: dict[str, Any] | None = None
+    #: For a plan-mode handoff (``exit_plan_mode``): the permission mode the user
+    #: chose to escalate to on approval (e.g. ``"auto-edit"``/``"ask"``). The
+    #: approver applies it; ``None`` for ordinary approvals.
+    plan_mode_target: str | None = None
 
 
 # approver(request) -> reply
@@ -417,6 +432,39 @@ class SessionDriver:
             for req in _action_requests(intr):
                 name = req.get("action") or req.get("name") or "tool"
                 args = req.get("args", {}) or {}
+
+                # Plan-mode handoff: exit_plan_mode is callable *in* plan mode, so
+                # it bypasses the engine (which would deny it like any non-read
+                # action). The approver shows the plan and escalates the mode on
+                # approval; an approve resumes the tool (its return is the model's
+                # "go" signal), a reject keeps the agent planning.
+                if name == "exit_plan_mode":
+                    plan_text = str(args.get("plan", "")).strip()
+                    reply = await self.approver(
+                        ApprovalRequest(
+                            action=Action(ActionKind.READ, target="plan", tool=name),
+                            result=PermissionResult(Decision.ASK, "plan ready for review"),
+                            description=req.get("description", ""),
+                            args=args,
+                            plan=plan_text,
+                        )
+                    )
+                    if reply.approved:
+                        yield (
+                            Event(EventKind.APPROVAL, text="plan approved — executing",
+                                  data={"target": "plan"}),
+                            {"type": "approve"},
+                        )
+                    else:
+                        yield (
+                            Event(EventKind.APPROVAL, text="plan not approved — still planning",
+                                  data={"target": "plan"}),
+                            {"type": "reject",
+                             "message": reply.message
+                             or "Keep refining the plan; call exit_plan_mode again when ready."},
+                        )
+                    continue
+
                 action = tool_to_action(name, args)
 
                 # Pre-tool / pre-commit hooks run before the tool: a blocking
