@@ -170,6 +170,7 @@ class InlineApp:
         self._input_queue = InputQueue()
         self._resume_task: asyncio.Task | None = None
         self._line_future: asyncio.Future | None = None       # app-native asks
+        self._yolo_confirm_inflight = False    # de-dupe rapid Shift+Tab→yolo presses
         self._menu_future: asyncio.Future | None = None     # arrow-key pickers
         self._menu_options: list[tuple[str, object]] = []
         self._menu_index = 0
@@ -517,6 +518,26 @@ class InlineApp:
         answer = await self._ask("Type 'y' to confirm yolo, anything else to cancel [y/N]: ")
         return answer.strip().lower() in ("y", "yes")
 
+    def _request_yolo_confirm(self) -> None:
+        """Spawn the yolo confirmation, dropping re-entrant requests.
+
+        Shift+Tab only *peeks* the next mode, so rapid presses while a
+        confirmation is pending would each spawn a task — all sharing the single
+        ``_line_future``, leaving every prompt but the last hung forever. The flag
+        is set synchronously here (before the task is scheduled) so repeat presses
+        are ignored until the in-flight confirmation resolves."""
+        if self._yolo_confirm_inflight:
+            return
+        self._yolo_confirm_inflight = True
+
+        async def _run() -> None:
+            try:
+                await self._confirm_and_cycle_yolo()
+            finally:
+                self._yolo_confirm_inflight = False
+
+        asyncio.get_running_loop().create_task(_run())
+
     async def _confirm_and_cycle_yolo(self) -> None:
         """Async helper for Shift+Tab: confirm yolo, then apply it (or skip)."""
         if not await self._confirm_yolo():
@@ -863,8 +884,9 @@ class InlineApp:
         def _cycle_mode(event) -> None:
             next_mode = self.controller.peek_next_mode()
             if next_mode == "yolo":
-                # Entering yolo requires async confirmation; hand off to a task.
-                asyncio.get_event_loop().create_task(self._confirm_and_cycle_yolo())
+                # Entering yolo requires async confirmation; hand off to a task,
+                # de-duped so rapid repeat presses don't stack confirmations.
+                self._request_yolo_confirm()
                 event.app.invalidate()
                 return
             new = self.controller.cycle_mode()
