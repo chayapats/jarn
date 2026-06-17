@@ -148,6 +148,13 @@ Aider). See the design spec under `docs/superpowers/specs/`.
 - [x] **Auto-checkpoint + `/undo` / `/redo` / `/checkpoints`** — snapshot working tree
   before each turn using private git refs (never moves HEAD); `git.autocheckpoint`
   (default `false`), `git.checkpoint_mode: shadow|commit` (default `shadow`)
+- [x] **`/rewind` — branch to an earlier turn (slice 1)** — arrow-key picker over
+  earlier user turns; forks onto a new thread keeping the prefix, optionally edits
+  the chosen prompt, and continues. The original thread stays in `/resume`.
+  Rewinds the conversation only — file edits since the chosen turn are not
+  reverted (use `/undo`). Deferred: link the rewind to the git-checkpoint stack so
+  file edits revert atomically (slice 2); in-place/destructive same-thread rewind
+  + free message-editing (slice 3); a visual branch tree in `/sessions` (slice 4)
 - [x] **Repo map** — ranked token-budgeted codebase overview (stdlib `ast` + regex for
   JS/TS/Go/Rust); `repo_map` tool + `/map` command; `context.repo_map: off|tool|auto`
   (default `tool`), `context.repo_map_tokens` (default 1024)
