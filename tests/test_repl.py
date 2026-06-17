@@ -681,6 +681,121 @@ def test_edit_text_in_editor_abort_returns_none(tmp_path, monkeypatch):
     assert repl._edit_text_in_editor("original\n") is None
 
 
+# -- /compact preview + confirm (P4.D) -------------------------------------
+
+
+def _stub_compact(app, monkeypatch, *, summary="SUMMARY: did X"):
+    """Stub the controller's preview/apply; return a list capturing what got applied."""
+    applied: list[str] = []
+
+    async def _preview():
+        return summary
+
+    async def _apply(s):
+        applied.append(s)
+
+    monkeypatch.setattr(app.controller, "compact_preview", _preview)
+    monkeypatch.setattr(app.controller, "compact_apply", _apply)
+    return applied
+
+
+def _stub_editor(monkeypatch, result):
+    """Route the /compact 'edit' path through a stubbed editor (never spawn one)."""
+    import prompt_toolkit.application as pta
+
+    from jarn import repl
+
+    async def _run_in_terminal(func, *a, **k):
+        return func()
+
+    monkeypatch.setattr(pta, "run_in_terminal", _run_in_terminal)
+    monkeypatch.setattr(repl, "_edit_text_in_editor", lambda text, **k: result)
+
+
+@pytest.mark.asyncio
+async def test_cmd_compact_applies_on_yes(tmp_path, monkeypatch):
+    """Manual /compact applies the summary only after the user confirms with y."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    applied = _stub_compact(app, monkeypatch)
+    monkeypatch.setattr(app, "_ask", _ask_returning("y"))
+
+    await app._command("compact", "")
+
+    assert applied == ["SUMMARY: did X"]
+    assert "Compacted" in app.console.file.getvalue()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_cmd_compact_declined_keeps_context(tmp_path, monkeypatch):
+    """Declining (n) applies nothing — the original context stays intact."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    applied = _stub_compact(app, monkeypatch)
+    monkeypatch.setattr(app, "_ask", _ask_returning("n"))
+
+    await app._command("compact", "")
+
+    assert applied == []
+    assert "cancelled" in app.console.file.getvalue().lower()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_cmd_compact_default_no_on_empty(tmp_path, monkeypatch):
+    """Empty input takes the [y/N] default (N) — nothing applied."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    applied = _stub_compact(app, monkeypatch)
+    monkeypatch.setattr(app, "_ask", _ask_returning(""))
+
+    await app._command("compact", "")
+
+    assert applied == []
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_cmd_compact_edit_applies_edited_summary(tmp_path, monkeypatch):
+    """'edit' opens $EDITOR; the user-edited summary is what gets applied."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    applied = _stub_compact(app, monkeypatch)
+    monkeypatch.setattr(app, "_ask", _ask_returning("edit"))
+    _stub_editor(monkeypatch, "EDITED SUMMARY")
+
+    await app._command("compact", "")
+
+    assert applied == ["EDITED SUMMARY"]
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_cmd_compact_edit_aborted_keeps_context(tmp_path, monkeypatch):
+    """Aborting the editor (None) applies nothing and keeps the context."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    applied = _stub_compact(app, monkeypatch)
+    monkeypatch.setattr(app, "_ask", _ask_returning("edit"))
+    _stub_editor(monkeypatch, None)
+
+    await app._command("compact", "")
+
+    assert applied == []
+    assert "cancelled" in app.console.file.getvalue().lower()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_cmd_compact_nothing_to_compact(tmp_path, monkeypatch):
+    """An empty preview short-circuits before any prompt — nothing to apply."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    applied = _stub_compact(app, monkeypatch, summary="")
+    monkeypatch.setattr(app, "_ask", _ask_returning("y"))
+
+    await app._command("compact", "")
+
+    assert applied == []
+    assert "nothing to compact" in app.console.file.getvalue().lower()
+    app.controller.close()
+
+
 def test_inline_app_constructs(tmp_path, monkeypatch):
     from jarn import repl
 
