@@ -287,6 +287,79 @@ class Controller:
         await self.compact_apply(summary)
         return summary
 
+    async def human_turns(self) -> list[tuple[int, str]]:
+        """Enumerate the user turns in the current thread for the ``/rewind``
+        picker. Returns ``(message_index, preview)`` for each ``HumanMessage``,
+        in conversation order. ``message_index`` is the offset into
+        ``state.values["messages"]`` — the cut point that keeps everything
+        *before* that turn. Previews are single-line and truncated.
+
+        Enumerated straight from the messages list (not the checkpointer step
+        history) so a turn is exactly one ``HumanMessage`` boundary — simple,
+        deterministic, and decoupled from checkpointer internals."""
+        rt = await self.ensure_runtime()
+        state = await rt.agent.aget_state(self._config())
+        messages = (getattr(state, "values", {}) or {}).get("messages", []) or []
+        turns: list[tuple[int, str]] = []
+        for idx, msg in enumerate(messages):
+            if getattr(msg, "type", "") != "human":
+                continue
+            content = getattr(msg, "content", "")
+            if isinstance(content, list):
+                content = "".join(
+                    b.get("text", "") if isinstance(b, dict) else str(b)
+                    for b in content
+                )
+            preview = " ".join(str(content).split())
+            if len(preview) > 80:
+                preview = preview[:77] + "…"
+            turns.append((idx, preview))
+        return turns
+
+    async def fork_to_turn(self, keep_count: int) -> int | None:
+        """Branch the conversation: keep ``messages[:keep_count]`` on a *new*
+        thread and continue from there. The original thread is untouched and
+        still resumable (this forks, it does not destroy).
+
+        ``keep_count`` is the cut index from :meth:`human_turns` — it must land
+        on a ``HumanMessage`` boundary so the re-run begins a clean turn. The
+        kept prefix is everything strictly before the chosen turn.
+
+        Mirrors :meth:`compact_apply`: ``new_thread()`` mints a fresh thread,
+        then ``aupdate_state`` seeds it. We prepend ``RemoveMessage(
+        REMOVE_ALL_MESSAGES)`` so the messages reducer starts from empty even if
+        the fresh thread somehow carried state — the same reducer mechanism
+        compaction relies on. Resets the context-token gauge like
+        :meth:`new_thread`.
+
+        Returns the cut index actually used, or ``None`` when there is nothing
+        to rewind (empty thread or ``keep_count <= 0``)."""
+        rt = await self.ensure_runtime()
+        state = await rt.agent.aget_state(self._config())
+        messages = (getattr(state, "values", {}) or {}).get("messages", []) or []
+        if not messages or keep_count <= 0:
+            return None
+
+        kept_prefix = list(messages[:keep_count])
+        from langchain_core.messages import RemoveMessage
+        from langgraph.graph.message import REMOVE_ALL_MESSAGES
+
+        self.new_thread()  # mint a fresh thread_id; resets tracker.context_tokens
+        await rt.agent.aupdate_state(
+            self._config(),
+            {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *kept_prefix]},
+        )
+        return keep_count
+
+    # TODO(rewind-conversation) slice 2: link this fork to the git checkpoint
+    # stack (a per-turn turn-id<->snapshot-SHA index) so file edits made since
+    # the chosen turn revert atomically with the conversation. Today the working
+    # tree is NOT reverted on rewind — the picker points the user at /undo.
+    # TODO(rewind-conversation) slice 3: in-place/destructive rewind on the same
+    # thread + true free message-editing.
+    # TODO(rewind-conversation) slice 4: visual branch tree across forked threads
+    # surfaced in /sessions.
+
     def terminate_shells(self) -> int:
         """Kill any shell command still running on the host (on turn cancel).
 

@@ -575,10 +575,19 @@ class InlineApp:
             project_root=self.controller.project_root,
         )
 
-    async def _ask(self, prompt: str) -> str:
+    async def _ask(self, prompt: str, *, prefill: str = "") -> str:
         """App-native line capture for pickers: show the prompt in the region above
-        the input and resolve on the next Enter-submitted line."""
+        the input and resolve on the next Enter-submitted line.
+
+        ``prefill`` pre-populates the editable input with text the user can edit
+        in place (used by ``/rewind`` to offer the chosen turn's prompt) — the
+        cursor lands at the end so they can tweak or accept it as-is."""
         self._set_stream(prompt)
+        if prefill:
+            self.input.reset()
+            self.input.insert_text(prefill)
+            if self.app is not None:
+                self.app.invalidate()
         self._line_future = asyncio.get_running_loop().create_future()
         try:
             text = await self._line_future
@@ -1348,6 +1357,9 @@ class InlineApp:
         if name == "resume":
             await self._resume_picker()
             return
+        if name == "rewind":
+            await self._rewind_picker()
+            return
         if name == "queue":
             await self._cmd_queue(args)
             return
@@ -1539,6 +1551,89 @@ class InlineApp:
         self.controller.resume_thread(chosen.thread_id)
         self._last_todos_sig = None
         await self._replay_transcript()
+
+    async def _rewind_picker(self) -> None:
+        """`/rewind`: pick an earlier user turn, fork onto a NEW thread keeping
+        everything before it, optionally edit that turn's prompt, then continue.
+
+        The original thread is left intact (still in /sessions for /resume) — this
+        branches, it does not destroy. This rewinds the CONVERSATION only: file
+        edits made after the chosen turn are NOT reverted; the notice points the
+        user at /undo for those (git-checkpoint linkage is slice 2).
+
+        Runs through the normal queue, so it never fires mid-turn: a `/rewind`
+        typed while a turn is running is queued and only runs once that turn
+        (and any HITL interrupt) has settled — no fork of a hanging thread.
+        """
+        c = self.console
+        try:
+            turns = await self.controller.human_turns()
+        except Exception as exc:  # noqa: BLE001
+            c.print(
+                f"[{palette.C_ERROR}]could not load conversation: "
+                f"{_rich_escape(str(exc))}[/{palette.C_ERROR}]"
+            )
+            return
+        # Rewinding to the LAST user turn is a no-op (you'd keep everything and
+        # re-ask the same thing), so it's not offered — need at least two turns
+        # for an earlier one to exist.
+        if len(turns) < 2:
+            c.print(
+                f"[{palette.C_DIM}]Nothing to rewind — need an earlier user "
+                f"turn to branch from.[/{palette.C_DIM}]"
+            )
+            return
+        # Drop the last turn: forking at it keeps the whole conversation, which
+        # is a no-op. The picker only offers turns you can meaningfully branch
+        # before continuing again.
+        options: list[tuple[str, tuple[int, str] | None]] = [
+            (f"turn {n} · {_rich_escape(preview)}", (idx, preview))
+            for n, (idx, preview) in enumerate(turns[:-1], start=1)
+        ]
+        options.append(("Cancel", None))
+        chosen = await self._pick_menu(
+            options,
+            header="Rewind to turn · ↑/↓ · Enter · Esc cancel",
+            cancel_returns=None,
+        )
+        if chosen is None:
+            return
+        cut_index, original_prompt = chosen
+        # Optional prompt edit: pre-fill the input with the chosen turn's text so
+        # the user can tweak it before re-running (blank keeps the original).
+        edited = await self._ask(
+            "Edit the prompt (Enter to keep it as-is):", prefill=original_prompt
+        )
+        prompt = edited if edited else original_prompt
+
+        cut = await self.controller.fork_to_turn(cut_index)
+        if cut is None:
+            c.print(f"[{palette.C_DIM}]Nothing to rewind.[/{palette.C_DIM}]")
+            return
+        self._last_todos_sig = None
+        await self._replay_transcript()
+        c.print(
+            f"[{palette.C_NOTICE}]↩ rewound to a new branch[/{palette.C_NOTICE}] "
+            f"[{palette.C_DIM}]— the original session is still in /resume. "
+            f"File edits made after this point are NOT reverted; use /undo for "
+            f"those.[/{palette.C_DIM}]"
+        )
+        if not prompt:
+            return
+        # Continue from the fork through the normal turn path (we're already the
+        # active turn task, so call _run_turn directly — same as _handle does).
+        c.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(prompt)}")
+        self._last_tool_outputs = []
+        await _run_turn(
+            c, self.controller, prompt, self._ask,
+            pick=self._pick_approval, view=self._view_full_diff,
+            edit=self._edit_before_apply,
+            live_sink=self._set_stream, spinner=False,
+            tool_sink=self._last_tool_outputs,
+            token_sink=self._count_stream_chars,
+        )
+        await self._render_todos()
+        self._maybe_autocheckpoint_hint()
 
     async def _pick_model_or_mode(self, what: str) -> None:
         c = self.console

@@ -146,6 +146,12 @@ BUILTINS: tuple[BuiltinCommand, ...] = (
         group="Setup",
     ),
     BuiltinCommand("resume", "Pick a previous session to resume.", "repl", group="Session"),
+    BuiltinCommand(
+        "rewind",
+        "Rewind the conversation to an earlier turn and continue (forks a new thread).",
+        "repl",
+        group="Session",
+    ),
     BuiltinCommand("sessions", "List and resume previous sessions.", "controller", group="Session"),
     BuiltinCommand("checkpoints", "List recent auto-checkpoints.", "controller", group="Session"),
     BuiltinCommand(

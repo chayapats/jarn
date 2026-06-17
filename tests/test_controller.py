@@ -949,3 +949,140 @@ def test_main_context_window_queries_local_once_and_caches(tmp_path, monkeypatch
     assert ctrl._main_context_window() == 8192       # served from cache
     assert calls == ["mystery-local-7b"]             # endpoint queried exactly once
     ctrl.close()
+
+
+# -- conversation rewind (fork to an earlier turn) --------------------------
+
+
+def _rewind_runtime(messages):
+    """A fake runtime whose agent records aupdate_state and serves `messages`."""
+    from types import SimpleNamespace
+
+    class _Agent:
+        def __init__(self):
+            self.updated = None
+            self.updated_config = None
+
+        async def aget_state(self, config):
+            return SimpleNamespace(values={"messages": list(messages)})
+
+        async def aupdate_state(self, config, values):
+            self.updated_config = config
+            self.updated = values
+
+    agent = _Agent()
+    return agent, SimpleNamespace(agent=agent)
+
+
+@pytest.mark.asyncio
+async def test_human_turns_enumerates_user_messages(tmp_path, monkeypatch, base_config):
+    """human_turns() returns (message_index, preview) for each HumanMessage."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    msgs = [
+        HumanMessage(content="first question"),
+        AIMessage(content="x"),
+        HumanMessage(content="second question"),
+        AIMessage(content="y"),
+    ]
+    _, ctrl.runtime = _rewind_runtime(msgs)
+
+    turns = await ctrl.human_turns()
+    assert [i for i, _ in turns] == [0, 2]
+    assert turns[0][1] == "first question"
+    assert turns[1][1] == "second question"
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_human_turns_truncates_long_preview(tmp_path, monkeypatch, base_config):
+    from langchain_core.messages import HumanMessage
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    long = "x" * 300
+    _, ctrl.runtime = _rewind_runtime([HumanMessage(content=long)])
+    turns = await ctrl.human_turns()
+    assert len(turns) == 1
+    assert len(turns[0][1]) < len(long)  # truncated
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_fork_to_turn_starts_new_thread_with_prefix(tmp_path, monkeypatch, base_config):
+    """fork keeping the first turn -> new thread, seeded with messages[:cut]."""
+    from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    msgs = [
+        HumanMessage(content="first"),
+        AIMessage(content="ans1"),
+        HumanMessage(content="second"),
+        AIMessage(content="ans2"),
+    ]
+    agent, ctrl.runtime = _rewind_runtime(msgs)
+    old_thread = ctrl.thread_id
+    ctrl.tracker.context_tokens = 4321
+
+    cut = await ctrl.fork_to_turn(2)  # keep messages[:2] = [first, ans1]
+    assert cut == 2
+    assert ctrl.thread_id != old_thread  # forked onto a NEW thread (branch)
+    assert ctrl.tracker.context_tokens == 0  # gauge reset like new_thread()
+
+    recorded = agent.updated["messages"]
+    assert isinstance(recorded[0], RemoveMessage)
+    from langgraph.graph.message import REMOVE_ALL_MESSAGES
+
+    assert recorded[0].id == REMOVE_ALL_MESSAGES
+    # remainder is exactly the kept prefix, in order
+    assert [m.content for m in recorded[1:]] == ["first", "ans1"]
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_fork_to_turn_empty_is_noop(tmp_path, monkeypatch, base_config):
+    """An empty thread cannot be rewound: returns None and keeps the thread."""
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    agent, ctrl.runtime = _rewind_runtime([])
+    old_thread = ctrl.thread_id
+
+    cut = await ctrl.fork_to_turn(0)
+    assert cut is None
+    assert ctrl.thread_id == old_thread
+    assert agent.updated is None  # never touched state
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_fork_to_turn_keep_zero_is_noop(tmp_path, monkeypatch, base_config):
+    """keep_count <= 0 is a no-op (would discard the whole conversation)."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    agent, ctrl.runtime = _rewind_runtime(
+        [HumanMessage(content="a"), AIMessage(content="b")]
+    )
+    old_thread = ctrl.thread_id
+    cut = await ctrl.fork_to_turn(0)
+    assert cut is None
+    assert ctrl.thread_id == old_thread
+    assert agent.updated is None
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_fork_preserves_original_thread(tmp_path, monkeypatch, base_config):
+    """Forking must not destroy the original thread (resume_thread restores it)."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    _, ctrl.runtime = _rewind_runtime(
+        [HumanMessage(content="a"), AIMessage(content="b")]
+    )
+    old_thread = ctrl.thread_id
+
+    await ctrl.fork_to_turn(1)
+    assert ctrl.thread_id != old_thread
+    ctrl.resume_thread(old_thread)
+    assert ctrl.thread_id == old_thread  # the pre-rewind branch is still selectable
+    ctrl.close()
