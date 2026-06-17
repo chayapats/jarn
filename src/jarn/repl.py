@@ -181,6 +181,7 @@ class InlineApp:
         self._thinking_word = ""
         self._turn_stream_chars = 0   # streamed output chars this turn (live tok estimate)
         self._turn_base_output = 0    # tracker output tokens at turn start (real-usage delta)
+        self._turn_base_input = 0     # tracker input tokens at turn start (prompt-size delta)
         self._first_token_at: float | None = None   # first streamed delta (for tok/s)
         self._flash_html: HTML | None = None       # transient region message
         self._flash_until = 0.0
@@ -425,19 +426,31 @@ class InlineApp:
         return HTML("\n".join(lines))
 
     def _gen_stat(self) -> str:
-        """Live generation stat: output tokens this turn + tok/s.
+        """Live turn stat for the spinner / stream footer.
 
-        Uses the provider's real output-token delta when it reports usage during
-        the stream (e.g. Anthropic); otherwise a ``~`` estimate from the streamed
-        text (~4 chars/token), so a local model (LM Studio) — which streams
-        without per-chunk usage — still shows the counter moving. The rate is
-        measured from the first streamed token, so it reflects generation speed,
-        not prompt-processing latency."""
+        Two phases: while still processing the prompt (no token streamed yet) show
+        the PROMPT size; once output is generating show OUTPUT tokens + tok/s.
+
+        Output tokens use the provider's real per-chunk usage when it reports it
+        (e.g. Anthropic); otherwise a ``~`` estimate from the streamed text
+        (~4 chars/token), so a local model (LM Studio) — which streams without
+        per-chunk usage — still shows the counter moving. The rate is measured from
+        the first streamed token, so it reflects generation speed, not the
+        prompt-processing (prefill) wait."""
+        if self._first_token_at is None:
+            # Still thinking / prefilling — there is no generation rate yet, so
+            # show the prompt size instead (real input delta if the provider has
+            # reported it, else the prior context size as a proxy).
+            prompt = self.controller.tracker.total.input_tokens - self._turn_base_input
+            if prompt > 0:
+                return f"prompt {prompt} tok"
+            ctx = self.controller.tracker.context_tokens
+            return f"prompt ~{ctx} tok" if ctx > 0 else ""
         est = self._turn_stream_chars // 4
         real = self.controller.tracker.total.output_tokens - self._turn_base_output
         gen, approx = (real, "") if real > 0 else (est, "~")
         out = f"{approx}{gen} tok"
-        if self._first_token_at is not None and gen > 0:
+        if gen > 0:
             dur = time.monotonic() - self._first_token_at
             if dur >= 0.5:
                 out += f" · {gen / dur:.0f} tok/s"
@@ -868,6 +881,7 @@ class InlineApp:
                 self._thinking_word = random.choice(palette.THINKING_WORDS)
                 self._turn_stream_chars = 0
                 self._turn_base_output = self.controller.tracker.total.output_tokens
+                self._turn_base_input = self.controller.tracker.total.input_tokens
                 self._first_token_at = None
                 self._turn_task = asyncio.create_task(self._handle(send))
 
@@ -1066,6 +1080,7 @@ class InlineApp:
             self._thinking_word = random.choice(palette.THINKING_WORDS)
             self._turn_stream_chars = 0
             self._turn_base_output = self.controller.tracker.total.output_tokens
+            self._turn_base_input = self.controller.tracker.total.input_tokens
             self._first_token_at = None
             self._turn_task = asyncio.create_task(self._handle(item.payload))
 
