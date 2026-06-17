@@ -1577,3 +1577,22 @@ def test_apply_mode_ref_reports_clamp_on_untrusted(tmp_path, monkeypatch):
     out = console.file.getvalue()
     assert "plan" in out and "clamped" in out.lower()
     ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_turn_failure_points_at_log_traceback(tmp_path, monkeypatch):
+    """A mid-turn exception (e.g. a langgraph error) shows the message AND points
+    the user at the file-logged full traceback instead of swallowing it."""
+    from jarn import repl
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    async def _boom(*a, **k):
+        raise RuntimeError("langgraph boom")
+
+    monkeypatch.setattr(repl, "_run_turn", _boom)
+    await app._handle("please do something")
+    out = app.console.file.getvalue()
+    assert "langgraph boom" in out                 # concise message still shown
+    assert "full traceback" in out and "jarn.log" in out  # pointer to the log
+    app.controller.close()
