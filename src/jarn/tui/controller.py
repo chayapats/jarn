@@ -84,6 +84,9 @@ class Controller:
         self.telemetry = Telemetry.from_config(config.observability.telemetry)
         self.health = "unknown"            # unknown | ok | error | degraded
         self.last_error: str | None = None
+        # Resolved context-window sizes per model ref (0 = unknown / gave up), so
+        # a local-model endpoint (LM Studio / Ollama) is queried at most once.
+        self._ctx_window_cache: dict[str, int] = {}
         # Auto-checkpoint manager: snapshots working tree before agent turns so
         # /undo and /redo can revert or re-apply file changes without touching HEAD.
         _cp_root = project_root or Path.cwd()
@@ -529,6 +532,30 @@ class Controller:
             self.last_error = str(exc)
             return False, str(exc)
 
+    def _main_context_window(self) -> int:
+        """The main model's context window in tokens (0 = unknown).
+
+        Curated table / user override first; for a local model whose window isn't
+        known (LM Studio / Ollama), query its endpoint once and cache the result
+        so the toolbar can show a real context % instead of hiding the gauge."""
+        ref = self.config.resolved_main_model() or ""
+        from jarn.cost.pricing import context_window
+
+        window = context_window(ref)
+        if window > 0:
+            return window
+        if ref in self._ctx_window_cache:
+            return self._ctx_window_cache[ref]
+        window = 0
+        from jarn.providers import parse_model_ref, remote_context_window
+
+        parsed = parse_model_ref(ref, default_profile=self.config.default_profile)
+        provider = self.config.providers.get(parsed.profile)
+        if provider is not None:
+            window = remote_context_window(provider, parsed.model_id) or 0
+        self._ctx_window_cache[ref] = window
+        return window
+
     def context_status(self) -> tuple[int, int, float] | None:
         """(tokens, window, fraction) of the main model's context, or None when
         unknown — no tokens recorded yet, or the model's window can't be resolved
@@ -536,9 +563,7 @@ class Controller:
         tokens = self.tracker.context_tokens
         if tokens <= 0:
             return None
-        from jarn.cost.pricing import context_window
-
-        window = context_window(self.config.resolved_main_model() or "")
+        window = self._main_context_window()
         if window <= 0:
             return None
         return tokens, window, tokens / window
