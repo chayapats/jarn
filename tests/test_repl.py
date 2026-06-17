@@ -366,6 +366,61 @@ def test_tool_sink_accumulates_live():
     assert sink == [("web_search", "a\nb\nc")]  # visible before the turn ends
 
 
+def test_reasoning_streams_live_into_sink():
+    """Reasoning tokens stream into the live region as they arrive, not just at end."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+
+    seen: list[str] = []
+    r = _TurnRenderer(Console(file=StringIO()),
+                      live_sink=seen.append, spinner=False)
+    r.on_reasoning("weighing ")
+    r.on_reasoning("options")
+    # The growing thinking text is pushed to the live region before any other
+    # event commits it — the user sees it during the phase, not only after.
+    assert seen, "reasoning never reached the live region"
+    assert "weighing options" in seen[-1]
+    assert "thinking" in seen[-1]
+
+
+def test_reasoning_live_preview_clears_when_committed():
+    """Committing reasoning to scrollback clears the live preview (no double-render)."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+
+    seen: list[str] = []
+    console = Console(file=StringIO(), width=80)
+    r = _TurnRenderer(console, live_sink=seen.append, spinner=False)
+    r.on_reasoning("pondering")
+    assert "pondering" in seen[-1]
+    # Real text arriving commits the reasoning block and collapses the preview.
+    r.on_text("done.")
+    assert "" in seen  # the live reasoning preview was cleared on commit
+    assert "thinking" not in seen[-1]  # live region no longer shows reasoning
+    out = console.file.getvalue()
+    assert "✻ thinking" in out and "pondering" in out  # committed once to scrollback
+    assert out.count("pondering") == 1  # not double-rendered
+
+
+def test_reasoning_streams_live_into_rich_live(monkeypatch):
+    """On a real terminal, reasoning updates the Rich Live region during the phase."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+
+    console = Console(file=StringIO(), force_terminal=True, width=80)
+    r = _TurnRenderer(console, spinner=False)  # no sink -> Rich Live path
+    updates: list = []
+    try:
+        r.on_reasoning("thinking hard")
+        assert r._live is not None  # a live region was opened mid-phase
+        # capture what it would render
+        import rich.live as _rl
+
+        monkeypatch.setattr(_rl.Live, "update",
+                            lambda self, renderable, **kw: updates.append(renderable))
+        r.on_reasoning(" now")
+    finally:
+        r._live_clear()
+    assert updates, "reasoning did not refresh the live region"
+
+
 def test_session_thinking_word_is_stable():
     """The session thinking word is picked once and stays put across calls."""
     from jarn.tui import palette
