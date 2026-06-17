@@ -88,6 +88,16 @@ session stays clamped to the `review-only` floor.
 > `/model`, `/mode`, `/sandbox`, `/profile` change the **current session only** and do
 > not persist; use `/config set` (or edit the file) to make a change stick.
 
+### Fixing a bad API key — `/key`
+
+If a provider rejects your key mid-session (a `401`), run `/key` to fix it without
+quitting. It prompts for the current provider's key, stores the secret in the OS
+keychain, points the provider's `api_key` at a `keychain:jarn/<provider>` reference
+(the secret is never inlined into config), and rebuilds the runtime so the next turn
+uses the new key. The reference is persisted to `~/.jarn/config.yaml`, so it also
+survives a restart. (You can pass the key inline as `/key <value>`, but it then lands
+in your scrollback/history — prefer the bare `/key` prompt.)
+
 ## Validation
 
 Config is validated strictly when it loads, so a typo fails loud instead of being

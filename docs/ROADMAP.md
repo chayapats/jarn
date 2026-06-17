@@ -108,6 +108,10 @@ Aider). See the design spec under `docs/superpowers/specs/`.
   (`execution.background`, default `true`), gated like shell, terminated on exit.
 - [x] **Image paste (macOS)** — `Ctrl+V` grabs a clipboard image into `.jarn/pastes/`
   and inserts it as an `@path` the multimodal `read_file` loads (pngpaste / AppleScript).
+- [x] **`/key`** — fix a rejected/missing API key for the current provider in-session
+  (no quit + edit env/keychain + restart). Prompts for the key, stores it in the OS
+  keychain, points config at a `keychain:jarn/<provider>` reference (never an inlined
+  secret), and rebuilds the runtime so the next turn uses it.
 
 ## v0.3.0 — prepared (Alpha, unreleased)
 

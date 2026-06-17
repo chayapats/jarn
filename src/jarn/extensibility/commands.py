@@ -133,6 +133,13 @@ BUILTINS: tuple[BuiltinCommand, ...] = (
     BuiltinCommand("init", "Create a JARN.md project context file.", "controller", group="Setup"),
     BuiltinCommand("permissions", "Show current permission rules and allowlist.", "controller", group="Setup"),
     BuiltinCommand(
+        "key",
+        "Set or replace the API key for the current provider (stored in the keychain).",
+        "repl",
+        usage="[<key>]",
+        group="Setup",
+    ),
+    BuiltinCommand(
         "doctor",
         "Diagnose configuration, providers, and keys.",
         "controller",
