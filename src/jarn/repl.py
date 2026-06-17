@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import random
 import shlex
@@ -1028,8 +1029,19 @@ class InlineApp:
         except asyncio.CancelledError:
             self.console.print(f"\n[{palette.C_DIM}]interrupted[/{palette.C_DIM}]")
         except Exception as exc:  # noqa: BLE001
+            # The TUI must not print a traceback (it corrupts the display), so log
+            # the full one to the file logger and point the user at it — an
+            # otherwise-opaque mid-turn failure (e.g. a langgraph error) is then
+            # diagnosable instead of a bare one-line message.
+            logging.getLogger("jarn").error("turn failed", exc_info=exc)
+            from jarn.config import paths
+
             self.console.print(
                 f"[{palette.C_ERROR}]{_rich_escape(str(exc))}[/{palette.C_ERROR}]"
+            )
+            self.console.print(
+                f"[{palette.C_DIM}]full traceback → "
+                f"{paths.global_logs_dir() / 'jarn.log'}[/{palette.C_DIM}]"
             )
         finally:
             self._turn_task = None
