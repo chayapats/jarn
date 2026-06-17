@@ -62,6 +62,13 @@ def warn_unpriced(model_id: str) -> None:
 class Price:
     input_per_mtok: float
     output_per_mtok: float
+    # Optional prompt-cache rates ($/Mtok). ``None`` (the default) means "price
+    # like uncached input" — so adding cache accounting never changes the total
+    # for a price table that doesn't declare cache rates. Cache reads are usually
+    # ~0.1x input and cache writes ~1.25x input, but those are provider-specific,
+    # so we don't guess: a price source must opt in to override the fallback.
+    cache_read_rate: float | None = None
+    cache_write_rate: float | None = None
 
 
 # Curated anchors — kept deliberately small: the dedicated Anthropic API model
@@ -276,12 +283,34 @@ def context_window(model_id: str) -> int:
     return 0
 
 
-def cost_of(model_id: str, input_tokens: int, output_tokens: int) -> float | None:
+def cost_of(
+    model_id: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+) -> float | None:
+    """USD cost of one call, or ``None`` if the model is unpriced.
+
+    ``cache_read_tokens`` / ``cache_creation_tokens`` are the provider's
+    prompt-cache counts — disjoint from ``input_tokens`` (which is the uncached
+    remainder). Each is priced at the model's explicit cache rate when set, else
+    at the plain input rate. With both at 0 (no cache usage), the result is
+    exactly the original ``input + output`` figure — totals never drift.
+    """
     price = lookup(model_id)
     if price is None:
         warn_unpriced(model_id)
         return None
+    cache_read_rate = (
+        price.cache_read_rate if price.cache_read_rate is not None else price.input_per_mtok
+    )
+    cache_write_rate = (
+        price.cache_write_rate if price.cache_write_rate is not None else price.input_per_mtok
+    )
     return (
         input_tokens / 1_000_000 * price.input_per_mtok
         + output_tokens / 1_000_000 * price.output_per_mtok
+        + cache_read_tokens / 1_000_000 * cache_read_rate
+        + cache_creation_tokens / 1_000_000 * cache_write_rate
     )

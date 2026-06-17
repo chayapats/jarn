@@ -388,11 +388,17 @@ class SessionDriver:
     def _record_usage(self, msg: Any) -> None:
         usage = getattr(msg, "usage_metadata", None)
         if usage:
+            # LangChain reports prompt-cache tokens under ``input_token_details``
+            # (``cache_read`` / ``cache_creation``); absent for providers/turns
+            # without caching, in which case both default to 0.
+            details = usage.get("input_token_details") or {}
             self.tracker.record(
                 self._resolve_model_ref(msg),
                 int(usage.get("input_tokens", 0)),
                 int(usage.get("output_tokens", 0)),
                 tool=_first_tool_name(msg),
+                cache_read_tokens=int(details.get("cache_read", 0)),
+                cache_creation_tokens=int(details.get("cache_creation", 0)),
             )
 
     def _resolve_model_ref(self, msg: Any) -> str:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from jarn.config.schema import BudgetConfig
-from jarn.cost import BudgetStatus, CostTracker
+from jarn.cost import BudgetStatus, CostTracker, Usage
 from jarn.cost.pricing import cost_of, lookup
 
 
@@ -251,3 +251,92 @@ def test_priced_model_no_warning(recwarn):
     assert result is not None
     warns = [w for w in recwarn.list if issubclass(w.category, UnpricedModelWarning)]
     assert len(warns) == 0
+
+
+# -- prompt-cache token tracking --------------------------------------------
+
+def test_usage_cache_fields_default_zero():
+    """Usage gains cache fields that default to 0 so existing call sites stay valid."""
+    u = Usage()
+    assert u.cache_read_tokens == 0
+    assert u.cache_creation_tokens == 0
+
+
+def test_record_captures_cache_tokens():
+    """record() accumulates cache token counts into every bucket it touches."""
+    t = CostTracker()
+    t.record(
+        "claude-opus-4-8", 1000, 500, tool="execute",
+        cache_read_tokens=800, cache_creation_tokens=200,
+    )
+    assert t.total.cache_read_tokens == 800
+    assert t.total.cache_creation_tokens == 200
+    assert t.per_model["claude-opus-4-8"].cache_read_tokens == 800
+    assert t.per_tool["execute"].cache_creation_tokens == 200
+
+
+def test_cache_tokens_reconcile_across_buckets():
+    """Cache token sums over per-tool / per-model buckets equal the grand total."""
+    t = CostTracker()
+    t.record("claude-opus-4-8", 1000, 500, cache_read_tokens=100, cache_creation_tokens=10)
+    t.record("claude-haiku-4-5", 200, 100, cache_read_tokens=50, cache_creation_tokens=5)
+    read_via_tool = sum(u.cache_read_tokens for u in t.per_tool.values())
+    write_via_model = sum(u.cache_creation_tokens for u in t.per_model.values())
+    assert read_via_tool == t.total.cache_read_tokens == 150
+    assert write_via_model == t.total.cache_creation_tokens == 15
+
+
+def test_no_cache_usage_leaves_totals_unchanged():
+    """A turn with no cache usage records zero cache tokens and unchanged cost."""
+    t = CostTracker()
+    t.record("claude-opus-4-8", 1_000_000, 0)  # $5.00, no cache args
+    assert t.total.cache_read_tokens == 0
+    assert t.total.cache_creation_tokens == 0
+    assert t.total.cost_usd == 5.0
+
+
+# -- cache-aware pricing ----------------------------------------------------
+
+def test_price_cache_rates_default_none():
+    """Price gains optional cache rate fields defaulting to None (fall back to input)."""
+    price = lookup("claude-opus-4-8")
+    assert price is not None
+    assert price.cache_read_rate is None
+    assert price.cache_write_rate is None
+
+
+def test_cost_of_unchanged_without_cache_tokens():
+    """cost_of with no cache tokens matches the original input+output formula exactly."""
+    # 1M input @5 + 1M output @25 = 30
+    assert cost_of("claude-opus-4-8", 1_000_000, 1_000_000) == 30.0
+
+
+def test_cost_of_cache_falls_back_to_input_rate():
+    """With no explicit cache rates, cache tokens are priced at the input rate."""
+    from jarn.cost.pricing import cost_of
+
+    # opus input rate = $5/Mtok. 1M cache-read + 1M cache-creation -> $10 added.
+    cost = cost_of(
+        "claude-opus-4-8", 0, 0,
+        cache_read_tokens=1_000_000, cache_creation_tokens=1_000_000,
+    )
+    assert cost == 10.0
+
+
+def test_cost_of_uses_explicit_cache_rates_when_present():
+    """When a Price carries cache rates, they price cache tokens instead of input."""
+    from jarn.cost import pricing
+    from jarn.cost.pricing import Price, cost_of
+
+    monkeypatched = {"my-cache-model": Price(10.0, 30.0, cache_read_rate=1.0, cache_write_rate=12.5)}
+    orig = pricing._BUILTIN
+    pricing._BUILTIN = {**orig, **monkeypatched}
+    try:
+        # 1M cache-read @1.0 + 1M cache-creation @12.5 = 13.5
+        cost = cost_of(
+            "my-cache-model", 0, 0,
+            cache_read_tokens=1_000_000, cache_creation_tokens=1_000_000,
+        )
+        assert cost == 13.5
+    finally:
+        pricing._BUILTIN = orig

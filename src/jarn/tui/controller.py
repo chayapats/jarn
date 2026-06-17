@@ -976,6 +976,12 @@ class Controller:
     def _cmd_cost(self, args: str) -> CommandResult:
         t = self.tracker
         lines = [f"[b]Session usage[/b] — {t.summary_line()}", f"status: {t.status().value}"]
+        if t.total.cache_read_tokens or t.total.cache_creation_tokens:
+            lines.append(
+                f"[{palette.C_DIM}]cache[/{palette.C_DIM}] "
+                f"{t.total.cache_read_tokens:,} read · "
+                f"{t.total.cache_creation_tokens:,} write"
+            )
         for model, usage in t.per_model.items():
             lines.append(
                 f"  {_escape_markup(model)}: ${usage.cost_usd:.4f} · {usage.total_tokens:,} tok"

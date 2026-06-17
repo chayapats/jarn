@@ -45,6 +45,44 @@ def test_record_usage_attributes_cost_to_requested_tool():
     assert sum(u.calls for u in tracker.per_tool.values()) == tracker.total.calls == 2
 
 
+def test_record_usage_captures_cache_tokens():
+    """A chunk whose usage_metadata carries input_token_details cache fields records
+    the cache_read / cache_creation counts into the tracker; a chunk without them
+    records zero (so non-cache turns are unaffected)."""
+    tracker = CostTracker()
+    driver = SessionDriver(
+        agent=None,
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=tracker,
+        thread_id="t1",
+        main_model_ref="claude-opus-4-8",
+    )
+
+    cached_msg = type("AIMessage", (), {
+        "usage_metadata": {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "input_token_details": {"cache_read": 800, "cache_creation": 200},
+        },
+        "response_metadata": {},
+        "tool_calls": [],
+    })()
+    plain_msg = type("AIMessage", (), {
+        "usage_metadata": {"input_tokens": 10, "output_tokens": 5},
+        "response_metadata": {},
+        "tool_calls": [],
+    })()
+
+    driver._record_usage(cached_msg)
+    assert tracker.total.cache_read_tokens == 800
+    assert tracker.total.cache_creation_tokens == 200
+
+    driver._record_usage(plain_msg)
+    # The plain turn adds no cache tokens — the running totals are unchanged.
+    assert tracker.total.cache_read_tokens == 800
+    assert tracker.total.cache_creation_tokens == 200
+
+
 def test_handle_update_chunk_unwraps_overwrite_messages():
     driver = SessionDriver(
         agent=None,
