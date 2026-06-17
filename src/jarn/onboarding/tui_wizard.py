@@ -28,10 +28,12 @@ from jarn.config.defaults import (
     PROVIDER_BASE_URLS,
     PROVIDER_ENV_VARS,
 )
-from jarn.config.secrets import store_keychain
+from jarn.config.secrets import SecretResolutionError, resolve, store_keychain
 from jarn.onboarding.wizard import (
     _CONFIG_HEADER,
     _build_config_dict,
+    _detect_env_key,
+    _recommended_provider,
     confirm_overwrite,
     normalize_base_url,
     profile_needs_base_url,
@@ -82,6 +84,10 @@ class SetupApp(App):
         self.result_path: Path | None = None
         self._base_url_error: str | None = None
         self._cancelled = False
+        # Probe the environment so we can offer an existing key and tag the
+        # recommended provider (parity with the plain-text wizard).
+        self.env_hit: tuple[str, str] | None = _detect_env_key()
+        self.recommended: str = _recommended_provider(self.env_hit)
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="card"):
@@ -113,6 +119,27 @@ class SetupApp(App):
             self._cancelled = True
             self.exit()
 
+    def _env_key_present(self, provider: str) -> bool:
+        """True when ``provider``'s env var currently holds a usable value."""
+        import os
+
+        env = PROVIDER_ENV_VARS.get(provider, f"{provider.upper()}_API_KEY")
+        return bool(os.environ.get(env))
+
+    def _key_ref_resolves(self, key_ref: str | None) -> bool:
+        """True when ``key_ref`` resolves to a concrete value right now.
+
+        A keychain ref points at a stored secret; a ``${ENV}`` ref needs the
+        variable set. Anything that fails to resolve means the first turn would
+        crash, so the wizard must collect a key before finishing.
+        """
+        if key_ref is None:
+            return True
+        try:
+            return bool(resolve(key_ref))
+        except SecretResolutionError:
+            return False
+
     def _next_after_key(self) -> str:
         prov = self.answers.get("provider", "")
         if profile_needs_base_url(prov):
@@ -121,6 +148,11 @@ class SetupApp(App):
 
     def _next_after_storage(self, storage: str) -> str:
         if storage == "keychain":
+            return "key"
+        # env storage: only continue when the ${ENV} reference actually
+        # resolves; otherwise capture a key now so onboarding can't "succeed"
+        # while leaving the first turn doomed to fail.
+        if not self._key_ref_resolves(self.answers.get("key_ref")):
             return "key"
         return self._next_after_key()
 
@@ -140,12 +172,24 @@ class SetupApp(App):
         await body.mount(widget)
         widget.focus()
 
-    def _option_list(self, items: list[tuple[str, str]], current: str | None = None) -> OptionList:
+    def _option_list(
+        self,
+        items: list[tuple[str, str]],
+        current: str | None = None,
+        *,
+        highlight: str | None = None,
+    ) -> OptionList:
         opts = []
-        for key, label in items:
+        highlight_idx: int | None = None
+        for idx, (key, label) in enumerate(items):
             mark = "[cyan]●[/cyan] " if key == current else "  "
             opts.append(Option(f"{mark}{label}", id=f"opt:{key}"))
-        return OptionList(*opts, id="step-list")
+            if highlight is not None and key == highlight:
+                highlight_idx = idx
+        option_list = OptionList(*opts, id="step-list")
+        if highlight_idx is not None:
+            option_list.highlighted = highlight_idx
+        return option_list
 
     # -- per-step rendering -------------------------------------------------
 
@@ -153,19 +197,49 @@ class SetupApp(App):
         await getattr(self, f"_step_{self.step.replace('-', '_')}")()
 
     async def _step_provider(self) -> None:
-        items = [(p, f"{p}  ({_PROVIDER_HINTS[p]})") for p in ALL_PROVIDERS]
-        await self._set("Which model provider?",
-                        self._option_list(items, self.answers.get("provider")))
+        items: list[tuple[str, str]] = []
+        for p in ALL_PROVIDERS:
+            label = f"{p}  ({_PROVIDER_HINTS[p]})"
+            if p == self.recommended:
+                if self.env_hit is not None and self.env_hit[0] == p:
+                    label += f"  [yellow]★ recommended — found ${self.env_hit[1]}[/yellow]"
+                else:
+                    label += "  [yellow]★ recommended[/yellow]"
+            items.append((p, label))
+        # Default-highlight the recommended provider (env key > anthropic > openrouter)
+        # unless the user already chose one (navigating back).
+        chosen = self.answers.get("provider")
+        await self._set(
+            "Which model provider?",
+            self._option_list(items, chosen, highlight=chosen or self.recommended),
+        )
 
     async def _step_storage(self) -> None:
         prov = self.answers["provider"]
         env = PROVIDER_ENV_VARS.get(prov, f"{prov.upper()}_API_KEY")
-        items = [("env", f"Read from ${env} (recommended)"), _STORAGE[1]]
+        # If the key is already in the environment, the env reference is the
+        # recommended default; otherwise nudge the keychain (paste-now) path.
+        if self._env_key_present(prov):
+            env_label = f"Read from ${env} [green](found in your environment)[/green]"
+        else:
+            env_label = f"Read from ${env} — set it before launching"
+        items = [("env", env_label), _STORAGE[1]]
         await self._set(f"How should J.A.R.N. read your {prov} API key?",
                         self._option_list(items, self.answers.get("storage")))
 
     async def _step_key(self) -> None:
-        await self._set("Paste your API key (stored in the OS keychain)",
+        prov = self.answers["provider"]
+        env = PROVIDER_ENV_VARS.get(prov, f"{prov.upper()}_API_KEY")
+        # When the env var is missing we land here to capture a key rather than
+        # finishing with an unresolvable ${ENV} reference.
+        if self.answers.get("storage") == "env":
+            title = (
+                f"${env} is not set — paste your {prov} API key now"
+                " (stored in the OS keychain)"
+            )
+        else:
+            title = "Paste your API key (stored in the OS keychain)"
+        await self._set(title,
                         Input(placeholder="sk-...", password=True, id="step-input"))
 
     async def _step_base_url(self) -> None:
@@ -263,8 +337,16 @@ class SetupApp(App):
         if step == "provider":
             self.answers["provider"] = key
             self.answers.pop("key_ref", None)
+            self.answers.pop("storage", None)
             self.answers.pop("base_url", None)
-            await self._goto(self._next_after_provider(key))
+            # Detected env key for this exact provider → reuse it as a
+            # ${ENV} reference and skip the storage prompt entirely.
+            if self.env_hit is not None and self.env_hit[0] == key:
+                self.answers["storage"] = "env"
+                self._set_env_key_ref()
+                await self._goto(self._next_after_key())
+            else:
+                await self._goto(self._next_after_provider(key))
         elif step == "storage":
             self.answers["storage"] = key
             if key == "env":
