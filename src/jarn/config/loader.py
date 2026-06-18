@@ -27,6 +27,7 @@ from jarn.config.schema import (
     ObservabilityConfig,
     PermissionMode,
     PermissionRules,
+    PlanConfig,
     PolicyConfig,
     ProviderConfig,
     ProviderType,
@@ -58,6 +59,7 @@ _KNOWN_TOP_LEVEL_KEYS = {
     "compat",
     "git",
     "wiki",
+    "plan",
 }
 
 _TRUE_STRINGS = {"true", "yes", "on", "1"}
@@ -176,11 +178,32 @@ def _build_config(raw: dict[str, Any]) -> Config:
     cfg.providers = _build_providers(raw.get("providers", {}))
 
     routing = raw.get("routing", {}) or {}
+    from jarn.config.schema import _VALID_PROMPT_CACHE
+
+    # YAML 1.1 parses a bare ``off``/``on`` as a boolean, so ``prompt_cache: off``
+    # arrives as ``False`` — map it back to the intended string rather than
+    # rejecting a perfectly natural spelling.
+    prompt_cache_val = routing.get("prompt_cache", "auto")
+    if isinstance(prompt_cache_val, bool):
+        prompt_cache_val = "off" if prompt_cache_val is False else "auto"
+    prompt_cache_raw = str(prompt_cache_val)
+    if prompt_cache_raw not in _VALID_PROMPT_CACHE:
+        raise ConfigError(
+            f"routing.prompt_cache must be one of "
+            f"{sorted(_VALID_PROMPT_CACHE)} (got {prompt_cache_raw!r})."
+        )
+    keep_alive_raw = _coerce_int(routing.get("keep_alive", 1800), "routing.keep_alive")
+    if keep_alive_raw < 0:
+        raise ConfigError(
+            f"routing.keep_alive must be >= 0 (got {keep_alive_raw})."
+        )
     cfg.routing = RoutingConfig(
         main=routing.get("main"),
         subagent=routing.get("subagent"),
         summarizer=routing.get("summarizer"),
         fallback=list(routing.get("fallback", []) or []),
+        prompt_cache=prompt_cache_raw,
+        keep_alive=keep_alive_raw,
     )
 
     budget = raw.get("budget", {}) or {}
@@ -269,6 +292,7 @@ def _build_config(raw: dict[str, Any]) -> Config:
         )
     cfg.execution = ExecutionConfig(
         backend=backend_raw,
+        background=_normalize_bool(ex.get("background", True), "execution.background"),
         sandbox_provider=str(ex.get("sandbox_provider", "langsmith")),
         docker_image=str(ex.get("docker_image", "python:3.12")),
         multimodal=_normalize_bool(ex.get("multimodal", True), "execution.multimodal"),
@@ -322,9 +346,18 @@ def _build_config(raw: dict[str, Any]) -> Config:
     )
 
     ui = raw.get("ui", {}) or {}
+    from jarn.config.schema import _VALID_SPLASH_VALUES
+    splash_raw = str(ui.get("splash", "compact"))
+    if splash_raw not in _VALID_SPLASH_VALUES:
+        raise ConfigError(
+            f"ui.splash must be one of {sorted(_VALID_SPLASH_VALUES)} "
+            f"(got {splash_raw!r})."
+        )
     cfg.ui = UIConfig(
         theme=str(ui.get("theme", "dark")),
         accent=str(ui.get("accent", "cyan")),
+        splash=splash_raw,
+        approval_diff_lines=int(ui.get("approval_diff_lines", 40)),
     )
 
     compat = raw.get("compat", {}) or {}
@@ -335,6 +368,17 @@ def _build_config(raw: dict[str, Any]) -> Config:
 
     wiki = raw.get("wiki", {}) or {}
     cfg.wiki = _build_wiki_config(wiki)
+
+    plan = raw.get("plan", {}) or {}
+    from jarn.config.schema import _VALID_EXIT_MODES
+
+    exit_mode_raw = str(plan.get("exit_mode", "auto-edit"))
+    if exit_mode_raw not in _VALID_EXIT_MODES:
+        raise ConfigError(
+            f"plan.exit_mode must be one of "
+            f"{sorted(_VALID_EXIT_MODES)} (got {exit_mode_raw!r})."
+        )
+    cfg.plan = PlanConfig(exit_mode=exit_mode_raw)
 
     return cfg
 

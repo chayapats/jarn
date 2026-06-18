@@ -37,6 +37,7 @@ import json
 import logging
 import re
 import subprocess
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -113,6 +114,19 @@ class FileEntry:
     rel: str                              # relative path string (from root)
     symbols: list[str] = field(default_factory=list)
     score: float = 0.0
+
+
+@dataclass(slots=True, frozen=True)
+class SymbolRef:
+    """A single named symbol located in the repo, for @symbol completion.
+
+    ``container`` is the enclosing class name for a method (one level deep,
+    matching :func:`_extract_python`); it is empty for top-level symbols.
+    """
+
+    name: str
+    rel: str                              # relative path string (from root, posix)
+    container: str = ""
 
 
 def _extract_python(text: str) -> list[str]:
@@ -306,6 +320,40 @@ def _count_tokens(text: str) -> int:
 # Caching
 # ---------------------------------------------------------------------------
 
+#: Module-level in-process cache for the symbol index, keyed by
+#: ``_cache_key(root, _cheap_signature(files))``.  The REPL completer builds a
+#: fresh ``CompletionProvider`` on EVERY keystroke, so the symbol index MUST be
+#: cached here (process-global), NOT on the provider, or a large repo would be
+#: re-scanned per character and stall the UI.  Same cheap signature (file count
+#: + max mtime) as the on-disk repo-map cache — edits within the same mtime
+#: second can be missed, which is acceptable for an authoring aid.
+_SYMBOL_INDEX_CACHE: dict[str, list[SymbolRef]] = {}
+
+#: Short-TTL cache of ``(files, signature)`` per root. The REPL builds a fresh
+#: completer on EVERY keystroke; without this, the symbol completer re-forks
+#: ``git ls-files`` and re-stats every file on each character even on a
+#: symbol-index cache hit, because the signature it keys on was recomputed every
+#: call (the O(repo) the index cache was meant to avoid). 1s TTL — same
+#: same-second staleness tradeoff as the dir-listing / symbol-index caches.
+_DISCOVERY_TTL = 1.0
+_DISCOVERY_CACHE: dict[str, tuple[float, list[Path], str]] = {}
+
+
+def _discover_with_signature(root: Path) -> tuple[list[Path], str]:
+    """``(_discover_files(root), _cheap_signature(files))`` behind a short-TTL
+    process cache so the per-keystroke symbol completer doesn't fork git + stat
+    every file on each character."""
+    key = str(root)
+    now = time.monotonic()
+    cached = _DISCOVERY_CACHE.get(key)
+    if cached is not None and now - cached[0] < _DISCOVERY_TTL:
+        return cached[1], cached[2]
+    files = _discover_files(root)
+    signature = _cheap_signature(files)
+    _DISCOVERY_CACHE[key] = (now, files, signature)
+    return files, signature
+
+
 def _cache_key(root: Path, signature: str) -> str:
     h = hashlib.sha256(f"{root}:{signature}".encode()).hexdigest()[:16]
     return h
@@ -380,6 +428,46 @@ def build_repo_map(
     map_text = _render(root, ranked, token_budget=token_budget)
     _save_cache(cp, map_text)
     return map_text
+
+
+def build_symbol_index(root: Path) -> list[SymbolRef]:
+    """Return a flat list of :class:`SymbolRef` for every symbol under *root*.
+
+    Reuses :func:`_discover_files` (git-ls-files / .gitignore-aware, noise-dir
+    filtered) and :func:`_extract_symbols` (Python via ``ast`` including
+    one-level methods; JS/TS/Go/Rust via regex), so language coverage matches
+    :func:`build_repo_map`.  Python method entries arrive as ``"  .name"`` and
+    are normalized into ``name=method, container=<enclosing class>``.
+
+    The result is cached in the process-global :data:`_SYMBOL_INDEX_CACHE`
+    keyed by ``root`` + a cheap signature (file count + max mtime). File
+    discovery + the signature themselves go through :func:`_discover_with_signature`
+    (a 1s-TTL cache), so the per-keystroke REPL completer does a genuine
+    O(prefix-match) lookup with no ``git ls-files`` fork or per-file ``stat`` on a
+    cache hit.  See the cache docstrings for the staleness tradeoff.
+    """
+    files, signature = _discover_with_signature(root)
+    key = _cache_key(root, signature)
+    cached = _SYMBOL_INDEX_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    refs: list[SymbolRef] = []
+    for p in files:
+        try:
+            rel = p.relative_to(root).as_posix()
+        except ValueError:
+            rel = str(p)
+        container = ""
+        for sym in _extract_symbols(p):
+            if sym.startswith("  ."):
+                # A class method (one level deep); attach to the last class.
+                refs.append(SymbolRef(name=sym[3:], rel=rel, container=container))
+            else:
+                container = sym  # a subsequent "  .method" belongs to this name
+                refs.append(SymbolRef(name=sym, rel=rel, container=""))
+    _SYMBOL_INDEX_CACHE[key] = refs
+    return refs
 
 
 def _build_entries(root: Path, files: list[Path]) -> list[FileEntry]:

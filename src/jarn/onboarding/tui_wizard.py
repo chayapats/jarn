@@ -28,14 +28,22 @@ from jarn.config.defaults import (
     PROVIDER_BASE_URLS,
     PROVIDER_ENV_VARS,
 )
-from jarn.config.secrets import store_keychain
+from jarn.config.secrets import SecretResolutionError, resolve, store_keychain
 from jarn.onboarding.wizard import (
     _CONFIG_HEADER,
     _build_config_dict,
+    _detect_env_key,
+    _recommended_provider,
     confirm_overwrite,
     normalize_base_url,
     profile_needs_base_url,
     validate_config,
+)
+from jarn.providers import (
+    list_remote_models,
+    qualify_model_ref,
+    strip_profile,
+    suggest_slug,
 )
 from jarn.tui.logo import TAGLINE
 from jarn.tui.theme import ALL_THEMES, theme_name_for
@@ -56,6 +64,22 @@ def _provider_hint(name: str) -> str:
 
 
 _PROVIDER_HINTS = {p: _provider_hint(p) for p in ALL_PROVIDERS}
+
+
+def _curated_cloud_models(provider: str) -> list[str]:
+    """A small curated pick-list of model ids for a cloud ``provider``.
+
+    Drawn from :data:`DEFAULT_MODELS` (main / subagent / summarizer), with the
+    leading profile stripped so the value matches what the user would type, and
+    deduplicated while preserving first-seen order. Empty for unknown providers.
+    """
+    models = DEFAULT_MODELS.get(provider)
+    if not models:
+        return []
+    seen: dict[str, None] = {}
+    for full in models.values():
+        seen.setdefault(strip_profile(full, provider), None)
+    return list(seen)
 
 
 class SetupApp(App):
@@ -82,6 +106,16 @@ class SetupApp(App):
         self.result_path: Path | None = None
         self._base_url_error: str | None = None
         self._cancelled = False
+        # Model-step transient state: force the free-text box (after picking the
+        # "enter manually" entry), the slug-hint shown on the last submit, and the
+        # value that hint was about (resubmitting it unchanged accepts the slug).
+        self._model_manual = False
+        self._model_hint: str | None = None
+        self._model_hinted_value: str | None = None
+        # Probe the environment so we can offer an existing key and tag the
+        # recommended provider (parity with the plain-text wizard).
+        self.env_hit: tuple[str, str] | None = _detect_env_key()
+        self.recommended: str = _recommended_provider(self.env_hit)
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="card"):
@@ -102,6 +136,12 @@ class SetupApp(App):
     async def _goto(self, step: str, *, push: bool = True) -> None:
         if push and self.step != step:
             self.history.append(self.step)
+        if step == "model" and self.step != "model":
+            # Fresh arrival at the model step (not an in-place re-render): start
+            # from the pick-list, with no stale manual/hint state.
+            self._model_manual = False
+            self._model_hint = None
+            self._model_hinted_value = None
         self.step = step
         await self._render_step()
 
@@ -113,6 +153,27 @@ class SetupApp(App):
             self._cancelled = True
             self.exit()
 
+    def _env_key_present(self, provider: str) -> bool:
+        """True when ``provider``'s env var currently holds a usable value."""
+        import os
+
+        env = PROVIDER_ENV_VARS.get(provider, f"{provider.upper()}_API_KEY")
+        return bool(os.environ.get(env))
+
+    def _key_ref_resolves(self, key_ref: str | None) -> bool:
+        """True when ``key_ref`` resolves to a concrete value right now.
+
+        A keychain ref points at a stored secret; a ``${ENV}`` ref needs the
+        variable set. Anything that fails to resolve means the first turn would
+        crash, so the wizard must collect a key before finishing.
+        """
+        if key_ref is None:
+            return True
+        try:
+            return bool(resolve(key_ref))
+        except SecretResolutionError:
+            return False
+
     def _next_after_key(self) -> str:
         prov = self.answers.get("provider", "")
         if profile_needs_base_url(prov):
@@ -121,6 +182,11 @@ class SetupApp(App):
 
     def _next_after_storage(self, storage: str) -> str:
         if storage == "keychain":
+            return "key"
+        # env storage: only continue when the ${ENV} reference actually
+        # resolves; otherwise capture a key now so onboarding can't "succeed"
+        # while leaving the first turn doomed to fail.
+        if not self._key_ref_resolves(self.answers.get("key_ref")):
             return "key"
         return self._next_after_key()
 
@@ -140,12 +206,24 @@ class SetupApp(App):
         await body.mount(widget)
         widget.focus()
 
-    def _option_list(self, items: list[tuple[str, str]], current: str | None = None) -> OptionList:
+    def _option_list(
+        self,
+        items: list[tuple[str, str]],
+        current: str | None = None,
+        *,
+        highlight: str | None = None,
+    ) -> OptionList:
         opts = []
-        for key, label in items:
+        highlight_idx: int | None = None
+        for idx, (key, label) in enumerate(items):
             mark = "[cyan]●[/cyan] " if key == current else "  "
             opts.append(Option(f"{mark}{label}", id=f"opt:{key}"))
-        return OptionList(*opts, id="step-list")
+            if highlight is not None and key == highlight:
+                highlight_idx = idx
+        option_list = OptionList(*opts, id="step-list")
+        if highlight_idx is not None:
+            option_list.highlighted = highlight_idx
+        return option_list
 
     # -- per-step rendering -------------------------------------------------
 
@@ -153,19 +231,49 @@ class SetupApp(App):
         await getattr(self, f"_step_{self.step.replace('-', '_')}")()
 
     async def _step_provider(self) -> None:
-        items = [(p, f"{p}  ({_PROVIDER_HINTS[p]})") for p in ALL_PROVIDERS]
-        await self._set("Which model provider?",
-                        self._option_list(items, self.answers.get("provider")))
+        items: list[tuple[str, str]] = []
+        for p in ALL_PROVIDERS:
+            label = f"{p}  ({_PROVIDER_HINTS[p]})"
+            if p == self.recommended:
+                if self.env_hit is not None and self.env_hit[0] == p:
+                    label += f"  [yellow]★ recommended — found ${self.env_hit[1]}[/yellow]"
+                else:
+                    label += "  [yellow]★ recommended[/yellow]"
+            items.append((p, label))
+        # Default-highlight the recommended provider (env key > anthropic > openrouter)
+        # unless the user already chose one (navigating back).
+        chosen = self.answers.get("provider")
+        await self._set(
+            "Which model provider?",
+            self._option_list(items, chosen, highlight=chosen or self.recommended),
+        )
 
     async def _step_storage(self) -> None:
         prov = self.answers["provider"]
         env = PROVIDER_ENV_VARS.get(prov, f"{prov.upper()}_API_KEY")
-        items = [("env", f"Read from ${env} (recommended)"), _STORAGE[1]]
+        # If the key is already in the environment, the env reference is the
+        # recommended default; otherwise nudge the keychain (paste-now) path.
+        if self._env_key_present(prov):
+            env_label = f"Read from ${env} [green](found in your environment)[/green]"
+        else:
+            env_label = f"Read from ${env} — set it before launching"
+        items = [("env", env_label), _STORAGE[1]]
         await self._set(f"How should J.A.R.N. read your {prov} API key?",
                         self._option_list(items, self.answers.get("storage")))
 
     async def _step_key(self) -> None:
-        await self._set("Paste your API key (stored in the OS keychain)",
+        prov = self.answers["provider"]
+        env = PROVIDER_ENV_VARS.get(prov, f"{prov.upper()}_API_KEY")
+        # When the env var is missing we land here to capture a key rather than
+        # finishing with an unresolvable ${ENV} reference.
+        if self.answers.get("storage") == "env":
+            title = (
+                f"${env} is not set — paste your {prov} API key now"
+                " (stored in the OS keychain)"
+            )
+        else:
+            title = "Paste your API key (stored in the OS keychain)"
+        await self._set(title,
                         Input(placeholder="sk-...", password=True, id="step-input"))
 
     async def _step_base_url(self) -> None:
@@ -185,23 +293,97 @@ class SetupApp(App):
             Input(value=default, placeholder="http://localhost:11434", id="step-input"),
         )
 
-    async def _step_model(self) -> None:
-        from jarn.providers import strip_profile
-
-        prov = self.answers["provider"]
+    def _default_model_id(self, prov: str) -> str:
         default_full = self.answers.get("model") or DEFAULT_MODELS.get(
             prov, DEFAULT_MODELS["openrouter"]
         )["main"]
         default_id = strip_profile(default_full, prov)
         if prov == CUSTOM_OPENAI_PROFILE and default_id == "your-model":
             default_id = "gpt-4o"
-        if prov == CUSTOM_OPENAI_PROFILE:
+        return default_id
+
+    async def _step_model(self) -> None:
+        prov = self.answers["provider"]
+        default_id = self._default_model_id(prov)
+
+        # Picked "enter manually" / came back to override a slug hint → free-text.
+        if self._model_manual:
+            await self._model_text_input(prov, default_id)
+            return
+
+        # Local / custom endpoints: probe the live endpoint for its served models
+        # and offer an arrow-key pick (preferred over blind typing).
+        if profile_needs_base_url(prov):
+            discovered = self._discover_models(prov)
+            if discovered:
+                items = [(m, m) for m in discovered]
+                items.append(("__manual__", "Enter a model id manually…"))
+                await self._set(
+                    f"Pick a model served by {prov}  ({len(discovered)} found)",
+                    self._option_list(
+                        items, default_id if default_id in discovered else None
+                    ),
+                )
+                return
+            # Unreachable / empty endpoint: nudge instead of a silent blind box,
+            # then still degrade to manual entry.
+            endpoint = self.answers.get("base_url") or PROVIDER_BASE_URLS.get(prov, "")
+            await self._model_text_input(prov, default_id, unreachable=endpoint)
+            return
+
+        # Cloud providers: a small curated pick-list + a custom free-text entry
+        # (the project's "list + enter your own" preference) so the user isn't
+        # blind-typing a slug they can't see.
+        curated = _curated_cloud_models(prov)
+        if curated:
+            items = [(m, m) for m in curated]
+            items.append(("__manual__", "Enter a model id manually…"))
+            await self._set(
+                f"Pick a model for {prov}  (or enter your own)",
+                self._option_list(
+                    items, default_id if default_id in curated else None,
+                    highlight=default_id if default_id in curated else None,
+                ),
+            )
+            return
+
+        await self._model_text_input(prov, default_id)
+
+    async def _model_text_input(
+        self, prov: str, default_id: str, *, unreachable: str | None = None
+    ) -> None:
+        """Render the free-text model box, optionally with an unreachable-endpoint
+        nudge or a dot-vs-dash slug-correction hint."""
+        if unreachable:
+            server = "Ollama" if prov == "ollama" else (
+                "LM Studio" if prov == "lmstudio" else "your endpoint"
+            )
+            title = (
+                f"couldn't reach {unreachable} — is {server} running?"
+                f"  Enter a model id for {prov} manually"
+            )
+        elif self._model_hint:
+            title = f"Model id for {prov} — {self._model_hint}"
+        elif prov == CUSTOM_OPENAI_PROFILE:
             title = "Model id on your endpoint  (e.g. gpt-4o, qwen3-coder)"
         else:
             title = (
                 f"Model id for {prov}  (e.g. deepseek/deepseek-v4-flash for OpenRouter)"
             )
         await self._set(title, Input(value=default_id, id="step-input"))
+
+    def _discover_models(self, prov: str) -> list[str]:
+        """Probe a local endpoint for its served models (``[]`` on any failure)."""
+        if not profile_needs_base_url(prov):
+            return []
+        from jarn.config.schema import ProviderConfig, ProviderType
+
+        base_url = self.answers.get("base_url") or PROVIDER_BASE_URLS.get(prov)
+        try:
+            ptype = ProviderType(prov)
+        except ValueError:
+            return []
+        return list_remote_models(ProviderConfig(type=ptype, base_url=base_url))
 
     async def _step_theme(self) -> None:
         await self._set("Theme?", self._option_list(_THEMES, self.answers.get("theme", "dark")))
@@ -235,13 +417,31 @@ class SetupApp(App):
         if step == "provider":
             self.answers["provider"] = key
             self.answers.pop("key_ref", None)
+            self.answers.pop("storage", None)
             self.answers.pop("base_url", None)
-            await self._goto(self._next_after_provider(key))
+            # Detected env key for this exact provider → reuse it as a
+            # ${ENV} reference and skip the storage prompt entirely.
+            if self.env_hit is not None and self.env_hit[0] == key:
+                self.answers["storage"] = "env"
+                self._set_env_key_ref()
+                await self._goto(self._next_after_key())
+            else:
+                await self._goto(self._next_after_provider(key))
         elif step == "storage":
             self.answers["storage"] = key
             if key == "env":
                 self._set_env_key_ref()
             await self._goto(self._next_after_storage(key))
+        elif step == "model":
+            if key == "__manual__":
+                # Drop the pick-list and render the free-text input instead.
+                self._model_manual = True
+                self._model_hint = None
+                self._model_hinted_value = None
+                await self._render_step()
+            else:
+                self._set_model(key)
+                await self._goto("theme")
         elif step == "theme":
             self.answers["theme"] = key
             self.theme = theme_name_for(key)
@@ -273,16 +473,40 @@ class SetupApp(App):
             self._base_url_error = None
             await self._goto("model")
         elif self.step == "model":
-            from jarn.providers import qualify_model_ref, strip_profile
-
             prov = self.answers["provider"]
-            default_id = strip_profile(
-                DEFAULT_MODELS.get(prov, DEFAULT_MODELS["openrouter"])["main"], prov
-            )
-            if prov == CUSTOM_OPENAI_PROFILE and default_id == "your-model":
-                default_id = "gpt-4o"
-            self.answers["model"] = qualify_model_ref(value or default_id, prov)
+            # Dot-vs-dash slug trap: if the typed slug looks like the wrong form,
+            # surface the suggestion inline once. Resubmitting the same value
+            # unchanged accepts it (the user's deliberate call).
+            if value and value != self._model_hinted_value:
+                hint = self._slug_hint(prov, value)
+                if hint:
+                    self._model_hint = hint
+                    self._model_hinted_value = value
+                    self._model_manual = True
+                    await self._render_step()
+                    return
+            self._model_hint = None
+            self._model_hinted_value = None
+            self._set_model(value)
             await self._goto("theme")
+
+    def _set_model(self, value: str) -> None:
+        prov = self.answers["provider"]
+        self.answers["model"] = qualify_model_ref(value or self._default_model_id(prov), prov)
+
+    def _slug_hint(self, prov: str, slug: str) -> str | None:
+        """A dot-vs-dash ``suggest_slug`` hint for ``slug`` under ``prov`` (or None).
+
+        Only meaningful for providers backed by a known :class:`ProviderType`;
+        custom endpoints serve arbitrary ids so no hint is offered there.
+        """
+        from jarn.config.schema import ProviderType
+
+        try:
+            ptype = ProviderType(prov)
+        except ValueError:
+            return None
+        return suggest_slug(ptype, qualify_model_ref(slug, prov).split("/", 1)[-1])
 
     def _set_env_key_ref(self) -> None:
         prov = self.answers["provider"]
@@ -336,6 +560,14 @@ def run_setup_tui(*, force: bool = False) -> Path | None:
 
     config = getattr(app, "_saved_config", None)
     if config is not None and app._saved_provider in CLOUD_PROVIDERS:
-        validate_config(app._saved_provider, app._saved_model, config)
+        from rich.prompt import Confirm
+
+        # Skippable: validation pings the model, which for a local/custom endpoint
+        # can cold-load for ~1 min — don't force a new user to wait through it.
+        if Confirm.ask(
+            "Validate the API key now? (a local model may need to load — can be slow)",
+            default=True,
+        ):
+            validate_config(app._saved_provider, app._saved_model, config)
 
     return app.result_path

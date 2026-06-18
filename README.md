@@ -28,15 +28,17 @@ It runs entirely in your terminal (a Web UI is on the roadmap, post-launch). Not
 capabilities: **AGENTS.md / CLAUDE.md interop** (works out-of-the-box beside other
 agents), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcripts**,
 **`!` shell escape**, **OS-level execution sandbox** (macOS `sandbox-exec` / Linux
-`bwrap`) and **Docker container backend** (`execution.backend: docker`), **policy
-profiles** (`/profile`, `jarn --profile`) with an untrusted `review-only` floor,
+`bwrap`) and **Docker container backend** (`execution.backend: docker`), **presets**
+(`/preset`, `jarn --preset`) that set mode + sandbox at once, with an untrusted floor,
 **auto-checkpoint + `/undo` / `/redo`**, **repo map** (`/map`), a **wiki knowledge
 base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists to
 `~/.jarn/config.yaml`), and per-server **MCP health** (`/mcp status`).
 
-> **Status:** v0.3.0 (Alpha) — prepared, pending publish; v0.2.0 is the latest on
-> PyPI. Adds real container/OS isolation, policy profiles, a smoke-eval harness,
-> and `/mcp` / `/trust`. The architecture, configuration, permission engine, and
+> **Status:** v0.4.0 (Alpha) — prepared, pending publish. Closes five user pain
+> points vs other harnesses (prompt caching, plan-mode handoff, `/commit` +
+> `/review`, background processes, macOS image paste) plus a UX-polish round (live
+> in-place streaming, conversation `/rewind`, rich `@`-mentions, in-session `/key`,
+> faster approvals). The architecture, configuration, permission engine, and
 > terminal REPL are implemented and tested; live model calls require your own API
 > key. See [CHANGELOG.md](CHANGELOG.md) and [SECURITY.md](SECURITY.md).
 
@@ -56,8 +58,12 @@ base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists 
 - **Bring your own model** — 13 providers (OpenRouter, Anthropic, OpenAI, Google,
   Mistral, Groq, DeepSeek, Together, Fireworks, xAI, Ollama, LM Studio, plus a generic
   OpenAI-compatible endpoint) with per-task routing so subagents can use cheaper models.
-- **Cost-aware** — live token/cost tracking with a per-session budget that can warn
-  or hard-stop.
+- **Cost- & context-aware** — live token/cost tracking (with a per-tool breakdown)
+  and a per-session budget that can warn or hard-stop; a context-% gauge and live
+  generation throughput (tok/s) that work for local models (LM Studio / Ollama)
+  too, not just priced cloud ones.
+- **Date-aware** — the current local date/time is injected into the system prompt,
+  so "today"-relative requests don't anchor to the model's training cutoff.
 - **Extensible** — skills, slash commands, custom subagents, lifecycle hooks, and MCP
   servers, all configured through plain files in `~/.jarn` and `.jarn/`.
 
@@ -157,6 +163,8 @@ preview appear inline.
 - **Shift+Tab** cycles the permission mode (plan → ask → auto-edit → yolo); the new
   mode flashes on the input border and stays in the status bar.
 - **Ctrl+O** (or **`/expand`**) opens the last turn's full tool output in the pager.
+- **Ctrl+V** (macOS) pastes an image/screenshot from the clipboard — it's saved under
+  `.jarn/pastes/` and inserted as an `@path` the agent reads on send.
 - **Esc** cancels the running turn. **Ctrl+C** cancels a turn / clears the input,
   and **twice in a row** exits (Claude Code-style). **Ctrl+Q** also quits.
 - **Copy text:** the terminal owns selection — just **drag to select and ⌘C**
@@ -179,28 +187,36 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/help` | Show available commands and shortcuts. |
 | `/init` | Create a JARN.md project context file. |
 | `/config` | View or edit settings: /config, /config get <key>, /config set <key> <value> (persists). |
-| `/model [/ref]` | Show or switch the active model. |
+| `/model [/ref\|refresh]` | Show or switch the active model; /model refresh re-queries local endpoints. |
 | `/mode [plan\|ask\|auto-edit\|yolo]` | Show or switch the permission mode (plan/ask/auto-edit/yolo). |
 | `/sandbox [on\|off]` | Show or toggle the execution backend (local/sandbox). |
-| `/profile [<profile-name>]` | Show or apply a policy profile (permission mode + sandbox + web tools). |
+| `/key [<key>]` | Set or replace the API key for the current provider (stored in the keychain). |
+| `/preset [<preset-name>]` | Show or apply a preset — a shortcut that sets mode + sandbox at once. |
+| `/profile [<preset-name>]` | Deprecated alias of /preset (kept working). |
 | `/cost` | Show session token usage and cost. |
 | `/compact` | Summarize and compact the conversation context. |
 | `/expand` | Open the last turn's full tool output in the pager (same as Ctrl+O). |
 | `/clear` | Clear the conversation and start a fresh thread. |
 | `/sessions` | List and resume previous sessions. |
 | `/resume` | Pick a previous session to resume. |
+| `/rewind` | Rewind the conversation to an earlier turn and continue (forks a new thread). |
 | `/skills` | List available skills. |
-| `/memory [search\|show\|add\|update\|delete] ...` | List, search, show, add, update, or delete long-term memory. |
+| `/memory [search\|show\|add\|update\|delete\|dump] ...` | List, search, show, add, update, delete, or dump long-term memory. |
 | `/permissions` | Show current permission rules and allowlist. |
 | `/mcp [status]` | Show configured MCP servers with per-server health and last error. |
 | `/trust` | Trust this project root and lift the untrusted review-only floor. |
 | `/queue [clear\|cancel <n>\|move <from> <to>]` | Show or manage queued input lines (while a turn is running). |
 | `/undo` | Revert the last agent turn's file changes. |
 | `/redo` | Re-apply the last undone agent turn's file changes. |
+| `/abort` | Cancel the running turn and roll back its file changes. |
+| `/commit` | Draft a commit message from the current diff and commit (with approval). |
+| `/review` | Review the current working-tree diff for bugs and quality (read-only). |
 | `/checkpoints` | List recent auto-checkpoints. |
+| `/ps [kill <id>]` | List or kill background processes (from run_in_background). |
 | `/quit` | Exit J.A.R.N. |
 | `/map [focus] [--refresh]` | Show the ranked repo map (codebase overview). |
 | `/wiki [search <q>\|list]` | Search or list wiki knowledge-base pages. |
+| `/doctor` | Diagnose configuration, providers, and keys. |
 
 ## Permission modes
 
@@ -210,6 +226,11 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `ask` (default) | ✅ | ask | ask | ask |
 | `auto-edit` | ✅ | ✅ in-scope | ask | ✅ *(read-only)* |
 | `yolo` | ✅ | ✅ | ✅ | ✅ |
+
+In **`plan`** mode the agent researches read-only, then presents a concrete plan
+(`exit_plan_mode`). Approve it and J.A.R.N. escalates the mode (default `auto-edit`,
+configurable via `plan.exit_mode`; the picker also offers `ask`) and carries the plan
+out in the same turn — no manual mode switch. Untrusted projects stay clamped to `plan`.
 
 The **danger-guard** overrides all modes: `rm -rf` (incl. `rm -r -f` / `--recursive
 --force`), force-push, `git reset --hard`, `mkfs`, fork bombs, out-of-scope writes, etc.
@@ -263,7 +284,7 @@ See [docs/EXTENDING.md](docs/EXTENDING.md) ([quick start](docs/EXTENDING.md#quic
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 789 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1166 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

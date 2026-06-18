@@ -88,6 +88,16 @@ session stays clamped to the `review-only` floor.
 > `/model`, `/mode`, `/sandbox`, `/profile` change the **current session only** and do
 > not persist; use `/config set` (or edit the file) to make a change stick.
 
+### Fixing a bad API key — `/key`
+
+If a provider rejects your key mid-session (a `401`), run `/key` to fix it without
+quitting. It prompts for the current provider's key, stores the secret in the OS
+keychain, points the provider's `api_key` at a `keychain:jarn/<provider>` reference
+(the secret is never inlined into config), and rebuilds the runtime so the next turn
+uses the new key. The reference is persisted to `~/.jarn/config.yaml`, so it also
+survives a restart. (You can pass the key inline as `/key <value>`, but it then lands
+in your scrollback/history — prefer the bare `/key` prompt.)
+
 ## Validation
 
 Config is validated strictly when it loads, so a typo fails loud instead of being
@@ -207,6 +217,15 @@ routing:
   subagent: openrouter/anthropic/claude-haiku-4-5   # delegated subagents (cheaper)
   summarizer: openrouter/anthropic/claude-haiku-4-5 # context summarization
   fallback: []                                      # tried on primary failure
+  prompt_cache: auto   # auto | off. Cloud caching is automatic — the agent engine
+                       #   adds Anthropic cache-control, and other cloud providers
+                       #   cache by prefix server-side. The lever this controls is
+                       #   the LOCAL keep-warm (keep_alive): auto applies it, off
+                       #   skips it (cloud caching still stays on either way).
+  keep_alive: 1800     # seconds to keep a LOCAL model + its KV/prefix cache
+                       #   resident between turns. Maps to Ollama's keep_alive and
+                       #   LM Studio's request ttl; without it those servers unload
+                       #   on idle and drop the cache. 0 = leave to the provider.
 
 # ── Budget ───────────────────────────────────────────────────────────────
 budget:
@@ -232,6 +251,10 @@ context:
 
 # ── Execution backend ────────────────────────────────────────────────────
 execution:
+  background: true         # register run/check/kill/list_background tools so the agent
+                           #   can run a dev server / watcher / long build without blocking
+                           #   the turn. Local backend only (a host process would escape a
+                           #   container); /ps lists them. Gated like shell.
   backend: local           # local | docker | sandbox  (toggle at runtime with /sandbox)
                            # local  — run on the host (permission engine is the only
                            #          authorizer; NO isolation)
@@ -407,6 +430,33 @@ compat:
 ```
 
 Both settings have sensible defaults and the section can be omitted entirely.
+
+### Context-file precedence
+
+J.A.R.N. loads **exactly one** context file per project — whichever name it
+finds first in the project root. The default resolution order is:
+
+| Priority | Filename | Origin |
+|---|---|---|
+| 1 (highest) | `JARN.md` | J.A.R.N. native |
+| 2 | `AGENTS.md` | OpenAI Codex / other agents |
+| 3 (lowest) | `CLAUDE.md` | Claude Code |
+
+**First present wins** — if `JARN.md` exists it is loaded and the others are
+ignored, even if they also exist. At session start J.A.R.N. prints a one-line
+notice naming the file that was loaded (e.g. `context: CLAUDE.md`) so you
+always know which one is active.
+
+To use a different file or order, set `compat.context_files` explicitly:
+
+```yaml
+compat:
+  context_files: ["MYCONTEXT.md", "AGENTS.md"]
+```
+
+The project context file is subject to the same trust gate as all other
+project-tier content — it is skipped (not injected) until the project is
+trusted.
 
 ## Secrets
 

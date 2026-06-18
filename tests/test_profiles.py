@@ -296,7 +296,27 @@ def test_profile_command_unknown_name(tmp_path, monkeypatch, base_config):
     ctrl = _controller(tmp_path, monkeypatch, base_config)
     res = ctrl.handle_command("profile", "bogus")
     assert res.rebuilt is False
-    assert "Unknown profile" in res.text
+    assert "Unknown preset" in res.text
+    ctrl.close()
+
+
+def test_preset_command_echoes_expansion(tmp_path, monkeypatch, base_config):
+    """/preset applies and echoes exactly what it expanded to (mode + sandbox)."""
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    res = ctrl.handle_command("preset", "ci")
+    assert res.rebuilt is True
+    assert "mode=yolo" in res.text and "sandbox=require" in res.text
+    assert ctrl.config.permission_mode.value == "yolo"
+    ctrl.close()
+
+
+def test_profile_command_is_deprecated_alias(tmp_path, monkeypatch, base_config):
+    """/profile still works but is flagged deprecated, delegating to /preset."""
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    res = ctrl.handle_command("profile", "ci")
+    assert res.rebuilt is True
+    assert "deprecated" in res.text.lower()
+    assert ctrl.config.permission_mode.value == "yolo"  # same effect as /preset
     ctrl.close()
 
 

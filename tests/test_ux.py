@@ -91,9 +91,20 @@ async def test_setup_wizard_branches_local_skips_key(tmp_path, monkeypatch):
         assert app.step == "model"
 
 
+def _clear_provider_env(monkeypatch) -> None:
+    from jarn.config.defaults import PROVIDER_ENV_VARS
+
+    for ev in PROVIDER_ENV_VARS.values():
+        monkeypatch.delenv(ev, raising=False)
+
+
 @pytest.mark.asyncio
 async def test_setup_wizard_full_flow_saves(tmp_path, monkeypatch):
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    # The env key is present, so the env reference resolves and the wizard does
+    # not have to stop to capture a key (openrouter becomes the detected hit).
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
     from jarn.config import paths
     from jarn.config.loader import load_config
     from jarn.onboarding.tui_wizard import SetupApp
@@ -105,9 +116,9 @@ async def test_setup_wizard_full_flow_saves(tmp_path, monkeypatch):
     app = SetupApp()
     async with app.run_test(size=(90, 40)) as pilot:
         await pilot.pause()
-        await step(pilot, "provider")   # openrouter (first) → storage
-        assert app.step == "storage"
-        await step(pilot, "storage")    # env (first) → model
+        # openrouter is the detected env hit + recommended → selecting it reuses
+        # the ${ENV} reference and skips straight past the storage prompt.
+        await step(pilot, "provider")   # openrouter → model (storage skipped)
         assert app.step == "model"
         await step(pilot, "model")      # accept prefilled default → theme
         assert app.step == "theme"
@@ -127,17 +138,23 @@ async def test_wizard_openrouter_with_slashed_model(tmp_path, monkeypatch):
     """Regression: provider=openrouter + model 'deepseek/deepseek-v4-flash'
     must route through openrouter, not the deepseek provider."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
     from jarn.config.loader import load_config
     from jarn.onboarding.tui_wizard import SetupApp
 
     app = SetupApp()
     async with app.run_test(size=(90, 40)) as pilot:
         await pilot.pause()
-        await pilot.press("enter")          # provider: openrouter (first)
+        # openrouter is the detected hit → storage prompt is skipped.
+        await pilot.press("enter")          # provider: openrouter → model
         await pilot.pause()
-        await pilot.press("enter")          # storage: env (first)
+        # model step: a curated cloud pick-list — drop to the custom entry and
+        # type an OpenRouter model id that contains a slash.
+        ol = app.query_one("#step-list")
+        ol.highlighted = len(ol._options) - 1   # the "enter manually" entry
+        await pilot.press("enter")
         await pilot.pause()
-        # model step: type an OpenRouter model id that contains a slash
         inp = app.query_one("#step-input")
         inp.value = "deepseek/deepseek-v4-flash"
         await pilot.press("enter")
@@ -159,6 +176,9 @@ async def test_wizard_openrouter_with_slashed_model(tmp_path, monkeypatch):
 async def test_setup_wizard_openai_compatible_custom_endpoint(tmp_path, monkeypatch):
     """Custom OpenAI-compatible: key + base_url + model are all persisted."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _clear_provider_env(monkeypatch)
+    # env reference resolves so the env storage path proceeds without a key prompt.
+    monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "sk-compat-env")
     from jarn.config import paths
     from jarn.config.defaults import ALL_PROVIDERS
     from jarn.config.loader import load_config
@@ -171,10 +191,9 @@ async def test_setup_wizard_openai_compatible_custom_endpoint(tmp_path, monkeypa
         await pilot.pause()
         ol = app.query_one("#step-list")
         ol.highlighted = compat_idx
-        await pilot.press("enter")          # provider → storage
-        await pilot.pause()
-        assert app.step == "storage"
-        await pilot.press("enter")          # env → base_url
+        # openai_compatible's env var is set → detected hit reuses the ${ENV}
+        # reference and skips the storage prompt, landing on base_url.
+        await pilot.press("enter")          # provider → base_url
         await pilot.pause()
         assert app.step == "base_url"
         inp = app.query_one("#step-input")
@@ -271,3 +290,74 @@ async def test_setup_wizard_back_navigation(tmp_path, monkeypatch):
         await pilot.press("escape")    # back → provider
         await pilot.pause()
         assert app.step == "provider"
+
+
+async def _goto_ollama_model_step(pilot, app):
+    """Drive the wizard provider→base_url→model for the local 'ollama' provider."""
+    from jarn.config.defaults import ALL_PROVIDERS
+
+    ollama_idx = list(ALL_PROVIDERS).index("ollama")
+    ol = app.query_one("#step-list")
+    ol.highlighted = ollama_idx
+    await pilot.press("enter")          # provider: ollama → base_url
+    await pilot.pause()
+    assert app.step == "base_url"
+    await pilot.press("enter")          # accept default Ollama URL → model
+    await pilot.pause()
+    assert app.step == "model"
+
+
+@pytest.mark.asyncio
+async def test_wizard_model_step_offers_arrow_select_when_endpoint_reachable(tmp_path, monkeypatch):
+    """A reachable Ollama endpoint → the model step is an arrow-key OptionList."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    from unittest.mock import patch
+
+    from textual.widgets import OptionList
+
+    from jarn.onboarding.tui_wizard import SetupApp
+
+    # Mock discovery so no real network call happens (patch the name the wizard
+    # imported, which is what _discover_models calls).
+    with patch(
+        "jarn.onboarding.tui_wizard.list_remote_models",
+        return_value=["qwen3-coder:30b", "llama3:8b"],
+    ):
+        app = SetupApp()
+        async with app.run_test(size=(90, 40)) as pilot:
+            await pilot.pause()
+            await _goto_ollama_model_step(pilot, app)
+            # The model step is now a selectable list, not a free-text Input.
+            lst = app.query_one("#step-list", OptionList)
+            labels = [str(opt.prompt) for opt in lst._options]
+            assert any("qwen3-coder:30b" in lbl for lbl in labels)
+            assert any("llama3:8b" in lbl for lbl in labels)
+            assert any("manually" in lbl.lower() for lbl in labels)
+            # Pick the first discovered model via arrow-select.
+            lst.highlighted = 0
+            await pilot.press("enter")
+            await pilot.pause()
+    assert app.answers["model"] == "ollama/qwen3-coder:30b"
+
+
+@pytest.mark.asyncio
+async def test_wizard_model_step_degrades_to_manual_when_unreachable(tmp_path, monkeypatch):
+    """An unreachable endpoint (empty list) → free-text Input, never blocks."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    from unittest.mock import patch
+
+    from textual.widgets import Input
+
+    from jarn.onboarding.tui_wizard import SetupApp
+
+    with patch("jarn.onboarding.tui_wizard.list_remote_models", return_value=[]):
+        app = SetupApp()
+        async with app.run_test(size=(90, 40)) as pilot:
+            await pilot.pause()
+            await _goto_ollama_model_step(pilot, app)
+            # No discovered models → manual entry input is present.
+            inp = app.query_one("#step-input", Input)
+            inp.value = "my-local-model"
+            await pilot.press("enter")
+            await pilot.pause()
+    assert app.answers["model"] == "ollama/my-local-model"

@@ -24,6 +24,7 @@ flagged as incomplete rather than silently wrong), and report a context window o
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,11 +33,39 @@ import yaml
 
 from jarn.config import paths
 
+logger = logging.getLogger("jarn.cost")
+
+# Set of model ids for which the unpriced notice has already been emitted this
+# process lifetime.  Kept at module level so repeated calls never re-warn.
+_WARNED_UNPRICED: set[str] = set()
+
+
+def warn_unpriced(model_id: str) -> None:
+    """Record (once per model id) that no price was found for *model_id*.
+
+    Routed to the ``jarn`` file logger, NOT ``warnings.warn``: in the TUI a raw
+    Python warning leaks to stderr and corrupts the display mid-session (it reads
+    like an error). The unpriced state is still surfaced cleanly to the user via
+    ``/cost`` (the ``unpriced`` call count). Deduped per model id so the
+    high-frequency cost path never repeats it.
+    """
+    if model_id in _WARNED_UNPRICED:
+        return
+    _WARNED_UNPRICED.add(model_id)
+    logger.warning("No price for %s — cost will be counted as $0", model_id)
+
 
 @dataclass(frozen=True, slots=True)
 class Price:
     input_per_mtok: float
     output_per_mtok: float
+    # Optional prompt-cache rates ($/Mtok). ``None`` (the default) means "price
+    # like uncached input" — so adding cache accounting never changes the total
+    # for a price table that doesn't declare cache rates. Cache reads are usually
+    # ~0.1x input and cache writes ~1.25x input, but those are provider-specific,
+    # so we don't guess: a price source must opt in to override the fallback.
+    cache_read_rate: float | None = None
+    cache_write_rate: float | None = None
 
 
 # Curated anchors — kept deliberately small: the dedicated Anthropic API model
@@ -251,11 +280,41 @@ def context_window(model_id: str) -> int:
     return 0
 
 
-def cost_of(model_id: str, input_tokens: int, output_tokens: int) -> float | None:
+def cost_of(
+    model_id: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+) -> float | None:
+    """USD cost of one call, or ``None`` if the model is unpriced.
+
+    ``input_tokens`` is the provider's *full* reported input — LangChain's
+    ``usage_metadata['input_tokens']`` already folds the prompt-cache counts back
+    into the total (Anthropic's raw API excludes them; LangChain adds them back).
+    ``cache_read_tokens`` / ``cache_creation_tokens`` are therefore the cached
+    *subset* of that input: they are subtracted from the plain-input charge and
+    repriced at the model's explicit cache rate when set, else at the plain input
+    rate — so a cached token is counted once, never billed at the input rate AND
+    as a cache line. With both at 0 (no cache usage), the result is exactly the
+    original ``input + output`` figure — totals never drift.
+    """
     price = lookup(model_id)
     if price is None:
+        warn_unpriced(model_id)
         return None
+    cache_read_rate = (
+        price.cache_read_rate if price.cache_read_rate is not None else price.input_per_mtok
+    )
+    cache_write_rate = (
+        price.cache_write_rate if price.cache_write_rate is not None else price.input_per_mtok
+    )
+    # Cache tokens are a subset of input_tokens — charge the uncached remainder at
+    # the input rate and the cached portions at their own rates (no double-count).
+    plain_input = max(0, input_tokens - cache_read_tokens - cache_creation_tokens)
     return (
-        input_tokens / 1_000_000 * price.input_per_mtok
+        plain_input / 1_000_000 * price.input_per_mtok
         + output_tokens / 1_000_000 * price.output_per_mtok
+        + cache_read_tokens / 1_000_000 * cache_read_rate
+        + cache_creation_tokens / 1_000_000 * cache_write_rate
     )

@@ -30,7 +30,8 @@ def test_builtin_registry_routes_are_handled():
             assert hasattr(Controller, f"_cmd_{cmd.name.replace('-', '_')}")
         elif cmd.route == "repl":
             assert cmd.name in {
-                "compact", "expand", "resume", "model", "mode", "queue",
+                "compact", "expand", "resume", "model", "mode", "queue", "abort",
+                "commit", "review", "key", "rewind",
             }
 
 
@@ -47,7 +48,71 @@ def test_format_help_is_valid_rich_markup():
 
     buf = StringIO()
     Console(file=buf, force_terminal=True, width=100).print(format_help())
-    assert "Built-in commands" in buf.getvalue()
+    rendered = buf.getvalue()
+    # Grouped sections replace the old flat "Built-in commands" header.
+    assert "Daily" in rendered
+    assert "Setup" in rendered
+    assert "Session" in rendered
+
+
+def test_format_help_groups_contain_expected_commands():
+    """Commands appear under the correct group section."""
+    body = format_help()
+    # Verify section ordering: Daily appears before Setup, Setup before Session.
+    assert body.index("[b]Daily[/b]") < body.index("[b]Setup[/b]")
+    assert body.index("[b]Setup[/b]") < body.index("[b]Session[/b]")
+    # Spot-check a few commands per group.
+    setup_pos = body.index("[b]Setup[/b]")
+    session_pos = body.index("[b]Session[/b]")
+    # Daily commands appear before Setup header.
+    assert body.index("/model") < setup_pos
+    assert body.index("/cost") < setup_pos
+    assert body.index("/clear") < setup_pos
+    # Setup commands appear between Setup and Session headers.
+    assert setup_pos < body.index("/config") < session_pos
+    assert setup_pos < body.index("/trust") < session_pos
+    # Session commands appear after Session header.
+    assert body.index("/resume") > session_pos
+    assert body.index("/queue") > session_pos
+
+
+def test_format_help_has_shortcuts_block():
+    """Shortcuts block is present in the rendered help."""
+    body = format_help()
+    assert "[b]Shortcuts[/b]" in body
+    assert "Shift+Tab" in body or "Tab complete" in body
+
+
+def test_format_help_has_toolbar_glyphs_legend():
+    """Toolbar glyphs legend block is rendered with the expected symbols."""
+    body = format_help()
+    assert "[b]Toolbar glyphs[/b]" in body
+    assert "◇" in body   # plan
+    assert "◆" in body   # ask
+    assert "⚡" in body  # auto-edit
+    assert "⚠" in body   # yolo
+    assert "●" in body   # key ok
+    assert "✗" in body   # key fail
+    assert "queue N" in body
+
+
+def test_builtin_command_group_field():
+    """Every builtin has a non-empty group assigned."""
+    from jarn.extensibility.commands import BUILTINS
+
+    for cmd in BUILTINS:
+        assert cmd.group in ("Daily", "Setup", "Session"), (
+            f"/{cmd.name} has unexpected group {cmd.group!r}"
+        )
+
+
+def test_profile_command_entry_unchanged():
+    """P3.A is deferred — the 'profile' command entry must not be renamed."""
+    from jarn.extensibility.commands import BUILTINS
+
+    profile_cmd = next((c for c in BUILTINS if c.name == "profile"), None)
+    assert profile_cmd is not None, "/profile must remain in BUILTINS (P3.A deferred)"
+    assert profile_cmd.group == "Setup"
 
 
 def test_readme_rows_cover_all_builtins():
@@ -107,6 +172,46 @@ def test_toolbar_shows_queue_and_collapses_narrow():
     assert "ask" in narrow.value
 
 
+def test_toolbar_trusted_shows_lock():
+    result = render_toolbar(
+        model="openrouter/claude",
+        mode="ask",
+        cost_line="$0.00 · 0 tok · 0 calls",
+        cost_status=BudgetStatus.OK,
+        trusted=True,
+        width=120,
+    )
+    assert "trusted" in result.value
+    assert "untrusted" not in result.value
+
+
+def test_toolbar_untrusted_shows_warning_and_pointer():
+    result = render_toolbar(
+        model="openrouter/claude",
+        mode="ask",
+        cost_line="$0.00 · 0 tok · 0 calls",
+        cost_status=BudgetStatus.OK,
+        trusted=False,
+        width=120,
+    )
+    assert "untrusted" in result.value
+    assert "jarn trust" in result.value
+
+
+def test_toolbar_trust_segment_survives_narrow():
+    """Trust segment has priority 2; cost (priority 5) drops before trust does."""
+    # At width=60 the cost segment drops but model, mode, and trust all fit.
+    narrow = render_toolbar(
+        model="m",
+        mode="ask",
+        cost_line="$0.00 · 1000 tok · 99 calls · very long cost line",
+        cost_status=BudgetStatus.OK,
+        trusted=False,
+        width=60,
+    )
+    assert "untrusted" in narrow.value
+
+
 def test_no_color_plain_toolbar(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     palette.configure_ui(theme="dark", accent="cyan")
@@ -127,8 +232,7 @@ async def test_parallel_tool_durations_by_call_id():
     assert "3 lines" in out and "5 lines" in out
 
 
-@pytest.mark.asyncio
-async def test_queue_command_list(tmp_path, monkeypatch):
+def _make_app(tmp_path, monkeypatch):
     from jarn import repl
     from jarn.config.schema import Config, ProviderConfig, ProviderType, RoutingConfig
 
@@ -140,7 +244,12 @@ async def test_queue_command_list(tmp_path, monkeypatch):
         providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
         routing=RoutingConfig(main="openrouter/m"),
     )
-    app = repl.InlineApp(cfg, root)
+    return repl.InlineApp(cfg, root)
+
+
+@pytest.mark.asyncio
+async def test_queue_command_list(tmp_path, monkeypatch):
+    app = _make_app(tmp_path, monkeypatch)
     app._input_queue.append("first", "first")
     app._input_queue.append("second", "second")
     buf = StringIO()
@@ -148,3 +257,26 @@ async def test_queue_command_list(tmp_path, monkeypatch):
     await app._cmd_queue("")
     out = buf.getvalue()
     assert "1. first" in out and "2. second" in out
+
+
+@pytest.mark.asyncio
+async def test_drain_queue_does_not_re_echo_line(tmp_path, monkeypatch):
+    """A queued line is echoed once (the `» queued:` marker at submit time); the
+    drain that starts its turn must NOT print a second `›` scrollback line."""
+    app = _make_app(tmp_path, monkeypatch)
+    app._input_queue.append("hello world", "hello world")
+    buf = StringIO()
+    app.console = Console(file=buf, width=80)
+
+    async def _noop(_text: str) -> None:
+        return None
+
+    monkeypatch.setattr(app, "_handle", _noop)
+    app._drain_queue()
+    assert app._turn_task is not None
+    await app._turn_task  # let the (mocked) turn finish
+
+    out = buf.getvalue()
+    # No duplicate prompt echo on drain.
+    assert "› hello world" not in out
+    assert "hello world" not in out

@@ -26,7 +26,14 @@ from langgraph.types import Command, Overwrite
 
 from jarn.agent.permissions_bridge import tool_to_action
 from jarn.cost import BudgetExceeded, CostTracker
-from jarn.permissions import Action, Decision, PermissionEngine, PermissionResult, RememberScope
+from jarn.permissions import (
+    Action,
+    ActionKind,
+    Decision,
+    PermissionEngine,
+    PermissionResult,
+    RememberScope,
+)
 
 # LangChain message ``.type`` values that represent assistant output.
 _ASSISTANT_TYPES = {"ai", "AIMessageChunk"}
@@ -59,11 +66,37 @@ class Event:
 # -- approval contract ------------------------------------------------------
 
 @dataclass(slots=True)
+class SuggestedMemory:
+    """A memory the agent proposes for the user to approve, edit, or decline.
+
+    Carried on an :class:`ApprovalRequest` when the agent calls ``suggest_memory``.
+    The approver surfaces a "Save this memory?" prompt and, on approval, writes it
+    through the existing :class:`~jarn.memory.MemoryStore` (respecting the global
+    vs project tier and the project's trust gating)."""
+
+    name: str
+    description: str
+    body: str
+    type: str = "project"
+    #: ``"global"`` or ``"project"`` — which store tier to write to. Project writes
+    #: are refused on an untrusted project (the approver reports why).
+    scope: str = "project"
+
+
+@dataclass(slots=True)
 class ApprovalRequest:
     action: Action
     result: PermissionResult
     description: str = ""
     args: dict[str, Any] = field(default_factory=dict)
+    #: Set (to the proposed plan text) when this is a plan-mode handoff request
+    #: from ``exit_plan_mode`` rather than an ordinary tool approval. The approver
+    #: shows the plan and, on approval, escalates the permission mode.
+    plan: str | None = None
+    #: Set when this is an agent memory suggestion (``suggest_memory``) rather than
+    #: an ordinary tool approval. The approver shows it and, on approval, writes it
+    #: through the memory store.
+    suggested_memory: SuggestedMemory | None = None
 
 
 @dataclass(slots=True)
@@ -71,6 +104,18 @@ class ApprovalReply:
     approved: bool
     scope: RememberScope = RememberScope.ONCE
     message: str = ""           # reason shown to the model on rejection
+    #: When the user chose "edit before apply", the tool args edited in $EDITOR.
+    #: The turn resumes with a LangGraph ``edit`` decision carrying these args, so
+    #: the *edited* content lands on disk instead of the agent's original. ``None``
+    #: means a plain approve (run the tool with its original args).
+    # TODO(per-hunk): edit-before-apply replaces the whole new content/replacement.
+    # Per-hunk (partial) approval is deferred — it needs hunk parsing + partial
+    # apply of a unified diff; not implemented in this pass (see fable-todo.md P4.B).
+    edited_args: dict[str, Any] | None = None
+    #: For a plan-mode handoff (``exit_plan_mode``): the permission mode the user
+    #: chose to escalate to on approval (e.g. ``"auto-edit"``/``"ask"``). The
+    #: approver applies it; ``None`` for ordinary approvals.
+    plan_mode_target: str | None = None
 
 
 # approver(request) -> reply
@@ -213,10 +258,14 @@ class SessionDriver:
                 # Tag retryable provider failures (rate-limit/timeout/5xx/etc.)
                 # so the front-end can transparently fall back to another model
                 # — but only when nothing has been emitted yet (it decides that).
-                yield Event(
-                    EventKind.ERROR, text=str(exc),
-                    data={"retryable": _is_retryable_error(exc)},
-                )
+                # Auth/401 failures are *not* retryable (rotating models won't fix a
+                # rejected key); tag them so the front-end can show a friendly,
+                # actionable message naming the provider instead of the raw SDK JSON.
+                data: dict[str, Any] = {"retryable": _is_retryable_error(exc)}
+                if _is_auth_error(exc):
+                    data["auth"] = True
+                    data["provider"] = _provider_of_ref(self.main_model_ref)
+                yield Event(EventKind.ERROR, text=str(exc), data=data)
                 return
 
             if not interrupts:
@@ -226,12 +275,36 @@ class SessionDriver:
                 yield Event(EventKind.DONE, data={"usage": self.tracker.summary_line()})
                 return
 
-            decisions = []
-            async for ev, decision in self._resolve_interrupts(interrupts):
-                if ev is not None:
-                    yield ev
-                decisions.append(decision)
-            payload = Command(resume={"decisions": decisions})
+            # Dedupe interrupts by id: with stream_mode=["messages","updates"] +
+            # subgraphs=True the same __interrupt__ can surface more than once, and
+            # resuming with one decision per duplicate over-counts ("Number of human
+            # decisions (N) does not match number of hanging tool calls" — seen when
+            # the model batches parallel tool calls). One decision per unique
+            # interrupt keeps the count aligned with the hanging calls.
+            seen_intr: set[Any] = set()
+            unique_interrupts = []
+            for intr in interrupts:
+                key = getattr(intr, "id", None) or id(intr)
+                if key in seen_intr:
+                    continue
+                seen_intr.add(key)
+                unique_interrupts.append(intr)
+
+            # Resolve each interrupt's gated calls, grouped BY interrupt so the
+            # resume can be addressed per interrupt id. With subagents, each
+            # subagent raises its own HITL interrupt — so more than one can be
+            # pending at once, and LangGraph then requires a resume keyed by
+            # interrupt id (see _resume_payload).
+            resolved: list[tuple[Any, list[Any]]] = []
+            for intr in unique_interrupts:
+                iid = getattr(intr, "id", None)
+                intr_decisions: list[Any] = []
+                async for ev, decision in self._resolve_interrupts([intr]):
+                    if ev is not None:
+                        yield ev
+                    intr_decisions.append(decision)
+                resolved.append((iid, intr_decisions))
+            payload = _resume_payload(resolved)
 
     # -- stream handling ----------------------------------------------------
 
@@ -244,7 +317,8 @@ class SessionDriver:
         # under the tool call mirrors Claude Code's "⎿ result" affordance.
         if mtype == "tool":
             full = _text_of(getattr(msg, "content", "")).strip()
-            data: dict[str, Any] = {"summary": _tool_summary(full)}
+            tool_name = getattr(msg, "name", "") or ""
+            data: dict[str, Any] = {"summary": _tool_summary(full, tool_name)}
             tool_call_id = getattr(msg, "tool_call_id", None)
             if tool_call_id:
                 data["tool_call_id"] = str(tool_call_id)
@@ -340,10 +414,17 @@ class SessionDriver:
     def _record_usage(self, msg: Any) -> None:
         usage = getattr(msg, "usage_metadata", None)
         if usage:
+            # LangChain reports prompt-cache tokens under ``input_token_details``
+            # (``cache_read`` / ``cache_creation``); absent for providers/turns
+            # without caching, in which case both default to 0.
+            details = usage.get("input_token_details") or {}
             self.tracker.record(
                 self._resolve_model_ref(msg),
                 int(usage.get("input_tokens", 0)),
                 int(usage.get("output_tokens", 0)),
+                tool=_first_tool_name(msg),
+                cache_read_tokens=int(details.get("cache_read", 0)),
+                cache_creation_tokens=int(details.get("cache_creation", 0)),
             )
 
     def _resolve_model_ref(self, msg: Any) -> str:
@@ -383,6 +464,77 @@ class SessionDriver:
             for req in _action_requests(intr):
                 name = req.get("action") or req.get("name") or "tool"
                 args = req.get("args", {}) or {}
+
+                # Plan-mode handoff: exit_plan_mode is callable *in* plan mode, so
+                # it bypasses the engine (which would deny it like any non-read
+                # action). The approver shows the plan and escalates the mode on
+                # approval; an approve resumes the tool (its return is the model's
+                # "go" signal), a reject keeps the agent planning.
+                if name == "exit_plan_mode":
+                    plan_text = str(args.get("plan", "")).strip()
+                    reply = await self.approver(
+                        ApprovalRequest(
+                            action=Action(ActionKind.READ, target="plan", tool=name),
+                            result=PermissionResult(Decision.ASK, "plan ready for review"),
+                            description=req.get("description", ""),
+                            args=args,
+                            plan=plan_text,
+                        )
+                    )
+                    if reply.approved:
+                        yield (
+                            Event(EventKind.APPROVAL, text="plan approved — executing",
+                                  data={"target": "plan"}),
+                            {"type": "approve"},
+                        )
+                    else:
+                        yield (
+                            Event(EventKind.APPROVAL, text="plan not approved — still planning",
+                                  data={"target": "plan"}),
+                            {"type": "reject",
+                             "message": reply.message
+                             or "Keep refining the plan; call exit_plan_mode again when ready."},
+                        )
+                    continue
+
+                # Memory suggestion: suggest_memory proposes a memory for the user
+                # to approve. It never mutates the world on its own (the approver
+                # does the write on approval), so it bypasses the engine and routes
+                # straight to the approver — an approve resumes the tool (its return
+                # is the model's confirmation), a reject keeps the agent going
+                # without writing anything.
+                if name == "suggest_memory":
+                    suggestion = SuggestedMemory(
+                        name=str(args.get("name", "")).strip(),
+                        description=str(args.get("description", "")).strip(),
+                        body=str(args.get("body", "")).strip(),
+                        type=str(args.get("type", "project")).strip() or "project",
+                        scope=str(args.get("scope", "project")).strip() or "project",
+                    )
+                    reply = await self.approver(
+                        ApprovalRequest(
+                            action=Action(ActionKind.READ, target="memory", tool=name),
+                            result=PermissionResult(Decision.ASK, "memory suggested"),
+                            description=req.get("description", ""),
+                            args=args,
+                            suggested_memory=suggestion,
+                        )
+                    )
+                    if reply.approved:
+                        yield (
+                            Event(EventKind.APPROVAL, text="memory saved",
+                                  data={"target": "memory"}),
+                            {"type": "approve"},
+                        )
+                    else:
+                        yield (
+                            Event(EventKind.APPROVAL, text="memory not saved",
+                                  data={"target": "memory"}),
+                            {"type": "reject",
+                             "message": reply.message or "User declined to save the memory."},
+                        )
+                    continue
+
                 action = tool_to_action(name, args)
 
                 # Pre-tool / pre-commit hooks run before the tool: a blocking
@@ -424,11 +576,22 @@ class SessionDriver:
                         if result.block_remember_always and scope is RememberScope.ALWAYS:
                             scope = RememberScope.SESSION
                         self.engine.remember(action, scope)
-                        yield (
-                            Event(EventKind.APPROVAL, text=f"approved: {name}",
-                                  data={"target": action.target, "scope": scope.value}),
-                            {"type": "approve"},
-                        )
+                        if reply.edited_args is not None:
+                            # Edit-before-apply: resume with a LangGraph ``edit``
+                            # decision so the tool runs with the user-edited args —
+                            # the edited content is what lands on disk.
+                            yield (
+                                Event(EventKind.APPROVAL, text=f"approved (edited): {name}",
+                                      data={"target": action.target, "scope": scope.value}),
+                                {"type": "edit",
+                                 "edited_action": {"name": name, "args": reply.edited_args}},
+                            )
+                        else:
+                            yield (
+                                Event(EventKind.APPROVAL, text=f"approved: {name}",
+                                      data={"target": action.target, "scope": scope.value}),
+                                {"type": "approve"},
+                            )
                     else:
                         self.engine.deny_session(action)
                         yield (
@@ -477,6 +640,22 @@ def _reasoning_of(msg: Any) -> str:
     return "".join(parts)
 
 
+def _first_tool_name(msg: Any) -> str | None:
+    """The tool a model call requested, for per-tool cost attribution.
+
+    The usage-bearing AI chunk also carries the (accumulated) tool calls it
+    decided on — ``tool_calls`` on a complete message, ``tool_call_chunks`` while
+    streaming. The first named call labels this call's cost; ``None`` (a plain
+    reply) falls back to ``RESPONSE_TOOL`` in the tracker so totals reconcile.
+    """
+    for attr in ("tool_calls", "tool_call_chunks"):
+        for call in getattr(msg, attr, None) or []:
+            name = call.get("name") if isinstance(call, dict) else None
+            if name:
+                return str(name)
+    return None
+
+
 #: Substrings / exception-name fragments that mark a provider error as worth a
 #: model fallback (transient or capacity-related, not a logic bug).
 _RETRYABLE_NAME_HINTS = ("timeout", "connecterror", "connectionerror", "ratelimit",
@@ -504,6 +683,45 @@ def _is_retryable_error(exc: BaseException) -> bool:
         return True
     msg = str(exc).lower()
     return any(h in msg for h in _RETRYABLE_MSG_HINTS)
+
+
+#: Exception-name fragments and message phrases that mark a provider failure as an
+#: authentication/authorization rejection — an invalid/expired/missing API key.
+#: Rotating to another model won't fix this, so it is handled separately from the
+#: retryable heuristic above (see ``_is_retryable_error``).
+_AUTH_NAME_HINTS = ("authenticationerror", "permissiondenied", "unauthorized")
+_AUTH_MSG_HINTS = ("invalid x-api-key", "invalid api key", "invalid_api_key",
+                   "incorrect api key", "authentication_error", "authentication error",
+                   "unauthorized", "no auth credentials", "missing api key",
+                   "expired api key", "invalid bearer token", "permission denied")
+
+
+def _is_auth_error(exc: BaseException) -> bool:
+    """Heuristic: is this a 401/403 auth rejection (bad/expired/missing key)?
+
+    Matches on a numeric ``status_code`` of 401/403, the exception type name, or
+    known message phrases. Kept deliberately narrow so a generic "permission"
+    string in an unrelated tool result doesn't get misclassified.
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and status in (401, 403):
+        return True
+    name = type(exc).__name__.lower()
+    if any(h in name for h in _AUTH_NAME_HINTS):
+        return True
+    msg = str(exc).lower()
+    if "401" in msg or "403" in msg:
+        return True
+    return any(h in msg for h in _AUTH_MSG_HINTS)
+
+
+def _provider_of_ref(ref: str) -> str:
+    """Best-effort provider/profile name from a model ref (e.g. ``anthropic`` from
+    ``anthropic/claude-opus-4-8``). Returns ``""`` when it can't be determined so
+    the caller can fall back to a generic phrasing."""
+    if not ref or ref == "unknown":
+        return ""
+    return ref.split("/", 1)[0] if "/" in ref else ""
 
 
 def _looks_like_git_commit(command: str) -> bool:
@@ -539,8 +757,39 @@ def _hook_detail(result: Any) -> str:
     return f"exit {getattr(result, 'exit_code', '?')}"
 
 
-def _tool_summary(content: str) -> str:
+def _web_search_summary(content: str) -> str:
+    """Richer one-line summary for web_search results: count + top source hosts."""
+    import re as _re
+    from urllib.parse import urlparse as _urlparse
+
+    # Count result entries (each starts with "- <Title>") by counting "  https?://" lines.
+    urls = _re.findall(r"^\s{2}(https?://[^\s]+)", content, _re.MULTILINE)
+    if not urls:
+        # Fallback: no URLs found — use generic summary.
+        return _tool_summary(content)
+    count = len(urls)
+    # Build a deduplicated list of hosts in order of first appearance.
+    seen: dict[str, None] = {}
+    for u in urls:
+        # .hostname (not .netloc) so a credential-bearing URL never leaks its
+        # user:pass@ userinfo (or :port) into the inline summary.
+        host = _urlparse(u).hostname or _urlparse(u).netloc or u
+        # Strip www. prefix for compactness.
+        if host.startswith("www."):
+            host = host[4:]
+        seen[host] = None
+    hosts = list(seen.keys())
+    # Show up to 3 hosts; append "…" when there are more.
+    shown = hosts[:3]
+    suffix = ", …" if len(hosts) > 3 else ""
+    hosts_str = ", ".join(shown) + suffix
+    return f"🔍 {count} result{'s' if count != 1 else ''} · {hosts_str}"
+
+
+def _tool_summary(content: str, tool_name: str = "") -> str:
     """A compact one-line summary of a tool result (never the full payload)."""
+    if tool_name == "web_search":
+        return _web_search_summary(content)
     txt = content.strip()
     if not txt:
         return "(no output)"
@@ -563,6 +812,29 @@ def _text_of(content: Any) -> str:
                 out.append(block.get("text", ""))
         return "".join(out)
     return ""
+
+
+def _resume_payload(resolved: list[tuple[Any, list[Any]]]) -> Command:
+    """Build the LangGraph resume ``Command`` for the pending interrupt(s).
+
+    ``resolved`` is ``[(interrupt_id, decisions), ...]`` — one entry per unique
+    pending interrupt, in resolution order.
+
+    A SINGLE pending interrupt resumes with the bundled ``{"decisions": [...]}``
+    value its HITL middleware expects. With MULTIPLE pending interrupts (each
+    delegated subagent raises its own), LangGraph requires the resume to be a map
+    keyed by interrupt id — otherwise it raises *"When there are multiple pending
+    interrupts, you must specify the interrupt id when resuming."*
+    (``langgraph/pregel/_loop.py``). The id is an xxh3-128 hexdigest, which is how
+    LangGraph recognises the value as a per-interrupt resume map.
+    """
+    keyed = [(iid, decisions) for iid, decisions in resolved if iid is not None]
+    if len(resolved) > 1 and len(keyed) == len(resolved):
+        return Command(resume={iid: {"decisions": decisions} for iid, decisions in keyed})
+    # Single interrupt (or, defensively, ids unavailable): the legacy bundled
+    # resume — flatten every decision into one list.
+    decisions = [d for _, ds in resolved for d in ds]
+    return Command(resume={"decisions": decisions})
 
 
 def _action_requests(interrupt: Any) -> list[dict[str, Any]]:

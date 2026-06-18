@@ -3,6 +3,140 @@
 All notable changes to J.A.R.N. are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+## [0.4.0] - 2026-06-18
+
+A customer-feedback remediation pass (19 tasks across onboarding, permissions,
+approvals, cost/context surfacing, and docs) plus follow-up fixes, then a
+competitive-gaps round closing five user pain points versus other harnesses:
+prompt caching, plan-mode handoff, `/commit` + `/review`, background processes,
+and macOS image paste; then a UX-polish round (16 fixes from an end-to-end
+user-journey audit) covering live in-place streaming, onboarding key capture,
+in-session auth recovery, faster approvals, cache-aware cost, suggested memory,
+rich `@`-mentions, and conversation rewind. A multi-agent review then hardened the
+round — fixing a `/rewind` blocker (rewind to the first turn), a cached-token cost
+double-count, a per-keystroke `@symbol` stall, and a reasoning-render regression —
+and dogfooding against a real LM Studio model surfaced two more: the unpriced-model
+notice is now logged (not leaked to the TUI), setup validation shows a spinner +
+timeout and is skippable (a cold local model no longer looks like a hang), and token
+usage is now tracked for OpenAI-compatible streaming (LM Studio / vLLM). Test count:
+789 → 1166.
+
+### Added
+
+- **`/rewind` — branch the conversation to an earlier turn** — pick an earlier
+  user turn (arrow-key picker), optionally edit that turn's prompt, and continue
+  from there. The rewind *forks* onto a new thread (via the same messages-reducer
+  mechanism `/compact` uses), so the original session stays intact and resumable
+  in `/resume` — nothing is destroyed. First slice rewinds the **conversation
+  only**: file edits made after the chosen turn are **not** reverted; the picker
+  and the post-rewind notice point at `/undo` for those. Linking the rewind to the
+  git-checkpoint stack so file edits revert atomically is a deferred slice.
+- **Live in-place markdown streaming** — assistant output renders as one growing
+  *formatted* block in the input region and commits to scrollback once per prose
+  run, instead of streaming as dim raw markdown that re-rendered paragraph by
+  paragraph. Removes the double-echo flicker, the 8-line preview clip, and literal
+  mid-construct markup (open code fences, tables).
+- **Core-loop polish** — one-key accept/deny in the approval menu; reasoning text
+  streams live during a thinking phase; a steady thinking-word indicator; queued
+  input echoes once (not twice); `@file` completion no longer rescans the directory
+  on every keystroke; Esc-cancel now states that file edits remain and points at
+  rollback (`/abort`).
+- **Onboarding that secures a usable key** — the TUI setup wizard now detects an
+  existing `*_API_KEY` in your environment, tags a recommended provider, offers a
+  model pick-list with a custom-entry fallback for cloud providers, nudges when a
+  local endpoint (Ollama / LM Studio) is unreachable, and prompts for/validates a
+  key before finishing so the first turn works.
+- **In-session auth recovery** — an invalid/expired key now surfaces a friendly
+  "key rejected (401) — fix with /key, jarn setup, or your env var" message instead
+  of raw SDK JSON; **`/key`** sets or replaces the current provider's key (keychain)
+  and rebuilds the runtime without restarting; an auth failure now rotates to a
+  configured `routing.fallback` provider instead of dead-ending.
+- **Cache-aware cost** — prompt-cache read/write tokens are tracked and shown in
+  `/cost` (cloud cache pricing where known); totals still reconcile when a turn has
+  no cache usage.
+- **Suggested memory** — the agent can propose a memory the user approves
+  (`y / N / edit`) before it is written via the existing store (tier + trust gated).
+- **Rich `@`-mentions (first slice)** — `@folder` and `@symbol` resolve alongside
+  `@path` through an extensible resolver registry; `@url` / `@docs` are deferred.
+- **Image paste (macOS)** — **Ctrl+V** grabs a screenshot/image from the clipboard,
+  saves it under `.jarn/pastes/`, and inserts it as an `@path` so the agent's
+  multimodal `read_file` loads it on send — no more save-to-disk-then-type-the-path.
+  Uses `pngpaste` if installed, else an AppleScript fallback; degrades to a hint on
+  other platforms or an empty clipboard.
+- **Background processes** — `run_in_background` / `check_background` /
+  `kill_background` / `list_background` tools let the agent start a dev server,
+  watcher, or long build and keep working instead of blocking on output (the
+  ordinary `execute` blocks with a 120s timeout). Output streams to a per-process
+  log; `/ps` lists them and `/ps kill <id>` stops one. Gated like shell (the
+  danger-guard inspects the command); local backend only (`execution.background`,
+  default on) — not registered under docker/sandbox; all terminated on exit.
+- **Plan-mode handoff** — in read-only `plan` mode the agent now researches, then
+  calls a new `exit_plan_mode` tool to present a concrete plan. You approve it
+  (arrow-key picker: proceed in auto-edit / proceed asking / keep planning) and the
+  session escalates the permission mode and carries the plan out *in the same turn*
+  — no manual `/mode` switch and re-prompt. Untrusted projects stay clamped to the
+  review-only floor (`/trust` to lift). Default landing mode: `plan.exit_mode`.
+- **`/commit` and `/review`** — `/commit` gathers the working-tree diff, has the
+  agent draft a conventional commit message, and runs `git commit` (through the
+  normal approval path; nothing is pushed). `/review` seeds a read-only review of
+  the current diff for correctness bugs and quality. Both embed the diff in the
+  seeded turn so the agent skips a tool round-trip.
+- **Local prompt-cache keep-warm (`routing.prompt_cache: auto`, default on)** —
+  cloud caching is already automatic (the agent engine adds Anthropic cache-control;
+  other cloud providers cache by prefix server-side). What was missing was the local
+  side: `routing.keep_alive` now keeps an Ollama / LM Studio model + its KV/prefix
+  cache resident between turns (Ollama `keep_alive` / LM Studio request `ttl`), so a
+  local model doesn't unload on idle and recompute the whole prompt next turn. Cuts
+  cost and first-token latency on repeated context.
+- **Current-date awareness** — the assembled system prompt states the local
+  date/time, so time-sensitive requests ("find today's news") are no longer
+  anchored to the model's training cutoff.
+- **Context-% gauge for local models** — the toolbar `ctx N%` gauge resolves the
+  window for LM Studio (`/api/v0/models`) and Ollama (`/api/show`), so it shows
+  for local models, not only curated cloud ones.
+- **Live token/throughput while generating** — the spinner/stream footer shows
+  the prompt size while processing, then output tokens + a real tok/s rate while
+  generating (estimated from the streamed text when the provider streams without
+  per-chunk usage, e.g. LM Studio).
+- **`/doctor` in the REPL** (same checks as `jarn doctor`, inline); **`/memory
+  dump`** (one "what the agent knows" view); **`/abort`** (cancel the turn and
+  roll back its edits); **`/preset`** / `--preset` (canonical mode+sandbox
+  shortcut).
+- **Approvals**: `[v]` view-full-diff through the pager and `[e]`
+  edit-before-apply in the menu; **`/compact` preview + confirm**;
+  `ui.approval_diff_lines` makes the inline diff cap configurable.
+- **Onboarding**: env-key detection + recommended provider + cloud/local/custom
+  hints in the wizard; model-slug "did you mean"; local-model discovery (Ollama /
+  LM Studio); a one-time unpriced-model warning.
+- **Surfacing**: per-tool cost breakdown in `/cost`; web-search source hosts
+  inline; grouped `/help` + toolbar glyph legend; always-visible trust indicator;
+  `ui.splash: full|compact|off`.
+
+### Changed
+
+- **Unified permission model (P3.A)** — `permission_mode` + `policy.profile`
+  collapse into one model: **Mode** (`/mode`), **Sandbox** (`/sandbox`), **Trust**
+  (`/trust`), and **Presets** as launch-time shortcuts. `/profile`, `--profile`,
+  and `policy.profile` are deprecated aliases of `/preset`/`--preset` (still work,
+  with a one-time notice). The untrusted floor is now a direct clamp,
+  byte-for-byte equivalent to the old `review-only` floor (pinned by an
+  equivalence test). `docs/PERMISSIONS.md` rewritten around the one model.
+- Entering **yolo** prints a prominent confirmation banner; `/undo` /`/redo` give
+  an actionable message when autocheckpoint is off.
+
+### Fixed
+
+- **Multiple subagent interrupts** — resuming more than one pending HITL interrupt
+  is keyed by interrupt id (LangGraph 1.x requirement), fixing the "you must
+  specify the interrupt id when resuming" error when several subagents need
+  approval at once.
+- **Rapid Shift+Tab → yolo** no longer stacks confirmation prompts that fight over
+  the input and hang.
+- A mid-turn failure now logs the **full traceback** to `~/.jarn/logs/jarn.log`
+  instead of showing only a one-line message.
+
 ## [0.3.0] - 2026-06-09
 
 Still **alpha** (`Development Status :: 3 - Alpha`). v1.0.0 is not yet earned —

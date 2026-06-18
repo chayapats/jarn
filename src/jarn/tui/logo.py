@@ -16,11 +16,25 @@ WORDMARK = "\n".join([
 TAGLINE = "just a reliable nerd"
 
 
+SHORTCUT_HINT = (
+    "[dim]Type a message · [/dim][b]/help[/b][dim] for commands · "
+    "Tab complete · Shift+Tab mode · Esc cancel[/dim]"
+)
+
+
 def splash(version: str, model: str | None, mode: str) -> str:
     """Big ASCII wordmark welcome. Model/mode live in the status bar."""
     return (
         f"[b {palette.ACCENT}]{WORDMARK}[/b {palette.ACCENT}]\n"
         f"[dim]{TAGLINE} · v{version}[/dim]\n\n"
-        f"[dim]Type a message · [/dim][b]/help[/b][dim] for commands · "
-        f"Tab complete · Shift+Tab mode · Esc cancel[/dim]"
+        f"{SHORTCUT_HINT}"
+    )
+
+
+def splash_compact(version: str, model: str | None, mode: str) -> str:
+    """Single-line wordmark + version + shortcut hint."""
+    return (
+        f"[b {palette.ACCENT}]JARN[/b {palette.ACCENT}] "
+        f"[dim]v{version} · {TAGLINE}[/dim]  "
+        f"{SHORTCUT_HINT}"
     )

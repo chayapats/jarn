@@ -191,6 +191,8 @@ routing:
   subagent: {models["subagent"]}
   summarizer: {models["summarizer"]}
   fallback: []          # ordered list of model refs tried on primary failure
+  prompt_cache: auto    # auto | off — cache the prompt prefix where supported
+  keep_alive: 1800      # secs to keep a local model + KV cache warm (Ollama/LM Studio)
 
 # Session cost guardrails.
 budget:
@@ -205,6 +207,10 @@ context:
   # Repo map: compact ranked overview of the codebase injected into the agent.
   # repo_map: tool        # off | tool (on-demand via repo_map tool) | auto (also in system prompt)
   # repo_map_tokens: 1024  # token budget for map output (must be > 0)
+
+# Plan-mode handoff: which mode `exit_plan_mode` escalates to once you approve a plan.
+plan:
+  exit_mode: auto-edit    # ask | auto-edit (the approval picker still offers the other)
 
 # Execution backend (shell commands). Defaults to local; see docs/CONFIGURATION.md.
 # OS-level sandbox is opt-in — enabling it changes execution behaviour.
@@ -228,6 +234,8 @@ observability:
 ui:
   theme: dark           # dark | light | high-contrast
   accent: cyan
+  splash: compact       # full | compact (default) | off
+  approval_diff_lines: 40   # max diff lines inline before "View full diff" in an approval
 
 # ── Cross-vendor interop ──────────────────────────────────────────────────────
 # Controls which context file is auto-loaded and whether ~/.claude / .claude/

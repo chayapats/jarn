@@ -17,6 +17,7 @@ from jarn.agent.repomap import (
     _extract_rust,
     _extract_symbols,
     build_repo_map,
+    build_symbol_index,
 )
 
 # ---------------------------------------------------------------------------
@@ -351,6 +352,97 @@ def test_cache_busted_on_file_change(tmp_path: Path) -> None:
     assert "NewClass" in second, "New file's symbols should appear after cache bust"
     # The two outputs are different because the new file added a symbol.
     assert second != first
+
+
+# ---------------------------------------------------------------------------
+# Symbol index (build_symbol_index) — backs @symbol completion
+# ---------------------------------------------------------------------------
+
+
+def test_build_symbol_index_python(tmp_path: Path, py_fixture: Path) -> None:
+    """Classes, normalized methods, and top-level funcs with correct rel + container."""
+    refs = build_symbol_index(tmp_path)
+    by_name = {(r.name, r.container): r for r in refs}
+
+    # Top-level class.
+    assert ("MyClass", "") in by_name
+    assert by_name[("MyClass", "")].rel == "sample.py"
+
+    # Methods normalized from "  .name" -> name=method, container=enclosing class.
+    assert ("method_one", "MyClass") in by_name
+    assert ("method_two", "MyClass") in by_name
+    assert by_name[("method_one", "MyClass")].rel == "sample.py"
+
+    # Top-level functions (no container).
+    assert ("top_func", "") in by_name
+    assert ("async_func", "") in by_name
+
+
+def test_build_symbol_index_cache_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second call with an unchanged tree must not re-scan (cached at module scope)."""
+    (tmp_path / "mod.py").write_text("def fn(): pass", encoding="utf-8")
+
+    import jarn.agent.repomap as repomap_mod
+
+    # Drop any cross-test cache state for this root.
+    repomap_mod._SYMBOL_INDEX_CACHE.clear()
+
+    extract_calls: list[Path] = []
+    _orig = repomap_mod._extract_symbols
+
+    def _spy(path: Path) -> list[str]:
+        extract_calls.append(path)
+        return _orig(path)
+
+    monkeypatch.setattr("jarn.agent.repomap._extract_symbols", _spy)
+
+    first = build_symbol_index(tmp_path)
+    assert len(extract_calls) > 0
+    extract_calls.clear()
+
+    second = build_symbol_index(tmp_path)
+    assert second == first
+    assert len(extract_calls) == 0, "Cached index must not re-extract on repeat call"
+
+
+def test_build_symbol_index_no_rediscover_within_ttl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The per-keystroke path must not re-fork git ls-files + re-stat every file on
+    each call. Discovery is TTL-cached (regression: discovery ran on every call —
+    only symbol extraction was cached — so @symbol stalled on large repos)."""
+    (tmp_path / "mod.py").write_text("def fn(): pass", encoding="utf-8")
+
+    import jarn.agent.repomap as repomap_mod
+
+    repomap_mod._SYMBOL_INDEX_CACHE.clear()
+    repomap_mod._DISCOVERY_CACHE.clear()
+
+    discover_calls: list[Path] = []
+    _orig = repomap_mod._discover_files
+
+    def _spy(root: Path) -> list[Path]:
+        discover_calls.append(root)
+        return _orig(root)
+
+    monkeypatch.setattr("jarn.agent.repomap._discover_files", _spy)
+
+    build_symbol_index(tmp_path)
+    build_symbol_index(tmp_path)
+    build_symbol_index(tmp_path)
+    assert len(discover_calls) == 1, (
+        "discovery (git fork + per-file stat) must be TTL-cached, not run per call"
+    )
+
+
+def test_build_symbol_index_empty_repo(tmp_path: Path) -> None:
+    """An empty tree yields an empty index without raising."""
+    import jarn.agent.repomap as repomap_mod
+
+    repomap_mod._SYMBOL_INDEX_CACHE.clear()
+    assert build_symbol_index(tmp_path) == []
 
 
 # ---------------------------------------------------------------------------
