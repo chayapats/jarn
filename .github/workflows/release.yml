@@ -79,7 +79,6 @@ jobs:
     environment: NPM_TOKEN   # the NPM_TOKEN secret lives in this environment (mirrors the pypi job)
     permissions:
       contents: read
-      id-token: write   # npm provenance
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -97,6 +96,9 @@ jobs:
           node --test npm/test/build.test.mjs
       - name: Assemble npm packages
         run: node npm/build-packages.mjs --version "${GITHUB_REF_NAME#v}" --binaries binaries --out npm/dist
+      # NOTE: no --provenance — npm provenance requires a PUBLIC source repo, and
+      # this repo is private (open-core: public at launch). Re-add --provenance
+      # (and id-token: write above) once the repo is public.
       - name: Publish to npm (platform packages first, then the launcher)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -104,5 +106,5 @@ jobs:
           while read -r dir; do
             [ -n "$dir" ] || continue
             echo "==> npm publish $dir"
-            npm publish "$dir" --access public --provenance
+            npm publish "$dir" --access public
           done < npm/dist/publish-order.txt

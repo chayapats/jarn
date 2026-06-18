@@ -5,7 +5,7 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
-## [0.4.3] - 2026-06-18
+## [0.4.4] - 2026-06-18
 
 ### Added
 
@@ -26,15 +26,21 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Fixed
 
-- The npm publish job now reads `NPM_TOKEN` from its deployment environment (it had
-  no `environment:`, so the token was empty and 0.4.2's publish failed with
-  `ENEEDAUTH`). The PyPI publish also gains `skip-existing` so re-runs are no-ops.
+- npm publish in CI: the job now reads `NPM_TOKEN` from its deployment environment
+  (it previously had no `environment:`, so the token was empty → `ENEEDAUTH`), and
+  publishes **without `--provenance`** (provenance requires a public source repo;
+  this one is private until launch). The PyPI publish gained `skip-existing` so
+  re-runs are no-ops. These were the issues behind the 0.4.2/0.4.3 npm failures.
+
+## [0.4.3] - 2026-06-18
+
+Packaging-only interim (PyPI). The npm publish failed (provenance is unsupported
+for private repos); npm ships in 0.4.4.
 
 ## [0.4.2] - 2026-06-18
 
-Packaging-only interim (PyPI). Intended as the first npm release, but the npm
-publish step was misconfigured (the job had no deployment environment, so the
-token was empty) and did not publish — npm ships in 0.4.3.
+Packaging-only interim (PyPI). The npm publish failed (the job had no deployment
+environment, so the token was empty); npm ships in 0.4.4.
 
 ## [0.4.1] - 2026-06-18
 
@@ -363,6 +369,7 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Windows: use WSL; native Windows terminal is unsupported
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
+[0.4.4]: https://github.com/chayapats/jarn/releases/tag/v0.4.4
 [0.4.3]: https://github.com/chayapats/jarn/releases/tag/v0.4.3
 [0.4.2]: https://github.com/chayapats/jarn/releases/tag/v0.4.2
 [0.4.1]: https://github.com/chayapats/jarn/releases/tag/v0.4.1
