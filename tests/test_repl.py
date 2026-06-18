@@ -1335,6 +1335,28 @@ def test_stream_control_reasoning_renders_plain_not_collapsed(tmp_path, monkeypa
     app.controller.close()
 
 
+def test_stream_control_empty_buffer_has_no_leading_blank_line(tmp_path, monkeypatch):
+    """A pure-whitespace buffer (newlines streamed before the first real prose)
+    shows just the footer, not a stray leading blank line."""
+    from prompt_toolkit.formatted_text import ANSI
+
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+    monkeypatch.setattr(app, "_busy", lambda: True)
+    app._stream_text = "\n"  # renders to empty markdown → footer only
+    result = app._stream_control()
+    assert isinstance(result, ANSI)
+    assert not result.value.startswith("\n")
+    app.controller.close()
+
+
 @pytest.mark.asyncio
 async def test_pick_model_qualifies_vendor_prefixed_ref(tmp_path, monkeypatch):
     """A custom ref whose first segment isn't a configured provider profile is

@@ -435,7 +435,10 @@ class InlineApp:
         per frame)."""
         if self._stream_md_cache is not None and self._stream_md_cache[0] == source:
             return self._stream_md_cache[1]
-        width = min(shutil.get_terminal_size((100, 24)).columns, 100)
+        # Same width as the scrollback console so the live block wraps identically
+        # to the committed block (no reflow jump on commit, and they stay matched
+        # across a terminal resize).
+        width = self.console.width
         buf = io.StringIO()
         cap = Console(force_terminal=True, width=width, file=buf)
         cap.print(Markdown(source.strip(), code_theme=palette.CODE_THEME), end="")
@@ -482,7 +485,9 @@ class InlineApp:
                 footer = self._render_dim_ansi(
                     f"{self._gen_stat()} · esc to interrupt"
                 )
-                return ANSI(f"{rendered}\n{footer}")
+                # Drop the leading blank line when the buffer is still empty (pure
+                # newlines streamed before the first real prose) — show just the footer.
+                return ANSI(f"{rendered}\n{footer}" if rendered else footer)
             # Not busy: a picker / _ask prompt lives here as PLAIN text — never
             # markdown-rendered (it isn't markdown and must show verbatim).
             return self._stream_text
@@ -1313,9 +1318,13 @@ class InlineApp:
         clipboard read off the event loop.
         """
         if sys.platform != "darwin":
-            self._set_stream(
-                "image paste is macOS-only for now — save the file and use @path"
-            )
+            # Transient flash, NOT _set_stream — mid-turn _set_stream would clobber
+            # the live prose preview and get markdown-rendered with a stat footer.
+            self._flash(HTML(
+                f'<style fg="{palette.C_DIM}">'
+                f'{_esc("image paste is macOS-only for now — save the file and use @path")}'
+                "</style>"
+            ))
             return
 
         async def _job() -> None:
@@ -1324,9 +1333,11 @@ class InlineApp:
             root = self.controller.project_root or Path(".")
             path = await asyncio.to_thread(save_clipboard_image, root)
             if path is None:
-                self._set_stream(
-                    "no image on the clipboard — copy a screenshot, or save it and use @path"
-                )
+                self._flash(HTML(
+                    f'<style fg="{palette.C_DIM}">'
+                    f'{_esc("no image on the clipboard — copy a screenshot, or save it and use @path")}'
+                    "</style>"
+                ))
             else:
                 try:
                     rel = path.relative_to(root)
