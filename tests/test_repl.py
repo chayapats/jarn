@@ -1293,6 +1293,36 @@ def test_stream_control_plain_prompt_not_markdown(tmp_path, monkeypatch):
     app.controller.close()
 
 
+def test_stream_control_reasoning_renders_plain_not_collapsed(tmp_path, monkeypatch):
+    """A reasoning block renders as PLAIN dim multi-line text, NOT markdown — the
+    "✻ thinking\\n…" soft break must keep its line break (regression: routing
+    reasoning through the markdown branch collapsed it onto one line)."""
+    from prompt_toolkit.formatted_text import ANSI
+
+    from jarn import repl
+    from jarn.repl_renderer import REASONING_STREAM_PREFIX
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+    monkeypatch.setattr(app, "_busy", lambda: True)
+    app._set_stream(f"{REASONING_STREAM_PREFIX}let me consider the options")
+    assert app._stream_is_reasoning is True
+    result = app._stream_control()
+    assert isinstance(result, ANSI)
+    rendered = result.value
+    assert "✻ thinking" in rendered
+    assert "let me consider the options" in rendered
+    # The buggy markdown render joins the soft break: "thinking let me consider".
+    # The plain render keeps the header and body on separate lines.
+    assert "thinking let me consider" not in rendered
+    app.controller.close()
+
+
 @pytest.mark.asyncio
 async def test_pick_model_qualifies_vendor_prefixed_ref(tmp_path, monkeypatch):
     """A custom ref whose first segment isn't a configured provider profile is
