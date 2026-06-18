@@ -333,14 +333,17 @@ class Controller:
         :meth:`new_thread`.
 
         Returns the cut index actually used, or ``None`` when there is nothing
-        to rewind (empty thread or ``keep_count <= 0``)."""
+        to rewind (empty thread or a negative ``keep_count``). ``keep_count == 0``
+        is a *valid* rewind to before the very first turn: it seeds an empty
+        branch (``RemoveMessage`` only) so the conversation restarts from
+        scratch — not a no-op (that's the 2-turn / first-turn rewind case)."""
         rt = await self.ensure_runtime()
         state = await rt.agent.aget_state(self._config())
         messages = (getattr(state, "values", {}) or {}).get("messages", []) or []
-        if not messages or keep_count <= 0:
+        if not messages or keep_count < 0:
             return None
 
-        kept_prefix = list(messages[:keep_count])
+        kept_prefix = list(messages[:keep_count])  # empty when keep_count == 0
         from langchain_core.messages import RemoveMessage
         from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
