@@ -32,6 +32,8 @@ audit_logs/
 # Internal planning / audit notes (kept local, not for the public repo)
 PROJECT_AUDIT_*.md
 todo.md
+fable-todo.md
+docs/superpowers/
 
 # Secrets / credentials (never commit)
 .env
