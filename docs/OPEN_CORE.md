@@ -3,11 +3,14 @@
 > **Audience:** anyone curious about the project's business model and licensing.
 > This document describes future plans, not shipped features.
 
-## Today (v0.4.0, Alpha)
+## Today (v0.4.4, Alpha)
 
 - The project is **Apache-2.0** (see [LICENSE](../LICENSE)) and developed in a
   license-clean, "ready to open" state: no bundled secrets, no proprietary deps.
 - Telemetry is **off by default** and local-only; there is no hosted service.
+- Distributed free on **PyPI** (`pip install jarn`) and **npm** (`npm install -g
+  jarn-cli`, a standalone binary). The source repo is private for now and goes
+  public at launch (npm publish provenance is enabled at that point).
 
 ## Direction (post-launch)
 
