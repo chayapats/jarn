@@ -266,19 +266,25 @@ class SymbolMentionResolver:
     def resolve(
         self, provider: CompletionProvider, prefix_text: str, frag: str, root: Path
     ) -> list[Completion]:
-        if not root.is_dir():
+        if not root.is_dir() or not frag:
+            # An empty fragment would match every symbol in arbitrary order; wait
+            # for at least one character (same as how unknown prefixes return []).
             return []
-        frag_lower = frag.lower()
+        frag_cf = frag.casefold()
+        matches = [
+            ref for ref in build_symbol_index(root)
+            if ref.name.casefold().startswith(frag_cf)
+        ]
+        # Sort deterministically (by name, then file, then container) BEFORE the
+        # cap — otherwise the max_files cut drops matches in arbitrary
+        # git-ls-files order, silently hiding symbols for a common prefix.
+        matches.sort(key=lambda r: (r.name.casefold(), r.rel, r.container))
         out: list[Completion] = []
-        for ref in build_symbol_index(root):
-            if not ref.name.lower().startswith(frag_lower):
-                continue
+        for ref in matches[: provider.max_files]:
             qualified = f"{ref.container}.{ref.name}" if ref.container else ref.name
             label = f"@{ref.rel}:{qualified}"
             replacement = f"{prefix_text}@{ref.rel}:{ref.name}"
             out.append(Completion(label, replacement, self.kind, description=ref.rel))
-            if len(out) >= provider.max_files:
-                break
         return out
 
 
