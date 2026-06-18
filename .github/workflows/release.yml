@@ -72,10 +72,11 @@ jobs:
 
   # Assemble and publish the npm packages: one `jarn-cli-<target>` per platform
   # (each carrying its prebuilt binary) plus the `jarn-cli` launcher package whose
-  # optionalDependencies pin those four to this exact version.
+  # optionalDependencies pin those three to this exact version.
   npm:
     needs: binaries
     runs-on: ubuntu-latest
+    environment: NPM_TOKEN   # the NPM_TOKEN secret lives in this environment (mirrors the pypi job)
     permissions:
       contents: read
       id-token: write   # npm provenance
