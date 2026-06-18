@@ -30,16 +30,26 @@ jobs:
           name: dist-pypi
           path: dist/*
 
-  # Build standalone binaries per OS.
+  # Build standalone binaries per OS/arch. Each one is both attached to the
+  # GitHub Release and uploaded as a `binary-<target>` workflow artifact that the
+  # npm job repackages.
   binaries:
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            asset: jarn-linux-x86_64
+            target: linux-x64
+            gh_asset: jarn-linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            gh_asset: jarn-linux-arm64
           - os: macos-latest
-            asset: jarn-macos-arm64
+            target: darwin-arm64
+            gh_asset: jarn-macos-arm64
+          - os: macos-13
+            target: darwin-x64
+            gh_asset: jarn-macos-x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -48,9 +58,51 @@ jobs:
           python-version: "3.12"
       - run: uv sync --extra dev
       - run: ./scripts/build-binary.sh
+      - name: Upload binary artifact (for the npm job)
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: dist/jarn
+          if-no-files-found: error
       - name: Rename asset
-        run: mv dist/jarn "dist/${{ matrix.asset }}"
+        run: mv dist/jarn "dist/${{ matrix.gh_asset }}"
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/${{ matrix.asset }}
+          files: dist/${{ matrix.gh_asset }}
+
+  # Assemble and publish the npm packages: one `jarn-cli-<target>` per platform
+  # (each carrying its prebuilt binary) plus the `jarn-cli` launcher package whose
+  # optionalDependencies pin those four to this exact version.
+  npm:
+    needs: binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # npm provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+      - name: Download all platform binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          path: binaries
+      - name: Run launcher + assembly tests
+        run: |
+          node --test npm/jarn-cli/test/launcher.test.js
+          node --test npm/test/build.test.mjs
+      - name: Assemble npm packages
+        run: node npm/build-packages.mjs --version "${GITHUB_REF_NAME#v}" --binaries binaries --out npm/dist
+      - name: Publish to npm (platform packages first, then the launcher)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          while read -r dir; do
+            [ -n "$dir" ] || continue
+            echo "==> npm publish $dir"
+            npm publish "$dir" --access public --provenance
+          done < npm/dist/publish-order.txt

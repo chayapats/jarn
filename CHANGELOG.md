@@ -5,6 +5,19 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-18
+
+### Added
+
+- **npm distribution (`jarn-cli`)** — install the standalone binary with
+  `npm install -g jarn-cli` (exposes both `jarn` and `jarn-cli`); **no Python
+  required**. Ships as a small launcher package plus per-platform binary packages
+  (`jarn-cli-linux-x64`, `-linux-arm64`, `-darwin-arm64`, `-darwin-x64`) selected
+  automatically through npm `os`/`cpu` — no install scripts, so it works under
+  `--ignore-scripts`. The release workflow now builds all four binaries (added
+  Linux arm64 and macOS x86_64) and publishes them to npm alongside the existing
+  PyPI release, version-locked to the same git tag.
+
 ## [0.4.0] - 2026-06-18
 
 A customer-feedback remediation pass (19 tasks across onboarding, permissions,
@@ -326,6 +339,8 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Windows: use WSL; native Windows terminal is unsupported
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
+[0.4.1]: https://github.com/chayapats/jarn/releases/tag/v0.4.1
+[0.4.0]: https://github.com/chayapats/jarn/releases/tag/v0.4.0
 [0.3.0]: https://github.com/chayapats/jarn/releases/tag/v0.3.0
 [0.2.0]: https://github.com/chayapats/jarn/releases/tag/v0.2.0
 [0.1.0]: https://github.com/chayapats/jarn/releases/tag/v0.1.0
