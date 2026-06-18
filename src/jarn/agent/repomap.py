@@ -37,6 +37,7 @@ import json
 import logging
 import re
 import subprocess
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -328,6 +329,30 @@ def _count_tokens(text: str) -> int:
 #: second can be missed, which is acceptable for an authoring aid.
 _SYMBOL_INDEX_CACHE: dict[str, list[SymbolRef]] = {}
 
+#: Short-TTL cache of ``(files, signature)`` per root. The REPL builds a fresh
+#: completer on EVERY keystroke; without this, the symbol completer re-forks
+#: ``git ls-files`` and re-stats every file on each character even on a
+#: symbol-index cache hit, because the signature it keys on was recomputed every
+#: call (the O(repo) the index cache was meant to avoid). 1s TTL — same
+#: same-second staleness tradeoff as the dir-listing / symbol-index caches.
+_DISCOVERY_TTL = 1.0
+_DISCOVERY_CACHE: dict[str, tuple[float, list[Path], str]] = {}
+
+
+def _discover_with_signature(root: Path) -> tuple[list[Path], str]:
+    """``(_discover_files(root), _cheap_signature(files))`` behind a short-TTL
+    process cache so the per-keystroke symbol completer doesn't fork git + stat
+    every file on each character."""
+    key = str(root)
+    now = time.monotonic()
+    cached = _DISCOVERY_CACHE.get(key)
+    if cached is not None and now - cached[0] < _DISCOVERY_TTL:
+        return cached[1], cached[2]
+    files = _discover_files(root)
+    signature = _cheap_signature(files)
+    _DISCOVERY_CACHE[key] = (now, files, signature)
+    return files, signature
+
 
 def _cache_key(root: Path, signature: str) -> str:
     h = hashlib.sha256(f"{root}:{signature}".encode()).hexdigest()[:16]
@@ -415,12 +440,14 @@ def build_symbol_index(root: Path) -> list[SymbolRef]:
     are normalized into ``name=method, container=<enclosing class>``.
 
     The result is cached in the process-global :data:`_SYMBOL_INDEX_CACHE`
-    keyed by ``root`` + a cheap signature (file count + max mtime), so the
-    per-keystroke REPL completer does an O(prefix-match) lookup rather than an
-    O(repo) re-scan.  See the cache docstring for the staleness tradeoff.
+    keyed by ``root`` + a cheap signature (file count + max mtime). File
+    discovery + the signature themselves go through :func:`_discover_with_signature`
+    (a 1s-TTL cache), so the per-keystroke REPL completer does a genuine
+    O(prefix-match) lookup with no ``git ls-files`` fork or per-file ``stat`` on a
+    cache hit.  See the cache docstrings for the staleness tradeoff.
     """
-    files = _discover_files(root)
-    key = _cache_key(root, _cheap_signature(files))
+    files, signature = _discover_with_signature(root)
+    key = _cache_key(root, signature)
     cached = _SYMBOL_INDEX_CACHE.get(key)
     if cached is not None:
         return cached
