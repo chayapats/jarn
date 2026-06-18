@@ -1113,3 +1113,47 @@ async def test_fork_preserves_original_thread(tmp_path, monkeypatch, base_config
     ctrl.resume_thread(old_thread)
     assert ctrl.thread_id == old_thread  # the pre-rewind branch is still selectable
     ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_fork_mechanism_preserves_original_thread_real_saver():
+    """Integration: the operation fork_to_turn performs — a fresh thread_id plus
+    aupdate_state({messages: [RemoveMessage(REMOVE_ALL_MESSAGES), *prefix]}) — leaves
+    the ORIGINAL thread's checkpoint intact, against a REAL AsyncSqliteSaver.
+
+    The mock-based unit tests assert on intermediate state and so can't prove the
+    load-bearing 'forks, does not destroy' guarantee; this exercises the real
+    langgraph reducer + checkpointer the controller relies on."""
+    from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    from langgraph.graph import END, START, MessagesState, StateGraph
+    from langgraph.graph.message import REMOVE_ALL_MESSAGES
+
+    async with AsyncSqliteSaver.from_conn_string(":memory:") as saver:
+        g = StateGraph(MessagesState)  # built-in: messages + add_messages reducer
+        g.add_node("noop", lambda state: {})
+        g.add_edge(START, "noop")
+        g.add_edge("noop", END)
+        agent = g.compile(checkpointer=saver)
+
+        cfg_a = {"configurable": {"thread_id": "A"}}
+        original = [
+            HumanMessage(content="first"), AIMessage(content="ans1"),
+            HumanMessage(content="second"), AIMessage(content="ans2"),
+        ]
+        await agent.aupdate_state(cfg_a, {"messages": original})
+
+        # Fork keep_count=2 onto a NEW thread B — the exact payload fork_to_turn seeds.
+        cfg_b = {"configurable": {"thread_id": "B"}}
+        await agent.aupdate_state(
+            cfg_b,
+            {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *original[:2]]},
+        )
+
+        state_a = await agent.aget_state(cfg_a)
+        state_b = await agent.aget_state(cfg_b)
+        a_contents = [m.content for m in state_a.values["messages"]]
+        b_contents = [m.content for m in state_b.values["messages"]]
+
+    assert a_contents == ["first", "ans1", "second", "ans2"]  # original untouched
+    assert b_contents == ["first", "ans1"]  # the branch keeps only the prefix
