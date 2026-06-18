@@ -367,6 +367,11 @@ class ModelFactory:
                 kwargs["api_key"] = api_key
             if provider.base_url:
                 kwargs["base_url"] = provider.base_url
+            # Ask for token usage in the STREAMED response (OpenAI
+            # stream_options.include_usage). Without it, OpenAI-compatible servers
+            # (LM Studio, vLLM, OpenRouter, …) stream no usage metadata, so cost
+            # tracking records nothing — /cost and the budget gauge stay at 0 tok.
+            kwargs.setdefault("stream_usage", True)
         elif provider.type is ProviderType.OLLAMA:
             model_provider = "ollama"
             if provider.base_url:

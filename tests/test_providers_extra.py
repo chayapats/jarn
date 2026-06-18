@@ -35,6 +35,9 @@ def test_openai_compatible_providers(ptype, base):
     assert m.call_args.kwargs["model_provider"] == "openai"
     assert m.call_args.kwargs["base_url"] == base
     assert m.call_args.kwargs["api_key"] == "k"
+    # Ask for streamed usage so cost/token tracking isn't blind on servers (LM
+    # Studio, vLLM, …) that omit usage unless stream_options.include_usage is set.
+    assert m.call_args.kwargs["stream_usage"] is True
 
 
 @pytest.mark.parametrize("ptype,provider_str", [
@@ -47,6 +50,8 @@ def test_dedicated_providers(ptype, provider_str):
         m.return_value = object()
         factory.build("p/model")
     assert m.call_args.kwargs["model_provider"] == provider_str
+    # stream_usage is an OpenAI-only kwarg — don't pass it to other model classes.
+    assert "stream_usage" not in m.call_args.kwargs
 
 
 def test_all_provider_types_have_defaults():
