@@ -1,6 +1,6 @@
-# Release process — v0.4.0 alpha
+# Release process — v0.4.4 alpha
 
-Checklist for publishing J.A.R.N. to PyPI and GitHub Releases.
+Checklist for publishing J.A.R.N. to PyPI, npm, and GitHub Releases.
 
 Still **alpha** (`Development Status :: 3 - Alpha`) — v1.0.0 is not yet earned;
 see CHANGELOG §0.3.0 for the remaining road-to-1.0 work.
@@ -28,8 +28,8 @@ Run on a **fresh machine or clean venv** with a real API key. Record date + resu
 
 | Step | Command / action | Pass? |
 |------|------------------|-------|
-| 1 | `uv tool install jarn` or `pip install jarn==0.4.0` | ☐ |
-| 2 | `jarn --version` → `jarn 0.4.0` | ☐ |
+| 1 | `uv tool install jarn` or `pip install jarn==0.4.4` (or `npm install -g jarn-cli`) | ☐ |
+| 2 | `jarn --version` → `jarn 0.4.4` | ☐ |
 | 3 | `jarn setup` — wizard completes, `~/.jarn/config.yaml` created | ☐ |
 | 4 | `jarn doctor` — providers OK, extensions section renders | ☐ |
 | 5 | `cd <project>` → `jarn` — REPL launches, splash visible | ☐ |
@@ -51,23 +51,35 @@ Optional binary smoke (maintainer):
 
 ## Publish
 
-1. Ensure `PYPI_TOKEN` is set in GitHub repository secrets.
-2. Commit release prep on `main`.
-3. Tag and push:
+1. Credentials are already configured in the repo: **PyPI Trusted Publishing**
+   (OIDC, no token) via the `pypi` environment, and **`NPM_TOKEN`** stored as a
+   secret in the `NPM_TOKEN` environment (an npm **automation** token). No tokens
+   live in the workflow.
+2. Bump the version in `pyproject.toml` + `src/jarn/version.py`, run `uv lock`,
+   update `CHANGELOG.md`, and merge to `main`.
+3. Tag and push (the tag drives the whole release):
 
 ```bash
-git tag -a v0.4.0 -m "v0.4.0 — competitive-gaps + UX-polish round"
-git push origin main
-git push origin v0.4.0
+git tag v0.4.4
+git push origin v0.4.4
 ```
 
-4. GitHub Actions `Release` workflow builds PyPI artifacts + per-OS binaries and
-   attaches them to the GitHub Release.
+4. GitHub Actions `Release` workflow then, from that tag:
+   - publishes the PyPI sdist + wheel (`skip-existing`, so re-runs are no-ops);
+   - builds the three standalone binaries (linux-x64, linux-arm64, macos-arm64)
+     and attaches them to the GitHub Release;
+   - assembles and publishes the npm packages — `jarn-cli` + the three
+     `jarn-cli-<platform>` binary packages — via the `npm` job.
+
+> npm publish runs **without `--provenance`** while the repo is private; re-enable
+> it (and `id-token: write`) once the repo is public. Intel macOS (`macos-13`) is
+> intentionally not built — its GitHub runner is deprecated.
 
 ## Post-release
 
 - Verify `pip install jarn` / `uv tool install jarn` from PyPI
-- Open GitHub Release notes (copy from `CHANGELOG.md` §0.3.0)
+- Verify `npm install -g jarn-cli` → `jarn --version`
+- Open GitHub Release notes (copy from `CHANGELOG.md` §0.4.4)
 
 ## v0.1.0 sign-off (2026-06-08)
 
@@ -111,3 +123,21 @@ git push origin v0.4.0
 | `uv build` | ✅ `dist/jarn-0.4.0-py3-none-any.whl` + `.tar.gz` |
 | CI on main | ✅ green (after the traceback-pointer soft-wrap fix, PR #3) |
 | tag `v0.4.0` + PyPI publish | ✅ published — PyPI latest `jarn 0.4.0`; GitHub release `v0.4.0` with linux/macos binaries |
+
+## v0.4.4 sign-off (2026-06-18) — RELEASED ✅ (first npm release)
+
+Added npm distribution (`jarn-cli`). The npm publish took three tries to land —
+0.4.1 stalled on the deprecated Intel runner, 0.4.2 failed `ENEEDAUTH` (the npm
+job had no `environment:`), 0.4.3 failed `E422` (`--provenance` needs a public
+repo). 0.4.4 fixes all three; 0.4.1–0.4.3 are PyPI-only interims.
+
+| Gate | Result |
+|------|--------|
+| pytest (full) | ✅ 1166 passed, 8 skipped |
+| Node tests (launcher + assembly) | ✅ 8 + 7 passed (CI `npm` job) |
+| ruff + mypy | ✅ clean |
+| `uv build` | ✅ `dist/jarn-0.4.4-*.whl` + `.tar.gz` |
+| PyPI publish | ✅ `jarn 0.4.4` |
+| GitHub Release `v0.4.4` | ✅ binaries: linux-x64, linux-arm64, macos-arm64 |
+| npm publish | ✅ `jarn-cli@0.4.4` + `jarn-cli-{linux-x64,linux-arm64,darwin-arm64}@0.4.4` |
+| End-to-end | ✅ `npm i jarn-cli` on macOS arm64 → `jarn --version` → `jarn 0.4.4` |

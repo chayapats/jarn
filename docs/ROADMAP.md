@@ -4,7 +4,7 @@
 > choosing where to contribute. Items marked `[x]` are implemented and in the
 > current release; `[ ]` items are scaffolded or documented but not yet shipped.
 
-Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-18** (v0.4.0 released on PyPI, Alpha).
+Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-18** (v0.4.4 released on PyPI + npm, Alpha).
 
 ## v1 — implemented
 
@@ -74,7 +74,12 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-18** (v0.4.0 released
 - [x] **`@file` autocomplete + command palette** — `CompletionProvider` + dropdown
   (Tab to accept) for `/commands` and `@paths`
 - [x] **Standalone binary builds** — PyInstaller spec (`packaging/jarn.spec`),
-  `scripts/build-binary.sh`, release workflow (built in CI per-OS)
+  `scripts/build-binary.sh`, release workflow (built in CI per-OS: linux-x64,
+  linux-arm64, macos-arm64)
+- [x] **npm distribution (`jarn-cli`)** — the standalone binary, shipped to npm as
+  a launcher package + per-platform binary packages (esbuild/ruff model); `npm
+  install -g jarn-cli` works with no Python. Published in lockstep with PyPI from
+  the same git tag (`npm/` + the release workflow's `npm` job)
 - [x] **Opt-in telemetry** — local-only, anonymized, **default OFF**; emits a numeric-only
   `"turn"` event after each turn via `Controller.record_turn` (no prompt/file content)
 - [x] **Provider key validation** surfaced in the TUI status bar (●/✗ glyph)

@@ -35,10 +35,15 @@ uv run mypy src/                   # type-check (must report 0 errors)
 ```
 
 Before pushing, run all three gates locally — `ruff check src tests`, `mypy src/`, and
-`pytest` (currently **1054** tests). CI runs exactly these on every push/PR
-(lint → type-check → test) across Linux/macOS and Python 3.12/3.13. The live-LLM
+`pytest` (currently **1166** tests). CI runs exactly these on every push/PR
+(lint → type-check → test) across Linux/macOS and Python 3.12/3.13, plus a `packaging`
+job and an `npm` job that runs the Node launcher + assembly tests (`node --test
+npm/jarn-cli/test/launcher.test.js` and `npm/test/build.test.mjs`). The live-LLM
 end-to-end suite is intentionally **not** part of that gate (it's slow, costs tokens,
 and is flaky); run those manually / nightly.
+
+If you touch anything under `npm/` (the `jarn-cli` launcher or the package-assembly
+script), run those two `node --test` files locally too.
 
 When adding a built-in command, update `BUILTINS` in `extensibility/commands.py` and
 keep `README.md`'s command table in sync — `tests/test_phase3.py` checks parity.
