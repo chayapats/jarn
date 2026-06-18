@@ -560,6 +560,14 @@ def run_setup_tui(*, force: bool = False) -> Path | None:
 
     config = getattr(app, "_saved_config", None)
     if config is not None and app._saved_provider in CLOUD_PROVIDERS:
-        validate_config(app._saved_provider, app._saved_model, config)
+        from rich.prompt import Confirm
+
+        # Skippable: validation pings the model, which for a local/custom endpoint
+        # can cold-load for ~1 min — don't force a new user to wait through it.
+        if Confirm.ask(
+            "Validate the API key now? (a local model may need to load — can be slow)",
+            default=True,
+        ):
+            validate_config(app._saved_provider, app._saved_model, config)
 
     return app.result_path
