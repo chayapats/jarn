@@ -1270,9 +1270,12 @@ class InlineApp:
             self.console.print(
                 f"[{palette.C_ERROR}]{_rich_escape(str(exc))}[/{palette.C_ERROR}]"
             )
+            # soft_wrap so a long log path isn't word-wrapped mid-token (that split
+            # ".../jarn.log" across a line on narrow / CI-width terminals).
             self.console.print(
                 f"[{palette.C_DIM}]full traceback → "
-                f"{paths.global_logs_dir() / 'jarn.log'}[/{palette.C_DIM}]"
+                f"{paths.global_logs_dir() / 'jarn.log'}[/{palette.C_DIM}]",
+                soft_wrap=True,
             )
         finally:
             self._turn_task = None

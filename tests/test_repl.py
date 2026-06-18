@@ -2279,8 +2279,13 @@ async def test_turn_failure_points_at_log_traceback(tmp_path, monkeypatch):
     """A mid-turn exception (e.g. a langgraph error) shows the message AND points
     the user at the file-logged full traceback instead of swallowing it."""
     from jarn import repl
+    from jarn.config import paths
 
     app = _make_inline_app(tmp_path, monkeypatch)
+    # Narrow console so the long log path WOULD word-wrap — reproduces the CI
+    # failure where the wrap split ".../jarn.log" across a line ("jarn.lo\ng"),
+    # breaking the pointer. The fix prints it soft-wrapped (one logical line).
+    app.console = Console(file=StringIO(), width=40)
 
     async def _boom(*a, **k):
         raise RuntimeError("langgraph boom")
@@ -2288,8 +2293,10 @@ async def test_turn_failure_points_at_log_traceback(tmp_path, monkeypatch):
     monkeypatch.setattr(repl, "_run_turn", _boom)
     await app._handle("please do something")
     out = app.console.file.getvalue()
+    log_path = str(paths.global_logs_dir() / "jarn.log")
     assert "langgraph boom" in out                 # concise message still shown
-    assert "full traceback" in out and "jarn.log" in out  # pointer to the log
+    assert "full traceback" in out                 # pointer present
+    assert log_path in out                          # full path, un-wrapped
     app.controller.close()
 
 
