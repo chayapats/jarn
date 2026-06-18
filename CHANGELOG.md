@@ -5,7 +5,7 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
-## [0.4.2] - 2026-06-18
+## [0.4.3] - 2026-06-18
 
 ### Added
 
@@ -24,11 +24,23 @@ All notable changes to J.A.R.N. are documented here. Format follows
   runner (`macos-13`) is being deprecated and its queue is unreliable; Intel mac
   users install via `pip install jarn`.
 
+### Fixed
+
+- The npm publish job now reads `NPM_TOKEN` from its deployment environment (it had
+  no `environment:`, so the token was empty and 0.4.2's publish failed with
+  `ENEEDAUTH`). The PyPI publish also gains `skip-existing` so re-runs are no-ops.
+
+## [0.4.2] - 2026-06-18
+
+Packaging-only interim (PyPI). Intended as the first npm release, but the npm
+publish step was misconfigured (the job had no deployment environment, so the
+token was empty) and did not publish — npm ships in 0.4.3.
+
 ## [0.4.1] - 2026-06-18
 
 Packaging-only interim release (PyPI). Adds the npm packaging groundwork — the
 `jarn-cli` launcher, per-platform packaging, and release automation — but the
-first npm publish ships in 0.4.2.
+first npm publish ships in 0.4.3.
 
 ## [0.4.0] - 2026-06-18
 
@@ -351,6 +363,7 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Windows: use WSL; native Windows terminal is unsupported
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
+[0.4.3]: https://github.com/chayapats/jarn/releases/tag/v0.4.3
 [0.4.2]: https://github.com/chayapats/jarn/releases/tag/v0.4.2
 [0.4.1]: https://github.com/chayapats/jarn/releases/tag/v0.4.1
 [0.4.0]: https://github.com/chayapats/jarn/releases/tag/v0.4.0
