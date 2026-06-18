@@ -1243,7 +1243,8 @@ def test_stream_control_renders_markdown_live(tmp_path, monkeypatch):
 
 def test_stream_control_no_eight_line_clip(tmp_path, monkeypatch):
     """The preview Window is no longer hard-clipped at 8 lines — a long live block
-    can grow past the old fold (content-sized, no max==8)."""
+    grows past the old fold, but is capped at (terminal rows - reserve) so the
+    input + toolbar stay on-screen (not the old fixed 8, not unbounded)."""
     from prompt_toolkit.layout.containers import Window
 
     from jarn import repl
@@ -1270,6 +1271,17 @@ def test_stream_control_no_eight_line_clip(tmp_path, monkeypatch):
     maxes = [w.height.max for w in _windows(built.layout.container)
              if getattr(w.height, "max", None) is not None]
     assert 8 not in maxes  # the old hard 8-line preview clip is gone
+
+    # The live region is now a terminal-height-aware cap (rows - reserve), not the
+    # fixed 8 and not unbounded — so a tall block clips, the input stays visible.
+    import os
+    import shutil
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda *_a, **_k: os.terminal_size((80, 30)))
+    dim = app._stream_height()
+    assert dim.max == 26  # 30 rows - 4 reserved
+    assert dim.min == 0
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda *_a, **_k: os.terminal_size((80, 5)))
+    assert app._stream_height().max == 4  # floor on a tiny terminal
     app.controller.close()
 
 
