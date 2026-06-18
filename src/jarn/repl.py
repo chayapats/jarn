@@ -1635,10 +1635,16 @@ class InlineApp:
         c.print(
             f"[{palette.C_NOTICE}]↩ rewound to a new branch[/{palette.C_NOTICE}] "
             f"[{palette.C_DIM}]— the original session is still in /resume. "
-            f"File edits made after this point are NOT reverted; use /undo for "
-            f"those.[/{palette.C_DIM}]"
+            f"File edits made after this point are NOT reverted — /undo rolls back "
+            f"file changes one turn at a time.[/{palette.C_DIM}]"
         )
         if not prompt:
+            # No continuation: still index the new branch so it survives in /resume
+            # (otherwise it's an orphan checkpoint with no sessions row). Title it by
+            # the turn we forked at.
+            self.controller.record_session_title(
+                original_prompt or "↩ rewound branch", when=time.time()
+            )
             return
         # Continue from the fork through the normal turn path (we're already the
         # active turn task, so call _run_turn directly — same as _handle does).

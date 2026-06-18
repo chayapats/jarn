@@ -1412,6 +1412,54 @@ async def test_pick_menu_esc_cancel(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_rewind_blank_continuation_indexes_branch(tmp_path, monkeypatch):
+    """A rewind with no continuation prompt still records a session title for the
+    forked branch, so it appears in /resume instead of being an orphan checkpoint
+    (regression: the blank-prompt path returned before indexing the new thread)."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    titles: list[str] = []
+
+    async def _human_turns():
+        return [(0, ""), (2, "second")]  # fork target (turn 1) has empty content
+
+    async def _fork(idx):
+        return idx  # non-None: the fork "succeeded"
+
+    async def _pick(options, header="", cancel_returns=None):
+        return (0, "")  # choose the empty-content first turn
+
+    async def _ask(*a, **k):
+        return ""  # blank → no continuation
+
+    async def _replay():
+        return None
+
+    monkeypatch.setattr(app.controller, "human_turns", _human_turns)
+    monkeypatch.setattr(app.controller, "fork_to_turn", _fork)
+    monkeypatch.setattr(app, "_pick_menu", _pick)
+    monkeypatch.setattr(app, "_ask", _ask)
+    monkeypatch.setattr(app, "_replay_transcript", _replay)
+    monkeypatch.setattr(
+        app.controller, "record_session_title",
+        lambda title, *, when: titles.append(title),
+    )
+
+    await app._rewind_picker()
+    assert titles, "blank-continuation rewind must index the new branch in /resume"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
 async def test_skills_available_after_ensure_extensions(tmp_path, monkeypatch):
     from jarn import repl
     from jarn.agent.builder import JarnRuntime
