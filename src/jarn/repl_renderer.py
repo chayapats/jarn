@@ -14,6 +14,11 @@ from rich.text import Text
 
 from jarn.tui import palette
 
+# Sentinel prefix the reasoning live-stream is pushed with, so the inline app can
+# tell a thinking block from assistant prose in the shared live sink and render it
+# as PLAIN dim text (markdown would collapse the "✻ thinking\n…" soft break).
+REASONING_STREAM_PREFIX = "✻ thinking\n"
+
 
 def esc(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -119,7 +124,7 @@ class TurnRenderer:
         if not body:
             return
         if self._live_sink is not None:
-            self._live_sink(f"✻ thinking\n{body}")
+            self._live_sink(f"{REASONING_STREAM_PREFIX}{body}")
             return
         if not self.console.is_terminal:
             return

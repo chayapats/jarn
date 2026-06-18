@@ -66,7 +66,7 @@ from jarn.agent.session import ApprovalReply, ApprovalRequest, Event, EventKind
 from jarn.config.schema import Config, PermissionMode
 from jarn.extensibility.commands import completion_catalog, parse_input
 from jarn.permissions import ActionKind, RememberScope
-from jarn.repl_renderer import TurnRenderer
+from jarn.repl_renderer import REASONING_STREAM_PREFIX, TurnRenderer
 from jarn.repl_renderer import esc as _esc
 from jarn.tui import palette
 from jarn.tui.completion import CompletionProvider
@@ -192,6 +192,9 @@ class InlineApp:
         # prompt_toolkit redraw (refresh_interval + invalidate per delta), so cache
         # (source, rendered_ansi) and only re-render when the buffer actually grew.
         self._stream_md_cache: tuple[str, str] | None = None
+        # True while the live region holds a reasoning block (render it plain dim,
+        # not markdown — see _set_stream / _stream_control).
+        self._stream_is_reasoning = False
         self._turn_start: float | None = None     # for the elapsed timer
         # One stable thinking word per session (don't re-roll every turn — the
         # churning label reads as noise). Shared with the renderer spinner.
@@ -415,6 +418,9 @@ class InlineApp:
         """Show ``text`` in the live region above the input (in-progress prose or
         an approval/picker prompt). Empty string collapses the region."""
         self._stream_text = text
+        # Reasoning blocks arrive through this same sink with a sentinel prefix;
+        # flag them so _stream_control renders them plain (not markdown-collapsed).
+        self._stream_is_reasoning = text.startswith(REASONING_STREAM_PREFIX)
         if self.app is not None:
             self.app.invalidate()
 
@@ -458,7 +464,13 @@ class InlineApp:
                 # source — that kills the grey-raw-then-recommit double render and
                 # the mid-construct literal markup. The dim gen-stat footer (live
                 # token/rate) stays, since streamed text replaces the spinner.
-                rendered = self._render_stream_md(self._stream_text)
+                # Reasoning is the exception: render it plain dim so the multi-line
+                # "✻ thinking\n…" block keeps its line breaks (markdown collapses
+                # the soft break onto one line).
+                if self._stream_is_reasoning:
+                    rendered = self._render_dim_ansi(self._stream_text)
+                else:
+                    rendered = self._render_stream_md(self._stream_text)
                 footer = self._render_dim_ansi(
                     f"{self._gen_stat()} · esc to interrupt"
                 )
