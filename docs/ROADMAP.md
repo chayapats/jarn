@@ -4,7 +4,7 @@
 > choosing where to contribute. Items marked `[x]` are implemented and in the
 > current release; `[ ]` items are scaffolded or documented but not yet shipped.
 
-Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-18** (v0.4.0 prepared, Alpha; v0.2.0 on PyPI).
+Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-18** (v0.4.0 released on PyPI, Alpha).
 
 ## v1 — implemented
 
@@ -87,7 +87,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-18** (v0.4.0 prepared
 - [x] **Turn-level fallback model-swap** — on a turn that fails before producing
   output, rotate through `routing.fallback` and retry transparently
 
-## v0.4.0 — competitive-gaps + UX-polish round (unreleased)
+## v0.4.0 — competitive-gaps + UX-polish round (released 2026-06-18)
 
 Five user pain points closed versus other harnesses (Claude Code / Cursor / Cline /
 Aider), then a UX-polish round from an end-to-end user-journey audit and a
