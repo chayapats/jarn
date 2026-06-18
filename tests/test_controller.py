@@ -1054,9 +1054,16 @@ async def test_fork_to_turn_empty_is_noop(tmp_path, monkeypatch, base_config):
 
 
 @pytest.mark.asyncio
-async def test_fork_to_turn_keep_zero_is_noop(tmp_path, monkeypatch, base_config):
-    """keep_count <= 0 is a no-op (would discard the whole conversation)."""
-    from langchain_core.messages import AIMessage, HumanMessage
+async def test_fork_to_turn_keep_zero_rewinds_before_first_turn(
+    tmp_path, monkeypatch, base_config
+):
+    """keep_count == 0 is a VALID rewind to before the first turn: it forks a new
+    branch seeded with an empty prefix (RemoveMessage only), not a no-op.
+
+    Regression guard for the blocker where /rewind silently no-op'd for any
+    2-turn session (the only offered target is the first turn → cut_index 0)."""
+    from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
+    from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
     ctrl = _controller(tmp_path, monkeypatch, base_config)
     agent, ctrl.runtime = _rewind_runtime(
@@ -1064,6 +1071,26 @@ async def test_fork_to_turn_keep_zero_is_noop(tmp_path, monkeypatch, base_config
     )
     old_thread = ctrl.thread_id
     cut = await ctrl.fork_to_turn(0)
+    assert cut == 0
+    assert ctrl.thread_id != old_thread  # forked onto a fresh branch
+    seeded = agent.updated["messages"]
+    assert len(seeded) == 1  # empty prefix: just the reducer reset, no kept turns
+    assert isinstance(seeded[0], RemoveMessage)
+    assert seeded[0].id == REMOVE_ALL_MESSAGES
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_fork_to_turn_negative_is_noop(tmp_path, monkeypatch, base_config):
+    """A negative keep_count is invalid → no-op (thread untouched)."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    agent, ctrl.runtime = _rewind_runtime(
+        [HumanMessage(content="a"), AIMessage(content="b")]
+    )
+    old_thread = ctrl.thread_id
+    cut = await ctrl.fork_to_turn(-1)
     assert cut is None
     assert ctrl.thread_id == old_thread
     assert agent.updated is None
