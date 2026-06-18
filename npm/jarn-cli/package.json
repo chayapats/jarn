@@ -1,0 +1,41 @@
+{
+  "name": "jarn-cli",
+  "version": "0.0.0",
+  "description": "J.A.R.N. — Just A Reliable Nerd. A TUI-first coding agent harness, shipped as a self-contained binary (no Python required).",
+  "keywords": [
+    "agent",
+    "coding-agent",
+    "tui",
+    "deepagents",
+    "llm",
+    "harness",
+    "cli"
+  ],
+  "homepage": "https://github.com/chayapats/jarn",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chayapats/jarn.git"
+  },
+  "license": "Apache-2.0",
+  "author": "Chayapat",
+  "type": "commonjs",
+  "bin": {
+    "jarn": "bin/jarn.js",
+    "jarn-cli": "bin/jarn.js"
+  },
+  "files": [
+    "bin/jarn.js"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "optionalDependencies": {
+    "jarn-cli-linux-x64": "0.0.0",
+    "jarn-cli-linux-arm64": "0.0.0",
+    "jarn-cli-darwin-x64": "0.0.0",
+    "jarn-cli-darwin-arm64": "0.0.0"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}
