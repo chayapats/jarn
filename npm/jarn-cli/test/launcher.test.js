@@ -7,7 +7,6 @@ const launcher = require('../bin/jarn.js')
 test('platformPackage maps every supported host', () => {
   assert.equal(launcher.platformPackage('linux', 'x64'), 'jarn-cli-linux-x64')
   assert.equal(launcher.platformPackage('linux', 'arm64'), 'jarn-cli-linux-arm64')
-  assert.equal(launcher.platformPackage('darwin', 'x64'), 'jarn-cli-darwin-x64')
   assert.equal(launcher.platformPackage('darwin', 'arm64'), 'jarn-cli-darwin-arm64')
 })
 
@@ -15,12 +14,14 @@ test('platformPackage returns null for unsupported hosts', () => {
   assert.equal(launcher.platformPackage('win32', 'x64'), null)
   assert.equal(launcher.platformPackage('linux', 'ia32'), null)
   assert.equal(launcher.platformPackage('freebsd', 'arm64'), null)
+  // Intel macOS is intentionally unsupported (use pip) — see jarn-cli-darwin-x64 removal.
+  assert.equal(launcher.platformPackage('darwin', 'x64'), null)
 })
 
-test('SUPPORTED lists exactly the four target keys', () => {
+test('SUPPORTED lists exactly the three target keys', () => {
   assert.deepEqual(
     [...launcher.SUPPORTED].sort(),
-    ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64']
+    ['darwin-arm64', 'linux-arm64', 'linux-x64']
   )
 })
 

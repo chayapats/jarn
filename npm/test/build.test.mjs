@@ -14,7 +14,7 @@ const TEMPLATE = JSON.parse(
 test('TARGETS matches the launcher platform keys', () => {
   assert.deepEqual(
     Object.keys(TARGETS).sort(),
-    ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64']
+    ['darwin-arm64', 'linux-arm64', 'linux-x64']
   )
 })
 
@@ -40,6 +40,8 @@ test('platformPackageJson covers every target with valid os/cpu', () => {
 
 test('platformPackageJson rejects unknown targets', () => {
   assert.throws(() => platformPackageJson('win32-x64', '1.0.0'), /unknown target/)
+  // Intel macOS is no longer a target.
+  assert.throws(() => platformPackageJson('darwin-x64', '1.0.0'), /unknown target/)
 })
 
 test('mainPackageJson pins every optionalDependency to the exact version', () => {
@@ -49,7 +51,6 @@ test('mainPackageJson pins every optionalDependency to the exact version', () =>
   const deps = pkg.optionalDependencies
   assert.deepEqual(Object.keys(deps).sort(), [
     'jarn-cli-darwin-arm64',
-    'jarn-cli-darwin-x64',
     'jarn-cli-linux-arm64',
     'jarn-cli-linux-x64',
   ])
@@ -61,12 +62,11 @@ test('main template exposes both jarn and jarn-cli bins', () => {
   assert.equal(TEMPLATE.bin['jarn-cli'], 'bin/jarn.js')
 })
 
-test('optionalDependencies in the template cover exactly the four platform packages', () => {
+test('optionalDependencies in the template cover exactly the three platform packages', () => {
   assert.deepEqual(
     Object.keys(TEMPLATE.optionalDependencies).sort(),
     [
       'jarn-cli-darwin-arm64',
-      'jarn-cli-darwin-x64',
       'jarn-cli-linux-arm64',
       'jarn-cli-linux-x64',
     ]
