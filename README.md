@@ -69,14 +69,24 @@ base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists 
 
 ## Install
 
-Requires **Python 3.12+** and [uv](https://docs.astral.sh/uv/). macOS and Linux are
-supported (Windows via WSL).
+macOS (Intel / Apple Silicon) and Linux (x64 / arm64) are supported; on Windows use WSL.
+
+**Via npm** — a self-contained binary, **no Python required**:
+
+```bash
+npm install -g jarn-cli     # installs the `jarn` command (also available as `jarn-cli`)
+```
+
+**Via pip / uv** — requires **Python 3.12+** and [uv](https://docs.astral.sh/uv/):
 
 ```bash
 pip install jarn            # PyPI (alpha)
 # or: uv tool install jarn
+```
 
-# from source:
+**From source:**
+
+```bash
 git clone https://github.com/chayapats/jarn && cd jarn
 uv sync --extra dev
 uv run jarn
