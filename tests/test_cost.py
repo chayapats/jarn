@@ -323,6 +323,19 @@ def test_cost_of_cache_falls_back_to_input_rate():
     assert cost == 10.0
 
 
+def test_cost_of_does_not_double_charge_cached_input():
+    """Regression: input_tokens is the FULL provider total (LangChain folds the
+    cache counts back in), so the cached subset is repriced, not added on top.
+
+    The bug billed cached tokens at the input rate AND again as a cache line."""
+    from jarn.cost.pricing import cost_of
+
+    # opus input $5/Mtok. Full input 1M, of which 0.8M is a cache read (no explicit
+    # cache rate → cache also $5). Correct: plain 0.2M@5 + cache 0.8M@5 = $1 + $4 =
+    # $5, i.e. exactly 1M@5 counted ONCE. The bug gave $9 (1M@5 + 0.8M@5).
+    assert cost_of("claude-opus-4-8", 1_000_000, 0, cache_read_tokens=800_000) == 5.0
+
+
 def test_cost_of_uses_explicit_cache_rates_when_present():
     """When a Price carries cache rates, they price cache tokens instead of input."""
     from jarn.cost import pricing
