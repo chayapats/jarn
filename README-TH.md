@@ -38,13 +38,15 @@ J.A.R.N. คือ terminal coding agent ที่ออกแบบในแน
 
 ## ติดตั้ง
 
-รองรับ macOS (Intel / Apple Silicon) และ Linux (x64 / arm64); บน Windows ใช้ผ่าน WSL
+รองรับ macOS (Apple Silicon) และ Linux (x64 / arm64); บน Windows ใช้ผ่าน WSL
 
 **ผ่าน npm** — เป็น binary สำเร็จรูป **ไม่ต้องมี Python**:
 
 ```bash
 npm install -g jarn-cli     # ได้คำสั่ง `jarn` (ใช้ `jarn-cli` ก็ได้)
 ```
+
+Intel mac ให้ติดตั้งผ่าน pip/uv แทน (ไม่มี binary npm สำหรับ Intel mac)
 
 **ผ่าน pip / uv** — ต้องการ **Python 3.12+** และ [uv](https://docs.astral.sh/uv/):
 

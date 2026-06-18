@@ -69,13 +69,15 @@ base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists 
 
 ## Install
 
-macOS (Intel / Apple Silicon) and Linux (x64 / arm64) are supported; on Windows use WSL.
+macOS (Apple Silicon) and Linux (x64 / arm64) are supported; on Windows use WSL.
 
 **Via npm** — a self-contained binary, **no Python required**:
 
 ```bash
 npm install -g jarn-cli     # installs the `jarn` command (also available as `jarn-cli`)
 ```
+
+Intel macs install via pip/uv instead (no npm binary is published for them).
 
 **Via pip / uv** — requires **Python 3.12+** and [uv](https://docs.astral.sh/uv/):
 

@@ -37,7 +37,6 @@ const MAIN_SRC = join(HERE, 'jarn-cli')
 export const TARGETS = {
   'linux-x64': { os: 'linux', cpu: 'x64' },
   'linux-arm64': { os: 'linux', cpu: 'arm64' },
-  'darwin-x64': { os: 'darwin', cpu: 'x64' },
   'darwin-arm64': { os: 'darwin', cpu: 'arm64' },
 }
 
