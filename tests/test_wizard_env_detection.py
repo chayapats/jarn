@@ -167,3 +167,49 @@ class TestConfigureKeyEnvHit:
         assert result is None
         result2 = _configure_key("lmstudio", env_hit=None)
         assert result2 is None
+
+
+# -- Fix B: validation ping timeout (don't hang setup on a cold model) -------
+
+
+def test_ping_with_timeout_returns_fast_response():
+    """A model that responds in time returns its response normally."""
+    from jarn.onboarding.wizard import _ping_with_timeout
+
+    class _FastChat:
+        def invoke(self, _prompt):
+            return "pong"
+
+    assert _ping_with_timeout(_FastChat(), timeout=5.0) == "pong"
+
+
+def test_ping_with_timeout_raises_on_slow_model():
+    """A model slower than the timeout raises TimeoutError instead of hanging setup
+    forever (regression: validation blocked silently on a cold-loading model)."""
+    import time as _time
+
+    import pytest
+
+    from jarn.onboarding.wizard import _ping_with_timeout
+
+    class _SlowChat:
+        def invoke(self, _prompt):
+            _time.sleep(5)  # well beyond the timeout
+            return "late"
+
+    with pytest.raises(TimeoutError):
+        _ping_with_timeout(_SlowChat(), timeout=0.2)
+
+
+def test_ping_with_timeout_propagates_invoke_error():
+    """An error from the model surfaces to the caller (not swallowed by the thread)."""
+    import pytest
+
+    from jarn.onboarding.wizard import _ping_with_timeout
+
+    class _BadChat:
+        def invoke(self, _prompt):
+            raise ValueError("bad key")
+
+    with pytest.raises(ValueError, match="bad key"):
+        _ping_with_timeout(_BadChat(), timeout=5.0)

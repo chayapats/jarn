@@ -212,7 +212,10 @@ def run_wizard(*, force: bool = False) -> Path | None:
                            encoding="utf-8")
     console.print(f"\n[green]✔[/green] Wrote {config_path}")
 
-    if profile in _CLOUD and Confirm.ask("Validate the API key now?", default=True):
+    if profile in _CLOUD and Confirm.ask(
+        "Validate the API key now? (a local model may need to load — can be slow)",
+        default=True,
+    ):
         validate_config(profile, default_model, config)
 
     console.print("\n[b cyan]All set.[/b cyan] Launch with [b]jarn[/b].")
@@ -328,8 +331,40 @@ def _build_config_dict(
     }
 
 
-def validate_config(profile: str, model: str, config: dict[str, Any]) -> bool:
-    """Send a 1-token ping to confirm the key/model work. Returns success."""
+def _ping_with_timeout(chat: Any, timeout: float) -> Any:
+    """Run a blocking ``chat.invoke('ping')`` but stop waiting after ``timeout``.
+
+    Uses a daemon thread so a slow/cold model (or a black-holed endpoint) can't
+    hang setup forever and never blocks process exit — the request finishes (or
+    dies) in the background. Raises ``TimeoutError`` if no response in time."""
+    import threading
+
+    box: dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            box["resp"] = chat.invoke("ping")
+        except Exception as exc:  # noqa: BLE001
+            box["err"] = exc
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise TimeoutError(f"no response within {timeout:.0f}s")
+    if "err" in box:
+        raise box["err"]
+    return box["resp"]
+
+
+def validate_config(
+    profile: str, model: str, config: dict[str, Any], *, timeout: float = 120.0
+) -> bool:
+    """Send a 1-token ping to confirm the key/model work. Returns success.
+
+    Shows a spinner while waiting — a local or remote model can need to cold-load,
+    which may take ~1 min — and gives up after ``timeout`` so a stuck endpoint
+    can't hang setup. Ctrl+C skips the wait."""
     from jarn.config.loader import _build_config
     from jarn.providers import ModelFactory
 
@@ -337,9 +372,26 @@ def validate_config(profile: str, model: str, config: dict[str, Any]) -> bool:
         cfg = _build_config(config)
         factory = ModelFactory(cfg)
         chat = factory.build(model)
-        resp = chat.invoke("ping")
+        with console.status(
+            "[cyan]validating[/cyan] — the model may need to load first "
+            "(can take ~1 min); Ctrl+C to skip"
+        ):
+            resp = _ping_with_timeout(chat, timeout)
         console.print(f"  [green]✔[/green] model responded ({len(str(resp.content))} chars)")
         return True
+    except KeyboardInterrupt:
+        console.print(
+            "  [dim]skipped — the model is still loading in the background; "
+            "it'll work once warm.[/dim]"
+        )
+        return False
+    except TimeoutError:
+        console.print(
+            f"  [yellow]![/yellow] validation timed out after {timeout:.0f}s — the "
+            "model may still be loading; it should work once it's warm."
+        )
+        console.print("  [dim]Adjust the key/model later in ~/.jarn/config.yaml if needed.[/dim]")
+        return False
     except Exception as exc:  # noqa: BLE001
         console.print(f"  [yellow]![/yellow] validation failed: {exc}")
         console.print("  [dim]You can fix the key/model later in ~/.jarn/config.yaml.[/dim]")
