@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+from contextlib import contextmanager
+
 from jarn.config.schema import BudgetConfig
 from jarn.cost import BudgetStatus, CostTracker, Usage
 from jarn.cost.pricing import cost_of, lookup
@@ -202,55 +205,70 @@ def test_per_tool_default_bucket_when_no_tool():
     assert t.per_tool[RESPONSE_TOOL].cost_usd == t.total.cost_usd
 
 
-# -- P2.B: unpriced model warning -------------------------------------------
+# -- P2.B: unpriced model notice (routed to the jarn log, NOT stderr) -------
 
-def test_unpriced_warning_emitted_once(recwarn):
-    """cost_of emits UnpricedModelWarning exactly once per unknown model id."""
-    from jarn.cost.pricing import _WARNED_UNPRICED, UnpricedModelWarning, cost_of
+
+@contextmanager
+def _capture_cost_logs():
+    """Capture WARNING records on the jarn.cost logger directly, so the assertion
+    doesn't depend on log propagation/handler setup elsewhere in the suite."""
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    lg = logging.getLogger("jarn.cost")
+    lg.addHandler(handler)
+    prev = lg.level
+    lg.setLevel(logging.WARNING)
+    try:
+        yield records
+    finally:
+        lg.removeHandler(handler)
+        lg.setLevel(prev)
+
+
+def test_unpriced_notice_logged_once():
+    """cost_of logs the unpriced notice exactly once per unknown model id — to the
+    jarn logger (file), never warnings.warn (which leaks into the TUI display)."""
+    from jarn.cost.pricing import _WARNED_UNPRICED, cost_of
 
     model = "totally-unknown-model-p2b-test"
     _WARNED_UNPRICED.discard(model)  # reset dedup state
 
-    result = cost_of(model, 1000, 1000)
-    assert result is None  # unpriced -> None
+    with _capture_cost_logs() as records:
+        assert cost_of(model, 1000, 1000) is None  # unpriced -> None
+        msgs = [r.getMessage() for r in records]
+        assert len(msgs) == 1
+        assert model in msgs[0] and "$0" in msgs[0]
 
-    warns = [w for w in recwarn.list if issubclass(w.category, UnpricedModelWarning)]
-    assert len(warns) == 1
-    assert model in str(warns[0].message)
-    assert "$0" in str(warns[0].message)
-
-    # Second call must NOT emit another warning.
-    cost_of(model, 2000, 2000)
-    warns_after = [w for w in recwarn.list if issubclass(w.category, UnpricedModelWarning)]
-    assert len(warns_after) == 1, "Warning should not repeat for the same model"
+        cost_of(model, 2000, 2000)  # repeat — must NOT re-log
+        assert len(records) == 1, "notice should not repeat for the same model"
 
 
-def test_unpriced_warning_dedup_per_model(recwarn):
-    """Each distinct unknown model gets its own one-time warning."""
-    from jarn.cost.pricing import _WARNED_UNPRICED, UnpricedModelWarning, cost_of
+def test_unpriced_notice_dedup_per_model():
+    """Each distinct unknown model gets its own one-time notice."""
+    from jarn.cost.pricing import _WARNED_UNPRICED, cost_of
 
     for slug in ("unknown-alpha-p2b", "unknown-beta-p2b"):
         _WARNED_UNPRICED.discard(slug)
 
-    cost_of("unknown-alpha-p2b", 1, 1)
-    cost_of("unknown-beta-p2b", 1, 1)
-    cost_of("unknown-alpha-p2b", 1, 1)  # repeat — must not re-warn
+    with _capture_cost_logs() as records:
+        cost_of("unknown-alpha-p2b", 1, 1)
+        cost_of("unknown-beta-p2b", 1, 1)
+        cost_of("unknown-alpha-p2b", 1, 1)  # repeat — must not re-log
+        msgs = [r.getMessage() for r in records]
 
-    warns = [w for w in recwarn.list if issubclass(w.category, UnpricedModelWarning)]
-    slugs_warned = [str(w.message) for w in warns]
-    assert any("unknown-alpha-p2b" in s for s in slugs_warned)
-    assert any("unknown-beta-p2b" in s for s in slugs_warned)
-    assert len(warns) == 2, "Two models → two warnings, no duplicates"
+    assert any("unknown-alpha-p2b" in s for s in msgs)
+    assert any("unknown-beta-p2b" in s for s in msgs)
+    assert len(msgs) == 2, "two models → two notices, no duplicates"
 
 
-def test_priced_model_no_warning(recwarn):
-    """No warning is emitted for a model whose price is known."""
-    from jarn.cost.pricing import UnpricedModelWarning, cost_of  # noqa: F401
+def test_priced_model_no_notice():
+    """No notice is logged for a model whose price is known."""
+    from jarn.cost.pricing import cost_of
 
-    result = cost_of("claude-opus-4-8", 1_000_000, 1_000_000)
-    assert result is not None
-    warns = [w for w in recwarn.list if issubclass(w.category, UnpricedModelWarning)]
-    assert len(warns) == 0
+    with _capture_cost_logs() as records:
+        assert cost_of("claude-opus-4-8", 1_000_000, 1_000_000) is not None
+    assert records == []
 
 
 # -- prompt-cache token tracking --------------------------------------------

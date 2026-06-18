@@ -24,8 +24,8 @@ flagged as incomplete rather than silently wrong), and report a context window o
 from __future__ import annotations
 
 import json
+import logging
 import time
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,29 +33,26 @@ import yaml
 
 from jarn.config import paths
 
-# Set of model ids for which the unpriced warning has already been emitted this
+logger = logging.getLogger("jarn.cost")
+
+# Set of model ids for which the unpriced notice has already been emitted this
 # process lifetime.  Kept at module level so repeated calls never re-warn.
 _WARNED_UNPRICED: set[str] = set()
 
 
-class UnpricedModelWarning(UserWarning):
-    """Emitted once per model when no price is found in any pricing source."""
-
-
 def warn_unpriced(model_id: str) -> None:
-    """Emit a one-time ``UnpricedModelWarning`` for *model_id*.
+    """Record (once per model id) that no price was found for *model_id*.
 
-    The warning is suppressed after the first call for each model id so
-    high-frequency cost recording paths never produce repeated noise.
+    Routed to the ``jarn`` file logger, NOT ``warnings.warn``: in the TUI a raw
+    Python warning leaks to stderr and corrupts the display mid-session (it reads
+    like an error). The unpriced state is still surfaced cleanly to the user via
+    ``/cost`` (the ``unpriced`` call count). Deduped per model id so the
+    high-frequency cost path never repeats it.
     """
     if model_id in _WARNED_UNPRICED:
         return
     _WARNED_UNPRICED.add(model_id)
-    warnings.warn(
-        f"⚠ No price for {model_id} — cost will be counted as $0",
-        UnpricedModelWarning,
-        stacklevel=2,
-    )
+    logger.warning("No price for %s — cost will be counted as $0", model_id)
 
 
 @dataclass(frozen=True, slots=True)
