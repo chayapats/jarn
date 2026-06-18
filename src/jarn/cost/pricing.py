@@ -292,11 +292,15 @@ def cost_of(
 ) -> float | None:
     """USD cost of one call, or ``None`` if the model is unpriced.
 
-    ``cache_read_tokens`` / ``cache_creation_tokens`` are the provider's
-    prompt-cache counts — disjoint from ``input_tokens`` (which is the uncached
-    remainder). Each is priced at the model's explicit cache rate when set, else
-    at the plain input rate. With both at 0 (no cache usage), the result is
-    exactly the original ``input + output`` figure — totals never drift.
+    ``input_tokens`` is the provider's *full* reported input — LangChain's
+    ``usage_metadata['input_tokens']`` already folds the prompt-cache counts back
+    into the total (Anthropic's raw API excludes them; LangChain adds them back).
+    ``cache_read_tokens`` / ``cache_creation_tokens`` are therefore the cached
+    *subset* of that input: they are subtracted from the plain-input charge and
+    repriced at the model's explicit cache rate when set, else at the plain input
+    rate — so a cached token is counted once, never billed at the input rate AND
+    as a cache line. With both at 0 (no cache usage), the result is exactly the
+    original ``input + output`` figure — totals never drift.
     """
     price = lookup(model_id)
     if price is None:
@@ -308,8 +312,11 @@ def cost_of(
     cache_write_rate = (
         price.cache_write_rate if price.cache_write_rate is not None else price.input_per_mtok
     )
+    # Cache tokens are a subset of input_tokens — charge the uncached remainder at
+    # the input rate and the cached portions at their own rates (no double-count).
+    plain_input = max(0, input_tokens - cache_read_tokens - cache_creation_tokens)
     return (
-        input_tokens / 1_000_000 * price.input_per_mtok
+        plain_input / 1_000_000 * price.input_per_mtok
         + output_tokens / 1_000_000 * price.output_per_mtok
         + cache_read_tokens / 1_000_000 * cache_read_rate
         + cache_creation_tokens / 1_000_000 * cache_write_rate
