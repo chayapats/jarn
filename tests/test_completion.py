@@ -133,6 +133,33 @@ def test_symbol_mention_case_insensitive_and_capped(tmp_path):
     assert len(cands) <= 12
 
 
+def test_symbol_mention_empty_fragment_returns_nothing(tmp_path):
+    """@symbol: with no fragment yields [] — don't dump every symbol arbitrarily."""
+    (tmp_path / "mod.py").write_text("def alpha(): pass\ndef beta(): pass\n", encoding="utf-8")
+    import jarn.agent.repomap as repomap_mod
+
+    repomap_mod._SYMBOL_INDEX_CACHE.clear()
+    repomap_mod._DISCOVERY_CACHE.clear()
+    assert _provider(tmp_path).complete("@symbol:") == []
+
+
+def test_symbol_mention_sorted_before_cap(tmp_path):
+    """Matches come back in deterministic (name) order, not arbitrary git-ls-files
+    order, so the max_files cap doesn't hide symbols unpredictably."""
+    for f in ("z.py", "a.py", "m.py"):
+        (tmp_path / f).write_text(
+            "\n\n".join(f"def handler_{f[0]}_{i}(): pass" for i in range(3)),
+            encoding="utf-8",
+        )
+    import jarn.agent.repomap as repomap_mod
+
+    repomap_mod._SYMBOL_INDEX_CACHE.clear()
+    repomap_mod._DISCOVERY_CACHE.clear()
+    cands = _provider(tmp_path).complete("@symbol:handler")
+    names = [c.replacement.split(":")[-1] for c in cands]
+    assert names == sorted(names)  # deterministic alphabetical, not git order
+
+
 def test_bare_at_still_files_unchanged(tmp_path):
     """Regression guard: bare @ stays file completion, byte-for-byte."""
     (tmp_path / "README.md").write_text("x", encoding="utf-8")
