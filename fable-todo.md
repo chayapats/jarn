@@ -1,5 +1,9 @@
 # fable-todo.md — JARN customer-feedback remediation
 
+> **✅ STATUS: COMPLETE (2026-06-18)** — ทุก task P1.A–P5.D ลงครบแล้ว
+> (`68782db` P1 · `fe25a91` P2 · `02d40de` P3-small · `c46bac6` P3.A/UNIFY · `0cc3db1`+`67532d0` P4 · `fb2b66c` P5).
+> ไฟล์นี้เก็บไว้เป็น record ของรอบนี้ — แผน "ทำต่อ" อยู่ที่ `todo.md` (§ Road to 1.0.0).
+
 **For:** Fable 5 (implementer)
 **Author:** triage + plan from a 25-item customer feedback round, verified against the codebase (every claim checked with file:line evidence).
 **Scope:** Implement every task below. Tasks are grouped into 5 phases ordered by effort/impact. Each task is self-contained: problem → files → approach → acceptance criteria → risk.
