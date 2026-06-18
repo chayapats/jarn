@@ -32,7 +32,6 @@
   "optionalDependencies": {
     "jarn-cli-linux-x64": "0.0.0",
     "jarn-cli-linux-arm64": "0.0.0",
-    "jarn-cli-darwin-x64": "0.0.0",
     "jarn-cli-darwin-arm64": "0.0.0"
   },
   "engines": {

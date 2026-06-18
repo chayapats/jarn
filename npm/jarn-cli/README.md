@@ -20,9 +20,10 @@ actual program is a standalone binary shipped in a per-platform package
 | Linux | x64 | `jarn-cli-linux-x64` |
 | Linux | arm64 | `jarn-cli-linux-arm64` |
 | macOS | arm64 (Apple Silicon) | `jarn-cli-darwin-arm64` |
-| macOS | x64 (Intel) | `jarn-cli-darwin-x64` |
 
-Native Windows is not supported — run under **WSL** (uses the Linux binary).
+**Intel macs** and **native Windows** are not supported via npm — install with
+`pip install jarn` (Intel mac), or run under **WSL** (Windows, uses the Linux
+binary). On any unsupported host the `jarn` command prints these instructions.
 
 > Installing with `--ignore-scripts` is fine (this package has no install
 > scripts), but `--no-optional` will skip the binary and `jarn` will refuse to
