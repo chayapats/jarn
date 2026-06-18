@@ -15,6 +15,11 @@ venv/
 .coverage
 htmlcov/
 
+# npm release build output (assembled by npm/build-packages.mjs) + pack tarballs
+npm/dist/
+node_modules/
+*.tgz
+
 # Textual snapshot diffs (keep baselines in tests/__snapshots__)
 snapshot_report.html
 

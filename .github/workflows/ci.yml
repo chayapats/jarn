@@ -39,3 +39,15 @@ jobs:
       - run: uv sync --extra dev
       - run: uv build
       - run: uv run pytest tests/test_packaging.py -q
+
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Launcher tests
+        run: node --test npm/jarn-cli/test/launcher.test.js
+      - name: Assembly-script tests
+        run: node --test npm/test/build.test.mjs
