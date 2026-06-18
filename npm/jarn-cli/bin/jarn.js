@@ -17,7 +17,6 @@ const { spawnSync } = require('node:child_process')
 const PLATFORM_PACKAGES = {
   'linux-x64': 'jarn-cli-linux-x64',
   'linux-arm64': 'jarn-cli-linux-arm64',
-  'darwin-x64': 'jarn-cli-darwin-x64',
   'darwin-arm64': 'jarn-cli-darwin-arm64',
 }
 
