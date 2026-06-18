@@ -34,7 +34,8 @@ agents), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcrip
 base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists to
 `~/.jarn/config.yaml`), and per-server **MCP health** (`/mcp status`).
 
-> **Status:** v0.4.0 (Alpha) — released on PyPI (`pip install jarn`). Closes five user pain
+> **Status:** v0.4.4 (Alpha) — on PyPI (`pip install jarn`) and npm (`npm install -g
+> jarn-cli` — a standalone binary, no Python). Closes five user pain
 > points vs other harnesses (prompt caching, plan-mode handoff, `/commit` +
 > `/review`, background processes, macOS image paste) plus a UX-polish round (live
 > in-place streaming, conversation `/rewind`, rich `@`-mentions, in-session `/key`,
