@@ -5,6 +5,8 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-18
+
 A customer-feedback remediation pass (19 tasks across onboarding, permissions,
 approvals, cost/context surfacing, and docs) plus follow-up fixes, then a
 competitive-gaps round closing five user pain points versus other harnesses:
@@ -12,7 +14,14 @@ prompt caching, plan-mode handoff, `/commit` + `/review`, background processes,
 and macOS image paste; then a UX-polish round (16 fixes from an end-to-end
 user-journey audit) covering live in-place streaming, onboarding key capture,
 in-session auth recovery, faster approvals, cache-aware cost, suggested memory,
-rich `@`-mentions, and conversation rewind. Test count: 789 → 1154.
+rich `@`-mentions, and conversation rewind. A multi-agent review then hardened the
+round — fixing a `/rewind` blocker (rewind to the first turn), a cached-token cost
+double-count, a per-keystroke `@symbol` stall, and a reasoning-render regression —
+and dogfooding against a real LM Studio model surfaced two more: the unpriced-model
+notice is now logged (not leaked to the TUI), setup validation shows a spinner +
+timeout and is skippable (a cold local model no longer looks like a hang), and token
+usage is now tracked for OpenAI-compatible streaming (LM Studio / vLLM). Test count:
+789 → 1166.
 
 ### Added
 

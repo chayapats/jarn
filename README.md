@@ -34,9 +34,11 @@ agents), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcrip
 base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists to
 `~/.jarn/config.yaml`), and per-server **MCP health** (`/mcp status`).
 
-> **Status:** v0.3.0 (Alpha) — prepared, pending publish; v0.2.0 is the latest on
-> PyPI. Adds real container/OS isolation, policy profiles, a smoke-eval harness,
-> and `/mcp` / `/trust`. The architecture, configuration, permission engine, and
+> **Status:** v0.4.0 (Alpha) — prepared, pending publish. Closes five user pain
+> points vs other harnesses (prompt caching, plan-mode handoff, `/commit` +
+> `/review`, background processes, macOS image paste) plus a UX-polish round (live
+> in-place streaming, conversation `/rewind`, rich `@`-mentions, in-session `/key`,
+> faster approvals). The architecture, configuration, permission engine, and
 > terminal REPL are implemented and tested; live model calls require your own API
 > key. See [CHANGELOG.md](CHANGELOG.md) and [SECURITY.md](SECURITY.md).
 
@@ -282,7 +284,7 @@ See [docs/EXTENDING.md](docs/EXTENDING.md) ([quick start](docs/EXTENDING.md#quic
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1054 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1166 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

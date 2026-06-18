@@ -4,7 +4,7 @@
 > choosing where to contribute. Items marked `[x]` are implemented and in the
 > current release; `[ ]` items are scaffolded or documented but not yet shipped.
 
-Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-09** (v0.3.0 prepared, Alpha; v0.2.0 on PyPI).
+Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-18** (v0.4.0 prepared, Alpha; v0.2.0 on PyPI).
 
 ## v1 — implemented
 
@@ -57,7 +57,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-09** (v0.3.0 prepared
 - [x] `jarn` / `setup` / `init` / `doctor` (`--json`) CLI
 - [x] Strict config validation (typed bools, numeric ranges, unknown top-level keys rejected)
 - [x] Local rotating logs, opt-in LangSmith tracing
-- [x] `uv`/PyPI packaging, 1054 tests (+ packaging gate), clean lint + `mypy` CI
+- [x] `uv`/PyPI packaging, 1166 tests (+ packaging gate), clean lint + `mypy` CI
 - [x] `jarn doctor` extension diagnostics — skills, commands, subagents, hooks, MCP
   (shadowing, builtin renames, untrusted skips); `uv.lock` tracked for team installs
 
@@ -87,10 +87,11 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-09** (v0.3.0 prepared
 - [x] **Turn-level fallback model-swap** — on a turn that fails before producing
   output, rotate through `routing.fallback` and retry transparently
 
-## v0.4.0 — competitive-gaps round (unreleased)
+## v0.4.0 — competitive-gaps + UX-polish round (unreleased)
 
 Five user pain points closed versus other harnesses (Claude Code / Cursor / Cline /
-Aider). See the design spec under `docs/superpowers/specs/`.
+Aider), then a UX-polish round from an end-to-end user-journey audit and a
+multi-agent review. See the design spec under `docs/superpowers/specs/`.
 
 - [x] **Local prompt-cache keep-warm** — cloud caching is already automatic (the
   agent engine adds Anthropic cache-control; other cloud providers cache by prefix
@@ -118,6 +119,12 @@ Aider). See the design spec under `docs/superpowers/specs/`.
   existing memory store, respecting the global vs project tier and the project's trust
   gating (project writes refused on an untrusted repo); declining writes nothing. Gated
   and special-cased by the session driver exactly like `exit_plan_mode`.
+- [x] **UX-polish round** — live in-place markdown streaming (no raw-preview
+  double-echo / 8-line clip), conversation **`/rewind`** (fork to an earlier turn),
+  rich **`@`-mentions** (`@folder` / `@symbol`), one-key approval accept/deny, live
+  reasoning render, Esc-cancel edit notice, cache-aware `/cost`, friendlier onboarding
+  (validation spinner + timeout + skippable), and token usage tracked for
+  OpenAI-compatible streaming (LM Studio / vLLM).
 
 ## v0.3.0 — prepared (Alpha, unreleased)
 
