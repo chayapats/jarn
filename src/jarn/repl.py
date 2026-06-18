@@ -320,15 +320,15 @@ class InlineApp:
         # dont_extend_height so each window sizes to its CONTENT (not the screen):
         # otherwise the windows expand to their max and the input floats up the
         # screen with a gap above the toolbar.
-        # No hard max: the live block is a transient FORMATTED markdown render of
-        # the in-progress run (prose commits to scrollback once at the run seam),
-        # so an unclosed fence / long paragraph is no longer clipped at 8 lines.
-        # dont_extend_height keeps it content-sized so the input stays at the
-        # bottom. (Slice 2: add a terminal-height-aware cap only if a very tall
-        # live block pushes the input off-screen on short terminals — measure first.)
+        # The live block is a transient FORMATTED markdown render of the in-progress
+        # run (prose commits to scrollback once at the run seam), so an unclosed
+        # fence / long paragraph is no longer clipped at a hard 8 lines.
+        # dont_extend_height keeps it content-sized; _stream_height adds a
+        # terminal-height-aware cap (rows - reserve) so a very tall live block clips
+        # instead of pushing the input + toolbar off the bottom of the screen.
         stream = Window(
             FormattedTextControl(self._stream_control),
-            height=Dimension(min=0), wrap_lines=True,
+            height=self._stream_height, wrap_lines=True,
             dont_extend_height=True, style=f"fg:{palette.C_DIM}",
         )
         prompt = Window(
@@ -450,6 +450,14 @@ class InlineApp:
         cap = Console(force_terminal=True, width=self.console.width, file=buf)
         cap.print(f"[{palette.C_DIM}]{_rich_escape(text)}[/{palette.C_DIM}]", end="")
         return buf.getvalue().rstrip("\n")
+
+    def _stream_height(self) -> Dimension:
+        """Height for the live region: content-sized, but capped so a very tall
+        in-progress block (long paragraph / big code block) can't push the input
+        and toolbar off the bottom of the screen. Reserve a few rows for the input
+        + toolbar; the live block clips at that cap, the input stays pinned."""
+        rows = shutil.get_terminal_size((80, 24)).lines
+        return Dimension(min=0, max=max(4, rows - 4))
 
     def _stream_control(self):
         """Region above the input: in-progress text, an animated thinking
