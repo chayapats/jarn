@@ -84,12 +84,12 @@ def test_load_custom_commands(monkeypatch, tmp_path, project_dir):
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     cdir = project_dir / ".jarn" / "commands"
     cdir.mkdir(parents=True)
-    (cdir / "review.md").write_text(
-        "---\ndescription: review diff\n---\nReview this: $ARGS", encoding="utf-8"
+    (cdir / "summarize.md").write_text(
+        "---\ndescription: summarize diff\n---\nSummarize this: $ARGS", encoding="utf-8"
     )
     cmds = load_commands(project_dir)
-    assert "review" in cmds
-    assert cmds["review"].render("the auth module") == "Review this: the auth module"
+    assert "summarize" in cmds
+    assert cmds["summarize"].render("the auth module") == "Summarize this: the auth module"
 
 
 def test_custom_command_cannot_shadow_builtin(monkeypatch, tmp_path, project_dir):

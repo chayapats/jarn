@@ -17,7 +17,7 @@ from rich.markup import escape as _escape_markup
 
 from jarn.agent.builder import JarnRuntime, build_runtime
 from jarn.agent.checkpoint import CheckpointManager
-from jarn.agent.session import Approver, SessionDriver
+from jarn.agent.session import Approver, SessionDriver, SuggestedMemory
 from jarn.config.schema import Config, PermissionMode
 from jarn.cost import CostTracker
 from jarn.extensibility.commands import format_help
@@ -51,10 +51,14 @@ class Controller:
         project_root: Path | None,
         *,
         project_trusted: bool = True,
+        system_prompt_override: str | None = None,
     ) -> None:
         self.config = config
         self.project_root = project_root
         self.project_trusted = project_trusted
+        # When set, build_runtime swaps J.A.R.N.'s assembled system prompt for
+        # this string (eval-harness A/B of the harness prompt; see build_runtime).
+        self.system_prompt_override = system_prompt_override
         self.engine = PermissionEngine(
             mode=config.permission_mode,
             rules=config.permissions,
@@ -80,6 +84,9 @@ class Controller:
         self.telemetry = Telemetry.from_config(config.observability.telemetry)
         self.health = "unknown"            # unknown | ok | error | degraded
         self.last_error: str | None = None
+        # Resolved context-window sizes per model ref (0 = unknown / gave up), so
+        # a local-model endpoint (LM Studio / Ollama) is queried at most once.
+        self._ctx_window_cache: dict[str, int] = {}
         # Auto-checkpoint manager: snapshots working tree before agent turns so
         # /undo and /redo can revert or re-apply file changes without touching HEAD.
         _cp_root = project_root or Path.cwd()
@@ -90,6 +97,8 @@ class Controller:
         # Set once the degraded/error state has been surfaced to the user, so the
         # TUI shows it a single time per session rather than on every turn.
         self.health_notice_shown = False
+        # One-time per-session hint that /undo is unavailable (autocheckpoint off).
+        self._autocheckpoint_hint_shown = False
         # Per-server MCP health, populated by ensure_runtime: name -> "ok"/"error".
         self.mcp_health: dict[str, str] = {}
         self.mcp_errors: dict[str, str] = {}
@@ -132,6 +141,7 @@ class Controller:
                     project_trusted=self.project_trusted,
                     checkpointer=self._saver,
                     extra_tools=tools,
+                    system_prompt_override=self.system_prompt_override,
                 )
             except AmbientKeyLeakError as exc:
                 self.health = "error"
@@ -159,6 +169,7 @@ class Controller:
                     project_trusted=self.project_trusted,
                     checkpointer=self._saver,
                     extra_tools=tools,
+                    system_prompt_override=self.system_prompt_override,
                 )
             if self.runtime.warnings:
                 if self.health not in ("error", "degraded"):
@@ -207,9 +218,12 @@ class Controller:
         state = await rt.agent.aget_state(self._config())
         return list((getattr(state, "values", {}) or {}).get("messages", []) or [])
 
-    async def compact(self) -> str:
-        """Summarize the current thread and continue in a fresh thread seeded
-        with the summary (the richer ``/compact``). Returns the summary text."""
+    async def compact_preview(self) -> str:
+        """Generate the compaction summary for the current thread *without*
+        applying it. Records the summarizer call's cost. Returns the summary
+        text (``""`` when there's nothing to compact). The manual ``/compact``
+        command renders this and asks the user before calling
+        :meth:`compact_apply`."""
         rt = await self.ensure_runtime()
         state = await rt.agent.aget_state(self._config())
         messages = (getattr(state, "values", {}) or {}).get("messages", []) if state else []
@@ -243,8 +257,15 @@ class Controller:
                 summarizer_ref,
                 int(usage.get("input_tokens", 0)),
                 int(usage.get("output_tokens", 0)),
+                tool="(compact)",
             )
+        return summary
 
+    async def compact_apply(self, summary: str) -> None:
+        """Replace the conversation thread with ``summary``: start a fresh
+        thread and seed it with the summary. The destructive half of compaction
+        — call only after the user confirms (manual) or unconditionally (auto)."""
+        rt = await self.ensure_runtime()
         self.new_thread()
         from langchain_core.messages import HumanMessage
 
@@ -252,7 +273,95 @@ class Controller:
             self._config(),
             {"messages": [HumanMessage(content=f"[Summary of prior conversation]\n{summary}")]},
         )
+
+    async def compact(self) -> str:
+        """Summarize the current thread and continue in a fresh thread seeded
+        with the summary (the richer ``/compact``). Generates *and* applies in
+        one step — used by the non-interactive auto-compact path. The manual
+        ``/compact`` command splits this into :meth:`compact_preview` +
+        :meth:`compact_apply` so the user can review before applying. Returns the
+        summary text."""
+        summary = await self.compact_preview()
+        if not summary:
+            return ""
+        await self.compact_apply(summary)
         return summary
+
+    async def human_turns(self) -> list[tuple[int, str]]:
+        """Enumerate the user turns in the current thread for the ``/rewind``
+        picker. Returns ``(message_index, preview)`` for each ``HumanMessage``,
+        in conversation order. ``message_index`` is the offset into
+        ``state.values["messages"]`` — the cut point that keeps everything
+        *before* that turn. Previews are single-line and truncated.
+
+        Enumerated straight from the messages list (not the checkpointer step
+        history) so a turn is exactly one ``HumanMessage`` boundary — simple,
+        deterministic, and decoupled from checkpointer internals."""
+        rt = await self.ensure_runtime()
+        state = await rt.agent.aget_state(self._config())
+        messages = (getattr(state, "values", {}) or {}).get("messages", []) or []
+        turns: list[tuple[int, str]] = []
+        for idx, msg in enumerate(messages):
+            if getattr(msg, "type", "") != "human":
+                continue
+            content = getattr(msg, "content", "")
+            if isinstance(content, list):
+                content = "".join(
+                    b.get("text", "") if isinstance(b, dict) else str(b)
+                    for b in content
+                )
+            preview = " ".join(str(content).split())
+            if len(preview) > 80:
+                preview = preview[:77] + "…"
+            turns.append((idx, preview))
+        return turns
+
+    async def fork_to_turn(self, keep_count: int) -> int | None:
+        """Branch the conversation: keep ``messages[:keep_count]`` on a *new*
+        thread and continue from there. The original thread is untouched and
+        still resumable (this forks, it does not destroy).
+
+        ``keep_count`` is the cut index from :meth:`human_turns` — it must land
+        on a ``HumanMessage`` boundary so the re-run begins a clean turn. The
+        kept prefix is everything strictly before the chosen turn.
+
+        Mirrors :meth:`compact_apply`: ``new_thread()`` mints a fresh thread,
+        then ``aupdate_state`` seeds it. We prepend ``RemoveMessage(
+        REMOVE_ALL_MESSAGES)`` so the messages reducer starts from empty even if
+        the fresh thread somehow carried state — the same reducer mechanism
+        compaction relies on. Resets the context-token gauge like
+        :meth:`new_thread`.
+
+        Returns the cut index actually used, or ``None`` when there is nothing
+        to rewind (empty thread or a negative ``keep_count``). ``keep_count == 0``
+        is a *valid* rewind to before the very first turn: it seeds an empty
+        branch (``RemoveMessage`` only) so the conversation restarts from
+        scratch — not a no-op (that's the 2-turn / first-turn rewind case)."""
+        rt = await self.ensure_runtime()
+        state = await rt.agent.aget_state(self._config())
+        messages = (getattr(state, "values", {}) or {}).get("messages", []) or []
+        if not messages or keep_count < 0:
+            return None
+
+        kept_prefix = list(messages[:keep_count])  # empty when keep_count == 0
+        from langchain_core.messages import RemoveMessage
+        from langgraph.graph.message import REMOVE_ALL_MESSAGES
+
+        self.new_thread()  # mint a fresh thread_id; resets tracker.context_tokens
+        await rt.agent.aupdate_state(
+            self._config(),
+            {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *kept_prefix]},
+        )
+        return keep_count
+
+    # TODO(rewind-conversation) slice 2: link this fork to the git checkpoint
+    # stack (a per-turn turn-id<->snapshot-SHA index) so file edits made since
+    # the chosen turn revert atomically with the conversation. Today the working
+    # tree is NOT reverted on rewind — the picker points the user at /undo.
+    # TODO(rewind-conversation) slice 3: in-place/destructive rewind on the same
+    # thread + true free message-editing.
+    # TODO(rewind-conversation) slice 4: visual branch tree across forked threads
+    # surfaced in /sessions.
 
     def terminate_shells(self) -> int:
         """Kill any shell command still running on the host (on turn cancel).
@@ -350,6 +459,67 @@ class Controller:
             self.config.default_model = self._candidates[0]
             self.runtime = None
 
+    def _ref_has_resolvable_key(self, ref: str) -> bool:
+        """True if ``ref``'s provider has a usable (resolvable, non-empty) key.
+
+        Used to decide whether rotating to a fallback on an *auth* failure is
+        worthwhile: a fallback whose own key is missing/unresolvable would just
+        401 again, so it isn't a viable target. Local providers (Ollama / LM
+        Studio) need no key and always count as viable. Resolution failures
+        (``${ENV}`` not set, no keychain entry) fail closed → not viable."""
+        from jarn.config.schema import ProviderType
+        from jarn.config.secrets import SecretResolutionError, resolve
+        from jarn.providers import parse_model_ref
+
+        try:
+            parsed = parse_model_ref(ref, default_profile=self.config.default_profile)
+        except Exception:  # noqa: BLE001 - malformed ref → not viable
+            return False
+        provider = self.config.providers.get(parsed.profile)
+        if provider is None:
+            return False
+        if provider.type in (ProviderType.OLLAMA, ProviderType.LMSTUDIO):
+            return True  # local endpoints need no key
+        try:
+            return bool(resolve(provider.api_key))
+        except SecretResolutionError:
+            return False
+
+    def rotate_to_keyed_fallback(self) -> str | None:
+        """Rotate to the next fallback on a *different* provider that has a key.
+
+        Auth (401) failures are not retryable on the same provider — a rejected
+        key won't fix itself by reusing it. But a configured ``routing.fallback``
+        on a *different* provider with a resolvable key is exactly the case where
+        switching providers helps. This advances the rotation cursor past any
+        same-provider or keyless candidates to the first viable one, mutating the
+        same routing state as :meth:`rotate_to_fallback` (so a later success
+        ``reset_model_rotation`` still returns to the primary). Returns the new
+        ref, or ``None`` when no viable fallback remains."""
+        from jarn.providers import parse_model_ref
+
+        def _profile(ref: str) -> str:
+            try:
+                return parse_model_ref(
+                    ref, default_profile=self.config.default_profile
+                ).profile
+            except Exception:  # noqa: BLE001
+                return ref
+
+        current = self._candidates[self._candidate_idx] if self._candidates else ""
+        current_profile = _profile(current)
+        idx = self._candidate_idx + 1
+        while idx < len(self._candidates):
+            cand = self._candidates[idx]
+            if _profile(cand) != current_profile and self._ref_has_resolvable_key(cand):
+                self._candidate_idx = idx
+                self.config.routing.main = cand
+                self.config.default_model = cand
+                self.runtime = None  # rebuild with the new model
+                return cand
+            idx += 1
+        return None
+
     def record_session_title(self, title: str, *, when: float) -> None:
         self.sessions.touch(self.thread_id, title, when=when)
 
@@ -405,6 +575,30 @@ class Controller:
                 add(models["subagent"], name)
         return list(seen.items())
 
+    def discover_models(self) -> list[tuple[str, str]]:
+        """Probe configured local endpoints for their served models.
+
+        Returns ``(qualified_ref, profile)`` for every model reported by a local
+        provider (Ollama / LM Studio / openai_compatible). Fails open: providers
+        that are unreachable contribute nothing, so the list is simply empty when
+        no endpoint answers — the caller then falls back to manual entry.
+        """
+        from jarn.config.schema import ProviderType
+        from jarn.providers import list_remote_models, qualify_model_ref
+
+        local = {ProviderType.OLLAMA, ProviderType.LMSTUDIO, ProviderType.OPENAI_COMPATIBLE}
+        out: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for name, prov in self.config.providers.items():
+            if prov.type not in local:
+                continue
+            for model_id in list_remote_models(prov):
+                ref = qualify_model_ref(model_id, name)
+                if ref not in seen:
+                    seen.add(ref)
+                    out.append((ref, name))
+        return out
+
     def mode_choices(self) -> list[tuple[str, str]]:
         hints = {
             "plan": "read-only",
@@ -440,6 +634,12 @@ class Controller:
         self.runtime = None
         return target.value
 
+    def peek_next_mode(self) -> str:
+        """Return the mode that cycle_mode() *would* advance to, without applying it."""
+        order = list(PermissionMode)
+        idx = order.index(self.config.permission_mode)
+        return order[(idx + 1) % len(order)].value
+
     def cycle_mode(self) -> str:
         """Advance to the next permission mode (plan→ask→auto-edit→yolo→plan).
 
@@ -469,6 +669,30 @@ class Controller:
             self.last_error = str(exc)
             return False, str(exc)
 
+    def _main_context_window(self) -> int:
+        """The main model's context window in tokens (0 = unknown).
+
+        Curated table / user override first; for a local model whose window isn't
+        known (LM Studio / Ollama), query its endpoint once and cache the result
+        so the toolbar can show a real context % instead of hiding the gauge."""
+        ref = self.config.resolved_main_model() or ""
+        from jarn.cost.pricing import context_window
+
+        window = context_window(ref)
+        if window > 0:
+            return window
+        if ref in self._ctx_window_cache:
+            return self._ctx_window_cache[ref]
+        window = 0
+        from jarn.providers import parse_model_ref, remote_context_window
+
+        parsed = parse_model_ref(ref, default_profile=self.config.default_profile)
+        provider = self.config.providers.get(parsed.profile)
+        if provider is not None:
+            window = remote_context_window(provider, parsed.model_id) or 0
+        self._ctx_window_cache[ref] = window
+        return window
+
     def context_status(self) -> tuple[int, int, float] | None:
         """(tokens, window, fraction) of the main model's context, or None when
         unknown — no tokens recorded yet, or the model's window can't be resolved
@@ -476,9 +700,7 @@ class Controller:
         tokens = self.tracker.context_tokens
         if tokens <= 0:
             return None
-        from jarn.cost.pricing import context_window
-
-        window = context_window(self.config.resolved_main_model() or "")
+        window = self._main_context_window()
         if window <= 0:
             return None
         return tokens, window, tokens / window
@@ -540,7 +762,11 @@ class Controller:
         model = (self.runtime.main_model_ref if self.runtime else None) or self.config.resolved_main_model()
         glyph = {
             "ok": f"[{palette.C_SUCCESS}]●[/{palette.C_SUCCESS}] ",
-            "error": f"[{palette.C_ERROR}]✗[/{palette.C_ERROR}] ",
+            "error": (
+                f"[{palette.C_ERROR}]✗ key[/{palette.C_ERROR}]"
+                f" [{palette.C_DIM}]·[/{palette.C_DIM}]"
+                f" [{palette.C_ERROR}]/doctor[/{palette.C_ERROR}] "
+            ),
             "degraded": f"[{palette.C_WARN}]⚠[/{palette.C_WARN}] ",
             "unknown": "",
         }.get(self.health, "")
@@ -588,6 +814,70 @@ class Controller:
         self.config.default_model = args.strip()
         self.runtime = None  # force rebuild on next turn
         return CommandResult(f"Model set to {args.strip()} (rebuilding).", rebuilt=True)
+
+    def current_provider(self) -> str | None:
+        """Profile name of the provider serving the active main model.
+
+        A model ref is ``<profile>/<model-id>``; the profile keys
+        ``config.providers``. Returns ``None`` when no model is configured."""
+        from jarn.providers.models import parse_model_ref
+
+        ref = self.config.resolved_main_model()
+        if not ref:
+            return None
+        return parse_model_ref(ref, default_profile=self.config.default_profile).profile
+
+    def set_provider_key(self, raw_key: str, *, provider: str | None = None) -> CommandResult:
+        """Set the API key for ``provider`` (defaults to the current provider).
+
+        The secret is stored in the OS keychain (never inlined into committed
+        config) and the provider's ``api_key`` is pointed at a
+        ``keychain:jarn/<provider>`` reference — the same shape the onboarding
+        wizard writes. The reference is persisted to the global config so it
+        survives a restart, and the runtime is dropped so the next turn rebuilds
+        with the new key."""
+        import contextlib
+
+        from jarn.config import paths
+        from jarn.config.secrets import store_keychain
+        from jarn.config.settings import ConfigStore
+
+        prov = (provider or self.current_provider() or "").strip()
+        if not prov:
+            return CommandResult(
+                "No active provider to set a key for — configure a model first "
+                "with /model or run jarn setup."
+            )
+        if prov not in self.config.providers:
+            return CommandResult(
+                f"Provider {prov!r} isn't configured. Run jarn setup to add it, "
+                "then use /key to update its API key."
+            )
+        secret = raw_key.strip()
+        if not secret:
+            return CommandResult("No key entered — unchanged.")
+
+        ref = f"keychain:jarn/{prov}"
+        try:
+            store_keychain("jarn", prov, secret)
+        except Exception as exc:  # noqa: BLE001 - surface any keyring backend failure
+            return CommandResult(
+                f"Couldn't store the key in the OS keychain: {_escape_markup(str(exc))}"
+            )
+        # Update the live config and persist the *reference* (not the secret) so a
+        # restart still finds the key. Best-effort persistence: even if the file
+        # write fails the in-session key already works.
+        self.config.providers[prov].api_key = ref
+        # Persistence is best-effort: even if the file write fails the in-session
+        # key already works.
+        with contextlib.suppress(Exception):
+            ConfigStore(paths.global_config_path()).set(f"providers.{prov}.api_key", ref)
+        self.runtime = None  # force rebuild on next turn with the new key
+        return CommandResult(
+            f"Updated the {prov} API key (stored in the OS keychain). Rebuilding "
+            "on the next turn.",
+            rebuilt=True,
+        )
 
     def _cmd_mode(self, args: str) -> CommandResult:
         if not args.strip():
@@ -638,7 +928,10 @@ class Controller:
             rebuilt=True,
         )
 
-    def _cmd_profile(self, args: str) -> CommandResult:
+    def _cmd_preset(self, args: str) -> CommandResult:
+        """Expand a preset — a launch-time shortcut that sets mode + OS sandbox +
+        network at once — and echo exactly what it set. /mode and /sandbox remain
+        the live axes; /preset is optional sugar."""
         from jarn.config.loader import ConfigError
         from jarn.config.profiles import PROFILE_NAMES, resolve_effective_profile
 
@@ -646,10 +939,11 @@ class Controller:
         if not args.strip():
             current = self.config.policy.profile or "none"
             return CommandResult(
-                f"Current policy profile: {current}. Available: {available}."
+                f"Current preset: {current}. Available: {available}. "
+                "A preset bundles mode + OS sandbox + network into one pick."
             )
         choice = args.strip()
-        # resolve_effective_profile applies the chosen profile (raising on an
+        # resolve_effective_profile expands the chosen preset (raising on an
         # unknown name) AND clamps untrusted sessions to the floor — a single
         # apply path, so the REPL can never loosen an untrusted session.
         try:
@@ -657,15 +951,29 @@ class Controller:
                 self.config, project_trusted=self.project_trusted, cli_profile=choice
             )
         except ConfigError:
-            return CommandResult(f"Unknown profile {choice!r}. Choose one of: {available}")
+            return CommandResult(f"Unknown preset {choice!r}. Choose one of: {available}")
         self.config.policy.profile = effective or ""
         self.engine.mode = self.config.permission_mode
         self.runtime = None  # mode/sandbox/web-tools changes require a rebuild
+        # Echo the expansion so the user sees what the preset actually set.
+        expansion = (
+            f"mode={self.config.permission_mode.value}, "
+            f"sandbox={self.config.execution.local_sandbox}, "
+            f"network={'on' if self.config.execution.sandbox_allow_network else 'off'}"
+        )
         suffix = ""
         if effective != choice:
             suffix = f" (clamped to {effective} — project untrusted)"
         return CommandResult(
-            f"Policy profile set to {effective}{suffix} (rebuilding).", rebuilt=True
+            f"preset '{effective}'{suffix} → {expansion} (rebuilding).", rebuilt=True
+        )
+
+    def _cmd_profile(self, args: str) -> CommandResult:
+        """Deprecated alias of /preset (kept working for back-compat)."""
+        result = self._cmd_preset(args)
+        return CommandResult(
+            f"(/profile is deprecated — use /preset.) {result.text}",
+            rebuilt=result.rebuilt,
         )
 
     def _cmd_mcp(self, args: str) -> CommandResult:
@@ -869,10 +1177,24 @@ class Controller:
     def _cmd_cost(self, args: str) -> CommandResult:
         t = self.tracker
         lines = [f"[b]Session usage[/b] — {t.summary_line()}", f"status: {t.status().value}"]
+        if t.total.cache_read_tokens or t.total.cache_creation_tokens:
+            lines.append(
+                f"[{palette.C_DIM}]cache[/{palette.C_DIM}] "
+                f"{t.total.cache_read_tokens:,} read · "
+                f"{t.total.cache_creation_tokens:,} write"
+            )
         for model, usage in t.per_model.items():
             lines.append(
                 f"  {_escape_markup(model)}: ${usage.cost_usd:.4f} · {usage.total_tokens:,} tok"
             )
+        top = t.top_tools()
+        if top:
+            lines.append(f"[{palette.C_DIM}]top burners (by tool)[/{palette.C_DIM}]")
+            for tool, usage in top:
+                lines.append(
+                    f"  {_escape_markup(tool)}: ${usage.cost_usd:.4f} · "
+                    f"{usage.total_tokens:,} tok · {usage.calls} calls"
+                )
         return CommandResult("\n".join(lines))
 
     def _cmd_compact(self, args: str) -> CommandResult:
@@ -935,9 +1257,12 @@ class Controller:
             return self._memory_update(parts[1:])
         if subcommand == "delete":
             return self._memory_delete(parts[1:])
+        if subcommand in ("dump", "context"):
+            return self._memory_dump()
         return CommandResult(
-            "Usage: /memory [search|show|add|update|delete] ...\n"
+            "Usage: /memory [search|show|add|update|delete|dump] ...\n"
             "Examples:\n"
+            "  /memory dump\n"
             "  /memory search pytest\n"
             "  /memory add project project \"Test style\" \"Use pytest\" \"Prefer parametrized tests.\"\n"
             "  /memory show project test-style\n"
@@ -984,6 +1309,95 @@ class Controller:
             )
             if hit.memory.body:
                 lines.append(_format_memory_body(hit.memory.body))
+        return CommandResult("\n".join(lines))
+
+    def _memory_dump(self) -> CommandResult:
+        """Render everything that gets injected into the system prompt for this project."""
+        from jarn.memory import MemoryStore
+        from jarn.memory.context import DEFAULT_CONTEXT_FILES, project_context_text
+
+        sep = f"[{palette.C_DIM}]{'─' * 48}[/{palette.C_DIM}]"
+        lines: list[str] = ["[b]Memory context dump[/b] [dim](what the agent sees)[/dim]"]
+
+        # 1. Global MEMORY.md index
+        lines.append(f"\n{sep}")
+        lines.append(f"[b][{palette.C_NOTICE}]Global memory index[/{palette.C_NOTICE}][/b]")
+        global_store = MemoryStore.global_store()
+        global_index = global_store.index_text().strip()
+        if global_index and "—" in global_index:
+            lines.append(_escape_markup(global_index))
+        else:
+            lines.append(f"[{palette.C_DIM}](empty)[/{palette.C_DIM}]")
+
+        # 2. Project MEMORY.md index
+        lines.append(f"\n{sep}")
+        lines.append(f"[b][{palette.C_NOTICE}]Project memory index[/{palette.C_NOTICE}][/b]")
+        if not self.project_trusted and self.project_root is not None:
+            lines.append(
+                f"[{palette.C_DIM}]Skipped — project untrusted (`jarn trust` to enable).[/{palette.C_DIM}]"
+            )
+        else:
+            project_store = MemoryStore.project_store(self.project_root)
+            if project_store:
+                project_index = project_store.index_text().strip()
+                if project_index and "—" in project_index:
+                    lines.append(_escape_markup(project_index))
+                else:
+                    lines.append(f"[{palette.C_DIM}](empty)[/{palette.C_DIM}]")
+            else:
+                lines.append(f"[{palette.C_DIM}](no project root)[/{palette.C_DIM}]")
+
+        # 3. Loaded context file (JARN.md / AGENTS.md / CLAUDE.md)
+        lines.append(f"\n{sep}")
+        names = (
+            self.config.compat.context_files
+            if self.config.compat.context_files
+            else DEFAULT_CONTEXT_FILES
+        )
+        ctx_text = project_context_text(self.project_root, context_files=names) if self.project_trusted else None
+        # Determine which file was loaded
+        ctx_filename: str | None = None
+        if self.project_trusted and self.project_root is not None:
+            for name in names:
+                if (self.project_root / name).is_file():
+                    ctx_filename = name
+                    break
+        label = f"Context file ({ctx_filename})" if ctx_filename else "Context file"
+        lines.append(f"[b][{palette.C_NOTICE}]{_escape_markup(label)}[/{palette.C_NOTICE}][/b]")
+        if ctx_text:
+            lines.append(_escape_markup(ctx_text.strip()))
+        elif not self.project_trusted and self.project_root is not None:
+            lines.append(
+                f"[{palette.C_DIM}]Skipped — project untrusted.[/{palette.C_DIM}]"
+            )
+        else:
+            lines.append(f"[{palette.C_DIM}](no context file found — run /init to create JARN.md)[/{palette.C_DIM}]")
+
+        # 4. Top-k recall — what recall_block(...) would surface per turn. Real
+        # injection is query-dependent (enrich_turn_input), so we recall against a
+        # representative query built from the stored memories to show live hits.
+        lines.append(f"\n{sep}")
+        lines.append(
+            f"[b][{palette.C_NOTICE}]Top-k recall (representative)[/{palette.C_NOTICE}][/b]"
+        )
+        query = " ".join(
+            f"{m.name} {m.description}"
+            for _scope, store in self._memory_read_stores()
+            for m in store.load_all()
+        )
+        recall_hits: list[tuple[str, RecallHit]] = (
+            self._memory_search_hits(query, k=3) if query.strip() else []
+        )
+        if recall_hits:
+            for scope, hit in recall_hits:
+                lines.append(
+                    f"  [cyan]{_escape_markup(hit.memory.name)}[/cyan] "
+                    f"[dim]({scope}, {hit.score:.2f})[/dim] — "
+                    f"{_escape_markup(hit.memory.description)}"
+                )
+        else:
+            lines.append(f"[{palette.C_DIM}](no memories to recall)[/{palette.C_DIM}]")
+
         return CommandResult("\n".join(lines))
 
     def _memory_show(self, parts: list[str]) -> CommandResult:
@@ -1113,6 +1527,34 @@ class Controller:
             return None, f"No project root found; cannot {target} project memory."
         return store, None
 
+    def save_suggested_memory(self, suggestion: SuggestedMemory) -> tuple[bool, str]:
+        """Persist an agent-suggested (and user-approved) memory via the store.
+
+        Routes through the same scope + trust gating as ``/memory add``: a project
+        write is refused on an untrusted project. Returns ``(saved, message)`` so
+        the approver can report the outcome to the user without raising."""
+        from jarn.memory.store import MEMORY_TYPES, Memory
+
+        name = suggestion.name.strip()
+        if not name:
+            return False, "Memory has no name; nothing saved."
+        mem_type = suggestion.type.strip() or "project"
+        if mem_type not in MEMORY_TYPES:
+            return False, (
+                f"Unknown memory type {mem_type!r}; "
+                f"choose one of: {', '.join(MEMORY_TYPES)}."
+            )
+        scope = suggestion.scope.strip().lower() or "project"
+        store, error = self._memory_store_for_scope(scope, write=True)
+        if error or store is None:
+            return False, error or "Memory store unavailable."
+        description = suggestion.description.strip() or name
+        body = suggestion.body.strip() or description
+        path = store.save(
+            Memory(name=name, description=description, body=body, type=mem_type)
+        )
+        return True, f"Saved {scope} memory: {path.name}"
+
     def _cmd_permissions(self, args: str) -> CommandResult:
         r = self.config.permissions
         session_allow = self.engine._all_allow()[len(r.allow) :]
@@ -1138,17 +1580,98 @@ class Controller:
         Capturing the current state as a redo-point first guarantees that undo
         is itself reversible: the user can always /redo to get back here.
         """
+        if not self.checkpoint_manager.enabled:
+            return CommandResult(
+                "No checkpoints — /undo needs autocheckpoint. "
+                "Enable it with /config (git.autocheckpoint: true) or 'jarn config'."
+            )
         result = self.checkpoint_manager.undo()
         if result.ok:
             return CommandResult(f"Undone. {result.message}")
         return CommandResult(f"Cannot undo: {result.message}")
 
+    def abort_rollback(self) -> str:
+        """Roll back the working tree to the current turn's start checkpoint.
+
+        Used by ``/abort`` *after* the turn has been cancelled in the REPL.
+        The turn-start snapshot sits on top of the undo stack, so reverting it
+        is exactly :meth:`CheckpointManager.undo`. Degrades gracefully when
+        autocheckpoint is off (no checkpoint to roll back to) — mirroring the
+        ``/undo`` wording that points the user at how to enable it.
+        """
+        if not self.checkpoint_manager.enabled:
+            return (
+                "Turn cancelled. Rollback unavailable — /abort needs autocheckpoint. "
+                "Enable it with /config (git.autocheckpoint: true) or 'jarn config'."
+            )
+        result = self.checkpoint_manager.undo()
+        if result.ok:
+            return f"Turn cancelled and rolled back. {result.message}"
+        return f"Turn cancelled. Cannot roll back: {result.message}"
+
+    def can_rollback_turn(self) -> bool:
+        """Whether a turn-start checkpoint is available to roll back to.
+
+        Autocheckpoint snapshots the working tree before each agent turn (see
+        ``SessionDriver._run``), so when autocheckpoint is on in a git repo there
+        is a checkpoint ``/abort`` can revert to."""
+        return self.checkpoint_manager.enabled and self.checkpoint_manager.is_repo
+
+    def cancel_edit_note(self) -> str | None:
+        """Message for an Esc/Ctrl+C cancel that left this turn's file edits on
+        disk.
+
+        Esc cancels the turn but does *not* revert edits (unlike ``/abort``).
+        Return text that says edits remain and how to revert them, offering
+        rollback when a turn-start checkpoint exists. Returns ``None`` only when
+        nothing actionable can be said (no rollback path) — but we always at
+        least point at ``/abort``, so this currently always returns a string.
+        """
+        if self.can_rollback_turn():
+            return (
+                "Edits from this turn are still on disk. "
+                "Run /abort to roll them back, or /undo later."
+            )
+        return (
+            "Edits from this turn are still on disk. "
+            "/abort can roll them back once autocheckpoint is on "
+            "(enable it with /config: git.autocheckpoint: true)."
+        )
+
     def _cmd_redo(self, args: str) -> CommandResult:
         """Re-apply the most recently undone agent turn's file changes."""
+        if not self.checkpoint_manager.enabled:
+            return CommandResult(
+                "No checkpoints — /redo needs autocheckpoint. "
+                "Enable it with /config (git.autocheckpoint: true) or 'jarn config'."
+            )
         result = self.checkpoint_manager.redo()
         if result.ok:
             return CommandResult(f"Redone. {result.message}")
         return CommandResult(f"Cannot redo: {result.message}")
+
+    def _cmd_ps(self, args: str) -> CommandResult:
+        """List background processes, or ``/ps kill <id>`` to stop one."""
+        from jarn.agent.background import manager
+
+        mgr = manager()
+        parts = args.split()
+        if parts and parts[0] == "kill":
+            if len(parts) < 2:
+                return CommandResult("Usage: /ps kill <id>")
+            ok = mgr.kill(parts[1])
+            return CommandResult(
+                f"Killed {parts[1]}." if ok else f"No background process {parts[1]!r}."
+            )
+        procs = mgr.list()
+        if not procs:
+            return CommandResult("No background processes.")
+        lines = ["[b]Background processes[/b]"]
+        for p in procs:
+            state = "running" if p["running"] else f"exited ({p['exit_code']})"
+            lines.append(f"  [cyan]{p['id']}[/cyan] [dim][{state}][/dim] {_escape_markup(p['command'])}")
+        lines.append("[dim]/ps kill <id> to stop one[/dim]")
+        return CommandResult("\n".join(lines))
 
     def _cmd_checkpoints(self, args: str) -> CommandResult:
         """List recent auto-checkpoints available for /undo."""
@@ -1172,6 +1695,23 @@ class Controller:
                 f"{marker}[dim]{entry.sha[:12]}[/dim] {_escape_markup(entry.label)}"
             )
         return CommandResult("\n".join(lines))
+
+    def autocheckpoint_off_hint(self) -> str | None:
+        """Return a one-time per-session hint when autocheckpoint is off.
+
+        Call after the agent writes a file.  Returns the hint string on the
+        first call in a session; returns ``None`` on all subsequent calls (so
+        callers can gate ``console.print`` on a truthy return value).
+        """
+        if self.checkpoint_manager.enabled:
+            return None
+        if self._autocheckpoint_hint_shown:
+            return None
+        self._autocheckpoint_hint_shown = True
+        return (
+            "Hint: /undo is unavailable while autocheckpoint is off. "
+            "Enable it with /config (git.autocheckpoint: true) or 'jarn config'."
+        )
 
     def _cmd_map(self, args: str) -> CommandResult:
         """Build and display the ranked repo map.
@@ -1249,8 +1789,201 @@ class Controller:
 
         return CommandResult("Usage: /wiki [search <q>|list]")
 
+    def _cmd_doctor(self, args: str) -> CommandResult:
+        """Run the same diagnostics as ``jarn doctor`` and return them inline."""
+        from jarn.cli import _collect_doctor
+
+        diag: dict = {}
+        _collect_doctor(
+            diag,
+            config=self.config,
+            project_root=self.project_root,
+            project_trusted=self.project_trusted,
+        )
+
+        lines: list[str] = ["[b]jarn doctor[/b]"]
+
+        gpath = diag.get("global_config", "")
+        present = diag.get("global_config_present", False)
+        lines.append(
+            f"global config: {_escape_markup(gpath)} "
+            f"{'[green]✔[/green]' if present else '[red]missing[/red]'}"
+        )
+        lines.append(f"project root: {_escape_markup(diag.get('project_root') or 'none')}")
+
+        if not present:
+            lines.append(f"[{palette.C_WARN}]No config — run [b]jarn setup[/b].[/{palette.C_WARN}]")
+            return CommandResult("\n".join(lines))
+
+        lines.append(f"default profile: {_escape_markup(diag.get('default_profile', ''))}")
+        lines.append(f"main model: {_escape_markup(diag.get('main_model', ''))}")
+        _mode = diag.get("permission_mode", "")
+        _eff_mode = diag.get("effective_mode", _mode)
+        _mode_str = (
+            _mode if _eff_mode == _mode
+            else f"{_mode} · effective: {_eff_mode} (after trust clamp)"
+        )
+        lines.append(f"mode: {_escape_markup(_mode_str)}")
+
+        web_tools_str = "on" if diag.get("web_tools", True) else "off"
+        lines.append(
+            f"preset (deprecated): {_escape_markup(diag.get('policy_profile', 'none'))}"
+            f" · web tools: {web_tools_str}"
+        )
+
+        sbx = diag.get("sandbox") or {}
+        sbx_backend = sbx.get("backend") or "none"
+        sbx_avail = sbx.get("available", False)
+        sbx_mode = sbx.get("mode", "off")
+        if sbx_avail:
+            sbx_status = f"[{palette.C_SUCCESS}]{_escape_markup(sbx_backend)} available[/{palette.C_SUCCESS}]"
+        else:
+            sbx_status = f"[{palette.C_DIM}]unavailable[/{palette.C_DIM}]"
+        lines.append(f"sandbox: {sbx_status} · mode {sbx_mode}")
+
+        ex = diag.get("execution") or {}
+        ex_backend = ex.get("backend", "local")
+        if ex_backend == "docker" or ex.get("docker_image"):
+            docker_ok = ex.get("docker_available", False)
+            docker_status = (
+                f"[{palette.C_SUCCESS}]available[/{palette.C_SUCCESS}]"
+                if docker_ok
+                else f"[{palette.C_DIM}]unavailable[/{palette.C_DIM}]"
+            )
+            lines.append(
+                f"execution backend: {_escape_markup(ex_backend)} · docker: {docker_status}"
+                f" · image {_escape_markup(str(ex.get('docker_image') or ''))}"
+            )
+        else:
+            lines.append(f"execution backend: {_escape_markup(ex_backend)}")
+
+        git_diag = diag.get("git") or {}
+        autockpt = "on" if git_diag.get("autocheckpoint") else "off"
+        lines.append(f"git.autocheckpoint: {autockpt}")
+
+        wiki_diag = diag.get("wiki") or {}
+        wiki_enabled = "on" if wiki_diag.get("enabled") else "off"
+        lines.append(f"wiki.enabled: {wiki_enabled}")
+
+        obs_diag = diag.get("observability") or {}
+        transcript = "on" if obs_diag.get("transcript", True) else "off"
+        lines.append(f"observability.transcript: {transcript}")
+
+        ctx_diag = diag.get("context") or {}
+        repo_map_mode = ctx_diag.get("repo_map", "tool")
+        repo_map_tokens = ctx_diag.get("repo_map_tokens", 1024)
+        lines.append(f"context.repo_map: {repo_map_mode} · token_budget {repo_map_tokens}")
+
+        lines.append("\n[b]Providers[/b]")
+        for entry in diag.get("providers") or []:
+            if entry.get("key_ok"):
+                key_state = f"[{palette.C_SUCCESS}]key ok[/{palette.C_SUCCESS}]"
+            else:
+                key_state = f"[{palette.C_WARN}]{_escape_markup(entry.get('key_state', ''))}[/{palette.C_WARN}]"
+            lines.append(
+                f"  {_escape_markup(entry.get('name', ''))} "
+                f"({_escape_markup(entry.get('type', ''))}): {key_state}"
+            )
+
+        lines.append("\n[b]Main model build[/b]")
+        if diag.get("main_model_builds"):
+            lines.append(f"  [{palette.C_SUCCESS}]✔ model constructs[/{palette.C_SUCCESS}]")
+        else:
+            lines.append(
+                f"  [{palette.C_ERROR}]✗ {_escape_markup(diag.get('main_model_error') or '')}[/{palette.C_ERROR}]"
+            )
+
+        _append_doctor_extensions(lines, diag.get("extensions") or {})
+
+        ok = diag.get("ok", False)
+        lines.append(
+            f"\n{'[green]All good.[/green]' if ok else f'[{palette.C_WARN}]Issues found above.[/{palette.C_WARN}]'}"
+        )
+        return CommandResult("\n".join(lines))
+
     def _cmd_quit(self, args: str) -> CommandResult:
         return CommandResult("Bye.", quit=True)
+
+
+def _append_doctor_extensions(lines: list[str], ext: dict) -> None:
+    """Append the doctor Extensions block as Rich-markup lines.
+
+    Mirrors ``cli._print_extensions`` so ``/doctor`` shows the same extensions
+    data as ``jarn doctor``, rendered inline with palette colours.
+    """
+    counts = ext.get("counts") or {}
+    lines.append("\n[b]Extensions[/b]")
+    if ext.get("project_trusted") is False:
+        lines.append(
+            f"  [{palette.C_WARN}]project untrusted — project-tier files/config "
+            f"skipped[/{palette.C_WARN}]"
+        )
+    lines.append(
+        "  "
+        f"skills {counts.get('skills', 0)} · "
+        f"commands {counts.get('commands', 0)} · "
+        f"subagents {counts.get('subagents', 0)} · "
+        f"hooks {counts.get('hooks', 0)} · "
+        f"mcp {counts.get('mcp_servers', 0)} · "
+        f"async {counts.get('async_subagents', 0)}"
+    )
+
+    for warning in ext.get("warnings") or []:
+        lines.append(f"  [{palette.C_WARN}]⚠ {_escape_markup(warning)}[/{palette.C_WARN}]")
+
+    for kind, label in (
+        ("skills", "Skills"),
+        ("commands", "Commands"),
+        ("subagents", "Subagents"),
+    ):
+        rows = ext.get(kind) or []
+        active = [r for r in rows if r.get("status") in ("active", "renamed_builtin")]
+        if not active:
+            continue
+        lines.append(f"\n  [b]{label}[/b]")
+        for row in active:
+            scope = _escape_markup(row.get("scope", ""))
+            name = _escape_markup(row.get("name", ""))
+            detail = _escape_markup(row.get("detail", ""))
+            suffix = f" — {detail}" if detail else ""
+            lines.append(f"    [{palette.C_SUCCESS}]✔[/{palette.C_SUCCESS}] {name} ({scope}){suffix}")
+
+    hooks = [h for h in ext.get("hooks") or [] if h.get("status") == "active"]
+    if hooks:
+        lines.append("\n  [b]Hooks[/b]")
+        for hook in hooks:
+            blocking = "blocking" if hook.get("blocking") else "non-blocking"
+            lines.append(
+                f"    [{palette.C_SUCCESS}]✔[/{palette.C_SUCCESS}] "
+                f"{_escape_markup(str(hook.get('event') or ''))} ({blocking}): "
+                f"{_escape_markup(str(hook.get('command') or ''))}"
+            )
+
+    servers = [s for s in ext.get("mcp_servers") or [] if s.get("status") == "active"]
+    if servers:
+        lines.append("\n  [b]MCP servers[/b]")
+        for server in servers:
+            health = server.get("health") or "unknown"
+            lines.append(
+                f"    [{palette.C_SUCCESS}]✔[/{palette.C_SUCCESS}] "
+                f"{_escape_markup(str(server.get('name') or ''))} "
+                f"({_escape_markup(str(server.get('transport') or ''))}, health={_escape_markup(str(health))})"
+            )
+
+    shadowed = [
+        r
+        for kind in ("skills", "commands", "subagents")
+        for r in (ext.get(kind) or [])
+        if r.get("status") == "shadowed"
+    ]
+    if shadowed:
+        lines.append(f"\n  [{palette.C_DIM}]Shadowed (not loaded):[/{palette.C_DIM}]")
+        for row in shadowed:
+            lines.append(
+                f"    [{palette.C_DIM}]{_escape_markup(str(row.get('name') or ''))} "
+                f"({_escape_markup(str(row.get('scope') or ''))}) — "
+                f"{_escape_markup(str(row.get('detail', '')))}[/{palette.C_DIM}]"
+            )
 
 
 def _bust_repomap_cache(root: Path) -> None:

@@ -121,3 +121,88 @@ def test_doctor_json_includes_context_repo_map(tmp_path, monkeypatch, capsys):
     assert "context" in data, "doctor --json must include 'context' key"
     assert data["context"]["repo_map"] == "auto"
     assert data["context"]["repo_map_tokens"] == 2048
+
+
+# ---------------------------------------------------------------------------
+# P3.C — headless yolo startup warning (no interactive prompt)
+# ---------------------------------------------------------------------------
+
+
+def _make_headless_config(tmp_path):
+    """Write a minimal config YAML and return its path."""
+    gp = tmp_path / "config.yaml"
+    gp.write_text(
+        yaml.safe_dump({
+            "default_profile": "openrouter",
+            "providers": {
+                "openrouter": {
+                    "type": "openrouter",
+                    "api_key": "sk-test",
+                    "base_url": "http://localhost:9999/v1",
+                }
+            },
+            "routing": {"main": "openrouter/some-model"},
+        }),
+        encoding="utf-8",
+    )
+    return gp
+
+
+def test_headless_yolo_prints_warning_to_stderr(tmp_path, monkeypatch, capsys):
+    """CLI --permission-mode yolo prints a one-line startup warning (no prompt)."""
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    gp = _make_headless_config(tmp_path)
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
+    # This test is about the yolo warning, not trust — keep it deterministic and
+    # non-interactive regardless of the cwd's ambient trust state.
+    monkeypatch.setattr(cli_mod, "_resolve_project_trust", lambda *a, **k: True)
+
+    # Patch run_headless so the test doesn't actually run the agent
+    def _fake_run_headless(*a, **k):
+        return 0
+
+    monkeypatch.setattr(cli_mod, "run_headless" if hasattr(cli_mod, "run_headless") else "_run_headless",
+                        _fake_run_headless, raising=False)
+    import jarn.headless as hd
+    monkeypatch.setattr(hd, "run_headless", _fake_run_headless)
+
+    # Use _cmd_headless directly to avoid config-not-found guard
+    result = cli_mod._cmd_headless(
+        prompt_arg="do something",
+        permission_mode_override="yolo",
+    )
+    captured = capsys.readouterr()
+    assert result == 0
+    assert "yolo" in captured.err.lower()
+    assert "warning" in captured.err.lower()
+    # Must NOT contain interactive prompt text
+    assert "[y/N]" not in captured.err and "[y/n]" not in captured.err.lower()
+
+
+def test_headless_non_yolo_no_warning(tmp_path, monkeypatch, capsys):
+    """CLI --permission-mode ask does NOT emit the yolo warning."""
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    gp = _make_headless_config(tmp_path)
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
+    # Deterministic, non-interactive regardless of the cwd's ambient trust state.
+    monkeypatch.setattr(cli_mod, "_resolve_project_trust", lambda *a, **k: True)
+
+    import jarn.headless as hd
+
+    def _fake_run_headless(*a, **k):
+        return 0
+
+    monkeypatch.setattr(hd, "run_headless", _fake_run_headless)
+
+    cli_mod._cmd_headless(
+        prompt_arg="do something",
+        permission_mode_override="ask",
+    )
+    captured = capsys.readouterr()
+    assert "yolo" not in captured.err.lower()

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import subprocess
 from io import StringIO
 
 import pytest
 from rich.console import Console
 
-from jarn.agent.session import ApprovalRequest, Event, EventKind
+from jarn.agent.session import ApprovalReply, ApprovalRequest, Event, EventKind
 from jarn.config.schema import Config, ProviderConfig, ProviderType, RoutingConfig
 from jarn.permissions import Action, ActionKind, Decision, PermissionResult, RememberScope
 from jarn.tui.controller import Controller
@@ -281,6 +283,149 @@ async def test_turn_does_not_retry_after_output(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_auth_error_surfaces_friendly_message(tmp_path, monkeypatch):
+    """A 401/auth ERROR is mapped to a friendly, actionable message naming the
+    provider — not the raw SDK JSON, which is kept only as dim detail."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)  # routing.main = "openrouter/m"
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+
+    raw = "Error code: 401 - {'error': {'message': 'invalid x-api-key'}}"
+    driver = _FakeDriver([
+        Event(EventKind.ERROR, raw, {"retryable": False, "auth": True,
+                                     "provider": "openrouter"}),
+    ])
+    monkeypatch.setattr(ctrl, "make_driver", lambda approver: driver)
+
+    console = Console(file=StringIO(), width=100)
+    await repl._run_turn(console, ctrl, "hi", _ask_returning(""))
+    out = console.file.getvalue()
+    flat = " ".join(out.split())  # collapse console line-wrapping
+    assert "was rejected (401)" in flat
+    assert "openrouter" in flat
+    assert "/key" in flat and "jarn setup" in flat
+    # raw detail stays available (dim), but the message is no longer just the JSON
+    assert not out.strip().startswith("Error code: 401")
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_non_auth_error_message_unchanged(tmp_path, monkeypatch):
+    """A non-auth error is surfaced verbatim (no friendly remapping)."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+
+    driver = _FakeDriver([
+        Event(EventKind.TEXT, "partial"),
+        Event(EventKind.ERROR, "boom: something broke", {"retryable": False}),
+    ])
+    monkeypatch.setattr(ctrl, "make_driver", lambda approver: driver)
+
+    console = Console(file=StringIO(), width=80)
+    await repl._run_turn(console, ctrl, "hi", _ask_returning(""))
+    out = console.file.getvalue()
+    assert "boom: something broke" in out
+    assert "was rejected (401)" not in out
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_auth_error_rotates_to_keyed_fallback(tmp_path, monkeypatch):
+    """A 401 on the primary rotates to a configured fallback on a different
+    provider that has a good key, and the turn completes there."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="primary",
+        providers={
+            "primary": ProviderConfig(type=ProviderType.OPENROUTER, api_key="bad"),
+            "backup": ProviderConfig(type=ProviderType.ANTHROPIC, api_key="good"),
+        },
+        routing=RoutingConfig(main="primary/m", fallback=["backup/m"]),
+    )
+    ctrl = Controller(cfg, root)
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+
+    raw = "Error code: 401 - {'error': {'message': 'invalid x-api-key'}}"
+    first = _FakeDriver([
+        Event(EventKind.ERROR, raw, {"retryable": False, "auth": True,
+                                     "provider": "primary"}),
+    ])
+    second = _FakeDriver([Event(EventKind.TEXT, "recovered."), Event(EventKind.DONE)])
+    seq = [first, second]
+    monkeypatch.setattr(ctrl, "make_driver", lambda approver: seq.pop(0))
+
+    console = Console(file=StringIO(), width=100)
+    await repl._run_turn(console, ctrl, "hi", _ask_returning(""))
+    out = console.file.getvalue()
+    flat = " ".join(out.split())
+    assert "auth failed, retrying with backup/m" in flat
+    assert "recovered." in flat
+    assert "was rejected (401)" not in flat   # rotated instead of dead-ending
+    assert second.resumed is True             # resume from state, no duplicate user msg
+    assert ctrl.config.routing.main == "primary/m"  # reset to primary on success
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_auth_error_dead_ends_without_viable_fallback(tmp_path, monkeypatch):
+    """With no viable fallback, a 401 still dead-ends with the friendly message."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)  # single provider, no fallback
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+
+    raw = "Error code: 401 - {'error': {'message': 'invalid x-api-key'}}"
+    calls = {"n": 0}
+
+    def _make(approver):
+        calls["n"] += 1
+        return _FakeDriver([
+            Event(EventKind.ERROR, raw, {"retryable": False, "auth": True,
+                                         "provider": "openrouter"}),
+        ])
+    monkeypatch.setattr(ctrl, "make_driver", _make)
+
+    console = Console(file=StringIO(), width=100)
+    await repl._run_turn(console, ctrl, "hi", _ask_returning(""))
+    out = console.file.getvalue()
+    flat = " ".join(out.split())
+    assert calls["n"] == 1                     # no rotation attempted
+    assert "was rejected (401)" in flat
+    assert "auth failed, retrying" not in flat
+    ctrl.close()
+
+
+def test_friendly_auth_error_falls_back_to_generic_without_provider():
+    """With no provider, the message degrades gracefully to a generic phrasing
+    and still keeps the raw detail dim."""
+    from jarn import repl
+
+    msg = repl._friendly_auth_error("Error code: 401 - invalid x-api-key", "")
+    assert "was rejected (401)" in msg
+    assert "/key" in msg and "jarn setup" in msg
+    assert "invalid x-api-key" in msg  # raw detail preserved
+
+
+@pytest.mark.asyncio
 async def test_fallback_retry_no_duplicate_human_message(tmp_path, monkeypatch):
     """End-to-end: a real flaky model fails the first call, the turn rotates to a
     fallback and recovers — leaving exactly ONE human message in the thread
@@ -364,6 +509,114 @@ def test_tool_sink_accumulates_live():
     assert sink == [("web_search", "a\nb\nc")]  # visible before the turn ends
 
 
+def test_reasoning_streams_live_into_sink():
+    """Reasoning tokens stream into the live region as they arrive, not just at end."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+
+    seen: list[str] = []
+    r = _TurnRenderer(Console(file=StringIO()),
+                      live_sink=seen.append, spinner=False)
+    r.on_reasoning("weighing ")
+    r.on_reasoning("options")
+    # The growing thinking text is pushed to the live region before any other
+    # event commits it — the user sees it during the phase, not only after.
+    assert seen, "reasoning never reached the live region"
+    assert "weighing options" in seen[-1]
+    assert "thinking" in seen[-1]
+
+
+def test_reasoning_live_preview_clears_when_committed():
+    """Committing reasoning to scrollback clears the live preview (no double-render)."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+
+    seen: list[str] = []
+    console = Console(file=StringIO(), width=80)
+    r = _TurnRenderer(console, live_sink=seen.append, spinner=False)
+    r.on_reasoning("pondering")
+    assert "pondering" in seen[-1]
+    # Real text arriving commits the reasoning block and collapses the preview.
+    r.on_text("done.")
+    assert "" in seen  # the live reasoning preview was cleared on commit
+    assert "thinking" not in seen[-1]  # live region no longer shows reasoning
+    out = console.file.getvalue()
+    assert "✻ thinking" in out and "pondering" in out  # committed once to scrollback
+    assert out.count("pondering") == 1  # not double-rendered
+
+
+def test_reasoning_streams_live_into_rich_live(monkeypatch):
+    """On a real terminal, reasoning updates the Rich Live region during the phase."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+
+    console = Console(file=StringIO(), force_terminal=True, width=80)
+    r = _TurnRenderer(console, spinner=False)  # no sink -> Rich Live path
+    updates: list = []
+    try:
+        r.on_reasoning("thinking hard")
+        assert r._live is not None  # a live region was opened mid-phase
+        # capture what it would render
+        import rich.live as _rl
+
+        monkeypatch.setattr(_rl.Live, "update",
+                            lambda self, renderable, **kw: updates.append(renderable))
+        r.on_reasoning(" now")
+    finally:
+        r._live_clear()
+    assert updates, "reasoning did not refresh the live region"
+
+
+def test_session_thinking_word_is_stable():
+    """The session thinking word is picked once and stays put across calls."""
+    from jarn.tui import palette
+
+    word = palette.session_thinking_word()
+    assert word in palette.THINKING_WORDS
+    # Re-asking within the session yields the same identity, not a fresh pick.
+    assert all(palette.session_thinking_word() == word for _ in range(20))
+
+
+def test_thinking_word_stable_across_turns(tmp_path, monkeypatch):
+    """The inline indicator label keeps one identity across multiple turns."""
+    from jarn import repl
+    from jarn.tui import palette
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+
+    # The word is established at session start (not blank/Working fallback).
+    assert app._thinking_word in palette.THINKING_WORDS
+    first = app._thinking_word
+
+    # Simulating several turn starts must NOT re-roll the word.
+    for _ in range(5):
+        app._turn_start = 0.0
+        # mirror the submit/drain bookkeeping that used to re-randomize
+        assert app._thinking_word == first
+    assert app._thinking_word == first
+    app.controller.close()
+
+
+def test_renderer_spinner_word_matches_session(monkeypatch):
+    """The renderer spinner uses the stable session word, not a per-spin pick."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+    from jarn.tui import palette
+
+    buf = StringIO()
+    console = Console(file=buf, force_terminal=True, width=80)
+    word = palette.session_thinking_word()
+    # spinner enabled (live_sink is None) so _spin builds the label
+    r = _TurnRenderer(console, lambda: 0)
+    try:
+        assert r._status is not None
+        assert word in r._status.status  # same stable word, not a per-spin pick
+    finally:
+        r._unspin()
+
+
 def test_pager_overlay_toggle(tmp_path, monkeypatch):
     """Ctrl+O opens the in-app overlay; toggling/collapse closes it."""
     from jarn import repl
@@ -400,6 +653,50 @@ def test_stable_cut_respects_code_fences():
     # once the fence closes, the boundary after it is safe
     s = "```\ncode\n```\n\nafter"
     assert _stable_cut(s) == s.index("\n\nafter") + 2
+
+
+def test_live_sink_suppresses_incremental_flush():
+    """With a live_sink, prose is NOT recommitted per blank line — the live preview
+    is the single source of truth mid-run, and the whole run lands in scrollback
+    exactly once at finish() (no grey-raw-then-recommit double render)."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+
+    console = Console(file=StringIO(), width=80)
+    r = _TurnRenderer(console, live_sink=lambda _s: None, spinner=False)
+    r.on_text("paragraph_one\n\nparagraph_two\n\n")
+    # Nothing recommitted to scrollback yet — only the live preview has it.
+    assert "paragraph_one" not in console.file.getvalue()
+    r.finish()
+    out = console.file.getvalue()
+    assert out.count("paragraph_one") == 1  # committed exactly once
+    assert out.count("paragraph_two") == 1
+
+
+def test_live_sink_commits_once_before_tool():
+    """A prose run accumulated before a tool call commits to scrollback once,
+    and BEFORE the tool glyph — the on_tool seam preserves interleaving."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+
+    console = Console(file=StringIO(), width=80)
+    r = _TurnRenderer(console, live_sink=lambda _s: None, spinner=False)
+    r.on_text("answer_body\n\n")
+    r.on_tool("read_file", {"path": "x"})
+    out = console.file.getvalue()
+    assert out.count("answer_body") == 1
+    assert out.index("answer_body") < out.index("read_file")
+
+
+def test_live_sink_carries_growing_buffer():
+    """The live_sink receives the whole growing markdown buffer each delta, so the
+    preview can render the full block (not just the latest fragment)."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+
+    seen: list[str] = []
+    r = _TurnRenderer(Console(file=StringIO(), width=80),
+                      live_sink=seen.append, spinner=False)
+    r.on_text("a")
+    r.on_text("b")
+    assert "a" in seen and "ab" in seen[-1]
 
 
 def _request(dangerous=False, block_always=False):
@@ -469,6 +766,419 @@ async def test_approve_always_blocked_for_dangerous(tmp_path, monkeypatch):
     ctrl.close()
 
 
+class _KeyEvent:
+    """Minimal stand-in for a prompt_toolkit key event (only ``.data`` is read)."""
+
+    def __init__(self, char: str):
+        self.data = char
+
+
+def _fastkey_handler(app):
+    """Return the `_menu_fastkey` keybinding handler (the y/a/n/d keystroke path)."""
+    for binding in app._kb.bindings:
+        if getattr(binding.handler, "__name__", "") == "_menu_fastkey":
+            return binding.handler
+    raise AssertionError("no _menu_fastkey binding found")
+
+
+def _inline_app(tmp_path, monkeypatch):
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    return repl.InlineApp(cfg, root)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key,approved,scope", [
+    ("y", True, RememberScope.ONCE),
+    ("a", True, RememberScope.ONCE),
+    ("n", False, None),
+    ("d", False, None),
+])
+async def test_pick_approval_one_key_resolves_instantly(tmp_path, monkeypatch, key, approved, scope):
+    """A single y/a/n/d keypress resolves the approval picker with no arrow+Enter."""
+    from jarn import repl
+
+    app = _inline_app(tmp_path, monkeypatch)
+    options = repl._approval_options(_request())
+    handler = _fastkey_handler(app)
+    task = asyncio.create_task(app._pick_approval(options))
+    await asyncio.sleep(0)  # let _pick_menu install the future + fastkeys
+    assert app._menu_fastkeys is not None  # approval menu wired the fast-path
+
+    handler(_KeyEvent(key))
+    picked = await task
+    assert isinstance(picked, ApprovalReply)
+    assert picked.approved is approved
+    if approved:
+        assert picked.scope is scope
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_pick_approval_arrow_then_enter_still_works(tmp_path, monkeypatch):
+    """Arrow navigation + Enter still confirms a non-default option (no regression)."""
+    from jarn import repl
+
+    app = _inline_app(tmp_path, monkeypatch)
+    options = repl._approval_options(_request())  # [allow once, allow always, deny]
+    task = asyncio.create_task(app._pick_approval(options))
+    await asyncio.sleep(0)
+    app._menu_index = 1  # "Allow always" via ↑/↓
+    app._menu_future.set_result(app._menu_options[1][1])
+    picked = await task
+    assert isinstance(picked, ApprovalReply)
+    assert picked.approved is True
+    assert picked.scope is RememberScope.ALWAYS
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_menu_fastkey_types_normally_outside_approval_menu(tmp_path, monkeypatch):
+    """With no fast-key menu active, y/a/n/d type into the input — editing intact.
+
+    (Async so the buffer's complete-while-typing has a running loop to schedule on.)"""
+    app = _inline_app(tmp_path, monkeypatch)
+    assert app._menu_fastkeys is None
+    handler = _fastkey_handler(app)
+    for ch in "andy":
+        handler(_KeyEvent(ch))
+    assert app.input.text == "andy"
+    app.controller.close()
+
+
+def _write_request(content: str):
+    return ApprovalRequest(
+        action=Action(ActionKind.WRITE, "big.txt"),
+        result=PermissionResult(Decision.ASK, "ask mode"),
+        args={"file_path": "big.txt", "content": content},
+    )
+
+
+@pytest.mark.asyncio
+async def test_view_full_diff_offered_only_over_cap(tmp_path, monkeypatch):
+    """A write diff longer than ui.approval_diff_lines offers the view option;
+    a small one does not."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    ctrl.config.ui.approval_diff_lines = 5
+    console = Console(file=StringIO(), width=80)
+
+    captured: list[list[str]] = []
+
+    async def _pick(options):
+        captured.append([label for label, _ in options])
+        return options[0][1]  # Allow once
+
+    async def _view(_text: str) -> None:  # present but should not be used here
+        raise AssertionError("view must not run when picking allow")
+
+    # Big diff (20 added lines > cap of 5) → view offered.
+    big = "".join(f"line {i}\n" for i in range(20))
+    await repl._approve(console, ctrl, _write_request(big), pick=_pick, view=_view)
+    assert "View full diff" in captured[-1]
+
+    # Small diff (2 lines < cap) → view NOT offered.
+    await repl._approve(
+        console, ctrl, _write_request("a\nb\n"), pick=_pick, view=_view
+    )
+    assert "View full diff" not in captured[-1]
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_view_full_diff_does_not_approve_and_reprompts(tmp_path, monkeypatch):
+    """Choosing [v] routes the COMPLETE diff through the pager and returns to the
+    SAME prompt — it never auto-approves."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    ctrl.config.ui.approval_diff_lines = 5
+    console = Console(file=StringIO(), width=80)
+
+    big = "".join(f"line {i}\n" for i in range(20))
+    request = _write_request(big)
+
+    viewed: list[str] = []
+
+    async def _view(text: str) -> None:
+        viewed.append(text)
+
+    # First pick the view sentinel; on the re-prompt pick Deny.
+    calls = {"n": 0}
+
+    async def _pick(options):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return repl._VIEW_FULL_DIFF
+        return next(v for _, v in options
+                    if isinstance(v, ApprovalReply) and not v.approved)
+
+    reply = await repl._approve(console, ctrl, request, pick=_pick, view=_view)
+    assert calls["n"] == 2  # re-prompted after viewing
+
+    # View ran exactly once, with the COMPLETE diff (all 20 lines present).
+    assert len(viewed) == 1
+    assert "line 0" in viewed[0] and "line 19" in viewed[0]
+    # Viewing did not approve; the second pick (Deny) decided.
+    assert reply.approved is False
+    ctrl.close()
+
+
+# -- edit before apply (P4.B) ----------------------------------------------
+
+def _edit_request(content: str | None = None, *, old=None, new=None):
+    """A write/edit ApprovalRequest. ``content`` → write_file; old/new → edit_file."""
+    if content is not None:
+        args = {"file_path": "f.txt", "content": content}
+    else:
+        args = {"file_path": "f.txt", "old_string": old, "new_string": new}
+    return ApprovalRequest(
+        action=Action(ActionKind.WRITE, "f.txt"),
+        result=PermissionResult(Decision.ASK, "ask mode"),
+        args=args,
+    )
+
+
+def test_editable_field_picks_content_then_new_string():
+    from jarn import repl
+
+    assert repl._editable_field({"content": "x"}) == "content"
+    assert repl._editable_field({"old_string": "a", "new_string": "b"}) == "new_string"
+    assert repl._editable_field({}) is None
+    assert repl._editable_field(None) is None
+
+
+@pytest.mark.asyncio
+async def test_edit_option_offered_only_with_editor_wired(tmp_path, monkeypatch):
+    """[e] Edit before apply appears for an editable write iff an editor launcher
+    is threaded in; never for headless callers (no ``edit``)."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    console = Console(file=StringIO(), width=80)
+    captured: list[list[str]] = []
+
+    async def _pick(options):
+        captured.append([label for label, _ in options])
+        return next(v for _, v in options
+                    if isinstance(v, ApprovalReply) and not v.approved)  # Deny
+
+    async def _edit(_req):
+        raise AssertionError("edit must not run when picking Deny")
+
+    # With an editor wired → option offered.
+    await repl._approve(console, ctrl, _edit_request("hi\n"), pick=_pick, edit=_edit)
+    assert "Edit before apply" in captured[-1]
+
+    # Without one → option absent.
+    await repl._approve(console, ctrl, _edit_request("hi\n"), pick=_pick)
+    assert "Edit before apply" not in captured[-1]
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_edit_then_apply_carries_edited_content(tmp_path, monkeypatch):
+    """Picking [e] and saving in the editor returns an approve whose edited_args
+    carry the USER-edited content — that's what lands, not the agent's original."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    console = Console(file=StringIO(), width=80)
+
+    async def _pick(options):
+        return next(v for v in (o[1] for o in options) if v is repl._EDIT_BEFORE_APPLY)
+
+    async def _edit(req):
+        # Simulate the editor returning user-edited content.
+        field = repl._editable_field(req.args)
+        return ApprovalReply(True, edited_args={**req.args, field: "USER EDIT\n"})
+
+    reply = await repl._approve(
+        console, ctrl, _edit_request("agent original\n"), pick=_pick, edit=_edit
+    )
+    assert reply.approved is True
+    assert reply.edited_args is not None
+    assert reply.edited_args["content"] == "USER EDIT\n"
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_edit_abort_cancels_without_applying(tmp_path, monkeypatch):
+    """Aborting the editor (edit callable returns None) denies cleanly: the reply
+    is a rejection and carries no edited_args, so nothing is applied."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    console = Console(file=StringIO(), width=80)
+
+    async def _pick(options):
+        return next(v for v in (o[1] for o in options) if v is repl._EDIT_BEFORE_APPLY)
+
+    async def _edit(_req):
+        return None  # editor aborted
+
+    reply = await repl._approve(
+        console, ctrl, _edit_request("x\n"), pick=_pick, edit=_edit
+    )
+    assert reply.approved is False
+    assert reply.edited_args is None
+    ctrl.close()
+
+
+def test_edit_text_in_editor_returns_saved_content(tmp_path, monkeypatch):
+    """The $EDITOR launcher writes the proposal to a temp file, runs the editor,
+    and returns whatever the editor saved."""
+    from jarn import repl
+
+    def _fake_editor(argv, **kwargs):
+        # argv == [editor, path]; emulate the user appending a line and saving.
+        path = argv[-1]
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("+appended\n")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setenv("EDITOR", "fake-editor")
+    monkeypatch.setattr(repl.subprocess, "run", _fake_editor)
+    out = repl._edit_text_in_editor("original\n")
+    assert out == "original\n+appended\n"
+
+
+def test_edit_text_in_editor_abort_returns_none(tmp_path, monkeypatch):
+    """A non-zero editor exit (e.g. vim :cq) is treated as an abort → None."""
+    from jarn import repl
+
+    def _fake_editor(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 1)  # aborted
+
+    monkeypatch.setenv("EDITOR", "fake-editor")
+    monkeypatch.setattr(repl.subprocess, "run", _fake_editor)
+    assert repl._edit_text_in_editor("original\n") is None
+
+
+# -- /compact preview + confirm (P4.D) -------------------------------------
+
+
+def _stub_compact(app, monkeypatch, *, summary="SUMMARY: did X"):
+    """Stub the controller's preview/apply; return a list capturing what got applied."""
+    applied: list[str] = []
+
+    async def _preview():
+        return summary
+
+    async def _apply(s):
+        applied.append(s)
+
+    monkeypatch.setattr(app.controller, "compact_preview", _preview)
+    monkeypatch.setattr(app.controller, "compact_apply", _apply)
+    return applied
+
+
+def _stub_editor(monkeypatch, result):
+    """Route the /compact 'edit' path through a stubbed editor (never spawn one)."""
+    import prompt_toolkit.application as pta
+
+    from jarn import repl
+
+    async def _run_in_terminal(func, *a, **k):
+        return func()
+
+    monkeypatch.setattr(pta, "run_in_terminal", _run_in_terminal)
+    monkeypatch.setattr(repl, "_edit_text_in_editor", lambda text, **k: result)
+
+
+@pytest.mark.asyncio
+async def test_cmd_compact_applies_on_yes(tmp_path, monkeypatch):
+    """Manual /compact applies the summary only after the user confirms with y."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    applied = _stub_compact(app, monkeypatch)
+    monkeypatch.setattr(app, "_ask", _ask_returning("y"))
+
+    await app._command("compact", "")
+
+    assert applied == ["SUMMARY: did X"]
+    assert "Compacted" in app.console.file.getvalue()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_cmd_compact_declined_keeps_context(tmp_path, monkeypatch):
+    """Declining (n) applies nothing — the original context stays intact."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    applied = _stub_compact(app, monkeypatch)
+    monkeypatch.setattr(app, "_ask", _ask_returning("n"))
+
+    await app._command("compact", "")
+
+    assert applied == []
+    assert "cancelled" in app.console.file.getvalue().lower()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_cmd_compact_default_no_on_empty(tmp_path, monkeypatch):
+    """Empty input takes the [y/N] default (N) — nothing applied."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    applied = _stub_compact(app, monkeypatch)
+    monkeypatch.setattr(app, "_ask", _ask_returning(""))
+
+    await app._command("compact", "")
+
+    assert applied == []
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_cmd_compact_edit_applies_edited_summary(tmp_path, monkeypatch):
+    """'edit' opens $EDITOR; the user-edited summary is what gets applied."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    applied = _stub_compact(app, monkeypatch)
+    monkeypatch.setattr(app, "_ask", _ask_returning("edit"))
+    _stub_editor(monkeypatch, "EDITED SUMMARY")
+
+    await app._command("compact", "")
+
+    assert applied == ["EDITED SUMMARY"]
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_cmd_compact_edit_aborted_keeps_context(tmp_path, monkeypatch):
+    """Aborting the editor (None) applies nothing and keeps the context."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    applied = _stub_compact(app, monkeypatch)
+    monkeypatch.setattr(app, "_ask", _ask_returning("edit"))
+    _stub_editor(monkeypatch, None)
+
+    await app._command("compact", "")
+
+    assert applied == []
+    assert "cancelled" in app.console.file.getvalue().lower()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_cmd_compact_nothing_to_compact(tmp_path, monkeypatch):
+    """An empty preview short-circuits before any prompt — nothing to apply."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    applied = _stub_compact(app, monkeypatch, summary="")
+    monkeypatch.setattr(app, "_ask", _ask_returning("y"))
+
+    await app._command("compact", "")
+
+    assert applied == []
+    assert "nothing to compact" in app.console.file.getvalue().lower()
+    app.controller.close()
+
+
 def test_inline_app_constructs(tmp_path, monkeypatch):
     from jarn import repl
 
@@ -501,6 +1211,149 @@ def test_app_builds(tmp_path, monkeypatch):
     built = app._build_app()
     assert built is not None  # layout/keybindings/toolbar all assemble
     assert app._toolbar() is not None
+    app.controller.close()
+
+
+def test_stream_control_renders_markdown_live(tmp_path, monkeypatch):
+    """While busy, the live region renders the streamed buffer as FORMATTED
+    markdown (Rich -> ANSI), not the dim escaped raw source — no double render."""
+    from prompt_toolkit.formatted_text import ANSI
+
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+    monkeypatch.setattr(app, "_busy", lambda: True)
+    app._stream_text = "# Heading\n\nbody **bold**"
+    result = app._stream_control()
+    assert isinstance(result, ANSI)
+    # The rendered fragments are NOT the raw markdown source: the literal "# "
+    # heading prefix and "**" bold markers are consumed by the formatter.
+    rendered = result.value
+    assert "# Heading" not in rendered
+    assert "**bold**" not in rendered
+    assert "Heading" in rendered and "bold" in rendered
+    app.controller.close()
+
+
+def test_stream_control_no_eight_line_clip(tmp_path, monkeypatch):
+    """The preview Window is no longer hard-clipped at 8 lines — a long live block
+    grows past the old fold, but is capped at (terminal rows - reserve) so the
+    input + toolbar stay on-screen (not the old fixed 8, not unbounded)."""
+    from prompt_toolkit.layout.containers import Window
+
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+    built = app._build_app()
+
+    def _windows(container):
+        if isinstance(container, Window):
+            yield container
+            return
+        for child in getattr(container, "children", []) or []:
+            yield from _windows(child)
+        content = getattr(container, "content", None)
+        if content is not None and content is not container:
+            yield from _windows(content)
+
+    maxes = [w.height.max for w in _windows(built.layout.container)
+             if getattr(w.height, "max", None) is not None]
+    assert 8 not in maxes  # the old hard 8-line preview clip is gone
+
+    # The live region is now a terminal-height-aware cap (rows - reserve), not the
+    # fixed 8 and not unbounded — so a tall block clips, the input stays visible.
+    import os
+    import shutil
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda *_a, **_k: os.terminal_size((80, 30)))
+    dim = app._stream_height()
+    assert dim.max == 26  # 30 rows - 4 reserved
+    assert dim.min == 0
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda *_a, **_k: os.terminal_size((80, 5)))
+    assert app._stream_height().max == 4  # floor on a tiny terminal
+    app.controller.close()
+
+
+def test_stream_control_plain_prompt_not_markdown(tmp_path, monkeypatch):
+    """A picker/_ask prompt (not busy, _line_future pending) renders as the plain
+    string, NOT markdown — guards the regression where a prompt gets markdownified."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+    assert app._busy() is False
+    prompt = "Pick a model # 1"
+    app._stream_text = prompt
+    result = app._stream_control()
+    assert result == prompt  # plain string, unchanged
+    app.controller.close()
+
+
+def test_stream_control_reasoning_renders_plain_not_collapsed(tmp_path, monkeypatch):
+    """A reasoning block renders as PLAIN dim multi-line text, NOT markdown — the
+    "✻ thinking\\n…" soft break must keep its line break (regression: routing
+    reasoning through the markdown branch collapsed it onto one line)."""
+    from prompt_toolkit.formatted_text import ANSI
+
+    from jarn import repl
+    from jarn.repl_renderer import REASONING_STREAM_PREFIX
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+    monkeypatch.setattr(app, "_busy", lambda: True)
+    app._set_stream(f"{REASONING_STREAM_PREFIX}let me consider the options")
+    assert app._stream_is_reasoning is True
+    result = app._stream_control()
+    assert isinstance(result, ANSI)
+    rendered = result.value
+    assert "✻ thinking" in rendered
+    assert "let me consider the options" in rendered
+    # The buggy markdown render joins the soft break: "thinking let me consider".
+    # The plain render keeps the header and body on separate lines.
+    assert "thinking let me consider" not in rendered
+    app.controller.close()
+
+
+def test_stream_control_empty_buffer_has_no_leading_blank_line(tmp_path, monkeypatch):
+    """A pure-whitespace buffer (newlines streamed before the first real prose)
+    shows just the footer, not a stray leading blank line."""
+    from prompt_toolkit.formatted_text import ANSI
+
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+    monkeypatch.setattr(app, "_busy", lambda: True)
+    app._stream_text = "\n"  # renders to empty markdown → footer only
+    result = app._stream_control()
+    assert isinstance(result, ANSI)
+    assert not result.value.startswith("\n")
     app.controller.close()
 
 
@@ -577,6 +1430,54 @@ async def test_pick_menu_esc_cancel(tmp_path, monkeypatch):
     await asyncio.sleep(0)
     app._menu_future.set_result(app._menu_cancel)
     assert await task is False
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_rewind_blank_continuation_indexes_branch(tmp_path, monkeypatch):
+    """A rewind with no continuation prompt still records a session title for the
+    forked branch, so it appears in /resume instead of being an orphan checkpoint
+    (regression: the blank-prompt path returned before indexing the new thread)."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    titles: list[str] = []
+
+    async def _human_turns():
+        return [(0, ""), (2, "second")]  # fork target (turn 1) has empty content
+
+    async def _fork(idx):
+        return idx  # non-None: the fork "succeeded"
+
+    async def _pick(options, header="", cancel_returns=None):
+        return (0, "")  # choose the empty-content first turn
+
+    async def _ask(*a, **k):
+        return ""  # blank → no continuation
+
+    async def _replay():
+        return None
+
+    monkeypatch.setattr(app.controller, "human_turns", _human_turns)
+    monkeypatch.setattr(app.controller, "fork_to_turn", _fork)
+    monkeypatch.setattr(app, "_pick_menu", _pick)
+    monkeypatch.setattr(app, "_ask", _ask)
+    monkeypatch.setattr(app, "_replay_transcript", _replay)
+    monkeypatch.setattr(
+        app.controller, "record_session_title",
+        lambda title, *, when: titles.append(title),
+    )
+
+    await app._rewind_picker()
+    assert titles, "blank-continuation rewind must index the new branch in /resume"
     app.controller.close()
 
 
@@ -687,6 +1588,332 @@ async def test_shell_escape_bare_bang_prints_hint(tmp_path, monkeypatch):
     app.controller.close()
 
 
+def _git_repo_with_commit(root):
+    """Create a fresh git repo with one commit at ``root``."""
+    def g(*args):
+        subprocess.run(["git", *args], cwd=root, capture_output=True, check=True)
+
+    root.mkdir(parents=True, exist_ok=True)
+    g("init", "-b", "main")
+    g("config", "user.email", "test@jarn.test")
+    g("config", "user.name", "Jarn Test")
+    (root / "README.txt").write_text("init\n", encoding="utf-8")
+    g("add", "README.txt")
+    g("commit", "-m", "init")
+
+
+@pytest.mark.asyncio
+async def test_abort_cancels_running_turn_and_rolls_back(tmp_path, monkeypatch):
+    """/abort stops the in-flight turn AND reverts its edits in one action."""
+    from jarn import repl
+    from jarn.config.schema import GitConfig
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    _git_repo_with_commit(root)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+        git=GitConfig(autocheckpoint=True),
+    )
+    app = repl.InlineApp(cfg, root)
+    buf = StringIO()
+    app.console = Console(file=buf, width=80)
+
+    # Turn-start checkpoint (what session.py snapshots before the agent edits).
+    (root / "file.txt").write_text("before\n", encoding="utf-8")
+    app.controller.checkpoint_manager.snapshot("running-turn")
+    # The running turn edits a file; /abort must revert it.
+    (root / "file.txt").write_text("after\n", encoding="utf-8")
+
+    # Simulate an in-flight turn so _busy() is True and _cancel_turn cancels it.
+    async def _never():
+        await asyncio.sleep(3600)
+
+    app._turn_task = asyncio.create_task(_never())
+    assert app._busy()
+
+    await app._command("abort", "")
+    await asyncio.sleep(0)  # let the loop process the task cancellation
+
+    assert app._turn_task.cancelled() or app._turn_task.done()
+    assert (root / "file.txt").read_text(encoding="utf-8") == "before\n"
+    out = buf.getvalue().lower()
+    assert "cancel" in out and "rolled back" in out
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_abort_without_checkpoint_cancels_and_explains(tmp_path, monkeypatch):
+    """/abort with autocheckpoint off cancels the turn and explains rollback is off."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    assert not cfg.git.autocheckpoint  # default OFF
+    app = repl.InlineApp(cfg, root)
+    buf = StringIO()
+    app.console = Console(file=buf, width=80)
+
+    async def _never():
+        await asyncio.sleep(3600)
+
+    app._turn_task = asyncio.create_task(_never())
+    assert app._busy()
+
+    await app._command("abort", "")
+    await asyncio.sleep(0)  # let the loop process the task cancellation
+
+    assert app._turn_task.cancelled() or app._turn_task.done()
+    out = buf.getvalue().lower()
+    assert "cancel" in out
+    assert "autocheckpoint" in out
+    assert "/config" in buf.getvalue()
+    app.controller.close()
+
+
+def _submit_handler(app):
+    """Return the real `enter`/`_submit` keybinding handler (the keystroke path)."""
+    for binding in app._kb.bindings:
+        if getattr(binding.handler, "__name__", "") == "_submit":
+            return binding.handler
+    raise AssertionError("no _submit binding found")
+
+
+async def _drain_background_tasks(*ignore):
+    """Run the fire-and-forgot task(s) _submit spawned (the /abort command) to
+    completion. Awaits every other pending task except the long-running turn
+    stub(s) in ``ignore`` and this coroutine itself."""
+    self = asyncio.current_task()
+    skip = {self, *ignore}
+    for _ in range(50):
+        pending = [t for t in asyncio.all_tasks() if t not in skip and not t.done()]
+        if not pending:
+            break
+        for t in pending:
+            with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                await asyncio.wait_for(asyncio.shield(t), timeout=1.0)
+    await asyncio.sleep(0)  # let any scheduled cancellation settle
+
+
+@pytest.mark.asyncio
+async def test_submit_abort_cancels_running_turn_through_keystroke(tmp_path, monkeypatch):
+    """Submitting `/abort` through _submit (not _command) while a turn is live
+    cancels the running turn and rolls back — the real keystroke entrypoint.
+
+    Regression guard: _submit must NOT queue /abort behind the running turn
+    (which would leave the cancel branch unreachable until the turn finishes)."""
+    from jarn import repl
+    from jarn.config.schema import GitConfig
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    _git_repo_with_commit(root)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+        git=GitConfig(autocheckpoint=True),
+    )
+    app = repl.InlineApp(cfg, root)
+    buf = StringIO()
+    app.console = Console(file=buf, width=80)
+
+    # Turn-start checkpoint, then a mid-turn edit /abort must revert.
+    (root / "file.txt").write_text("before\n", encoding="utf-8")
+    app.controller.checkpoint_manager.snapshot("running-turn")
+    (root / "file.txt").write_text("after\n", encoding="utf-8")
+
+    async def _never():
+        await asyncio.sleep(3600)
+
+    app._turn_task = asyncio.create_task(_never())
+    turn_task = app._turn_task
+    assert app._busy()
+
+    # Drive the actual submit path: type "/abort" + Enter.
+    app.input.text = "/abort"
+    _submit_handler(app)(event=None)
+    # _submit fire-and-forgets _command via create_task; drain background tasks
+    # (the abort command) so it reaches _cancel_turn and the rollback print.
+    await _drain_background_tasks(turn_task)
+
+    assert turn_task.cancelled() or turn_task.done()
+    assert not app.input.text  # the abort line did NOT stay queued in the input
+    assert (root / "file.txt").read_text(encoding="utf-8") == "before\n"
+    out = buf.getvalue().lower()
+    assert "cancel" in out and "rolled back" in out
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_submit_abort_without_checkpoint_cancels_and_explains(tmp_path, monkeypatch):
+    """Through the real keystroke path, /abort with autocheckpoint off cancels the
+    turn and explains rollback needs autocheckpoint."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    assert not cfg.git.autocheckpoint  # default OFF
+    app = repl.InlineApp(cfg, root)
+    buf = StringIO()
+    app.console = Console(file=buf, width=80)
+
+    async def _never():
+        await asyncio.sleep(3600)
+
+    app._turn_task = asyncio.create_task(_never())
+    turn_task = app._turn_task
+    assert app._busy()
+
+    app.input.text = "/abort"
+    _submit_handler(app)(event=None)
+    await _drain_background_tasks(turn_task)
+
+    assert turn_task.cancelled() or turn_task.done()
+    out = buf.getvalue().lower()
+    assert "cancel" in out
+    assert "autocheckpoint" in out
+    assert "/config" in buf.getvalue()
+    app.controller.close()
+
+
+def _esc_handler(app):
+    """Return the real `escape` keybinding handler (the Esc keystroke path)."""
+    for binding in app._kb.bindings:
+        if getattr(binding.handler, "__name__", "") == "_esc_key":
+            return binding.handler
+    raise AssertionError("no _esc_key binding found")
+
+
+def _app_with_running_edited_turn(tmp_path, monkeypatch, *, autocheckpoint):
+    """An InlineApp with an in-flight turn that already applied a file edit.
+
+    Returns (app, buf, turn_task). The turn task is a never-finishing stub so
+    _busy() is True and the cancel path fires."""
+    from jarn import repl
+    from jarn.config.schema import GitConfig
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    if autocheckpoint:
+        _git_repo_with_commit(root)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+        git=GitConfig(autocheckpoint=autocheckpoint),
+    )
+    app = repl.InlineApp(cfg, root)
+    buf = StringIO()
+    app.console = Console(file=buf, width=80)
+    # The running turn applied a file edit: the live tool sink carries it.
+    app._last_tool_outputs = [("edit_file", "patched file.txt")]
+
+    async def _never():
+        await asyncio.sleep(3600)
+
+    app._turn_task = asyncio.create_task(_never())
+    return app, buf, app._turn_task
+
+
+@pytest.mark.asyncio
+async def test_esc_after_edits_with_checkpoint_offers_rollback(tmp_path, monkeypatch):
+    """Esc cancelling a turn that made edits states the edits remain and offers
+    rollback via /abort when a turn-start checkpoint exists. It must NOT touch
+    the files itself (that's /abort's job)."""
+    app, buf, turn_task = _app_with_running_edited_turn(
+        tmp_path, monkeypatch, autocheckpoint=True
+    )
+    assert app._busy()
+
+    _esc_handler(app)(event=None)
+    await asyncio.sleep(0)
+
+    assert turn_task.cancelled() or turn_task.done()
+    out = buf.getvalue().lower()
+    assert "still on disk" in out
+    assert "/abort" in buf.getvalue()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_esc_after_edits_without_checkpoint_explains_revert(tmp_path, monkeypatch):
+    """Esc after edits with autocheckpoint off still says edits remain and points
+    at /abort + how to enable rollback."""
+    app, buf, turn_task = _app_with_running_edited_turn(
+        tmp_path, monkeypatch, autocheckpoint=False
+    )
+    assert not app.controller.config.git.autocheckpoint  # default OFF
+    assert app._busy()
+
+    _esc_handler(app)(event=None)
+    await asyncio.sleep(0)
+
+    assert turn_task.cancelled() or turn_task.done()
+    out = buf.getvalue()
+    assert "still on disk" in out.lower()
+    assert "/abort" in out
+    assert "autocheckpoint" in out.lower()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_esc_with_no_edits_is_unchanged(tmp_path, monkeypatch):
+    """Esc cancelling a turn that made NO file edits prints no edits-remain note."""
+    app, buf, turn_task = _app_with_running_edited_turn(
+        tmp_path, monkeypatch, autocheckpoint=True
+    )
+    app._last_tool_outputs = [("read_file", "just looked")]  # no write/edit
+    assert app._busy()
+
+    _esc_handler(app)(event=None)
+    await asyncio.sleep(0)
+
+    assert turn_task.cancelled() or turn_task.done()
+    assert "still on disk" not in buf.getvalue().lower()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_abort_does_not_add_edits_remain_note(tmp_path, monkeypatch):
+    """/abort rolls edits back, so it must NOT print the contradictory
+    "edits still on disk" Esc note (regression guard for the shared cancel path)."""
+    app, buf, _turn_task = _app_with_running_edited_turn(
+        tmp_path, monkeypatch, autocheckpoint=True
+    )
+    # Give /abort a real turn-start checkpoint to revert to.
+    root = app.controller.project_root
+    (root / "file.txt").write_text("before\n", encoding="utf-8")
+    app.controller.checkpoint_manager.snapshot("running-turn")
+    (root / "file.txt").write_text("after\n", encoding="utf-8")
+    assert app._busy()
+
+    await app._command("abort", "")
+    await asyncio.sleep(0)
+
+    out = buf.getvalue().lower()
+    assert "rolled back" in out
+    assert "still on disk" not in out
+    app.controller.close()
+
+
 def test_repl_importable():
     from jarn.repl import InlineApp, run_inline  # noqa: F401
 
@@ -708,3 +1935,451 @@ def test_shell_escape_style_registered():
     from jarn.tui import palette
 
     assert "shell-escape" in palette.toolbar_style_dict()
+
+
+@pytest.mark.asyncio
+async def test_error_health_notice_shows_doctor_hint(tmp_path, monkeypatch):
+    """When controller.health is 'error', the startup notice must include '/doctor'."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    # Simulate a provider key failure being already set (as validate() would set it).
+    ctrl.health = "error"
+    ctrl.last_error = "API key missing or invalid"
+    ctrl.health_notice_shown = False
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+    monkeypatch.setattr(ctrl, "make_driver",
+                        lambda approver: _FakeDriver([Event(EventKind.TEXT, "ok"), Event(EventKind.DONE)]))
+
+    console = Console(file=StringIO(), width=120)
+    await repl._run_turn(console, ctrl, "hi", _ask_returning(""))
+    out = console.file.getvalue()
+    assert "/doctor" in out, f"expected /doctor in startup error notice, got: {out!r}"
+    assert ctrl.health_notice_shown is True
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_degraded_health_notice_has_no_doctor_hint(tmp_path, monkeypatch):
+    """Degraded (non-error) health notice must NOT append '/doctor' (only error does)."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    ctrl.health = "degraded"
+    ctrl.last_error = "sandbox unavailable"
+    ctrl.health_notice_shown = False
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+    monkeypatch.setattr(ctrl, "make_driver",
+                        lambda approver: _FakeDriver([Event(EventKind.TEXT, "ok"), Event(EventKind.DONE)]))
+
+    console = Console(file=StringIO(), width=120)
+    await repl._run_turn(console, ctrl, "hi", _ask_returning(""))
+    out = console.file.getvalue()
+    assert "/doctor" not in out, f"degraded notice should not show /doctor, got: {out!r}"
+    ctrl.close()
+
+
+# ---------------------------------------------------------------------------
+# P3.C — yolo transition guard
+# ---------------------------------------------------------------------------
+
+
+def _make_inline_app(tmp_path, monkeypatch):
+    """Create a minimal InlineApp with a fake console for testing."""
+    from jarn import repl
+    from jarn.config.schema import Config, ProviderConfig, ProviderType, RoutingConfig
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    app.console = Console(file=StringIO(), width=80)
+    return app
+
+
+@pytest.mark.asyncio
+async def test_confirm_yolo_returns_true_on_y(tmp_path, monkeypatch):
+    """`_confirm_yolo` returns True when the user types 'y'."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    # Inject a fake _ask that always returns "y"
+    async def _fake_ask(prompt: str) -> str:
+        return "y"
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+    assert await app._confirm_yolo() is True
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_confirm_yolo_returns_false_on_n(tmp_path, monkeypatch):
+    """`_confirm_yolo` returns False when the user types 'n' (or anything other than 'y')."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    async def _fake_ask(prompt: str) -> str:
+        return "n"
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+    assert await app._confirm_yolo() is False
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_confirm_yolo_returns_false_on_empty(tmp_path, monkeypatch):
+    """`_confirm_yolo` defaults to False on empty input (the [y/N] default is N)."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    async def _fake_ask(prompt: str) -> str:
+        return ""
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+    assert await app._confirm_yolo() is False
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_confirm_yolo_prints_visible_banner(tmp_path, monkeypatch):
+    """The yolo confirm prints a prominent scrollback banner (not just the faint
+    region-above-input ask) so the y/N decision can't be missed."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(app, "_ask", _ask_returning("y"))
+    assert await app._confirm_yolo() is True
+    out = app.console.file.getvalue()
+    assert "YOLO mode" in out  # the banner landed in visible scrollback
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_command_mode_yolo_confirmed(tmp_path, monkeypatch):
+    """`/mode yolo` applies yolo when user confirms with 'y'."""
+    from jarn.config.schema import PermissionMode
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    # Start in ask mode
+    assert app.controller.config.permission_mode.value == "ask"
+
+    async def _fake_ask(prompt: str) -> str:
+        return "y"
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+
+    await app._command("mode", "yolo")
+    assert app.controller.config.permission_mode == PermissionMode.YOLO
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_command_mode_yolo_declined_keeps_previous(tmp_path, monkeypatch):
+    """`/mode yolo` keeps the previous mode when user declines."""
+    from jarn.config.schema import PermissionMode
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    assert app.controller.config.permission_mode.value == "ask"
+
+    async def _fake_ask(prompt: str) -> str:
+        return "n"
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+
+    await app._command("mode", "yolo")
+    # Mode must remain ask
+    assert app.controller.config.permission_mode == PermissionMode.ASK
+    out = app.console.file.getvalue()
+    assert "cancelled" in out.lower()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_command_mode_yolo_no_reprompt_when_already_yolo(tmp_path, monkeypatch):
+    """`/mode yolo` when already in yolo does NOT re-prompt (transition-only guard)."""
+    from jarn.config.schema import PermissionMode
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    # Set mode to yolo directly (simulating already being in yolo)
+    app.controller.config.permission_mode = PermissionMode.YOLO
+    app.controller.engine.mode = PermissionMode.YOLO
+
+    ask_calls: list[str] = []
+    async def _tracking_ask(prompt: str) -> str:
+        ask_calls.append(prompt)
+        return "n"
+    monkeypatch.setattr(app, "_ask", _tracking_ask)
+
+    await app._command("mode", "yolo")
+    # No confirmation prompt when already in yolo
+    assert ask_calls == [], "should not prompt when already in yolo mode"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_confirm_and_cycle_yolo_confirmed(tmp_path, monkeypatch):
+    """`_confirm_and_cycle_yolo` applies yolo when confirmed."""
+    from jarn.config.schema import PermissionMode
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    # Put mode at auto-edit so next cycle = yolo
+    app.controller.config.permission_mode = PermissionMode.AUTO_EDIT
+    app.controller.engine.mode = PermissionMode.AUTO_EDIT
+
+    async def _fake_ask(prompt: str) -> str:
+        return "y"
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+    # _flash and app.invalidate are no-ops in tests (app is None)
+    monkeypatch.setattr(app, "_flash", lambda *a, **k: None)
+
+    await app._confirm_and_cycle_yolo()
+    assert app.controller.config.permission_mode == PermissionMode.YOLO
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_confirm_and_cycle_yolo_declined_keeps_mode(tmp_path, monkeypatch):
+    """`_confirm_and_cycle_yolo` does NOT advance mode when declined."""
+    from jarn.config.schema import PermissionMode
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.controller.config.permission_mode = PermissionMode.AUTO_EDIT
+    app.controller.engine.mode = PermissionMode.AUTO_EDIT
+
+    async def _fake_ask(prompt: str) -> str:
+        return "n"
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+    monkeypatch.setattr(app, "_flash", lambda *a, **k: None)
+
+    await app._confirm_and_cycle_yolo()
+    # Mode must remain auto-edit
+    assert app.controller.config.permission_mode == PermissionMode.AUTO_EDIT
+    out = app.console.file.getvalue()
+    assert "cancelled" in out.lower()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_command_model_refresh_picks_discovered_model(tmp_path, monkeypatch):
+    """`/model refresh` re-queries local endpoints and applies the picked model."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    # An ollama provider must be configured for the discovered ref to be
+    # recognised as already-qualified (otherwise it'd reroute to the default).
+    app.controller.config.providers["ollama"] = ProviderConfig(
+        type=ProviderType.OLLAMA, base_url="http://localhost:11434"
+    )
+
+    async def _noop_ext() -> None:
+        return None
+    monkeypatch.setattr(app, "_ensure_extensions", _noop_ext)
+    # discover_models is mocked → no real network.
+    monkeypatch.setattr(
+        app.controller,
+        "discover_models",
+        lambda: [("ollama/qwen3-coder:30b", "ollama"), ("ollama/llama3:8b", "ollama")],
+    )
+
+    task = asyncio.create_task(app._command("model", "refresh"))
+    # Wait until the picker registers its options, then select the first model.
+    for _ in range(50):
+        await asyncio.sleep(0)
+        if app._menu_future is not None and app._menu_options:
+            break
+    assert app._menu_options[0][1] == "ollama/qwen3-coder:30b"
+    app._menu_future.set_result(app._menu_options[0][1])
+    await task
+
+    assert app.controller.config.resolved_main_model() == "ollama/qwen3-coder:30b"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_command_model_refresh_degrades_to_manual_when_unreachable(tmp_path, monkeypatch):
+    """`/model refresh` with no reachable endpoint prints a note + offers manual entry."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    async def _noop_ext() -> None:
+        return None
+    monkeypatch.setattr(app, "_ensure_extensions", _noop_ext)
+    monkeypatch.setattr(app.controller, "discover_models", lambda: [])
+
+    async def _fake_ask(prompt: str) -> str:
+        return "openrouter/manual-model"
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+
+    await app._command("model", "refresh")
+
+    out = app.console.file.getvalue()
+    assert "No local models found" in out
+    # The manually-entered ref is applied (never blocks the user).
+    assert app.controller.config.resolved_main_model() == "openrouter/manual-model"
+    app.controller.close()
+
+
+# -- review follow-up fixes (P4.C /abort, P3.B hint, P3.A clamp display) ----
+
+
+@pytest.mark.asyncio
+async def test_cmd_abort_idle_does_not_rollback(tmp_path, monkeypatch):
+    """/abort while no turn is running must NOT silently undo the last turn."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    called: list[bool] = []
+    monkeypatch.setattr(app.controller, "abort_rollback",
+                        lambda: (called.append(True), "rolled back")[1])
+    assert not app._busy()
+    await app._command("abort", "")
+    assert called == []  # idle → no rollback
+    assert "nothing to abort" in app.console.file.getvalue().lower()
+    app.controller.close()
+
+
+def test_autocheckpoint_hint_fires_on_write(tmp_path, monkeypatch):
+    """The one-time hint is shown after a turn that wrote a file."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(app.controller, "autocheckpoint_off_hint", lambda: "ENABLE UNDO HINT")
+    app._last_tool_outputs = [("write_file", "x")]
+    app._maybe_autocheckpoint_hint()
+    assert "ENABLE UNDO HINT" in app.console.file.getvalue()
+    app.controller.close()
+
+
+def test_autocheckpoint_hint_silent_without_write(tmp_path, monkeypatch):
+    """No write in the turn → the hint is never even queried."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    called: list[int] = []
+    monkeypatch.setattr(app.controller, "autocheckpoint_off_hint",
+                        lambda: (called.append(1), "H")[1])
+    app._last_tool_outputs = [("read_file", "x")]
+    app._maybe_autocheckpoint_hint()
+    assert called == []
+    app.controller.close()
+
+
+def test_apply_mode_ref_reports_clamp_on_untrusted(tmp_path, monkeypatch):
+    """The /mode picker shows the CLAMPED mode (plan), not the requested one."""
+    from jarn import repl
+    from jarn.config.schema import Config, ProviderConfig, ProviderType, RoutingConfig
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    ctrl = Controller(cfg, root, project_trusted=False)
+    console = Console(file=StringIO(), width=80)
+    repl._apply_mode_ref(ctrl, console, "yolo")
+    out = console.file.getvalue()
+    assert "plan" in out and "clamped" in out.lower()
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_turn_failure_points_at_log_traceback(tmp_path, monkeypatch):
+    """A mid-turn exception (e.g. a langgraph error) shows the message AND points
+    the user at the file-logged full traceback instead of swallowing it."""
+    from jarn import repl
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    async def _boom(*a, **k):
+        raise RuntimeError("langgraph boom")
+
+    monkeypatch.setattr(repl, "_run_turn", _boom)
+    await app._handle("please do something")
+    out = app.console.file.getvalue()
+    assert "langgraph boom" in out                 # concise message still shown
+    assert "full traceback" in out and "jarn.log" in out  # pointer to the log
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_rapid_yolo_confirm_requests_are_deduped(tmp_path, monkeypatch):
+    """Rapid Shift+Tab→yolo presses must not stack confirmations that fight over
+    the single _line_future and hang. Only ONE confirmation runs; repeats while
+    it is in flight are dropped."""
+    from jarn.config.schema import PermissionMode
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.controller.config.permission_mode = PermissionMode.AUTO_EDIT
+    app.controller.engine.mode = PermissionMode.AUTO_EDIT
+
+    asks: list[str] = []
+    gate = asyncio.Event()
+
+    async def _fake_ask(prompt: str) -> str:
+        asks.append(prompt)
+        await gate.wait()   # hold the confirmation open
+        return "n"
+
+    monkeypatch.setattr(app, "_ask", _fake_ask)
+
+    app._request_yolo_confirm()
+    app._request_yolo_confirm()   # ignored — a confirmation is already in flight
+    app._request_yolo_confirm()
+    await asyncio.sleep(0.02)      # let the single task reach _ask
+    assert app._yolo_confirm_inflight is True
+    assert len(asks) == 1          # exactly one confirmation, not three
+
+    gate.set()                     # let it resolve (declined → mode unchanged)
+    await asyncio.sleep(0.02)
+    assert app._yolo_confirm_inflight is False  # flag cleared, so a later press works
+    assert app.controller.config.permission_mode is PermissionMode.AUTO_EDIT
+    app.controller.close()
+
+
+def test_gen_stat_estimates_output_tokens_when_provider_reports_none(tmp_path, monkeypatch):
+    """LM Studio / OpenAI-compatible stream without per-chunk usage, so the live
+    counter would sit at 0 — fall back to a ~estimate from the streamed text."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app._turn_base_output = 0           # tracker stays flat → no live usage
+    app._count_stream_chars("x" * 40)   # ~10 tokens (40 // 4)
+    assert "~10 tok" in app._gen_stat()
+    app.controller.close()
+
+
+def test_gen_stat_uses_real_output_when_provider_reports_usage(tmp_path, monkeypatch):
+    """When the provider DOES report usage live (e.g. Anthropic), show the real
+    output-token delta and ignore the estimate (no double-count, no '~')."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app._turn_base_output = 0
+    app.controller.tracker.total.output_tokens = 50   # generated this turn
+    app._count_stream_chars("x" * 400)                # estimate (100) must be ignored
+    stat = app._gen_stat()
+    assert "50 tok" in stat and "~" not in stat
+
+
+def test_gen_stat_reports_tok_per_second(tmp_path, monkeypatch):
+    """The rate is measured from the first streamed token (generation speed)."""
+    import time as _time
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app._turn_base_output = 0
+    app._count_stream_chars("x" * 400)               # ~100 tokens
+    app._first_token_at = _time.monotonic() - 2.0    # 2s of generation
+    stat = app._gen_stat()
+    assert "~100 tok" in stat
+    assert "tok/s" in stat                            # ~50 tok/s
+    app.controller.close()
+
+
+def test_gen_stat_shows_prompt_tokens_while_thinking(tmp_path, monkeypatch):
+    """Before any output streams, show the prompt size (real input delta) — not a
+    tok/s rate, which is meaningless during prompt processing."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app._turn_base_input = 0
+    app.controller.tracker.total.input_tokens = 1234   # provider reported the prompt
+    assert app._first_token_at is None                 # still thinking
+    stat = app._gen_stat()
+    assert "prompt 1234 tok" in stat and "tok/s" not in stat
+    app.controller.close()
+
+
+def test_gen_stat_thinking_proxies_context_when_prompt_unknown(tmp_path, monkeypatch):
+    """LM Studio doesn't report input until the end — fall back to the prior
+    context size as a ~prompt proxy while thinking."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app._turn_base_input = 0
+    app.controller.tracker.context_tokens = 5000
+    assert "prompt ~5000 tok" in app._gen_stat()
+    app.controller.close()

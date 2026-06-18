@@ -43,6 +43,8 @@ class HeadlessResult:
     cost: float = 0.0
     """Total session cost in USD."""
     turns: int = 1
+    tool_calls: int = 0
+    """How many tool invocations the agent made during the turn (diagnostic)."""
 
 
 class HeadlessRefusal(Exception):
@@ -92,6 +94,7 @@ async def _run_headless(
     *,
     project_trusted: bool = True,
     max_turns: int = 1,
+    system_prompt_override: str | None = None,
 ) -> HeadlessResult:
     """Async core: build the runtime, run one turn, return results.
 
@@ -99,8 +102,14 @@ async def _run_headless(
     current implementation always completes in one model turn (the agent
     itself may still use multiple tool calls internally — that is one "turn"
     from the user's perspective).
+
+    ``system_prompt_override`` is forwarded to the Controller / build_runtime for
+    the eval harness's harness-prompt A/B (see build_runtime).
     """
-    controller = Controller(config, project_root, project_trusted=project_trusted)
+    controller = Controller(
+        config, project_root, project_trusted=project_trusted,
+        system_prompt_override=system_prompt_override,
+    )
     try:
         ok, message = controller.validate()
         if not ok:
@@ -115,9 +124,12 @@ async def _run_headless(
         enriched = controller.enrich_turn_input(prompt)
 
         text_parts: list[str] = []
+        tool_calls = 0
         async for event in driver.run_turn(enriched):
             if event.kind is EventKind.TEXT:
                 text_parts.append(event.text)
+            elif event.kind is EventKind.TOOL_START:
+                tool_calls += 1
             elif event.kind is EventKind.ERROR:
                 raise RuntimeError(event.text)
 
@@ -133,7 +145,10 @@ async def _run_headless(
             }
         cost = tracker.total.cost_usd
 
-        return HeadlessResult(result=reply_text, tokens=tokens, cost=cost, turns=1)
+        return HeadlessResult(
+            result=reply_text, tokens=tokens, cost=cost, turns=1,
+            tool_calls=tool_calls,
+        )
     finally:
         await controller.aclose()
 

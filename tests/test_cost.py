@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+from contextlib import contextmanager
+
 from jarn.config.schema import BudgetConfig
-from jarn.cost import BudgetStatus, CostTracker
+from jarn.cost import BudgetStatus, CostTracker, Usage
 from jarn.cost.pricing import cost_of, lookup
 
 
@@ -139,3 +142,232 @@ def test_summary_line_multi_model_breakdown():
     assert "claude-haiku-4-5 $" in line
     # The base aggregate line is still present.
     assert "calls" in line and "tok" in line
+
+
+# -- P5.C: per-tool cost breakdown ------------------------------------------
+
+def test_per_tool_attribution():
+    """Cost is bucketed per tool name alongside per-model, with a default bucket
+    for plain replies (no tool)."""
+    from jarn.cost.tracker import RESPONSE_TOOL
+
+    t = CostTracker()
+    t.record("claude-opus-4-8", 1_000_000, 0, tool="execute")   # priced -> $5.00
+    t.record("claude-opus-4-8", 1_000_000, 0, tool="execute")   # $5.00 again
+    t.record("claude-opus-4-8", 1_000_000, 0, tool="web_fetch")  # $5.00
+    t.record("claude-opus-4-8", 1_000, 500)                      # no tool -> reply
+    assert set(t.per_tool) == {"execute", "web_fetch", RESPONSE_TOOL}
+    execute = t.per_tool["execute"]
+    assert execute.calls == 2 and execute.input_tokens == 2_000_000
+    assert t.per_tool["web_fetch"].calls == 1
+    assert t.per_tool[RESPONSE_TOOL].calls == 1
+
+
+def test_per_tool_totals_reconcile_with_grand_total():
+    """The per-tool totals must sum EXACTLY to the same grand total — no
+    double-counting, no drift — and match the per-model totals too."""
+    t = CostTracker()
+    t.record("claude-opus-4-8", 1000, 500, tool="execute")
+    t.record("claude-haiku-4-5", 200, 100, tool="read_file")
+    t.record("claude-opus-4-8", 1000, 500, tool="execute")
+    t.record("claude-opus-4-8", 7, 3)  # plain reply
+
+    cost_via_tool = sum(u.cost_usd for u in t.per_tool.values())
+    cost_via_model = sum(u.cost_usd for u in t.per_model.values())
+    calls_via_tool = sum(u.calls for u in t.per_tool.values())
+    in_via_tool = sum(u.input_tokens for u in t.per_tool.values())
+    out_via_tool = sum(u.output_tokens for u in t.per_tool.values())
+
+    assert cost_via_tool == t.total.cost_usd == cost_via_model
+    assert calls_via_tool == t.total.calls == 4
+    assert in_via_tool == t.total.input_tokens
+    assert out_via_tool == t.total.output_tokens
+
+
+def test_top_tools_ranks_by_cost():
+    """top_tools returns the biggest cost contributors first, capped to limit."""
+    t = CostTracker()
+    t.record("claude-opus-4-8", 2_000_000, 0, tool="execute")    # $10.00
+    t.record("claude-opus-4-8", 1_000_000, 0, tool="web_fetch")  # $5.00
+    t.record("claude-opus-4-8", 100_000, 0, tool="read_file")    # $0.50
+    top = t.top_tools(limit=2)
+    assert [name for name, _ in top] == ["execute", "web_fetch"]
+    assert top[0][1].cost_usd == 10.0
+
+
+def test_per_tool_default_bucket_when_no_tool():
+    """A call with no tool lands in the response bucket so totals still close."""
+    from jarn.cost.tracker import RESPONSE_TOOL
+
+    t = CostTracker()
+    t.record("claude-opus-4-8", 1000, 500)
+    assert list(t.per_tool) == [RESPONSE_TOOL]
+    assert t.per_tool[RESPONSE_TOOL].cost_usd == t.total.cost_usd
+
+
+# -- P2.B: unpriced model notice (routed to the jarn log, NOT stderr) -------
+
+
+@contextmanager
+def _capture_cost_logs():
+    """Capture WARNING records on the jarn.cost logger directly, so the assertion
+    doesn't depend on log propagation/handler setup elsewhere in the suite."""
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    lg = logging.getLogger("jarn.cost")
+    lg.addHandler(handler)
+    prev = lg.level
+    lg.setLevel(logging.WARNING)
+    try:
+        yield records
+    finally:
+        lg.removeHandler(handler)
+        lg.setLevel(prev)
+
+
+def test_unpriced_notice_logged_once():
+    """cost_of logs the unpriced notice exactly once per unknown model id — to the
+    jarn logger (file), never warnings.warn (which leaks into the TUI display)."""
+    from jarn.cost.pricing import _WARNED_UNPRICED, cost_of
+
+    model = "totally-unknown-model-p2b-test"
+    _WARNED_UNPRICED.discard(model)  # reset dedup state
+
+    with _capture_cost_logs() as records:
+        assert cost_of(model, 1000, 1000) is None  # unpriced -> None
+        msgs = [r.getMessage() for r in records]
+        assert len(msgs) == 1
+        assert model in msgs[0] and "$0" in msgs[0]
+
+        cost_of(model, 2000, 2000)  # repeat — must NOT re-log
+        assert len(records) == 1, "notice should not repeat for the same model"
+
+
+def test_unpriced_notice_dedup_per_model():
+    """Each distinct unknown model gets its own one-time notice."""
+    from jarn.cost.pricing import _WARNED_UNPRICED, cost_of
+
+    for slug in ("unknown-alpha-p2b", "unknown-beta-p2b"):
+        _WARNED_UNPRICED.discard(slug)
+
+    with _capture_cost_logs() as records:
+        cost_of("unknown-alpha-p2b", 1, 1)
+        cost_of("unknown-beta-p2b", 1, 1)
+        cost_of("unknown-alpha-p2b", 1, 1)  # repeat — must not re-log
+        msgs = [r.getMessage() for r in records]
+
+    assert any("unknown-alpha-p2b" in s for s in msgs)
+    assert any("unknown-beta-p2b" in s for s in msgs)
+    assert len(msgs) == 2, "two models → two notices, no duplicates"
+
+
+def test_priced_model_no_notice():
+    """No notice is logged for a model whose price is known."""
+    from jarn.cost.pricing import cost_of
+
+    with _capture_cost_logs() as records:
+        assert cost_of("claude-opus-4-8", 1_000_000, 1_000_000) is not None
+    assert records == []
+
+
+# -- prompt-cache token tracking --------------------------------------------
+
+def test_usage_cache_fields_default_zero():
+    """Usage gains cache fields that default to 0 so existing call sites stay valid."""
+    u = Usage()
+    assert u.cache_read_tokens == 0
+    assert u.cache_creation_tokens == 0
+
+
+def test_record_captures_cache_tokens():
+    """record() accumulates cache token counts into every bucket it touches."""
+    t = CostTracker()
+    t.record(
+        "claude-opus-4-8", 1000, 500, tool="execute",
+        cache_read_tokens=800, cache_creation_tokens=200,
+    )
+    assert t.total.cache_read_tokens == 800
+    assert t.total.cache_creation_tokens == 200
+    assert t.per_model["claude-opus-4-8"].cache_read_tokens == 800
+    assert t.per_tool["execute"].cache_creation_tokens == 200
+
+
+def test_cache_tokens_reconcile_across_buckets():
+    """Cache token sums over per-tool / per-model buckets equal the grand total."""
+    t = CostTracker()
+    t.record("claude-opus-4-8", 1000, 500, cache_read_tokens=100, cache_creation_tokens=10)
+    t.record("claude-haiku-4-5", 200, 100, cache_read_tokens=50, cache_creation_tokens=5)
+    read_via_tool = sum(u.cache_read_tokens for u in t.per_tool.values())
+    write_via_model = sum(u.cache_creation_tokens for u in t.per_model.values())
+    assert read_via_tool == t.total.cache_read_tokens == 150
+    assert write_via_model == t.total.cache_creation_tokens == 15
+
+
+def test_no_cache_usage_leaves_totals_unchanged():
+    """A turn with no cache usage records zero cache tokens and unchanged cost."""
+    t = CostTracker()
+    t.record("claude-opus-4-8", 1_000_000, 0)  # $5.00, no cache args
+    assert t.total.cache_read_tokens == 0
+    assert t.total.cache_creation_tokens == 0
+    assert t.total.cost_usd == 5.0
+
+
+# -- cache-aware pricing ----------------------------------------------------
+
+def test_price_cache_rates_default_none():
+    """Price gains optional cache rate fields defaulting to None (fall back to input)."""
+    price = lookup("claude-opus-4-8")
+    assert price is not None
+    assert price.cache_read_rate is None
+    assert price.cache_write_rate is None
+
+
+def test_cost_of_unchanged_without_cache_tokens():
+    """cost_of with no cache tokens matches the original input+output formula exactly."""
+    # 1M input @5 + 1M output @25 = 30
+    assert cost_of("claude-opus-4-8", 1_000_000, 1_000_000) == 30.0
+
+
+def test_cost_of_cache_falls_back_to_input_rate():
+    """With no explicit cache rates, cache tokens are priced at the input rate."""
+    from jarn.cost.pricing import cost_of
+
+    # opus input rate = $5/Mtok. 1M cache-read + 1M cache-creation -> $10 added.
+    cost = cost_of(
+        "claude-opus-4-8", 0, 0,
+        cache_read_tokens=1_000_000, cache_creation_tokens=1_000_000,
+    )
+    assert cost == 10.0
+
+
+def test_cost_of_does_not_double_charge_cached_input():
+    """Regression: input_tokens is the FULL provider total (LangChain folds the
+    cache counts back in), so the cached subset is repriced, not added on top.
+
+    The bug billed cached tokens at the input rate AND again as a cache line."""
+    from jarn.cost.pricing import cost_of
+
+    # opus input $5/Mtok. Full input 1M, of which 0.8M is a cache read (no explicit
+    # cache rate → cache also $5). Correct: plain 0.2M@5 + cache 0.8M@5 = $1 + $4 =
+    # $5, i.e. exactly 1M@5 counted ONCE. The bug gave $9 (1M@5 + 0.8M@5).
+    assert cost_of("claude-opus-4-8", 1_000_000, 0, cache_read_tokens=800_000) == 5.0
+
+
+def test_cost_of_uses_explicit_cache_rates_when_present():
+    """When a Price carries cache rates, they price cache tokens instead of input."""
+    from jarn.cost import pricing
+    from jarn.cost.pricing import Price, cost_of
+
+    monkeypatched = {"my-cache-model": Price(10.0, 30.0, cache_read_rate=1.0, cache_write_rate=12.5)}
+    orig = pricing._BUILTIN
+    pricing._BUILTIN = {**orig, **monkeypatched}
+    try:
+        # 1M cache-read @1.0 + 1M cache-creation @12.5 = 13.5
+        cost = cost_of(
+            "my-cache-model", 0, 0,
+            cache_read_tokens=1_000_000, cache_creation_tokens=1_000_000,
+        )
+        assert cost == 13.5
+    finally:
+        pricing._BUILTIN = orig

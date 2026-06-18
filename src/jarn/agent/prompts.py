@@ -7,6 +7,8 @@ appended at build time.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 BASE_SYSTEM_PROMPT = """\
 You are J.A.R.N. — "Just A Reliable Nerd" — a terminal-based coding agent.
 
@@ -27,10 +29,17 @@ Operating principles:
 5. Be honest and concise. If you are uncertain, say so. If a step was skipped,
    say so. Report outcomes faithfully with the evidence (command output, diffs).
 
+PLAN MODE: when the session is in read-only `plan` mode, every write/shell/network
+action is refused ("plan mode is read-only"). In that mode, research with the
+read-only tools, then present a concrete, step-by-step plan by calling
+`exit_plan_mode` with the plan text. The user approves it to switch into an editing
+mode, after which you carry the plan out. Only call `exit_plan_mode` from plan mode
+and only once you have a real plan — never to merely display text.
+
 You have tools to read/search files (`read_file`, `ls`, `glob`, `grep`), modify
 files (`write_file`, `edit_file`), run shell commands (`execute`), search and read
-the web (`web_search`, `web_fetch`), plan (`write_todos`), and delegate to
-subagents (`task`). For current information from the internet, call `web_search`
+the web (`web_search`, `web_fetch`), plan (`write_todos`, `exit_plan_mode`), and
+delegate to subagents (`task`). For current information from the internet, call `web_search`
 directly (then `web_fetch` a result URL) — do this yourself rather than delegating
 unless the task is large. Use the right tool for the job and explain non-obvious
 actions briefly as you take them.
@@ -48,6 +57,23 @@ NOT a web page; format for readability there):
 - When something is clearer shown than described (architecture, flow, layout),
   draw a small ASCII diagram inside a fenced code block (boxes, →/│ arrows, trees).
 """
+
+
+def date_context(now: datetime | None = None) -> str:
+    """A context block stating the current local date/time.
+
+    The model's training has a cutoff and otherwise has no idea what "today" is,
+    which makes time-sensitive requests ("find today's news") unreliable. Computed
+    at session build, so it reflects the day the session started."""
+    dt = now or datetime.now().astimezone()
+    stamp = f"{dt:%A, %Y-%m-%d %H:%M}".rstrip()
+    tz = f"{dt:%Z}".strip()
+    if tz:
+        stamp = f"{stamp} {tz}"
+    return (
+        f"Current date and time: {stamp}. "
+        'Treat this as "today"/"now" — do not rely on your training cutoff for the date.'
+    )
 
 
 def build_system_prompt(*context_blocks: str) -> str:

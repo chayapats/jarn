@@ -4,7 +4,7 @@
 > choosing where to contribute. Items marked `[x]` are implemented and in the
 > current release; `[ ]` items are scaffolded or documented but not yet shipped.
 
-Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-09** (v0.3.0 prepared, Alpha; v0.2.0 on PyPI).
+Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-18** (v0.4.0 prepared, Alpha; v0.2.0 on PyPI).
 
 ## v1 — implemented
 
@@ -57,7 +57,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-09** (v0.3.0 prepared
 - [x] `jarn` / `setup` / `init` / `doctor` (`--json`) CLI
 - [x] Strict config validation (typed bools, numeric ranges, unknown top-level keys rejected)
 - [x] Local rotating logs, opt-in LangSmith tracing
-- [x] `uv`/PyPI packaging, 789 tests (+ packaging gate), clean lint + `mypy` CI
+- [x] `uv`/PyPI packaging, 1166 tests (+ packaging gate), clean lint + `mypy` CI
 - [x] `jarn doctor` extension diagnostics — skills, commands, subagents, hooks, MCP
   (shadowing, builtin renames, untrusted skips); `uv.lock` tracked for team installs
 
@@ -86,6 +86,45 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-09** (v0.3.0 prepared
   audio/video; binary-aware approval diff; `execution.multimodal` flag
 - [x] **Turn-level fallback model-swap** — on a turn that fails before producing
   output, rotate through `routing.fallback` and retry transparently
+
+## v0.4.0 — competitive-gaps + UX-polish round (unreleased)
+
+Five user pain points closed versus other harnesses (Claude Code / Cursor / Cline /
+Aider), then a UX-polish round from an end-to-end user-journey audit and a
+multi-agent review. See the design spec under `docs/superpowers/specs/`.
+
+- [x] **Local prompt-cache keep-warm** — cloud caching is already automatic (the
+  agent engine adds Anthropic cache-control; other cloud providers cache by prefix
+  server-side), so the gap was local: `routing.keep_alive` keeps an Ollama / LM Studio
+  model + its KV/prefix cache resident between turns (Ollama `keep_alive` / LM Studio
+  request `ttl`). `routing.prompt_cache: auto|off` (default `auto`) gates it.
+- [x] **Plan-mode handoff** — `exit_plan_mode` tool: in read-only `plan` mode the agent
+  presents a plan, you approve it (auto-edit / ask / keep planning), and the session
+  escalates and executes in the same turn (clamped on untrusted repos). `plan.exit_mode`
+  (default `auto-edit`).
+- [x] **`/commit` + `/review`** — `/commit` drafts a conventional message from the diff
+  and runs `git commit` (via approval; no push); `/review` seeds a read-only diff review.
+- [x] **Background processes** — `run_in_background` / `check_background` /
+  `kill_background` / `list_background` tools + `/ps`; local backend only
+  (`execution.background`, default `true`), gated like shell, terminated on exit.
+- [x] **Image paste (macOS)** — `Ctrl+V` grabs a clipboard image into `.jarn/pastes/`
+  and inserts it as an `@path` the multimodal `read_file` loads (pngpaste / AppleScript).
+- [x] **`/key`** — fix a rejected/missing API key for the current provider in-session
+  (no quit + edit env/keychain + restart). Prompts for the key, stores it in the OS
+  keychain, points config at a `keychain:jarn/<provider>` reference (never an inlined
+  secret), and rebuilds the runtime so the next turn uses it.
+- [x] **Agent-suggested memory** — `suggest_memory` tool: the agent proposes a durable
+  memory (name / description / body / type / scope) and the REPL surfaces a "Save this
+  memory?" prompt (save / edit-then-save / decline). On approval it writes through the
+  existing memory store, respecting the global vs project tier and the project's trust
+  gating (project writes refused on an untrusted repo); declining writes nothing. Gated
+  and special-cased by the session driver exactly like `exit_plan_mode`.
+- [x] **UX-polish round** — live in-place markdown streaming (no raw-preview
+  double-echo / 8-line clip), conversation **`/rewind`** (fork to an earlier turn),
+  rich **`@`-mentions** (`@folder` / `@symbol`), one-key approval accept/deny, live
+  reasoning render, Esc-cancel edit notice, cache-aware `/cost`, friendlier onboarding
+  (validation spinner + timeout + skippable), and token usage tracked for
+  OpenAI-compatible streaming (LM Studio / vLLM).
 
 ## v0.3.0 — prepared (Alpha, unreleased)
 
@@ -116,6 +155,13 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-09** (v0.3.0 prepared
 - [x] **Auto-checkpoint + `/undo` / `/redo` / `/checkpoints`** — snapshot working tree
   before each turn using private git refs (never moves HEAD); `git.autocheckpoint`
   (default `false`), `git.checkpoint_mode: shadow|commit` (default `shadow`)
+- [x] **`/rewind` — branch to an earlier turn (slice 1)** — arrow-key picker over
+  earlier user turns; forks onto a new thread keeping the prefix, optionally edits
+  the chosen prompt, and continues. The original thread stays in `/resume`.
+  Rewinds the conversation only — file edits since the chosen turn are not
+  reverted (use `/undo`). Deferred: link the rewind to the git-checkpoint stack so
+  file edits revert atomically (slice 2); in-place/destructive same-thread rewind
+  + free message-editing (slice 3); a visual branch tree in `/sessions` (slice 4)
 - [x] **Repo map** — ranked token-budgeted codebase overview (stdlib `ast` + regex for
   JS/TS/Go/Rust); `repo_map` tool + `/map` command; `context.repo_map: off|tool|auto`
   (default `tool`), `context.repo_map_tokens` (default 1024)

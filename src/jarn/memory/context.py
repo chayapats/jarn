@@ -52,6 +52,32 @@ JARN_MD_TEMPLATE = """\
 """
 
 
+def resolve_context_file(
+    project_root: Path | None = None,
+    *,
+    context_files: list[str] | None = None,
+) -> Path | None:
+    """Return the :class:`~pathlib.Path` of the first present context file.
+
+    Same resolution order as :func:`project_context_text` — this is the
+    companion that returns the *path* rather than the content, used by the
+    startup notice to name which file was loaded.
+    """
+    root = project_root or paths.find_project_root()
+    if root is None:
+        legacy = paths.project_context_path(project_root)
+        if legacy and legacy.is_file():
+            return legacy
+        return None
+
+    names = context_files if context_files is not None else DEFAULT_CONTEXT_FILES
+    for name in names:
+        candidate = root / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def project_context_text(
     project_root: Path | None = None,
     *,
@@ -67,20 +93,10 @@ def project_context_text(
     Falls back to the legacy :func:`jarn.config.paths.project_context_path`
     when the project root cannot be determined.
     """
-    root = project_root or paths.find_project_root()
-    if root is None:
-        # Legacy path: might return None for the path too, handled below.
-        legacy = paths.project_context_path(project_root)
-        if legacy and legacy.is_file():
-            return legacy.read_text(encoding="utf-8")
+    path = resolve_context_file(project_root, context_files=context_files)
+    if path is None:
         return None
-
-    names = context_files if context_files is not None else DEFAULT_CONTEXT_FILES
-    for name in names:
-        candidate = root / name
-        if candidate.is_file():
-            return candidate.read_text(encoding="utf-8")
-    return None
+    return path.read_text(encoding="utf-8")
 
 
 def init_template(project_root: Path | None = None) -> str:

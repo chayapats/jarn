@@ -209,3 +209,81 @@ def test_unpack_stream_item():
     # Without subgraphs the namespace defaults to an empty tuple.
     assert _unpack_stream_item(("updates", {"b": 2})) == ((), "updates", {"b": 2})
     assert _unpack_stream_item("nonsense") == ((), None, None)
+
+
+# ---------------------------------------------------------------------------
+# P5.A — web_search richer inline summary
+# ---------------------------------------------------------------------------
+
+def _make_search_output(*urls: str) -> str:
+    """Build a realistic web_search output string for the given URLs."""
+    lines = ["Top results for 'test query':", ""]
+    for i, url in enumerate(urls, 1):
+        lines.append(f"- Result {i}")
+        lines.append(f"  {url}")
+        lines.append(f"  Some snippet for result {i}.")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def test_web_search_summary_names_hosts():
+    """_tool_summary for web_search shows count and source hosts."""
+    from jarn.agent.session import _tool_summary
+
+    content = _make_search_output(
+        "https://example.com/page",
+        "https://wikipedia.org/wiki/X",
+        "https://docs.python.org/3/",
+    )
+    summary = _tool_summary(content, "web_search")
+    assert summary.startswith("🔍 3 results")
+    assert "example.com" in summary
+    assert "wikipedia.org" in summary
+
+
+def test_web_search_summary_strips_www():
+    """www. prefix is stripped from host names for compactness."""
+    from jarn.agent.session import _tool_summary
+
+    content = _make_search_output("https://www.bbc.co.uk/news")
+    summary = _tool_summary(content, "web_search")
+    assert "bbc.co.uk" in summary
+    assert "www." not in summary
+
+
+def test_web_search_summary_truncates_at_three_hosts():
+    """Only 3 hosts are shown; a trailing '…' indicates more."""
+    from jarn.agent.session import _tool_summary
+
+    content = _make_search_output(
+        "https://a.com/",
+        "https://b.com/",
+        "https://c.com/",
+        "https://d.com/",
+        "https://e.com/",
+    )
+    summary = _tool_summary(content, "web_search")
+    assert "a.com" in summary
+    assert "b.com" in summary
+    assert "c.com" in summary
+    assert "d.com" not in summary
+    assert "…" in summary
+
+
+def test_web_search_summary_single_result():
+    """Singular 'result' (not 'results') when count is 1."""
+    from jarn.agent.session import _tool_summary
+
+    content = _make_search_output("https://sole.example.com/only")
+    summary = _tool_summary(content, "web_search")
+    assert "1 result" in summary
+    assert "1 results" not in summary
+
+
+def test_tool_summary_non_web_search_unchanged():
+    """Non-web_search tool names still get the generic summary."""
+    from jarn.agent.session import _tool_summary
+
+    multi_line = "line1\nline2\nline3"
+    assert _tool_summary(multi_line, "bash") == "3 lines"
+    assert _tool_summary(multi_line) == "3 lines"  # default tool_name=""

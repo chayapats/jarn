@@ -292,6 +292,63 @@ async def test_reject_resumes_with_reject():
     assert agent.resumed_with.resume["decisions"][0]["type"] == "reject"
 
 
+class WriteAgent:
+    """Scripts a single ``write_file`` interrupt, then completes on resume."""
+
+    def __init__(self, args):
+        self.calls = 0
+        self.args = args
+        self.resumed_with = None
+
+    async def astream(self, payload, config, stream_mode=None, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            yield ("updates", {"__interrupt__": (
+                _Interrupt({"action_requests": [
+                    {"action": "write_file", "args": self.args}
+                ]}),
+            )})
+        else:
+            from langgraph.types import Command
+            self.resumed_with = payload if isinstance(payload, Command) else None
+            yield ("messages", (_FakeAIChunk("done.", {"input_tokens": 1, "output_tokens": 1}),))
+
+
+@pytest.mark.asyncio
+async def test_edit_before_apply_resumes_with_edit_decision():
+    """An approve carrying ``edited_args`` resumes with a LangGraph ``edit``
+    decision whose ``edited_action`` carries the user's edited content — so the
+    edited content (not the agent's original) is what the tool runs with."""
+    agent = WriteAgent({"file_path": "a.txt", "content": "agent original\n"})
+
+    async def approver(req: ApprovalRequest) -> ApprovalReply:
+        return ApprovalReply(
+            approved=True, scope=RememberScope.ONCE,
+            edited_args={"file_path": "a.txt", "content": "user edited\n"},
+        )
+
+    driver = _driver(agent, approver=approver)
+    await _collect(driver, "write it")
+    decision = agent.resumed_with.resume["decisions"][0]
+    assert decision["type"] == "edit"
+    assert decision["edited_action"]["name"] == "write_file"
+    assert decision["edited_action"]["args"]["content"] == "user edited\n"
+
+
+@pytest.mark.asyncio
+async def test_approve_without_edit_resumes_with_plain_approve():
+    """An ordinary approve (no ``edited_args``) still resumes with a plain
+    ``approve`` decision — the edit path is opt-in."""
+    agent = WriteAgent({"file_path": "a.txt", "content": "x\n"})
+
+    async def approver(req: ApprovalRequest) -> ApprovalReply:
+        return ApprovalReply(approved=True, scope=RememberScope.ONCE)
+
+    driver = _driver(agent, approver=approver)
+    await _collect(driver, "write it")
+    assert agent.resumed_with.resume["decisions"] == [{"type": "approve"}]
+
+
 class AsyncTaskAgent:
     """Scripts an interrupt for a ``start_async_task`` tool call (the remote
     async-subagent launcher), then completes on resume."""
@@ -529,6 +586,49 @@ def test_is_retryable_error_classifies():
 
     assert _is_retryable_error(_Http("server error"))
     assert not _is_retryable_error(_Bad("bad request"))
+
+
+def test_is_auth_error_classifies():
+    from jarn.agent.session import _is_auth_error, _is_retryable_error
+
+    # Raw SDK string from a rejected Anthropic key (the reported symptom).
+    raw = ("Error code: 401 - {'type': 'error', 'error': {'type': "
+           "'authentication_error', 'message': 'invalid x-api-key'}}")
+    assert _is_auth_error(Exception(raw))
+    # An auth rejection must NOT be classified as retryable (no model rotation).
+    assert not _is_retryable_error(Exception(raw))
+
+    assert _is_auth_error(Exception("401 Unauthorized"))
+    assert _is_auth_error(Exception("Incorrect API key provided"))
+
+    class _AuthErr(Exception):
+        status_code = 401
+
+    assert _is_auth_error(_AuthErr("nope"))
+    # Unrelated/transient errors are not auth errors.
+    assert not _is_auth_error(Exception("Rate limit exceeded (429)"))
+    assert not _is_auth_error(ValueError("unknown model ref"))
+
+
+@pytest.mark.asyncio
+async def test_run_turn_tags_auth_error_with_provider():
+    """A 401/auth failure on the first astream call is tagged auth=True (and NOT
+    retryable) with the provider profile derived from the main model ref."""
+    class _BoomAgent:
+        async def astream(self, payload, config, **kw):
+            raise RuntimeError(
+                "Error code: 401 - {'error': {'message': 'invalid x-api-key'}}"
+            )
+            yield  # unreachable; makes this an async generator
+
+    driver = SessionDriver(agent=_BoomAgent(), engine=PermissionEngine(),
+                           tracker=CostTracker(), thread_id="t",
+                           main_model_ref="anthropic/claude-opus-4-8")
+    events = [e async for e in driver.run_turn("hi")]
+    errs = [e for e in events if e.kind is EventKind.ERROR]
+    assert errs and errs[0].data.get("auth") is True
+    assert errs[0].data.get("retryable") is False
+    assert errs[0].data.get("provider") == "anthropic"
 
 
 @pytest.mark.asyncio

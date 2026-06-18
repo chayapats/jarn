@@ -239,6 +239,77 @@ def _make_backend(config: Config, project_root: Path | None):
     return _make_local_backend(project_root, config)
 
 
+def _exit_plan_mode_tool():
+    """The ``exit_plan_mode`` tool — present a plan and request approval to act.
+
+    The tool body runs only *after* the user approves (the session driver gates
+    it behind a plan-approval interrupt), so its return value is simply the
+    "go" signal the model reads to start executing.
+    """
+    from langchain_core.tools import tool
+
+    @tool
+    def exit_plan_mode(plan: str) -> str:
+        """Present your implementation plan and ask to leave read-only plan mode.
+
+        Call this ONLY when the session is in plan mode and you have finished
+        researching and have a concrete, step-by-step plan. The user reviews the
+        plan and, on approval, the session switches to an editing mode — then
+        carry the plan out, verifying as you go. Do not call this in other modes
+        or just to display text.
+
+        Args:
+            plan: The proposed plan as concise markdown (numbered steps).
+        """
+        return (
+            "Plan approved by the user. You are now in an editing mode — "
+            "implement the plan step by step and verify as you go."
+        )
+
+    return exit_plan_mode
+
+
+def _suggest_memory_tool():
+    """The ``suggest_memory`` tool — propose a long-term memory for the user to keep.
+
+    The tool body runs only *after* the user approves (the session driver gates it
+    behind a memory-approval interrupt and the approver does the actual write via
+    the memory store, respecting the global/project tier and trust gating), so its
+    return value is simply the confirmation the model reads.
+    """
+    from langchain_core.tools import tool
+
+    @tool
+    def suggest_memory(
+        name: str,
+        description: str,
+        body: str,
+        type: str = "project",
+        scope: str = "project",
+    ) -> str:
+        """Suggest a durable memory for the user to approve, edit, or decline.
+
+        Call this when you learn something worth remembering across sessions — a
+        stable user preference, a project convention, or a hard-won fact — and want
+        it persisted. The user reviews your suggestion and chooses to save it (as is
+        or edited) or decline; nothing is written unless they approve. Do not use
+        this for transient, turn-local details.
+
+        Args:
+            name: Short title for the memory (used as its filename/slug).
+            description: One-line summary shown in the memory index.
+            body: The memory content in concise markdown.
+            type: Memory category — one of user, feedback, project, reference.
+            scope: Where to store it — "global" (all projects) or "project".
+        """
+        return (
+            "Memory saved with the user's approval. Continue with the task; you can "
+            "rely on this being remembered in future sessions."
+        )
+
+    return suggest_memory
+
+
 def _async_subagent_specs(config: Config) -> list[Any]:
     """Build DeepAgents ``AsyncSubAgent`` dicts from config (Agent Protocol)."""
     specs: list[Any] = []
@@ -263,12 +334,20 @@ def build_runtime(
     project_trusted: bool = True,
     checkpointer: Any | None = None,
     extra_tools: list[Any] | None = None,
+    system_prompt_override: str | None = None,
 ) -> JarnRuntime:
     """Build a ready-to-run :class:`JarnRuntime` from config.
 
     ``checkpointer`` (a LangGraph saver) enables resumable sessions; pass one
     obtained from :func:`jarn.memory.open_checkpointer`. ``extra_tools`` is for
     MCP-loaded tools (see :func:`jarn.extensibility.mcp.load_mcp_tools`).
+
+    ``system_prompt_override`` replaces J.A.R.N.'s assembled system prompt
+    wholesale (the "reliable nerd" persona + project context) with the given
+    string — used by the eval harness to A/B the harness prompt against a bare
+    tool-using agent while holding tools/model/loop constant. ``None`` (default)
+    builds the normal prompt; ``""`` yields an empty prompt (DeepAgents' own
+    default agent instructions still apply).
     """
     from deepagents import create_deep_agent
 
@@ -293,15 +372,23 @@ def build_runtime(
     subagents = load_subagents(root, project_trusted=project_trusted)
     capabilities = detect_capabilities(root or Path.cwd())
 
-    system_prompt = prompts.build_system_prompt(
-        assemble_system_context(
-            root,
-            project_trusted=project_trusted,
-            context_files=config.compat.context_files,
-        ),
-        auto_skill_catalog(skills),
-        capabilities.as_prompt_block(),
-    )
+    if system_prompt_override is not None:
+        # A/B baseline: skip the JARN persona + project/skill/capability context
+        # entirely. Config-gated injections below (wiki, repo map) still apply so
+        # the *only* controlled difference is the base prompt — keep them off in
+        # the config to isolate the prompt cleanly.
+        system_prompt = system_prompt_override
+    else:
+        system_prompt = prompts.build_system_prompt(
+            prompts.date_context(),
+            assemble_system_context(
+                root,
+                project_trusted=project_trusted,
+                context_files=config.compat.context_files,
+            ),
+            auto_skill_catalog(skills),
+            capabilities.as_prompt_block(),
+        )
 
     # Built-in web tools + any MCP-loaded tools. Web tools run in-process and
     # bypass the OS sandbox, so the policy layer can disable them (e.g. the
@@ -333,6 +420,26 @@ def build_runtime(
         system_prompt = _inject_repo_map(
             system_prompt, root, token_budget=config.context.repo_map_tokens
         )
+
+    # Background-process tools (run/check/kill/list_background). Local backend
+    # only: under docker/sandbox a host process would escape the container, so we
+    # don't register them there. Gated like shell via the permission bridge.
+    if config.execution.backend == "local" and config.execution.background:
+        from jarn.agent.background import build_background_tools
+
+        tools = [*tools, *build_background_tools(root or Path.cwd())]
+
+    # Plan-mode handoff tool: lets the agent present a plan and request approval
+    # to leave read-only plan mode. Gated as an interrupt (below) and special-cased
+    # by the session driver so it is callable *in* plan mode (the engine would
+    # otherwise deny it like any other non-read action).
+    tools = [*tools, _exit_plan_mode_tool()]
+
+    # Memory-suggestion tool: lets the agent propose a durable memory for the user
+    # to approve. Like exit_plan_mode it is gated as an interrupt (below) and
+    # special-cased by the driver — the approver does the write on approval, so the
+    # tool itself never touches the store and is safe in any mode.
+    tools = [*tools, _suggest_memory_tool()]
 
     # Subagents may restrict themselves to a subset of the extra (web/MCP) tools;
     # pass the available set so to_spec can resolve names and reject typos.
@@ -366,6 +473,12 @@ def build_runtime(
     )
 
     backend = _make_backend(config, root)
+    # Prompt caching for Anthropic is handled by deepagents itself — it adds an
+    # AnthropicPromptCachingMiddleware unconditionally (a no-op for non-Anthropic
+    # models). Passing our own would be a *duplicate* and create_agent rejects
+    # that. JARN's caching contribution is the local keep-warm wired in the model
+    # factory (see ModelFactory._inject_keep_warm); cloud providers cache
+    # server-side. So no extra middleware is passed here.
     agent = create_deep_agent(
         model=model,
         backend=backend,

@@ -9,7 +9,8 @@ assistant paragraph previews in a small region just above the input.
 The agent turn runs as a **cancellable task**, so **Esc** (or Ctrl+C) interrupts
 mid-stream while the input stays live. Enter sends, Shift+Enter (Ctrl+J) inserts a
 newline, Shift+Tab cycles the permission mode, Tab completes ``/commands`` and
-``@files``, ↑/↓ navigate history, Ctrl+O expands the last tool output. Approvals
+``@`` mentions (``@file``, ``@folder:``, ``@symbol:``), ↑/↓ navigate history,
+Ctrl+O expands the last tool output. Approvals
 and pickers are app-native (captured through the same input). It reuses the
 UI-agnostic :class:`~jarn.tui.controller.Controller` and
 :class:`~jarn.agent.session.SessionDriver`.
@@ -19,8 +20,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import random
+import io
+import logging
+import os
+import shlex
 import shutil
+import subprocess
+import sys
+import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -31,7 +38,7 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition
-from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.formatted_text import ANSI, HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -59,26 +66,41 @@ from jarn.agent.session import ApprovalReply, ApprovalRequest, Event, EventKind
 from jarn.config.schema import Config, PermissionMode
 from jarn.extensibility.commands import completion_catalog, parse_input
 from jarn.permissions import ActionKind, RememberScope
-from jarn.repl_renderer import TurnRenderer
+from jarn.repl_renderer import REASONING_STREAM_PREFIX, TurnRenderer
 from jarn.repl_renderer import esc as _esc
 from jarn.tui import palette
 from jarn.tui.completion import CompletionProvider
 from jarn.tui.controller import Controller
 from jarn.tui.input_queue import InputQueue
-from jarn.tui.logo import splash
+from jarn.tui.logo import SHORTCUT_HINT, splash, splash_compact
 from jarn.tui.toolbar import render_toolbar
 from jarn.version import __version__
 
 if TYPE_CHECKING:
+    from rich.text import Text
+
     from jarn.config.settings import ConfigPanel
 
 Ask = Callable[[str], Awaitable[str]]
-Pick = Callable[[list[tuple[str, ApprovalReply]]], Awaitable[ApprovalReply]]
+Pick = Callable[[list[tuple[str, object]]], Awaitable[object]]
 _MenuT = TypeVar("_MenuT")
 
-#: Max diff lines shown in a write/edit approval prompt before collapsing the
-#: rest to a "… (+N more lines)" footer, so a large file doesn't flood the TUI.
-_APPROVAL_DIFF_MAX_LINES = 40
+#: Sentinel an approval menu carries for the "view full diff" action: choosing
+#: it opens the complete diff in the pager and re-shows the same prompt — it is
+#: NOT an :class:`ApprovalReply`, so it can never approve or deny.
+_VIEW_FULL_DIFF = object()
+
+#: Sentinel for the "edit before apply" action: choosing it opens the proposed
+#: new content in ``$EDITOR`` and applies the user-edited result. Like
+#: :data:`_VIEW_FULL_DIFF` it is not an :class:`ApprovalReply` — the editor flow
+#: produces the actual reply (an approve carrying ``edited_args``, or a deny when
+#: the editor is aborted).
+_EDIT_BEFORE_APPLY = object()
+
+#: Sentinel for the "edit then save" action on a suggested-memory prompt: choosing
+#: it opens the memory body in ``$EDITOR`` and saves the edited result. Like the
+#: others it is not an :class:`ApprovalReply` — the editor flow produces the reply.
+_EDIT_MEMORY = object()
 
 def run_inline(
     config: Config,
@@ -155,20 +177,41 @@ class InlineApp:
         self._input_queue = InputQueue()
         self._resume_task: asyncio.Task | None = None
         self._line_future: asyncio.Future | None = None       # app-native asks
+        self._yolo_confirm_inflight = False    # de-dupe rapid Shift+Tab→yolo presses
         self._menu_future: asyncio.Future | None = None     # arrow-key pickers
         self._menu_options: list[tuple[str, object]] = []
         self._menu_index = 0
         self._menu_header = ""
         self._menu_cancel: object | None = None
+        # Single-keypress fast-path for the *approval* menu only: maps a typed
+        # char (e.g. "y"/"a" → allow, "n"/"d" → deny) to the option value it
+        # resolves to. None for every other picker, so letter keys type normally.
+        self._menu_fastkeys: dict[str, object] | None = None
         self._stream_text = ""                    # in-progress region above input
+        # Cache for the live markdown->ANSI render: _stream_control runs on every
+        # prompt_toolkit redraw (refresh_interval + invalidate per delta), so cache
+        # (source, rendered_ansi) and only re-render when the buffer actually grew.
+        self._stream_md_cache: tuple[str, str] | None = None
+        # True while the live region holds a reasoning block (render it plain dim,
+        # not markdown — see _set_stream / _stream_control).
+        self._stream_is_reasoning = False
         self._turn_start: float | None = None     # for the elapsed timer
-        self._thinking_word = ""
+        # One stable thinking word per session (don't re-roll every turn — the
+        # churning label reads as noise). Shared with the renderer spinner.
+        self._thinking_word = palette.session_thinking_word()
+        self._turn_stream_chars = 0   # streamed output chars this turn (live tok estimate)
+        self._turn_base_output = 0    # tracker output tokens at turn start (real-usage delta)
+        self._turn_base_input = 0     # tracker input tokens at turn start (prompt-size delta)
+        self._first_token_at: float | None = None   # first streamed delta (for tok/s)
         self._flash_html: HTML | None = None       # transient region message
         self._flash_until = 0.0
         self._expanded = False                     # pager overlay open?
         self._last_todos_sig: str | None = None    # de-dupe the todo checklist
         self._pager_buffer = Buffer(read_only=True)
         self._pager_window: Window | None = None
+        #: Resolved when the pager closes — lets an approval prompt block on the
+        #: user finishing a "view full diff" before it re-shows the menu.
+        self._pager_closed: asyncio.Future[None] | None = None
         self._config_open = False                  # interactive /config panel open?
         self._config_panel: ConfigPanel | None = None
         self._config_window: Window | None = None
@@ -179,8 +222,25 @@ class InlineApp:
 
     async def run(self) -> None:
         c = self.console
-        c.print(splash(__version__, self.config.resolved_main_model(),
-                       self.config.permission_mode.value))
+        _model = self.config.resolved_main_model()
+        _mode = self.config.permission_mode.value
+        _splash_cfg = self.config.ui.splash
+        from jarn.config.paths import global_home
+        _first_run_marker = global_home() / "state" / "first_run_done"
+        _is_first_run = not _first_run_marker.exists()
+        if _is_first_run:
+            # Recording the marker is best-effort: a read-only home must re-show
+            # the full splash next time, never crash startup.
+            with contextlib.suppress(OSError):
+                _first_run_marker.parent.mkdir(parents=True, exist_ok=True)
+                _first_run_marker.touch()
+            c.print(splash(__version__, _model, _mode))
+        elif _splash_cfg == "full":
+            c.print(splash(__version__, _model, _mode))
+        elif _splash_cfg == "compact":
+            c.print(splash_compact(__version__, _model, _mode))
+        else:  # off
+            c.print(SHORTCUT_HINT)
         c.print(f"[{palette.C_DIM}]terminal mode · Enter send · Shift+Enter newline · "
                 f"Shift+Tab mode · Esc interrupt · Ctrl+O or /expand · Ctrl+C exit[/{palette.C_DIM}]")
         ok, message = self.controller.validate()
@@ -189,6 +249,17 @@ class InlineApp:
                 f"[{palette.C_ERROR}]Provider not ready: {_rich_escape(message)}"
                 f"[/{palette.C_ERROR}]  [{palette.C_DIM}]run `jarn setup`[/{palette.C_DIM}]"
             )
+        # Startup notice: name the context file loaded into the system prompt.
+        if self.controller.project_trusted and self.controller.project_root is not None:
+            from jarn.memory.context import resolve_context_file
+            _ctx_path = resolve_context_file(
+                self.controller.project_root,
+                context_files=self.config.compat.context_files,
+            )
+            if _ctx_path is not None:
+                c.print(
+                    f"[{palette.C_DIM}]context: {_ctx_path.name}[/{palette.C_DIM}]"
+                )
         # One-time untrusted-project notice: the review-only floor is active and
         # capability keys were stripped. Surfaced once in scrollback (not per turn)
         # so the user knows why modes are clamped and how to unlock.
@@ -249,9 +320,15 @@ class InlineApp:
         # dont_extend_height so each window sizes to its CONTENT (not the screen):
         # otherwise the windows expand to their max and the input floats up the
         # screen with a gap above the toolbar.
+        # The live block is a transient FORMATTED markdown render of the in-progress
+        # run (prose commits to scrollback once at the run seam), so an unclosed
+        # fence / long paragraph is no longer clipped at a hard 8 lines.
+        # dont_extend_height keeps it content-sized; _stream_height adds a
+        # terminal-height-aware cap (rows - reserve) so a very tall live block clips
+        # instead of pushing the input + toolbar off the bottom of the screen.
         stream = Window(
             FormattedTextControl(self._stream_control),
-            height=Dimension(min=0, max=8), wrap_lines=True,
+            height=self._stream_height, wrap_lines=True,
             dont_extend_height=True, style=f"fg:{palette.C_DIM}",
         )
         prompt = Window(
@@ -309,24 +386,81 @@ class InlineApp:
     def _busy(self) -> bool:
         return self._turn_task is not None and not self._turn_task.done()
 
-    def _cancel_turn(self) -> None:
+    def _cancel_turn(self, *, note_edits: bool = False) -> None:
         """Cancel the running turn AND kill any shell process it spawned.
 
         Cancelling the asyncio task alone leaves a host subprocess (e.g. a long
         ``sleep``/build) running; terminating the backend's process tree makes
-        Esc/Ctrl+C actually stop the work."""
+        Esc/Ctrl+C actually stop the work.
+
+        ``note_edits`` is set by the Esc/Ctrl+C path (not ``/abort``, which
+        rolls back itself): when the cancelled turn already applied file edits,
+        those edits stay on disk, so we print a clear note that they remain and
+        how to revert them (``/abort`` rolls them back; offered when a
+        turn-start checkpoint exists)."""
         if self._turn_task is not None:
             self._turn_task.cancel()
         killed = self.controller.terminate_shells()
         if killed:
             self.console.print(f"[{palette.C_DIM}]stopped {killed} running command(s)[/{palette.C_DIM}]")
+        if note_edits and self._turn_made_edits():
+            note = self.controller.cancel_edit_note()
+            if note:
+                self.console.print(f"[{palette.C_DIM}]{_rich_escape(note)}[/{palette.C_DIM}]")
+
+    def _turn_made_edits(self) -> bool:
+        """Whether the just-cancelled turn applied a file edit (write/edit) —
+        detected from the live tool-output sink, same signal as the
+        /undo-unavailable hint."""
+        return any(n in ("write_file", "edit_file") for n, _ in self._last_tool_outputs)
 
     def _set_stream(self, text: str) -> None:
         """Show ``text`` in the live region above the input (in-progress prose or
         an approval/picker prompt). Empty string collapses the region."""
         self._stream_text = text
+        # Reasoning blocks arrive through this same sink with a sentinel prefix;
+        # flag them so _stream_control renders them plain (not markdown-collapsed).
+        self._stream_is_reasoning = text.startswith(REASONING_STREAM_PREFIX)
         if self.app is not None:
             self.app.invalidate()
+
+    def _render_stream_md(self, source: str) -> str:
+        """Render the growing markdown buffer to an ANSI string for the live region.
+
+        Uses a force_terminal capture Console at the SAME width as ``self.console``
+        (the scrollback console) so the live block wraps identically to the
+        committed block — no reflow jump when the run finally commits. Cached on
+        the source string: _stream_control runs on every redraw, so we only re-run
+        the Rich render when the buffer actually changed (O(buffer) per change, not
+        per frame)."""
+        if self._stream_md_cache is not None and self._stream_md_cache[0] == source:
+            return self._stream_md_cache[1]
+        # Same width as the scrollback console so the live block wraps identically
+        # to the committed block (no reflow jump on commit, and they stay matched
+        # across a terminal resize).
+        width = self.console.width
+        buf = io.StringIO()
+        cap = Console(force_terminal=True, width=width, file=buf)
+        cap.print(Markdown(source.strip(), code_theme=palette.CODE_THEME), end="")
+        rendered = buf.getvalue().rstrip("\n")
+        self._stream_md_cache = (source, rendered)
+        return rendered
+
+    def _render_dim_ansi(self, text: str) -> str:
+        """Render a one-line dim footer to an ANSI string (palette colour may be a
+        name or hex, so let Rich emit the escape rather than hand-building it)."""
+        buf = io.StringIO()
+        cap = Console(force_terminal=True, width=self.console.width, file=buf)
+        cap.print(f"[{palette.C_DIM}]{_rich_escape(text)}[/{palette.C_DIM}]", end="")
+        return buf.getvalue().rstrip("\n")
+
+    def _stream_height(self) -> Dimension:
+        """Height for the live region: content-sized, but capped so a very tall
+        in-progress block (long paragraph / big code block) can't push the input
+        and toolbar off the bottom of the screen. Reserve a few rows for the input
+        + toolbar; the live block clips at that cap, the input stays pinned."""
+        rows = shutil.get_terminal_size((80, 24)).lines
+        return Dimension(min=0, max=max(4, rows - 4))
 
     def _stream_control(self):
         """Region above the input: in-progress text, an animated thinking
@@ -335,6 +469,27 @@ class InlineApp:
         if self._menu_future is not None and self._menu_options:
             return self._menu_html()
         if self._stream_text:
+            if self._busy():
+                # The streamed assistant prose renders LIVE as one growing
+                # FORMATTED markdown block (Rich -> ANSI), not dim escaped raw
+                # source — that kills the grey-raw-then-recommit double render and
+                # the mid-construct literal markup. The dim gen-stat footer (live
+                # token/rate) stays, since streamed text replaces the spinner.
+                # Reasoning is the exception: render it plain dim so the multi-line
+                # "✻ thinking\n…" block keeps its line breaks (markdown collapses
+                # the soft break onto one line).
+                if self._stream_is_reasoning:
+                    rendered = self._render_dim_ansi(self._stream_text)
+                else:
+                    rendered = self._render_stream_md(self._stream_text)
+                footer = self._render_dim_ansi(
+                    f"{self._gen_stat()} · esc to interrupt"
+                )
+                # Drop the leading blank line when the buffer is still empty (pure
+                # newlines streamed before the first real prose) — show just the footer.
+                return ANSI(f"{rendered}\n{footer}" if rendered else footer)
+            # Not busy: a picker / _ask prompt lives here as PLAIN text — never
+            # markdown-rendered (it isn't markdown and must show verbatim).
             return self._stream_text
         if self._busy():
             return self._thinking_line()
@@ -366,16 +521,53 @@ class InlineApp:
         )
         return HTML("\n".join(lines))
 
+    def _gen_stat(self) -> str:
+        """Live turn stat for the spinner / stream footer.
+
+        Two phases: while still processing the prompt (no token streamed yet) show
+        the PROMPT size; once output is generating show OUTPUT tokens + tok/s.
+
+        Output tokens use the provider's real per-chunk usage when it reports it
+        (e.g. Anthropic); otherwise a ``~`` estimate from the streamed text
+        (~4 chars/token), so a local model (LM Studio) — which streams without
+        per-chunk usage — still shows the counter moving. The rate is measured from
+        the first streamed token, so it reflects generation speed, not the
+        prompt-processing (prefill) wait."""
+        if self._first_token_at is None:
+            # Still thinking / prefilling — there is no generation rate yet, so
+            # show the prompt size instead (real input delta if the provider has
+            # reported it, else the prior context size as a proxy).
+            prompt = self.controller.tracker.total.input_tokens - self._turn_base_input
+            if prompt > 0:
+                return f"prompt {prompt} tok"
+            ctx = self.controller.tracker.context_tokens
+            return f"prompt ~{ctx} tok" if ctx > 0 else ""
+        est = self._turn_stream_chars // 4
+        real = self.controller.tracker.total.output_tokens - self._turn_base_output
+        gen, approx = (real, "") if real > 0 else (est, "~")
+        out = f"{approx}{gen} tok"
+        if gen > 0:
+            dur = time.monotonic() - self._first_token_at
+            if dur >= 0.5:
+                out += f" · {gen / dur:.0f} tok/s"
+        return out
+
     def _thinking_line(self) -> HTML:
         start = self._turn_start or time.monotonic()
         elapsed = int(time.monotonic() - start)
         frame = palette.SPINNER_FRAMES[int(time.monotonic() * 5) % len(palette.SPINNER_FRAMES)]
-        toks = self.controller.tracker.total.total_tokens
         word = self._thinking_word or "Working"
         return HTML(
             f'{palette.styled_fg(palette.C_TOOL, frame)} '
-            f'{palette.styled_fg(palette.C_DIM, f"{word}… ({elapsed}s · {toks} tok · esc to interrupt)")}'
+            f'{palette.styled_fg(palette.C_DIM, f"{word}… ({elapsed}s · {self._gen_stat()} · esc to interrupt)")}'
         )
+
+    def _count_stream_chars(self, delta: str) -> None:
+        """Accumulate streamed output chars this turn (for the live token estimate),
+        stamping the first delta so tok/s measures generation, not prefill."""
+        if self._first_token_at is None:
+            self._first_token_at = time.monotonic()
+        self._turn_stream_chars += len(delta)
 
     # -- prompt chrome ------------------------------------------------------
 
@@ -395,6 +587,7 @@ class InlineApp:
             mode=cfg.permission_mode.value,
             cost_line=tracker.summary_line(),
             cost_status=tracker.status(),
+            trusted=self.controller.project_trusted,
             queue_count=len(self._input_queue),
             context_frac=ctx_frac,
             width=width,
@@ -407,10 +600,19 @@ class InlineApp:
             project_root=self.controller.project_root,
         )
 
-    async def _ask(self, prompt: str) -> str:
+    async def _ask(self, prompt: str, *, prefill: str = "") -> str:
         """App-native line capture for pickers: show the prompt in the region above
-        the input and resolve on the next Enter-submitted line."""
+        the input and resolve on the next Enter-submitted line.
+
+        ``prefill`` pre-populates the editable input with text the user can edit
+        in place (used by ``/rewind`` to offer the chosen turn's prompt) — the
+        cursor lands at the end so they can tweak or accept it as-is."""
         self._set_stream(prompt)
+        if prefill:
+            self.input.reset()
+            self.input.insert_text(prefill)
+            if self.app is not None:
+                self.app.invalidate()
         self._line_future = asyncio.get_running_loop().create_future()
         try:
             text = await self._line_future
@@ -425,12 +627,17 @@ class InlineApp:
         *,
         header: str = "",
         cancel_returns: _MenuT | None = None,
+        fastkeys: dict[str, _MenuT] | None = None,
     ) -> _MenuT | None:
-        """Claude Code-style menu: ↑/↓ to highlight, Enter to confirm, Esc cancel."""
+        """Claude Code-style menu: ↑/↓ to highlight, Enter to confirm, Esc cancel.
+
+        ``fastkeys`` maps a single typed char to the option value it resolves to
+        immediately (no arrow+Enter) — used by the approval menu for y/a/n/d."""
         self._menu_options = cast(list[tuple[str, object]], options)
         self._menu_index = 0
         self._menu_header = header
         self._menu_cancel = cancel_returns
+        self._menu_fastkeys = cast("dict[str, object] | None", fastkeys)
         self._menu_future = asyncio.get_running_loop().create_future()
         if self.app is not None:
             self.app.invalidate()
@@ -441,16 +648,89 @@ class InlineApp:
             self._menu_options = []
             self._menu_header = ""
             self._menu_cancel = None
+            self._menu_fastkeys = None
             self._set_stream("")
 
-    async def _pick_approval(self, options: list[tuple[str, ApprovalReply]]) -> ApprovalReply:
-        deny = options[-1][1]
+    async def _pick_approval(self, options: list[tuple[str, object]]) -> object:
+        # Cancel → deny. The "View full diff" sentinel may sit last, so find the
+        # deny reply by value rather than assuming it's options[-1].
+        deny = next(
+            v for _, v in options
+            if isinstance(v, ApprovalReply) and not v.approved
+        )
+        # Allow-once is the first allow reply (options[0] by construction).
+        allow = next(
+            v for _, v in options
+            if isinstance(v, ApprovalReply) and v.approved
+        )
+        # Single-keypress fast-path: y/a approve (allow once), n/d deny — no
+        # arrow+Enter needed across a multi-edit turn. Arrow nav + Enter and the
+        # "View full diff"/"Edit before apply" options keep working unchanged.
+        fastkeys: dict[str, object] = {"y": allow, "a": allow, "n": deny, "d": deny}
         picked = await self._pick_menu(
             options,
-            header="Approve · ↑/↓ · Enter · Esc cancel",
+            header="Approve · y/a allow · n/d deny · ↑/↓ · Enter · Esc cancel",
             cancel_returns=deny,
+            fastkeys=fastkeys,
         )
         return deny if picked is None else picked
+
+    async def _confirm_yolo(self) -> bool:
+        """Prompt the user to confirm entering yolo mode.  Returns True iff confirmed."""
+        # Print a prominent banner into the visible scrollback first — the inline
+        # ask renders in the faint region above the input, which is easy to miss;
+        # the user must clearly see this is a y/N decision.
+        self.console.print(
+            f"[{palette.C_ERROR}]⚠  Entering YOLO mode[/{palette.C_ERROR}] "
+            f"[{palette.C_DIM}]— no approval prompts; the danger-guard still blocks "
+            f"catastrophic actions.[/{palette.C_DIM}]"
+        )
+        answer = await self._ask("Type 'y' to confirm yolo, anything else to cancel [y/N]: ")
+        return answer.strip().lower() in ("y", "yes")
+
+    def _request_yolo_confirm(self) -> None:
+        """Spawn the yolo confirmation, dropping re-entrant requests.
+
+        Shift+Tab only *peeks* the next mode, so rapid presses while a
+        confirmation is pending would each spawn a task — all sharing the single
+        ``_line_future``, leaving every prompt but the last hung forever. The flag
+        is set synchronously here (before the task is scheduled) so repeat presses
+        are ignored until the in-flight confirmation resolves."""
+        if self._yolo_confirm_inflight:
+            return
+        self._yolo_confirm_inflight = True
+
+        async def _run() -> None:
+            try:
+                await self._confirm_and_cycle_yolo()
+            finally:
+                self._yolo_confirm_inflight = False
+
+        asyncio.get_running_loop().create_task(_run())
+
+    async def _confirm_and_cycle_yolo(self) -> None:
+        """Async helper for Shift+Tab: confirm yolo, then apply it (or skip)."""
+        if not await self._confirm_yolo():
+            self.console.print(f"[{palette.C_DIM}]yolo cancelled — mode unchanged.[/{palette.C_DIM}]")
+            return
+        new = self.controller.cycle_mode()
+        self._armed = False
+        color = palette.MODE_COLOR.get(new, "#22d3ee")
+        glyph = palette.MODE_GLYPH.get(new, "◆")
+        self._flash(HTML(
+            f'<style fg="{color}"><b>{glyph} {new}</b></style> '
+            f'<style fg="#7c8f94">mode</style>'
+        ))
+        if self.app is not None:
+            self.app.invalidate()
+
+    def _maybe_autocheckpoint_hint(self) -> None:
+        """After a turn that wrote a file, show the one-time /undo-unavailable
+        hint when autocheckpoint is off (no-op otherwise; self-gates per session)."""
+        if self._turn_made_edits():
+            hint = self.controller.autocheckpoint_off_hint()
+            if hint:
+                self.console.print(f"[{palette.C_DIM}]{_rich_escape(hint)}[/{palette.C_DIM}]")
 
     async def _render_todos(self) -> None:
         """Print the current plan checklist into scrollback after a turn, de-duped
@@ -502,6 +782,99 @@ class InlineApp:
         if self.app is not None:
             self.app.layout.focus(self.input)  # back to the conversation
             self.app.invalidate()
+        # Unblock a "view full diff" approval prompt that's waiting on the close.
+        if self._pager_closed is not None and not self._pager_closed.done():
+            self._pager_closed.set_result(None)
+
+    async def _view_full_diff(self, text: str) -> None:
+        """Show the COMPLETE approval diff in the pager and wait for the user to
+        close it (q / Ctrl+O / Esc). Returns when the pager is dismissed so the
+        caller can re-show the SAME approve/deny prompt — viewing never decides."""
+        self._pager_buffer.set_document(Document(text, 0), bypass_readonly=True)
+        self._expanded = True
+        self._pager_closed = asyncio.get_running_loop().create_future()
+        if self.app is not None and self._pager_window is not None:
+            self.app.layout.focus(self._pager_window)
+            self.app.invalidate()
+        try:
+            await self._pager_closed
+        finally:
+            self._pager_closed = None
+
+    async def _edit_before_apply(self, request: ApprovalRequest) -> ApprovalReply | None:
+        """Open the proposed new content in ``$EDITOR``; apply the edited result.
+
+        Returns an approve-:class:`ApprovalReply` carrying ``edited_args`` (the
+        original tool args with the new content swapped for the user's edit), or
+        ``None`` when the editor is aborted so the caller cancels without applying.
+        """
+        args = request.args or {}
+        field = _editable_field(args)
+        if field is None:  # nothing editable — should not happen (menu gated on it)
+            return None
+        original = str(args.get(field, ""))
+        # Suspend the app so $EDITOR owns the terminal, run it off-thread so the
+        # event loop stays live, then restore the app.
+        from prompt_toolkit.application import run_in_terminal
+
+        suffix = Path(str(args.get("file_path") or args.get("path") or "")).suffix or ".txt"
+        edited = await run_in_terminal(
+            lambda: _edit_text_in_editor(original, suffix=suffix)
+        )
+        if edited is None:
+            return None  # editor aborted — cancel cleanly, apply nothing
+        # Validate: the edited content must still apply. We only ever replace the
+        # *new* content (``content`` for a write, ``new_string`` for an edit) and
+        # never touch ``old_string``, so an edit_file's anchor is unchanged and the
+        # replacement still applies; a write_file overwrites wholesale. Carry the
+        # edited args back so the turn resumes with a LangGraph ``edit`` decision.
+        edited_args = {**args, field: edited}
+        return ApprovalReply(True, RememberScope.ONCE, edited_args=edited_args)
+
+    async def _cmd_compact(self) -> None:
+        """Manual ``/compact``: generate the summary, render it for review, then
+        ask before replacing the thread. ``y`` applies, ``edit`` opens the
+        summary in ``$EDITOR`` first, anything else declines and keeps the
+        original context fully intact. (Auto-compact stays non-interactive — it
+        calls ``controller.compact()`` directly.)"""
+        c = self.console
+        c.print(f"[{palette.C_DIM}]compacting…[/{palette.C_DIM}]")
+        try:
+            summary = await self.controller.compact_preview()
+        except Exception as exc:  # noqa: BLE001
+            c.print(
+                f"[{palette.C_ERROR}]compact failed: {_rich_escape(str(exc))}"
+                f"[/{palette.C_ERROR}]"
+            )
+            return
+        if not summary:
+            c.print("Nothing to compact yet.")
+            return
+        c.print(f"[{palette.C_NOTICE}]Proposed compaction:[/{palette.C_NOTICE}]")
+        c.print(_rich_escape(summary))
+        answer = (await self._ask("Apply this compaction? [y/N/edit] ")).strip().lower()
+        if answer in ("e", "edit"):
+            from prompt_toolkit.application import run_in_terminal
+
+            edited = await run_in_terminal(
+                lambda: _edit_text_in_editor(summary, suffix=".md")
+            )
+            if edited is None:  # editor aborted — keep the original context intact
+                c.print(f"[{palette.C_DIM}]Compaction cancelled.[/{palette.C_DIM}]")
+                return
+            summary = edited
+        elif answer not in ("y", "yes"):
+            c.print(f"[{palette.C_DIM}]Compaction cancelled.[/{palette.C_DIM}]")
+            return
+        try:
+            await self.controller.compact_apply(summary)
+        except Exception as exc:  # noqa: BLE001
+            c.print(
+                f"[{palette.C_ERROR}]compact failed: {_rich_escape(str(exc))}"
+                f"[/{palette.C_ERROR}]"
+            )
+            return
+        c.print(f"[{palette.C_NOTICE}]Compacted.[/{palette.C_NOTICE}]")
 
     # -- interactive settings panel (/config) -------------------------------
 
@@ -583,6 +956,15 @@ class InlineApp:
                 self._line_future.set_result(text)
                 return
             stripped = text.strip()
+            # /abort must reach the running turn, not wait behind it: dispatch it
+            # immediately instead of queueing so it can cancel the in-flight turn
+            # and roll the working tree back.
+            if self._busy() and parse_input(stripped).name == "abort":
+                self.input.append_to_history()
+                self.input.reset()
+                self.console.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(stripped)}")
+                asyncio.create_task(self._command("abort", ""))
+                return
             if self._busy():
                 # A turn is running; queue the line (echoed dim) to run when it
                 # finishes. Empty lines just clear the input.
@@ -617,7 +999,10 @@ class InlineApp:
                 else:
                     self.console.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(stripped)}")
                 self._turn_start = time.monotonic()
-                self._thinking_word = random.choice(palette.THINKING_WORDS)
+                self._turn_stream_chars = 0
+                self._turn_base_output = self.controller.tracker.total.output_tokens
+                self._turn_base_input = self.controller.tracker.total.input_tokens
+                self._first_token_at = None
                 self._turn_task = asyncio.create_task(self._handle(send))
 
         @kb.add("c-j", filter=live)
@@ -668,8 +1053,43 @@ class InlineApp:
             buf = self.input
             buf.complete_next() if buf.complete_state else buf.auto_down()
 
+        def _menu_fastkey(event) -> None:
+            """Single-keypress accept/deny for the approval menu: a mapped char
+            (y/a/n/d) resolves the picker instantly. When no fast-key menu is up
+            — or the char isn't mapped — the key types normally into the input so
+            ordinary editing is never swallowed."""
+            char = event.data
+            keys = self._menu_fastkeys
+            if (
+                self._menu_future is not None
+                and not self._menu_future.done()
+                and keys is not None
+                and char in keys
+            ):
+                value = keys[char]
+                label = next(
+                    (lbl for lbl, v in self._menu_options if v is value),
+                    char,
+                )
+                self.console.print(
+                    f"[{palette.C_DIM}]› {_rich_escape(label)}[/{palette.C_DIM}]"
+                )
+                self._menu_future.set_result(value)
+                return
+            self.input.insert_text(char)
+
+        for _fk in ("y", "a", "n", "d"):
+            kb.add(_fk, filter=live)(_menu_fastkey)
+
         @kb.add("s-tab", filter=live)
         def _cycle_mode(event) -> None:
+            next_mode = self.controller.peek_next_mode()
+            if next_mode == "yolo":
+                # Entering yolo requires async confirmation; hand off to a task,
+                # de-duped so rapid repeat presses don't stack confirmations.
+                self._request_yolo_confirm()
+                event.app.invalidate()
+                return
             new = self.controller.cycle_mode()
             self._armed = False
             color = palette.MODE_COLOR.get(new, "#22d3ee")
@@ -735,6 +1155,10 @@ class InlineApp:
                 self._config_panel.type_text(data)
                 event.app.invalidate()
 
+        @kb.add("c-v", filter=live)
+        def _paste_image_key(event) -> None:
+            self._paste_clipboard_image()
+
         @kb.add("c-o")
         def _expand_key(event) -> None:
             self._armed = False
@@ -762,7 +1186,7 @@ class InlineApp:
             if self._expanded:
                 self._collapse()
             elif self._busy():
-                self._cancel_turn()
+                self._cancel_turn(note_edits=True)
             elif self.input.text:
                 self.input.reset()
 
@@ -780,7 +1204,7 @@ class InlineApp:
                 self._collapse()
                 return
             if self._busy():
-                self._cancel_turn()  # cancel the running turn
+                self._cancel_turn(note_edits=True)  # cancel the running turn
                 return
             if self.input.text:
                 self.input.reset()  # first Ctrl+C clears the input
@@ -801,11 +1225,14 @@ class InlineApp:
             item = self._input_queue.pop_next()
             if item is None:
                 return
-            self.console.print(
-                f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(item.display)}"
-            )
+            # No prompt echo here: the line was already echoed once with the
+            # `» queued: …` marker at submit time (see _submit). Re-echoing it as
+            # `› …` on drain would put two scrollback lines per queued input.
             self._turn_start = time.monotonic()
-            self._thinking_word = random.choice(palette.THINKING_WORDS)
+            self._turn_stream_chars = 0
+            self._turn_base_output = self.controller.tracker.total.output_tokens
+            self._turn_base_input = self.controller.tracker.total.input_tokens
+            self._first_token_at = None
             self._turn_task = asyncio.create_task(self._handle(item.payload))
 
     async def _handle(self, text: str) -> None:
@@ -822,16 +1249,30 @@ class InlineApp:
                 self._last_tool_outputs = []
                 await _run_turn(
                     self.console, self.controller, text, self._ask,
-                    pick=self._pick_approval,
+                    pick=self._pick_approval, view=self._view_full_diff,
+                    edit=self._edit_before_apply,
                     live_sink=self._set_stream, spinner=False,
                     tool_sink=self._last_tool_outputs,
+                    token_sink=self._count_stream_chars,
                 )
                 await self._render_todos()
+                self._maybe_autocheckpoint_hint()
         except asyncio.CancelledError:
             self.console.print(f"\n[{palette.C_DIM}]interrupted[/{palette.C_DIM}]")
         except Exception as exc:  # noqa: BLE001
+            # The TUI must not print a traceback (it corrupts the display), so log
+            # the full one to the file logger and point the user at it — an
+            # otherwise-opaque mid-turn failure (e.g. a langgraph error) is then
+            # diagnosable instead of a bare one-line message.
+            logging.getLogger("jarn").error("turn failed", exc_info=exc)
+            from jarn.config import paths
+
             self.console.print(
                 f"[{palette.C_ERROR}]{_rich_escape(str(exc))}[/{palette.C_ERROR}]"
+            )
+            self.console.print(
+                f"[{palette.C_DIM}]full traceback → "
+                f"{paths.global_logs_dir() / 'jarn.log'}[/{palette.C_DIM}]"
             )
         finally:
             self._turn_task = None
@@ -867,6 +1308,50 @@ class InlineApp:
         response = await asyncio.to_thread(backend.execute, command)
         c.print(response.output)
 
+    def _paste_clipboard_image(self) -> None:
+        """Ctrl+V: grab an image from the clipboard and insert it as an ``@path``.
+
+        Saves the clipboard image under ``.jarn/pastes/`` and inserts an ``@``
+        reference so the agent's multimodal ``read_file`` picks it up on send.
+        macOS only; otherwise (or with no image on the clipboard) it points the
+        user at the save-and-``@``-reference fallback. Runs the (possibly slow)
+        clipboard read off the event loop.
+        """
+        if sys.platform != "darwin":
+            # Transient flash, NOT _set_stream — mid-turn _set_stream would clobber
+            # the live prose preview and get markdown-rendered with a stat footer.
+            self._flash(HTML(
+                f'<style fg="{palette.C_DIM}">'
+                f'{_esc("image paste is macOS-only for now — save the file and use @path")}'
+                "</style>"
+            ))
+            return
+
+        async def _job() -> None:
+            from jarn.tui.clipboard import save_clipboard_image
+
+            root = self.controller.project_root or Path(".")
+            path = await asyncio.to_thread(save_clipboard_image, root)
+            if path is None:
+                self._flash(HTML(
+                    f'<style fg="{palette.C_DIM}">'
+                    f'{_esc("no image on the clipboard — copy a screenshot, or save it and use @path")}'
+                    "</style>"
+                ))
+            else:
+                try:
+                    rel = path.relative_to(root)
+                except ValueError:
+                    rel = path
+                self.input.insert_text(f"@{rel} ")
+                self.console.print(
+                    f"[{palette.C_NOTICE}]📎 attached {_rich_escape(str(rel))}[/{palette.C_NOTICE}]"
+                )
+            if self.app is not None:
+                self.app.invalidate()
+
+        asyncio.create_task(_job())
+
     # -- commands -----------------------------------------------------------
 
     async def _command(self, name: str, args: str) -> None:
@@ -882,26 +1367,20 @@ class InlineApp:
             self._last_tool_outputs = []
             await _run_turn(
                 c, self.controller, rt.commands[name].render(args), self._ask,
-                pick=self._pick_approval,
+                pick=self._pick_approval, view=self._view_full_diff,
+                edit=self._edit_before_apply,
                 live_sink=self._set_stream, spinner=False,
                 tool_sink=self._last_tool_outputs,
+                token_sink=self._count_stream_chars,
             )
             await self._render_todos()
+            self._maybe_autocheckpoint_hint()
             return
         if name == "compact":
-            c.print(f"[{palette.C_DIM}]compacting…[/{palette.C_DIM}]")
-            try:
-                summary = await self.controller.compact()
-                c.print(
-                    f"[{palette.C_NOTICE}]Compacted.[/{palette.C_NOTICE}] {_rich_escape(summary)}"
-                    if summary
-                    else "Nothing to compact yet."
-                )
-            except Exception as exc:  # noqa: BLE001
-                c.print(
-                    f"[{palette.C_ERROR}]compact failed: {_rich_escape(str(exc))}"
-                    f"[/{palette.C_ERROR}]"
-                )
+            await self._cmd_compact()
+            return
+        if name in ("commit", "review"):
+            await self._cmd_git_seed(name)
             return
         if name == "expand":  # same as Ctrl+O — reliable even if the key is eaten
             self._open_pager()
@@ -909,11 +1388,43 @@ class InlineApp:
         if name == "resume":
             await self._resume_picker()
             return
+        if name == "rewind":
+            await self._rewind_picker()
+            return
         if name == "queue":
             await self._cmd_queue(args)
             return
+        if name == "abort":
+            # Stop the running turn AND revert its edits in one action. When idle
+            # there is no turn to abort — don't silently undo the last one; point
+            # at /undo instead.
+            if not self._busy():
+                c.print(
+                    f"[{palette.C_DIM}]Nothing to abort — no turn is running. "
+                    f"Use /undo to revert the last turn's edits.[/{palette.C_DIM}]"
+                )
+                return
+            self._cancel_turn()
+            # abort_rollback runs a blocking git restore; offload it so the event
+            # loop stays responsive.
+            c.print(await asyncio.to_thread(self.controller.abort_rollback))
+            return
+        if name == "key":
+            await self._cmd_key(args)
+            return
+        if name == "model" and args.strip() in ("refresh", "list"):
+            await self._refresh_models()
+            return
         if name in ("model", "mode") and not args.strip():
             await self._pick_model_or_mode(name)
+            return
+        if (
+            name == "mode"
+            and args.strip() == "yolo"
+            and self.controller.config.permission_mode.value != "yolo"
+            and not await self._confirm_yolo()
+        ):
+            c.print(f"[{palette.C_DIM}]yolo cancelled — mode unchanged.[/{palette.C_DIM}]")
             return
         result = self.controller.handle_command(name, args)
         c.print(result.text)
@@ -921,6 +1432,76 @@ class InlineApp:
             self.controller.runtime = None
         if result.quit and self.app is not None:
             self.app.exit()
+
+    async def _cmd_git_seed(self, which: str) -> None:
+        """`/commit` and `/review`: gather the diff and seed an agent turn.
+
+        The diff is embedded in the prompt so the agent skips a tool round-trip.
+        ``/commit`` then drives a real ``git commit`` through the normal approval
+        path; ``/review`` is a read-only review.
+        """
+        from jarn.agent.git_commands import commit_prompt, gather_diff, review_prompt
+
+        c = self.console
+        root = self.controller.project_root or Path(".")
+        diff = await asyncio.to_thread(gather_diff, root)
+        if not diff.is_repo:
+            c.print(f"[{palette.C_ERROR}]Not a git repository.[/{palette.C_ERROR}]")
+            return
+        prompt = commit_prompt(diff) if which == "commit" else review_prompt(diff)
+        if prompt is None:
+            what = "commit" if which == "commit" else "review"
+            c.print(
+                f"[{palette.C_DIM}]Nothing to {what} — the working tree is clean."
+                f"[/{palette.C_DIM}]"
+            )
+            return
+        self._last_tool_outputs = []
+        await _run_turn(
+            c, self.controller, prompt, self._ask,
+            pick=self._pick_approval, view=self._view_full_diff,
+            edit=self._edit_before_apply,
+            live_sink=self._set_stream, spinner=False,
+            tool_sink=self._last_tool_outputs,
+            token_sink=self._count_stream_chars,
+        )
+        await self._render_todos()
+        self._maybe_autocheckpoint_hint()
+
+    async def _cmd_key(self, args: str) -> None:
+        """`/key`: set/replace the API key for the current provider in-session.
+
+        With no argument we prompt for the key (kept off the input history /
+        scrollback by capturing it through the region prompt rather than the
+        echoed command line). The secret goes to the OS keychain and the
+        provider's config is pointed at a ``keychain:jarn/<provider>`` reference;
+        the runtime is dropped so the next turn rebuilds with the new key."""
+        c = self.console
+        provider = self.controller.current_provider()
+        if not provider:
+            c.print(
+                f"[{palette.C_ERROR}]No active provider — configure a model first "
+                f"with /model or run jarn setup.[/{palette.C_ERROR}]"
+            )
+            return
+        inline = args.strip()
+        if inline:
+            # Inline keys are convenient but land in shell/REPL history — warn.
+            c.print(
+                f"[{palette.C_WARN}]Heads up: an inline key is visible in your "
+                f"scrollback/history. Prefer /key with no argument next time."
+                f"[/{palette.C_WARN}]"
+            )
+            secret = inline
+        else:
+            secret = await self._ask(f"Paste the {provider} API key (Enter to cancel): ")
+        if not secret.strip():
+            c.print(f"[{palette.C_DIM}]No key entered — unchanged.[/{palette.C_DIM}]")
+            return
+        result = self.controller.set_provider_key(secret, provider=provider)
+        c.print(result.text)
+        if result.rebuilt:
+            self.controller.runtime = None
 
     # -- queue --------------------------------------------------------------
 
@@ -1002,6 +1583,95 @@ class InlineApp:
         self._last_todos_sig = None
         await self._replay_transcript()
 
+    async def _rewind_picker(self) -> None:
+        """`/rewind`: pick an earlier user turn, fork onto a NEW thread keeping
+        everything before it, optionally edit that turn's prompt, then continue.
+
+        The original thread is left intact (still in /sessions for /resume) — this
+        branches, it does not destroy. This rewinds the CONVERSATION only: file
+        edits made after the chosen turn are NOT reverted; the notice points the
+        user at /undo for those (git-checkpoint linkage is slice 2).
+
+        Runs through the normal queue, so it never fires mid-turn: a `/rewind`
+        typed while a turn is running is queued and only runs once that turn
+        (and any HITL interrupt) has settled — no fork of a hanging thread.
+        """
+        c = self.console
+        try:
+            turns = await self.controller.human_turns()
+        except Exception as exc:  # noqa: BLE001
+            c.print(
+                f"[{palette.C_ERROR}]could not load conversation: "
+                f"{_rich_escape(str(exc))}[/{palette.C_ERROR}]"
+            )
+            return
+        # Rewinding to the LAST user turn is a no-op (you'd keep everything and
+        # re-ask the same thing), so it's not offered — need at least two turns
+        # for an earlier one to exist.
+        if len(turns) < 2:
+            c.print(
+                f"[{palette.C_DIM}]Nothing to rewind — need an earlier user "
+                f"turn to branch from.[/{palette.C_DIM}]"
+            )
+            return
+        # Drop the last turn: forking at it keeps the whole conversation, which
+        # is a no-op. The picker only offers turns you can meaningfully branch
+        # before continuing again.
+        options: list[tuple[str, tuple[int, str] | None]] = [
+            (f"turn {n} · {_rich_escape(preview)}", (idx, preview))
+            for n, (idx, preview) in enumerate(turns[:-1], start=1)
+        ]
+        options.append(("Cancel", None))
+        chosen = await self._pick_menu(
+            options,
+            header="Rewind to turn · ↑/↓ · Enter · Esc cancel",
+            cancel_returns=None,
+        )
+        if chosen is None:
+            return
+        cut_index, original_prompt = chosen
+        # Optional prompt edit: pre-fill the input with the chosen turn's text so
+        # the user can tweak it before re-running (blank keeps the original).
+        edited = await self._ask(
+            "Edit the prompt (Enter to keep it as-is):", prefill=original_prompt
+        )
+        prompt = edited if edited else original_prompt
+
+        cut = await self.controller.fork_to_turn(cut_index)
+        if cut is None:
+            c.print(f"[{palette.C_DIM}]Nothing to rewind.[/{palette.C_DIM}]")
+            return
+        self._last_todos_sig = None
+        await self._replay_transcript()
+        c.print(
+            f"[{palette.C_NOTICE}]↩ rewound to a new branch[/{palette.C_NOTICE}] "
+            f"[{palette.C_DIM}]— the original session is still in /resume. "
+            f"File edits made after this point are NOT reverted — /undo rolls back "
+            f"file changes one turn at a time.[/{palette.C_DIM}]"
+        )
+        if not prompt:
+            # No continuation: still index the new branch so it survives in /resume
+            # (otherwise it's an orphan checkpoint with no sessions row). Title it by
+            # the turn we forked at.
+            self.controller.record_session_title(
+                original_prompt or "↩ rewound branch", when=time.time()
+            )
+            return
+        # Continue from the fork through the normal turn path (we're already the
+        # active turn task, so call _run_turn directly — same as _handle does).
+        c.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(prompt)}")
+        self._last_tool_outputs = []
+        await _run_turn(
+            c, self.controller, prompt, self._ask,
+            pick=self._pick_approval, view=self._view_full_diff,
+            edit=self._edit_before_apply,
+            live_sink=self._set_stream, spinner=False,
+            tool_sink=self._last_tool_outputs,
+            token_sink=self._count_stream_chars,
+        )
+        await self._render_todos()
+        self._maybe_autocheckpoint_hint()
+
     async def _pick_model_or_mode(self, what: str) -> None:
         c = self.console
         if what == "model":
@@ -1029,7 +1699,45 @@ class InlineApp:
         if what == "model":
             _apply_model_ref(self.controller, c, str(chosen))
         else:
+            if (
+                chosen == "yolo"
+                and self.controller.config.permission_mode.value != "yolo"
+                and not await self._confirm_yolo()
+            ):
+                c.print(f"[{palette.C_DIM}]yolo cancelled — mode unchanged.[/{palette.C_DIM}]")
+                return
             _apply_mode_ref(self.controller, c, str(chosen))
+
+    async def _refresh_models(self) -> None:
+        """Re-query local endpoints (Ollama / LM Studio) and pick from the result.
+
+        Degrades to manual entry with a note when no endpoint answers, so it never
+        leaves the user stuck.
+        """
+        c = self.console
+        # Probing can block briefly on the network; keep the event loop live.
+        discovered = await asyncio.to_thread(self.controller.discover_models)
+        if not discovered:
+            c.print(
+                f"[{palette.C_DIM}]No local models found — is Ollama/LM Studio running? "
+                f"Use /model to pick a configured model or paste a ref.[/{palette.C_DIM}]"
+            )
+            custom = (await self._ask("Paste model ref (blank to cancel): ")).strip()
+            if custom:
+                _apply_model_ref(self.controller, c, custom)
+            return
+        options: list[tuple[str, str | None]] = [
+            (f"{ref}  ({profile})", ref) for ref, profile in discovered
+        ]
+        options.append(("Cancel", None))
+        chosen = await self._pick_menu(
+            options,
+            header="Pick model · ↑/↓ · Enter · Esc cancel",
+            cancel_returns=None,
+        )
+        if chosen is None:
+            return
+        _apply_model_ref(self.controller, c, str(chosen))
 
     async def _replay_transcript(self) -> None:
         try:
@@ -1083,6 +1791,37 @@ class _SlashFileCompleter(Completer):
 
 # -- turn streaming (module-level so it's unit-testable) -------------------
 
+def _provider_hint(controller: Controller) -> str:
+    """Provider/profile name for the active main model, for auth-error messages.
+
+    Best-effort fallback used when the failing turn's ERROR event didn't already
+    carry a ``provider`` (e.g. the driver had no resolved model ref). Returns ``""``
+    when it can't be determined so the message degrades to a generic phrasing."""
+    ref = controller.config.resolved_main_model() or ""
+    return ref.split("/", 1)[0] if "/" in ref else ""
+
+
+def _friendly_auth_error(raw: str, provider: str) -> str:
+    """Map a provider 401/auth rejection to a friendly, actionable message.
+
+    The raw SDK detail (e.g. ``Error code: 401 - {...invalid x-api-key...}``) is
+    unhelpful on its own, so we name the provider and the concrete next steps and
+    keep the original text available, but dim. ``provider`` may be empty, in which
+    case we fall back to a generic "API key" phrasing.
+    """
+    who = f"for {provider} " if provider else ""
+    head = (
+        f"[{palette.C_ERROR}]Your API key {who}was rejected (401).[/{palette.C_ERROR}] "
+        f"Fix it with [{palette.C_NOTICE}]/key[/{palette.C_NOTICE}], run "
+        f"[{palette.C_NOTICE}]jarn setup[/{palette.C_NOTICE}], or set the provider's "
+        f"API-key env var."
+    )
+    detail = raw.strip()
+    if detail:
+        head += f"\n[{palette.C_DIM}]{_rich_escape(detail)}[/{palette.C_DIM}]"
+    return head
+
+
 async def _run_turn(
     console: Console,
     controller: Controller,
@@ -1090,9 +1829,12 @@ async def _run_turn(
     ask: Ask,
     *,
     pick: Pick | None = None,
+    view: Callable[[str], Awaitable[None]] | None = None,
+    edit: Callable[[ApprovalRequest], Awaitable[ApprovalReply | None]] | None = None,
     live_sink: Callable[[str], None] | None = None,
     spinner: bool = True,
     tool_sink: list[tuple[str, str]] | None = None,
+    token_sink: Callable[[str], None] | None = None,
 ) -> list[tuple[str, str]]:
     """Stream a turn; return the turn's expandable ``(tool, full output)`` pairs.
 
@@ -1119,15 +1861,20 @@ async def _run_turn(
         _warn_color, _glyph = (
             (palette.C_ERROR, "✗") if controller.health == "error" else (palette.C_WARN, "⚠")
         )
+        _doctor_hint = (
+            f" [{palette.C_DIM}]— run /doctor[/{palette.C_DIM}]"
+            if controller.health == "error"
+            else ""
+        )
         console.print(
-            f"[{_warn_color}]{_glyph} {_rich_escape(controller.last_error)}[/{_warn_color}]"
+            f"[{_warn_color}]{_glyph} {_rich_escape(controller.last_error)}[/{_warn_color}]{_doctor_hint}"
         )
 
     controller.record_session_title(text, when=time.time())
     turn_text = controller.enrich_turn_input(text)
 
     async def approver(req: ApprovalRequest) -> ApprovalReply:
-        return await _approve(console, controller, req, ask=ask, pick=pick)
+        return await _approve(console, controller, req, ask=ask, pick=pick, view=view, edit=edit)
 
     renderer = TurnRenderer(
         console, lambda: controller.tracker.total.total_tokens,
@@ -1149,9 +1896,13 @@ async def _run_turn(
             async for event in driver.run_turn(payload, resume=resume):
                 if event.kind is EventKind.TEXT:
                     renderer.on_text(event.text)
+                    if token_sink is not None:
+                        token_sink(event.text)
                     produced = True
                 elif event.kind is EventKind.REASONING:
                     renderer.on_reasoning(event.text)
+                    if token_sink is not None:
+                        token_sink(event.text)
                     produced = True
                 elif event.kind is EventKind.TOOL_START:
                     renderer.on_tool(
@@ -1195,7 +1946,33 @@ async def _run_turn(
                     )
                     resume = True  # user message is already in state; don't re-send
                     continue
-            renderer.on_notice(f"[{palette.C_ERROR}]{pending_error.text}[/{palette.C_ERROR}]")
+            if pending_error.data.get("auth"):
+                # A 401 is non-retryable on the *same* provider (reusing a
+                # rejected key just 401s again), but a configured fallback on a
+                # different provider with a resolvable key is exactly the case
+                # where switching helps — try that before dead-ending.
+                if not produced:
+                    new_ref = controller.rotate_to_keyed_fallback()
+                    if new_ref:
+                        try:
+                            await controller.ensure_runtime()
+                        except Exception as exc:  # noqa: BLE001
+                            renderer.on_notice(
+                                f"[{palette.C_ERROR}]fallback unavailable: {exc}[/{palette.C_ERROR}]"
+                            )
+                            break
+                        renderer.on_notice(
+                            f"[{palette.C_NOTICE}]auth failed, retrying with {new_ref}…"
+                            f"[/{palette.C_NOTICE}]"
+                        )
+                        resume = True  # user message is already in state; don't re-send
+                        continue
+                provider = pending_error.data.get("provider") or _provider_hint(controller)
+                renderer.on_notice(_friendly_auth_error(pending_error.text, provider))
+            else:
+                renderer.on_notice(
+                    f"[{palette.C_ERROR}]{pending_error.text}[/{palette.C_ERROR}]"
+                )
             break
     except KeyboardInterrupt:
         renderer.cancel()
@@ -1214,16 +1991,71 @@ async def _run_turn(
     return renderer.tool_outputs
 
 
-def _approval_options(request: ApprovalRequest) -> list[tuple[str, ApprovalReply]]:
-    """Build the Claude Code-style approval menu for a gated action."""
-    options: list[tuple[str, ApprovalReply]] = [
+def _editable_field(args: dict | None) -> str | None:
+    """Which arg holds the proposed new content for a write/edit call.
+
+    ``content`` for a ``write_file`` (full file), ``new_string`` for an
+    ``edit_file`` (the replacement text). Returns ``None`` when neither is
+    present (e.g. a binary write), so edit-before-apply is simply not offered.
+    """
+    if not args:
+        return None
+    if "content" in args:
+        return "content"
+    if "new_string" in args:
+        return "new_string"
+    return None
+
+
+def _edit_text_in_editor(text: str, *, suffix: str = ".txt") -> str | None:
+    """Open ``text`` in ``$EDITOR`` and return the edited result.
+
+    Returns the edited text on a normal save-quit, or ``None`` when the editor is
+    *aborted* (non-zero exit, e.g. vim ``:cq``) so the caller cancels without
+    applying anything. Blocking — call via :func:`asyncio.to_thread` so the event
+    loop stays live.
+    """
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
+    fd, path = tempfile.mkstemp(suffix=suffix, prefix="jarn-edit-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        try:
+            proc = subprocess.run([*shlex.split(editor), path], check=False)
+        except (OSError, ValueError):
+            # Editor missing or unparseable $EDITOR → treat as abort.
+            return None
+        if proc.returncode != 0:
+            return None  # editor aborted — do not apply
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
+def _approval_options(
+    request: ApprovalRequest, *, view_full_diff: bool = False, edit_before_apply: bool = False
+) -> list[tuple[str, object]]:
+    """Build the Claude Code-style approval menu for a gated action.
+
+    ``view_full_diff`` appends a non-reply "View full diff" option (carrying the
+    :data:`_VIEW_FULL_DIFF` sentinel) for over-cap write diffs. ``edit_before_apply``
+    appends an "Edit before apply" option (carrying :data:`_EDIT_BEFORE_APPLY`) for
+    writes whose new content can be opened in ``$EDITOR``.
+    """
+    options: list[tuple[str, object]] = [
         ("Allow once", ApprovalReply(True, RememberScope.ONCE)),
     ]
     if request.result.block_remember_always:
         options.append(("Allow for session", ApprovalReply(True, RememberScope.SESSION)))
     else:
         options.append(("Allow always", ApprovalReply(True, RememberScope.ALWAYS)))
+    if edit_before_apply:
+        options.append(("Edit before apply", _EDIT_BEFORE_APPLY))
     options.append(("Deny", ApprovalReply(False, message="rejected by user")))
+    if view_full_diff:
+        options.append(("View full diff", _VIEW_FULL_DIFF))
     return options
 
 
@@ -1234,37 +2066,213 @@ async def _approve(
     *,
     ask: Ask | None = None,
     pick: Pick | None = None,
+    view: Callable[[str], Awaitable[None]] | None = None,
+    edit: Callable[[ApprovalRequest], Awaitable[ApprovalReply | None]] | None = None,
 ) -> ApprovalReply:
+    if request.plan is not None:
+        return await _approve_plan(console, controller, request, ask=ask, pick=pick)
+    if request.suggested_memory is not None:
+        return await _approve_suggested_memory(
+            console, controller, request, ask=ask, pick=pick, edit=edit
+        )
     a = request.action
     what = (f"run: {a.target}" if a.kind is ActionKind.SHELL
             else f"write: {a.target}" if a.kind is ActionKind.WRITE
             else f"{a.kind.value}: {a.target}")
     danger = "[red]⚠ DANGEROUS — [/red]" if request.result.dangerous else ""
     console.print(f"\n{danger}[bold]Approve?[/bold] {what}  [{palette.C_DIM}]({request.result.reason})[/{palette.C_DIM}]")
+    full_diff: Text | None = None
+    over_cap = False
     if a.kind is ActionKind.WRITE:
         from jarn.tui.widgets.diff import diff_from_edit_args
 
-        # Cap the diff so writing a large file doesn't flood the prompt; the
-        # full content is what's being approved, not what needs to be read.
-        diff = diff_from_edit_args(request.args or {}, max_lines=_APPROVAL_DIFF_MAX_LINES)
+        # Cap the inline diff so writing a large file doesn't flood the prompt;
+        # the full content is what's being approved, not what needs to be read.
+        cap = controller.config.ui.approval_diff_lines
+        full_diff = diff_from_edit_args(request.args or {})
+        over_cap = full_diff is not None and len(full_diff.plain.splitlines()) > cap
+        diff = diff_from_edit_args(request.args or {}, max_lines=cap)
         if diff is not None:
             console.print(diff)
-    options = _approval_options(request)
+    # Only offer "view full diff" when there's actually more to see *and* a pager
+    # to route it through (interactive sessions thread one in via ``view``).
+    show_view = over_cap and view is not None and full_diff is not None
+    # Offer "edit before apply" only for a write whose new content is editable
+    # *and* when an editor launcher is wired (interactive sessions thread one in
+    # via ``edit``); headless callers never see it.
+    show_edit = (
+        a.kind is ActionKind.WRITE
+        and edit is not None
+        and _editable_field(request.args) is not None
+    )
+    options = _approval_options(request, view_full_diff=show_view, edit_before_apply=show_edit)
     if pick is not None:
-        return await pick(options)
+        while True:
+            picked = await pick(options)
+            if picked is _VIEW_FULL_DIFF:
+                # Viewing must NOT decide: scroll the full diff, then re-prompt.
+                assert view is not None and full_diff is not None
+                await view(full_diff.plain)
+                continue
+            if picked is _EDIT_BEFORE_APPLY:
+                # Open the proposed content in $EDITOR. A clean save → approve with
+                # the edited args; aborting the editor cancels cleanly (deny), so
+                # nothing is applied. Either way the prompt is not re-shown.
+                assert edit is not None
+                reply = await edit(request)
+                if reply is None:
+                    console.print(
+                        f"[{palette.C_DIM}]edit aborted — nothing applied[/{palette.C_DIM}]"
+                    )
+                    return ApprovalReply(False, message="rejected by user")
+                return reply
+            return cast(ApprovalReply, picked)
     # Text fallback for headless tests / non-interactive callers.
+    allow_once = cast(ApprovalReply, options[0][1])
+    deny = ApprovalReply(False, message="rejected by user")
     if ask is None:
-        return options[-1][1]
+        return deny
     choices = ("[a]llow once / [s]ession / [r]eject" if request.result.block_remember_always
                else "[a]llow once / [s]ession / [w] always / [r]eject")
     ans = (await ask(f"  {choices}: ")).strip().lower()
     if ans in ("a", "allow", "y", "yes"):
-        return options[0][1]
+        return allow_once
     if ans in ("s", "session"):
         return ApprovalReply(True, RememberScope.SESSION)
     if ans in ("w", "always") and not request.result.block_remember_always:
         return ApprovalReply(True, RememberScope.ALWAYS)
-    return options[-1][1]
+    return deny
+
+
+async def _approve_plan(
+    console: Console,
+    controller: Controller,
+    request: ApprovalRequest,
+    *,
+    ask: Ask | None = None,
+    pick: Pick | None = None,
+) -> ApprovalReply:
+    """Plan-mode handoff approval: show the plan, pick the mode to proceed in.
+
+    On approval the live permission mode is escalated through
+    ``controller.apply_mode`` (which clamps to the review-only floor on an
+    untrusted project), so the rest of the turn can carry out the plan.
+    """
+    from rich.markdown import Markdown
+
+    plan = request.plan or ""
+    console.print(f"\n[{palette.C_NOTICE}]▶ Plan ready for review[/{palette.C_NOTICE}]")
+    if plan.strip():
+        console.print(Markdown(plan))
+    if not controller.project_trusted:
+        console.print(
+            f"[{palette.C_WARN}]⚠ Project is untrusted — approving keeps read-only "
+            f"plan mode; run /trust to allow edits.[/{palette.C_WARN}]"
+        )
+
+    auto = ("Approve → proceed in auto-edit",
+            ApprovalReply(True, plan_mode_target="auto-edit"))
+    askm = ("Approve → proceed, ask before each action",
+            ApprovalReply(True, plan_mode_target="ask"))
+    keep = ("Keep planning (don't execute yet)",
+            ApprovalReply(False,
+                          message="Keep refining the plan; call exit_plan_mode again when ready."))
+    ordered: list[tuple[str, object]] = (
+        [auto, askm, keep]
+        if controller.config.plan.exit_mode == "auto-edit"
+        else [askm, auto, keep]
+    )
+
+    if pick is not None:
+        picked = await pick(ordered)
+        reply = cast(ApprovalReply, picked)
+    elif ask is not None:
+        ans = (await ask("  [a]pprove auto-edit / [k] approve ask / [n] keep planning: ")).strip().lower()
+        reply = auto[1] if ans in ("a", "approve", "y", "yes") else askm[1] if ans in ("k", "ask") else keep[1]
+    else:
+        return ApprovalReply(False, message="auto-denied (no approver)")
+
+    if reply.approved and reply.plan_mode_target:
+        applied = controller.apply_mode(reply.plan_mode_target)
+        if applied != reply.plan_mode_target:
+            console.print(
+                f"[{palette.C_WARN}]mode clamped to {applied} — project untrusted "
+                f"(/trust to allow edits).[/{palette.C_WARN}]"
+            )
+        else:
+            console.print(
+                f"[{palette.C_NOTICE}]plan approved → {applied} mode[/{palette.C_NOTICE}]"
+            )
+    return reply
+
+
+async def _approve_suggested_memory(
+    console: Console,
+    controller: Controller,
+    request: ApprovalRequest,
+    *,
+    ask: Ask | None = None,
+    pick: Pick | None = None,
+    edit: Callable[[ApprovalRequest], Awaitable[ApprovalReply | None]] | None = None,
+) -> ApprovalReply:
+    """Memory-suggestion approval: show it, then save / edit-and-save / decline.
+
+    On approval the memory is written through ``controller.save_suggested_memory``
+    (same scope + trust gating as ``/memory add``); declining writes nothing. The
+    returned :class:`ApprovalReply` only signals the agent — its ``approved`` flag
+    is set iff the memory was actually saved.
+    """
+    suggestion = request.suggested_memory
+    assert suggestion is not None
+    console.print(f"\n[{palette.C_NOTICE}]▶ Suggested memory[/{palette.C_NOTICE}] "
+                  f"[{palette.C_DIM}]({suggestion.scope}, {suggestion.type})[/{palette.C_DIM}]")
+    console.print(f"  [b]{_rich_escape(suggestion.name)}[/b] — "
+                  f"{_rich_escape(suggestion.description)}")
+    if suggestion.body.strip():
+        console.print(Markdown(suggestion.body))
+
+    save = ("Save this memory", True)
+    edit_save = ("Edit, then save", _EDIT_MEMORY)
+    decline = ("Don't save", False)
+
+    choice: object
+    if pick is not None:
+        # Only offer "edit" when there's an editor wired (interactive sessions),
+        # matching how edit-before-apply is gated for writes.
+        options: list[tuple[str, object]] = [save]
+        if edit is not None:
+            options.append(edit_save)
+        options.append(decline)
+        choice = await pick(options)
+    elif ask is not None:
+        ans = (await ask("  Save this memory? [y/N/edit]: ")).strip().lower()
+        choice = (
+            _EDIT_MEMORY if ans in ("e", "edit")
+            else ans in ("y", "yes")
+        )
+    else:
+        return ApprovalReply(False, message="auto-denied (no approver)")
+
+    if choice is _EDIT_MEMORY:
+        edited = await asyncio.to_thread(
+            _edit_text_in_editor, suggestion.body, suffix=".md"
+        )
+        if edited is None:
+            console.print(
+                f"[{palette.C_DIM}]edit aborted — memory not saved[/{palette.C_DIM}]"
+            )
+            return ApprovalReply(False, message="User declined to save the memory.")
+        suggestion.body = edited.strip()
+        choice = True
+
+    if choice is not True:
+        console.print(f"[{palette.C_DIM}]memory not saved[/{palette.C_DIM}]")
+        return ApprovalReply(False, message="User declined to save the memory.")
+
+    saved, message = controller.save_suggested_memory(suggestion)
+    colour = palette.C_NOTICE if saved else palette.C_WARN
+    console.print(f"[{colour}]{_rich_escape(message)}[/{colour}]")
+    return ApprovalReply(saved, message="" if saved else message)
 
 
 def _apply_model_ref(controller: Controller, console: Console, chosen: str) -> None:
@@ -1286,8 +2294,14 @@ def _apply_model_ref(controller: Controller, console: Console, chosen: str) -> N
 
 def _apply_mode_ref(controller: Controller, console: Console, chosen: str) -> None:
     try:
-        controller.apply_mode(PermissionMode(chosen).value)
-        console.print(f"[{palette.C_NOTICE}]mode → {chosen}[/{palette.C_NOTICE}]")
+        applied = controller.apply_mode(PermissionMode(chosen).value)
+        if applied != chosen:
+            console.print(
+                f"[{palette.C_NOTICE}]mode → {applied}[/{palette.C_NOTICE}] "
+                f"[{palette.C_DIM}](clamped — project untrusted)[/{palette.C_DIM}]"
+            )
+        else:
+            console.print(f"[{palette.C_NOTICE}]mode → {applied}[/{palette.C_NOTICE}]")
     except ValueError:
         console.print(f"[{palette.C_ERROR}]unknown mode {chosen!r}[/{palette.C_ERROR}]")
 

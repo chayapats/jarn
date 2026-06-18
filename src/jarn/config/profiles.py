@@ -82,24 +82,43 @@ def apply_profile(config: Config, name: str) -> None:
     config.policy.web_tools = effect["web_tools"]
 
 
+def _clamp_untrusted_floor(config: Config) -> None:
+    """Force the untrusted floor as a one-way clamp — *directly*, not by applying
+    a preset.
+
+    An untrusted project is pinned to plan mode (the agent may look but not act)
+    with the review-only sandbox posture (sandbox off, network on, web on). This
+    mirrors the live mode-clamp in :meth:`Controller.apply_mode` and runs last at
+    the launch boundary so nothing can loosen it. The values are byte-for-byte
+    equivalent to the old ``apply_profile("review-only")`` floor — pinned by
+    ``tests/test_preset_unify.py`` so the equivalence can't drift.
+    """
+    config.permission_mode = PermissionMode.PLAN
+    config.execution.local_sandbox = "off"
+    config.execution.sandbox_allow_network = True
+    config.policy.web_tools = True
+
+
 def resolve_effective_profile(
     config: Config,
     *,
     project_trusted: bool,
     cli_profile: str | None = None,
 ) -> str | None:
-    """Apply the effective profile to ``config`` and return its name (or None).
+    """Expand the effective preset onto ``config`` and return its name (or None).
 
     Precedence: ``cli_profile`` > ``config.policy.profile`` > nothing. The chosen
-    profile (if any) is applied first; THEN, when the project is untrusted, the
-    :data:`UNTRUSTED_FLOOR_PROFILE` is forced as a clamp — an untrusted session
-    can never be loosened below it, regardless of what the CLI or config asked
-    for.
+    preset (if any) is expanded first; THEN, when the project is untrusted, the
+    untrusted floor is forced as a direct clamp — an untrusted session can never
+    be loosened below it, regardless of what the CLI or config asked for.
+
+    (``profile`` is the legacy name for ``preset``: a launch-time shortcut that
+    expands to a mode + sandbox posture. It is not a persistent parallel axis.)
     """
     chosen = cli_profile or config.policy.profile or None
     if chosen:
         apply_profile(config, chosen)
     if not project_trusted:
-        apply_profile(config, UNTRUSTED_FLOOR_PROFILE)
+        _clamp_untrusted_floor(config)
         return UNTRUSTED_FLOOR_PROFILE
     return chosen

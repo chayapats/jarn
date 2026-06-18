@@ -18,6 +18,30 @@ from typing import Any
 
 from jarn.version import __version__
 
+#: Fire the policy.profile deprecation notice at most once per process.
+_warned_policy_profile = False
+
+
+def _warn_policy_profile_deprecated(cfg: Any) -> None:
+    """One-time notice when the deprecated ``policy.profile`` config key is set.
+
+    ``profile`` is now a launch-time ``preset``; warn at the launch boundary and
+    name what it expands to, so users can set mode/sandbox directly instead.
+    """
+    global _warned_policy_profile
+    if _warned_policy_profile or not cfg.policy.profile:
+        return
+    _warned_policy_profile = True
+    from jarn.config.profiles import PROFILES
+
+    eff = PROFILES.get(cfg.policy.profile, {})
+    print(
+        f"warning: policy.profile is deprecated; '{cfg.policy.profile}' sets "
+        f"mode={eff.get('permission_mode', '?')}, sandbox={eff.get('local_sandbox', '?')}. "
+        "Set those directly or use --preset.",
+        file=sys.stderr,
+    )
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
@@ -48,20 +72,37 @@ def main(argv: list[str] | None = None) -> int:
         help="Override the active model for this headless run.",
     )
     parser.add_argument(
-        "--permission-mode",
+        "--mode",
         dest="headless_permission_mode",
         choices=["plan", "ask", "auto-edit", "yolo"],
         metavar="MODE",
         help=(
-            "Override the permission mode for this headless run (plan|ask|auto-edit|yolo). "
-            "Note: --profile takes precedence over this for trust-relevant knobs if both are given."
+            "Override the permission mode for this run (plan|ask|auto-edit|yolo). "
+            "Note: --preset overrides this for trust-relevant knobs if both are given."
         ),
     )
+    # Deprecated alias of --mode (hidden); still honoured.
+    parser.add_argument(
+        "--permission-mode",
+        dest="headless_permission_mode",
+        choices=["plan", "ask", "auto-edit", "yolo"],
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--preset",
+        dest="preset",
+        metavar="NAME",
+        help=(
+            "Apply a preset — a launch-time shortcut that sets mode + sandbox "
+            "(trusted-repo|review-only|sandbox-required|ci|offline)."
+        ),
+    )
+    # Deprecated alias of --preset (hidden); still honoured, warns when used.
     parser.add_argument(
         "--profile",
-        dest="profile",
+        dest="legacy_profile",
         metavar="NAME",
-        help="Apply a policy profile (trusted-repo|review-only|sandbox-required|ci|offline).",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--max-turns",
@@ -113,6 +154,16 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    # Unify the permission surface: --preset is canonical, --profile is a
+    # deprecated alias. Merge + warn once here so headless and launch both see
+    # one resolved value. (--mode/--permission-mode already share a dest.)
+    preset_override = args.preset or args.legacy_profile
+    if args.legacy_profile:
+        print(
+            "warning: --profile is deprecated; use --preset (same names).",
+            file=sys.stderr,
+        )
+
     # Headless one-shot: dispatch before any TUI setup.
     if args.headless_prompt is not None:
         return _cmd_headless(
@@ -122,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
             permission_mode_override=args.headless_permission_mode,
             max_turns=args.headless_max_turns,
             cwd_override=args.headless_cwd,
-            profile_override=args.profile,
+            profile_override=preset_override,
         )
 
     # Fix the macOS Caps Lock language-switch stray-character bug before any TUI
@@ -144,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "trust":
         return _cmd_trust(path=args.path, remove=args.remove, as_json=args.json)
-    return _cmd_launch(resume=args.resume, profile_override=args.profile)
+    return _cmd_launch(resume=args.resume, profile_override=preset_override)
 
 
 def _cmd_headless(
@@ -197,6 +248,7 @@ def _cmd_headless(
     # Use the same trust logic as the interactive launch.
     trusted = _resolve_project_trust(root)
     cfg = load_config(project_root=root, project_trusted=trusted)
+    _warn_policy_profile_deprecated(cfg)
     setup_logging(cfg.observability.log_level)
     configure_langsmith(cfg.observability.langsmith)
 
@@ -207,13 +259,13 @@ def _cmd_headless(
     if permission_mode_override:
         cfg.permission_mode = PermissionMode(permission_mode_override)
 
-    # Apply the effective policy profile (CLI > config) and clamp untrusted.
-    # A profile overrides the trust-relevant knobs (incl. permission_mode), so
-    # warn when both were supplied rather than silently dropping --permission-mode.
+    # Expand the effective preset (CLI > config) and clamp untrusted. A preset
+    # sets the trust-relevant knobs (incl. the mode), so warn when both were
+    # supplied rather than silently dropping --mode.
     if profile_override and permission_mode_override:
         print(
-            f"warning: --profile {profile_override} overrides "
-            f"--permission-mode {permission_mode_override} for trust-relevant settings.",
+            f"warning: --preset {profile_override} overrides "
+            f"--mode {permission_mode_override} for trust-relevant settings.",
             file=sys.stderr,
         )
     from jarn.config.profiles import resolve_effective_profile
@@ -225,6 +277,15 @@ def _cmd_headless(
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
+    # Warn about yolo only when it actually survives the untrusted clamp, so an
+    # untrusted run (pinned to plan) is never mislabelled as "no approval prompts".
+    if cfg.permission_mode == PermissionMode.YOLO:
+        print(
+            "warning: running in yolo mode — no approval prompts"
+            " (danger-guard still blocks catastrophic actions).",
+            file=sys.stderr,
+        )
 
     from jarn.headless import run_headless
 
@@ -260,41 +321,73 @@ def _cmd_init(*, force: bool) -> int:
     return 0
 
 
-def _collect_doctor(diag: dict) -> int:
+def _collect_doctor(
+    diag: dict,
+    *,
+    config: Any = None,
+    project_root: Any = None,
+    project_trusted: bool | None = None,
+) -> int:
     """Populate ``diag`` with doctor diagnostics and return the exit code.
 
     Pure data collection — no rendering — so the same diagnostics back both the
     Rich and the ``--json`` output paths.
+
+    When ``config`` is provided (e.g. from the REPL controller), the function
+    uses it directly instead of loading from disk.  ``project_root`` and
+    ``project_trusted`` are also accepted so the caller can pass its live
+    session state.
     """
     from jarn.config import paths
-    from jarn.config.loader import load_config
     from jarn.config.secrets import SecretResolutionError, resolve
     from jarn.providers import ModelFactory, ModelResolutionError
 
     gpath = paths.global_config_path()
     diag["global_config"] = str(gpath)
     diag["global_config_present"] = gpath.is_file()
-    root = paths.find_project_root()
-    diag["project_root"] = str(root) if root else None
 
-    if not gpath.is_file():
-        diag["ok"] = False
-        return 1
+    if config is None:
+        # CLI path: auto-discover root from the filesystem.
+        from jarn.config.loader import load_config
 
-    from jarn.config.trust import is_project_trusted
+        root = paths.find_project_root() if project_root is None else project_root
+        diag["project_root"] = str(root) if root else None
 
-    project_trusted = is_project_trusted(root) if root is not None else True
-    diag["project_trusted"] = project_trusted
-    cfg = load_config(project_root=root, project_trusted=project_trusted)
+        if not gpath.is_file():
+            diag["ok"] = False
+            return 1
+
+        from jarn.config.trust import is_project_trusted
+
+        if project_trusted is None:
+            project_trusted = is_project_trusted(root) if root is not None else True
+        diag["project_trusted"] = project_trusted
+        cfg = load_config(project_root=root, project_trusted=project_trusted)
+    else:
+        # REPL path: use the live config that was already loaded at session start.
+        # The session is running, so the config was already loaded successfully;
+        # mark it present regardless of the on-disk state to show all diagnostics.
+        cfg = config
+        root = project_root
+        diag["project_root"] = str(root) if root else None
+        diag["global_config_present"] = True
+        if project_trusted is None:
+            project_trusted = True
+        diag["project_trusted"] = project_trusted
+
     diag["default_profile"] = cfg.default_profile
     diag["main_model"] = cfg.resolved_main_model()
     diag["permission_mode"] = cfg.permission_mode.value
     diag["policy_profile"] = cfg.policy.profile or "none"
     diag["web_tools"] = cfg.policy.web_tools
-    # The effective profile at runtime: an untrusted project is clamped to the
-    # review-only floor regardless of the stored profile, so surface that here.
+    # Effective mode after the trust clamp: an untrusted project is pinned to
+    # plan regardless of the configured mode/preset, so surface that here.
     from jarn.config.profiles import UNTRUSTED_FLOOR_PROFILE
+    from jarn.config.schema import PermissionMode
 
+    diag["effective_mode"] = (
+        PermissionMode.PLAN.value if not project_trusted else cfg.permission_mode.value
+    )
     diag["effective_profile"] = (
         UNTRUSTED_FLOOR_PROFILE if not project_trusted else (cfg.policy.profile or "none")
     )
@@ -391,16 +484,12 @@ def _cmd_doctor(*, as_json: bool = False) -> int:
 
     console.print(f"default profile: {diag['default_profile']}")
     console.print(f"main model: {diag['main_model']}")
-    console.print(f"permission mode: {diag['permission_mode']}")
-    _stored = diag.get("policy_profile", "none")
-    _effective = diag.get("effective_profile", _stored)
-    _profile_str = (
-        f"{_stored} (effective: {_effective} — project untrusted)"
-        if _effective != _stored
-        else _stored
-    )
+    _mode = diag["permission_mode"]
+    _eff_mode = diag.get("effective_mode", _mode)
+    _mode_str = _mode if _eff_mode == _mode else f"{_mode} · effective: {_eff_mode} (after trust clamp)"
+    console.print(f"mode: {_mode_str}")
     console.print(
-        f"policy profile: {_profile_str}"
+        f"preset (deprecated): {diag.get('policy_profile', 'none')}"
         f" · web tools: {'on' if diag.get('web_tools', True) else 'off'}"
     )
 
@@ -616,6 +705,7 @@ def _cmd_launch(*, resume: bool = False, profile_override: str | None = None) ->
     trusted = _resolve_project_trust(root)
 
     cfg = load_config(project_root=root, project_trusted=trusted)
+    _warn_policy_profile_deprecated(cfg)
     setup_logging(cfg.observability.log_level)
     configure_langsmith(cfg.observability.langsmith)
 

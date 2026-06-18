@@ -61,6 +61,9 @@ class ProviderConfig:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+_VALID_PROMPT_CACHE: frozenset[str] = frozenset({"auto", "off"})
+
+
 @dataclass(slots=True)
 class RoutingConfig:
     """Per-task model routing. Values are fully-qualified model refs of the form
@@ -71,6 +74,19 @@ class RoutingConfig:
     summarizer: str | None = None
     #: Ordered fallback chain tried when the primary model errors.
     fallback: list[str] = field(default_factory=list)
+    #: Prompt caching. Cloud caching is automatic — the agent engine adds
+    #: Anthropic cache-control breakpoints for Anthropic models, and the other
+    #: cloud providers cache by prefix server-side. The lever JARN adds is the
+    #: *local* keep-warm (``keep_alive``) so Ollama / LM Studio don't drop their
+    #: KV cache between turns. ``"auto"`` (default) applies the keep-warm; ``"off"``
+    #: skips it (cloud caching is the engine/provider default and stays on).
+    prompt_cache: str = "auto"
+    #: Seconds to keep a *local* model + its KV/prefix cache resident between
+    #: turns. Wired to Ollama's ``keep_alive`` and LM Studio's request ``ttl``.
+    #: Without it those servers unload the model on idle and drop the prefix
+    #: cache, so the next turn recomputes from scratch. ``0`` leaves it to the
+    #: provider's own default. Ignored when ``prompt_cache`` is ``"off"``.
+    keep_alive: int = 1800
 
 
 @dataclass(slots=True)
@@ -105,6 +121,11 @@ class ExecutionConfig:
     (requires an available sandbox runtime — see docs)."""
 
     backend: str = "local"            # local | sandbox | docker
+    #: Register the background-process tools (run/check/kill/list_background) so the
+    #: agent can run a dev server / watcher / long build without blocking the turn.
+    #: Local backend only — under docker/sandbox the tools are not registered (a
+    #: host process would escape the container). Default on.
+    background: bool = True
     sandbox_provider: str = "langsmith"  # langsmith (remote); docker is its own backend
     # Container image for ``backend: docker``. Must ship python3 + /bin/sh
     # (BaseSandbox derives glob/edit/read via inline python3 scripts). Non-slim
@@ -218,10 +239,18 @@ class ObservabilityConfig:
     transcript: bool = True       # append-only JSONL session transcript under .jarn/sessions/
 
 
+_VALID_SPLASH_VALUES: frozenset[str] = frozenset({"full", "compact", "off"})
+
+
 @dataclass(slots=True)
 class UIConfig:
     theme: str = "dark"           # dark | light | high-contrast
     accent: str = "cyan"          # brand accent
+    splash: str = "compact"       # full | compact | off
+    #: Max diff lines shown inline in a write/edit approval prompt before the
+    #: rest collapses to a "… (+N more lines)" footer. Over-cap diffs offer a
+    #: [v] view-full-diff option that opens the complete diff in the pager.
+    approval_diff_lines: int = 40
 
 
 @dataclass(slots=True)
@@ -241,6 +270,22 @@ class GitConfig:
 
     autocheckpoint: bool = False
     checkpoint_mode: str = "shadow"   # "shadow" | "commit"
+
+
+_VALID_EXIT_MODES: frozenset[str] = frozenset({"ask", "auto-edit"})
+
+
+@dataclass(slots=True)
+class PlanConfig:
+    """Plan-mode handoff.
+
+    When the agent calls ``exit_plan_mode`` from read-only ``plan`` mode and the
+    user approves, the session escalates to ``exit_mode`` so the plan can be
+    carried out in the same turn. The approval picker still offers the other
+    editing mode; this is just the highlighted default.
+    """
+
+    exit_mode: str = "auto-edit"   # ask | auto-edit
 
 
 @dataclass(slots=True)
@@ -300,6 +345,7 @@ class Config:
     compat: CompatConfig = field(default_factory=CompatConfig)
     git: GitConfig = field(default_factory=GitConfig)
     wiki: WikiConfig = field(default_factory=WikiConfig)
+    plan: PlanConfig = field(default_factory=PlanConfig)
 
     def resolved_main_model(self) -> str | None:
         """The model used for the top-level agent loop."""
