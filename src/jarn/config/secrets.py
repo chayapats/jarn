@@ -211,6 +211,11 @@ def _keyring_call(
 
 def _resolve_keychain(service: str, account: str) -> str:
     try:
+        _validate_account(service)
+        _validate_account(account)
+    except ValueError as exc:
+        raise SecretResolutionError(str(exc)) from exc
+    try:
         value = _keyring_call("get", service, account)
     except TimeoutError as exc:
         raise SecretResolutionError(
@@ -253,13 +258,32 @@ def _resolve_file(service: str, account: str) -> str:
     return value
 
 
+def _ensure_secret_tree_permissions(path: Path) -> None:
+    """Ensure ``~/.jarn/secrets/`` and every ancestor up to it are mode ``0700``.
+
+    Called after writing a file secret so a pre-existing permissive directory
+    (e.g. ``~/.jarn`` left at ``755``) cannot expose secrets via group/other read.
+    """
+    from jarn.config.paths import global_home
+
+    secrets_root = global_home() / "secrets"
+    current = path if path.is_dir() else path.parent
+    while True:
+        with contextlib.suppress(OSError):
+            current.chmod(0o700)
+        if current == secrets_root:
+            break
+        if current == current.parent:
+            break
+        current = current.parent
+
+
 def _store_file_secret(service: str, account: str, value: str) -> Path:
     path = _secret_file_path(service, account)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(value, encoding="utf-8")
     path.chmod(0o600)
-    with contextlib.suppress(OSError):
-        path.parent.chmod(0o700)
+    _ensure_secret_tree_permissions(path)
     return path
 
 
