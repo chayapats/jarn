@@ -29,18 +29,18 @@ shadowed files and project-tier entries skipped on untrusted projects.
 ```bash
 uv run pytest                      # full suite (logic + mocked-agent + terminal REPL)
 uv run pytest tests/test_permissions.py -q   # one file
-uv run ruff check src tests        # lint
-uv run ruff check src tests --fix  # autofix
+uv run ruff check src tests scripts        # lint
+uv run ruff check src tests scripts --fix  # autofix
 uv run mypy src/                   # type-check (must report 0 errors)
 ```
 
-Before pushing, run all three gates locally — `ruff check src tests`, `mypy src/`, and
-`pytest` (currently **1166** tests). CI runs exactly these on every push/PR
-(lint → type-check → test) across Linux/macOS and Python 3.12/3.13, plus a `packaging`
+Before pushing, run all three gates locally — `ruff check src tests scripts`, `mypy src/`, and
+`pytest` (currently **1320** tests). CI runs exactly these on every push/PR
+(lint → type-check → test) across Linux/macOS/Windows and Python 3.12/3.13, plus a `packaging`
 job and an `npm` job that runs the Node launcher + assembly tests (`node --test
 npm/jarn-cli/test/launcher.test.js` and `npm/test/build.test.mjs`). The live-LLM
 end-to-end suite is intentionally **not** part of that gate (it's slow, costs tokens,
-and is flaky); run those manually / nightly.
+and is flaky); run those manually or via the optional nightly workflow (see `evals/README.md`).
 
 If you touch anything under `npm/` (the `jarn-cli` launcher or the package-assembly
 script), run those two `node --test` files locally too.
