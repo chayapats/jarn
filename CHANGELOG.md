@@ -5,7 +5,34 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
-## [0.4.4] - 2026-06-18
+### Added
+
+- **Headless multi-turn** — `jarn -p` honors `--max-turns`; JSON output includes
+  `tool_calls` and structured `{error: {kind, message}}`; exit codes `0`/`1`/`2`/`124`.
+- **Context token budgets** — `context.memory_tokens`, `wiki_index_tokens`, and
+  `project_context_tokens` cap injected prompt size with truncation notices.
+- **CI hardening** — release preflight gates, coverage floor (74%), `scripts/` lint,
+  Windows matrix, `pip-audit` + gitleaks security job, Dependabot, nightly eval workflow.
+- **Doc-sync test** — README/CONTRIBUTING/RELEASE test counts enforced against pytest collection.
+
+### Changed
+
+- `/compact status` shows auto-compact settings; bare `/compact` runs interactive compaction.
+- `/cost` shows per-source context injection sizes vs configured budgets.
+- Cost attribution splits evenly across parallel tool calls in a turn; streaming usage
+  deduplicates cumulative provider chunks.
+- Doctor skill shadowing matches runtime (`.jarn` wins over `.claude`).
+
+### Fixed
+
+- `/clear` clears terminal scrollback and resets the live region.
+- Checkpoint undo rolls back orphan redo entries on apply failure; file lock for concurrent undo.
+- Background job log FD leak; exited processes pruned from registry.
+- Repomap xref build linearized; `build_repo_map` shares discovery TTL cache.
+- Model factory cache invalidated on `/key` and config reload; `SecretResolutionError` propagates.
+- `verify.py` fewer false positives (pytest/ruff only when configured; better Node/Makefile detection).
+- `/review` includes untracked new files.
+
 
 ### Added
 
