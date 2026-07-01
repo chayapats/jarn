@@ -116,6 +116,12 @@ class ContextConfig:
     #: Token budget for the repo map (both system-prompt injection and tool
     #: responses).  Must be > 0.
     repo_map_tokens: int = 1024
+    #: Token budget for MEMORY.md index injection (global + project tiers).
+    memory_tokens: int = 4096
+    #: Token budget for the wiki index block injected into the system prompt.
+    wiki_index_tokens: int = 1024
+    #: Token budget for the project context file (JARN.md / AGENTS.md / …).
+    project_context_tokens: int = 8192
 
 
 @dataclass(slots=True)
@@ -129,6 +135,10 @@ class ExecutionConfig:
     #: Local backend only — under docker/sandbox the tools are not registered (a
     #: host process would escape the container). Default on.
     background: bool = True
+    #: Max concurrent background processes before a one-time warning (``None`` = unlimited).
+    background_max_concurrent: int | None = None
+    #: Warn when a background process exceeds this lifetime in seconds (``None`` = unlimited).
+    background_max_lifetime_secs: float | None = None
     sandbox_provider: str = "langsmith"  # langsmith (remote); docker is its own backend
     # Container image for ``backend: docker``. Must ship python3 + /bin/sh
     # (BaseSandbox derives glob/edit/read via inline python3 scripts). Non-slim

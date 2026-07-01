@@ -234,6 +234,18 @@ def test_index_text_project_first(tmp_path: Path) -> None:
     assert idx.index("project-page") < idx.index("global-page")
 
 
+def test_index_budget(tmp_path: Path) -> None:
+    """Wiki index injection respects its token budget."""
+    from jarn.memory.tokens import count_tokens
+
+    store = _make_store(tmp_path)
+    for i in range(100):
+        store.write(f"page-{i}", f"Summary line {i} " + ("y" * 300), tier="global")
+    idx = store.index_text(token_budget=80)
+    assert "(truncated" in idx
+    assert count_tokens(idx) <= 90
+
+
 # ---------------------------------------------------------------------------
 # Project tier vs global tier
 # ---------------------------------------------------------------------------

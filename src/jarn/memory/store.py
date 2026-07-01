@@ -18,6 +18,7 @@ from pathlib import Path
 import yaml
 
 from jarn.config import paths
+from jarn.memory.tokens import truncate_to_token_budget
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.DOTALL)
@@ -116,11 +117,15 @@ class MemoryStore:
                 out.append(mem)
         return out
 
-    def index_text(self) -> str:
+    def index_text(self, *, token_budget: int | None = None) -> str:
         """Return the MEMORY.md index (created on demand) for prompt injection."""
         if self.index_path.is_file():
-            return self.index_path.read_text(encoding="utf-8")
-        return self._rebuild_index()
+            text = self.index_path.read_text(encoding="utf-8")
+        else:
+            text = self._rebuild_index()
+        if token_budget is not None:
+            return truncate_to_token_budget(text, token_budget)
+        return text
 
     # -- internals ----------------------------------------------------------
 
