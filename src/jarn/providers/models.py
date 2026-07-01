@@ -12,11 +12,15 @@ right backend and injecting ``api_key`` / ``base_url``. Built models are cached.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from jarn.config.loader import ConfigError
 from jarn.config.schema import Config, ProviderConfig, ProviderType
 from jarn.config.secrets import SecretResolutionError, resolve
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -198,10 +202,18 @@ def list_remote_models(provider: ProviderConfig) -> list[str]:
     else:
         return []
 
+    headers: dict[str, str] = dict(provider.headers)
+    try:
+        api_key = resolve(provider.api_key) if provider.api_key else None
+    except SecretResolutionError:
+        return []
+    if api_key and "Authorization" not in headers and "authorization" not in headers:
+        headers["Authorization"] = f"Bearer {api_key}"
+
     try:
         import httpx
 
-        resp = httpx.get(url, timeout=_DISCOVERY_TIMEOUT_SECS)
+        resp = httpx.get(url, headers=headers or None, timeout=_DISCOVERY_TIMEOUT_SECS)
         resp.raise_for_status()
         payload = resp.json()
     except Exception:  # noqa: BLE001 - network/parse errors must degrade to manual entry
@@ -329,14 +341,27 @@ class ModelFactory:
         ref = self.config.resolved_summarizer_model()
         return self.build(ref) if ref else None
 
+    def invalidate_cache(self) -> None:
+        """Drop cached chat models (e.g. after ``/key`` or config reload)."""
+        self._cache.clear()
+
     def fallback_models(self) -> list[BaseChatModel]:
         """Materialize the configured fallback chain (skipping unbuildable ones)."""
         models: list[BaseChatModel] = []
         for ref in self.config.routing.fallback:
             try:
                 models.append(self.build(ref))
-            except (ModelResolutionError, Exception):
-                # A broken fallback entry must not prevent the agent from starting.
+            except SecretResolutionError:
+                raise
+            except ConfigError:
+                raise
+            except ModelResolutionError as exc:
+                if isinstance(exc.__cause__, SecretResolutionError):
+                    raise exc.__cause__ from exc
+                # A broken fallback ref must not prevent the agent from starting.
+                continue
+            except Exception as exc:
+                logger.warning("Skipping fallback model %r: %s", ref, exc)
                 continue
         return models
 

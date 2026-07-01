@@ -1179,6 +1179,37 @@ async def test_cmd_compact_nothing_to_compact(tmp_path, monkeypatch):
     app.controller.close()
 
 
+@pytest.mark.asyncio
+async def test_compact_apply(tmp_path, monkeypatch):
+    """`/compact` with no args runs the interactive apply path (not status)."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    applied = _stub_compact(app, monkeypatch)
+    monkeypatch.setattr(app, "_ask", _ask_returning("y"))
+
+    await app._command("compact", "")
+
+    assert applied == ["SUMMARY: did X"]
+    assert "Compacted" in app.console.file.getvalue()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_clear_clears_screen(tmp_path, monkeypatch):
+    """`/clear` resets scrollback, starts a fresh thread, and confirms."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.console.print("old conversation output")
+    old_thread = app.controller.thread_id
+
+    await app._command("clear", "")
+
+    out = app.console.file.getvalue()
+    assert "old conversation output" not in out
+    assert "Started a fresh conversation" in out
+    assert app.controller.thread_id != old_thread
+    assert app._stream_text == ""
+    app.controller.close()
+
+
 def test_inline_app_constructs(tmp_path, monkeypatch):
     from jarn import repl
 

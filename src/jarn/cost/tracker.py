@@ -7,6 +7,7 @@ USD cost from the pricing table, and exposes budget status so the UI can warn
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -59,6 +60,7 @@ class CostTracker:
     per_model: dict[str, Usage] = field(default_factory=dict)
     per_tool: dict[str, Usage] = field(default_factory=dict)
     context_tokens: int = 0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def record(
         self,
@@ -66,22 +68,71 @@ class CostTracker:
         input_tokens: int,
         output_tokens: int,
         tool: str | None = None,
+        tools: list[str] | None = None,
         cache_read_tokens: int = 0,
         cache_creation_tokens: int = 0,
+        increment_call: bool = True,
     ) -> Usage:
         """Record one model call; returns the updated total usage.
 
-        Each call is attributed to exactly one ``per_model`` bucket *and* exactly
-        one ``per_tool`` bucket (the tool this call requested, or ``RESPONSE_TOOL``
-        for a plain reply). Attributing to a single tool bucket — never one per
-        tool-call — keeps ``sum(per_tool) == total`` exactly, the same invariant
-        ``per_model`` already holds, so the breakdown never double-counts.
+        Each call is attributed to exactly one ``per_model`` bucket. Cost is
+        split evenly across ``tools`` when a turn batches parallel tool calls;
+        otherwise it lands in a single ``per_tool`` bucket (or ``RESPONSE_TOOL``
+        for a plain reply). Splitting keeps ``sum(per_tool) == total`` exactly.
 
         ``cache_read_tokens`` / ``cache_creation_tokens`` are the prompt-cache
         portions of this call's input; they are priced into the returned cost and
         tracked per bucket so ``/cost`` can surface cache reuse. When both are 0
         (no cache usage), totals are identical to the pre-cache behavior.
         """
+        tool_names = [t for t in (tools or []) if t]
+        if not tool_names:
+            tool_names = [tool or RESPONSE_TOOL]
+
+        n = len(tool_names)
+        in_each, in_rem = divmod(input_tokens, n)
+        out_each, out_rem = divmod(output_tokens, n)
+        cache_r_each, cache_r_rem = divmod(cache_read_tokens, n)
+        cache_w_each, cache_w_rem = divmod(cache_creation_tokens, n)
+        call_each, call_rem = divmod(1, n)
+
+        with self._lock:
+            self._record_aggregate(
+                model_id,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_creation_tokens=cache_creation_tokens,
+                increment_call=increment_call,
+            )
+            for i, tool_name in enumerate(tool_names):
+                extra_in = 1 if i < in_rem else 0
+                extra_out = 1 if i < out_rem else 0
+                extra_cr = 1 if i < cache_r_rem else 0
+                extra_cw = 1 if i < cache_w_rem else 0
+                calls_add = call_each + (1 if i < call_rem else 0)
+                self._record_tool_share(
+                    tool_name,
+                    in_each + extra_in,
+                    out_each + extra_out,
+                    calls_add if increment_call else 0,
+                    cache_read_tokens=cache_r_each + extra_cr,
+                    cache_creation_tokens=cache_w_each + extra_cw,
+                    model_id=model_id,
+                )
+            return self.total
+
+    def _record_aggregate(
+        self,
+        model_id: str,
+        input_tokens: int,
+        output_tokens: int,
+        *,
+        cache_read_tokens: int = 0,
+        cache_creation_tokens: int = 0,
+        increment_call: bool = True,
+    ) -> None:
+        """Update session total and per-model buckets (caller holds ``_lock``)."""
         cost = pricing.cost_of(
             model_id,
             input_tokens,
@@ -93,19 +144,49 @@ class CostTracker:
         cost = cost or 0.0
 
         model_bucket = self.per_model.setdefault(model_id, Usage())
-        tool_bucket = self.per_tool.setdefault(tool or RESPONSE_TOOL, Usage())
-        for u in (model_bucket, tool_bucket, self.total):
+        for u in (model_bucket, self.total):
             u.input_tokens += input_tokens
             u.output_tokens += output_tokens
             u.cost_usd += cost
-            u.calls += 1
+            if increment_call:
+                u.calls += 1
             u.cache_read_tokens += cache_read_tokens
             u.cache_creation_tokens += cache_creation_tokens
-            if unpriced:
+            if unpriced and increment_call:
                 u.unpriced_calls += 1
-        # Largest single prompt seen ~= current context fill (reset per thread).
         self.context_tokens = max(self.context_tokens, input_tokens)
-        return self.total
+
+    def _record_tool_share(
+        self,
+        tool: str,
+        input_tokens: int,
+        output_tokens: int,
+        calls: int,
+        *,
+        cache_read_tokens: int = 0,
+        cache_creation_tokens: int = 0,
+        model_id: str,
+    ) -> None:
+        """Attribute a share of one call to a per-tool bucket (caller holds ``_lock``)."""
+        cost = pricing.cost_of(
+            model_id,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+        )
+        unpriced = cost is None
+        cost = cost or 0.0
+
+        tool_bucket = self.per_tool.setdefault(tool, Usage())
+        tool_bucket.input_tokens += input_tokens
+        tool_bucket.output_tokens += output_tokens
+        tool_bucket.cost_usd += cost
+        tool_bucket.calls += calls
+        tool_bucket.cache_read_tokens += cache_read_tokens
+        tool_bucket.cache_creation_tokens += cache_creation_tokens
+        if unpriced:
+            tool_bucket.unpriced_calls += calls
 
     def top_tools(self, limit: int = 5) -> list[tuple[str, Usage]]:
         """The biggest per-tool cost contributors, most expensive first."""
@@ -121,19 +202,21 @@ class CostTracker:
         return self.budget.per_session_usd
 
     def fraction_used(self) -> float:
-        if not self.limit:
-            return 0.0
-        return self.total.cost_usd / self.limit
+        with self._lock:
+            if not self.limit:
+                return 0.0
+            return self.total.cost_usd / self.limit
 
     def status(self) -> BudgetStatus:
-        if not self.limit:
+        with self._lock:
+            if not self.limit:
+                return BudgetStatus.OK
+            frac = self.total.cost_usd / self.limit
+            if frac >= 1.0:
+                return BudgetStatus.EXCEEDED
+            if frac * 100 >= self.budget.warn_at_pct:
+                return BudgetStatus.WARN
             return BudgetStatus.OK
-        frac = self.fraction_used()
-        if frac >= 1.0:
-            return BudgetStatus.EXCEEDED
-        if frac * 100 >= self.budget.warn_at_pct:
-            return BudgetStatus.WARN
-        return BudgetStatus.OK
 
     def should_stop(self) -> bool:
         """True when a hard stop must be enforced before the next model call."""
@@ -155,16 +238,18 @@ class CostTracker:
         breakdown is appended so the cost can be attributed. With a single
         model the output is unchanged.
         """
-        t = self.total
-        base = f"${t.cost_usd:.4f} · {t.total_tokens:,} tok · {t.calls} calls"
-        if self.limit:
-            base += f" · {self.fraction_used() * 100:.0f}% of ${self.limit:.2f}"
-        if t.unpriced_calls:
-            base += f" · {t.unpriced_calls} unpriced"
-        if len(self.per_model) > 1:
-            parts = [
-                f"{model} ${u.cost_usd:.4f}"
-                for model, u in self.per_model.items()
-            ]
-            base += " · " + ", ".join(parts)
-        return base
+        with self._lock:
+            t = self.total
+            base = f"${t.cost_usd:.4f} · {t.total_tokens:,} tok · {t.calls} calls"
+            if self.limit:
+                frac = t.cost_usd / self.limit
+                base += f" · {frac * 100:.0f}% of ${self.limit:.2f}"
+            if t.unpriced_calls:
+                base += f" · {t.unpriced_calls} unpriced"
+            if len(self.per_model) > 1:
+                parts = [
+                    f"{model} ${u.cost_usd:.4f}"
+                    for model, u in self.per_model.items()
+                ]
+                base += " · " + ", ".join(parts)
+            return base

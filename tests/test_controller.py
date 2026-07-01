@@ -301,6 +301,31 @@ def test_should_auto_compact_threshold(tmp_path, monkeypatch, base_config):
     ctrl.close()
 
 
+def test_compact_status(tmp_path, monkeypatch, base_config):
+    """`/compact status` reports auto-compaction settings."""
+    base_config.context.auto_compact = True
+    base_config.context.compact_at_pct = 85
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    result = ctrl.handle_command("compact", "status")
+
+    assert result.clear_screen is False
+    assert "auto-compaction is on" in result.text.lower()
+    assert "85%" in result.text
+    ctrl.close()
+
+
+def test_compact_unknown_subcommand(tmp_path, monkeypatch, base_config):
+    """Unknown `/compact` subcommands return a helpful error."""
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    result = ctrl.handle_command("compact", "frobnicate")
+
+    assert "unknown" in result.text.lower()
+    assert "status" in result.text.lower()
+    ctrl.close()
+
+
 def test_enrich_turn_input_injects_recall_and_skips_untrusted_project(
     tmp_path, monkeypatch, base_config
 ):

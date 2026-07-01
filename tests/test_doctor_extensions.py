@@ -103,3 +103,39 @@ def test_doctor_json_includes_extensions(isolated_home, tmp_path, monkeypatch, c
     data = json.loads(capsys.readouterr().out)
     assert "extensions" in data
     assert data["extensions"]["counts"]["skills"] >= 1
+
+
+def test_skill_shadow_matches_runtime(monkeypatch, tmp_path):
+    """Doctor and runtime agree when .claude and .jarn define the same skill."""
+    from jarn.config.loader import load_config
+    from jarn.extensibility.skills import load_skills
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("JARN_HOME", str(home))
+    _write_global(home)
+
+    root = tmp_path / "proj"
+    (root / ".claude" / "skills").mkdir(parents=True)
+    (root / ".claude" / "skills" / "shared.md").write_text(
+        "---\nname: shared\ndescription: claude\n---\nclaude body",
+        encoding="utf-8",
+    )
+    (root / ".jarn" / "skills").mkdir(parents=True)
+    (root / ".jarn" / "skills" / "shared.md").write_text(
+        "---\nname: shared\ndescription: jarn\n---\njarn body",
+        encoding="utf-8",
+    )
+
+    runtime = load_skills(root, project_trusted=True)
+    assert runtime["shared"].description == "jarn"
+    assert runtime["shared"].scope == "project"
+
+    cfg = load_config(project_root=root, project_trusted=True)
+    ext = collect_extensions(root, project_trusted=True, config=cfg)
+    skills = {r["name"]: r for r in ext["skills"]}
+    assert skills["shared"]["status"] == "active"
+    assert skills["shared"]["scope"] == "project"
+    shadowed = [r for r in ext["skills"] if r["status"] == "shadowed"]
+    assert len(shadowed) == 1
+    assert shadowed[0]["scope"] == "project"
+    assert "claude" in shadowed[0]["path"]

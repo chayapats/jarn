@@ -13,6 +13,7 @@ from pathlib import Path
 
 from jarn.config import paths
 from jarn.memory.store import MemoryStore
+from jarn.memory.tokens import truncate_to_token_budget
 
 #: Default ordered list of context filenames tried in the project root.
 #: Mirrors :attr:`jarn.config.schema.CompatConfig.context_files`.
@@ -82,6 +83,7 @@ def project_context_text(
     project_root: Path | None = None,
     *,
     context_files: list[str] | None = None,
+    token_budget: int | None = None,
 ) -> str | None:
     """Return the contents of the first present context file for the project.
 
@@ -92,11 +94,17 @@ def project_context_text(
 
     Falls back to the legacy :func:`jarn.config.paths.project_context_path`
     when the project root cannot be determined.
+
+    When ``token_budget`` is set, the returned text is truncated to fit with a
+    visible ``(truncated N tokens)`` notice.
     """
     path = resolve_context_file(project_root, context_files=context_files)
     if path is None:
         return None
-    return path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8")
+    if token_budget is not None:
+        return truncate_to_token_budget(text, token_budget)
+    return text
 
 
 def init_template(project_root: Path | None = None) -> str:
@@ -119,6 +127,8 @@ def assemble_system_context(
     *,
     project_trusted: bool = True,
     context_files: list[str] | None = None,
+    memory_tokens: int | None = None,
+    project_context_tokens: int | None = None,
 ) -> str:
     """Build the context block appended to the agent's base system prompt.
 
@@ -136,18 +146,24 @@ def assemble_system_context(
     sections: list[str] = []
 
     if project_trusted:
-        ctx = project_context_text(project_root, context_files=context_files)
+        ctx = project_context_text(
+            project_root,
+            context_files=context_files,
+            token_budget=project_context_tokens,
+        )
         if ctx:
             sections.append("# Project context (JARN.md)\n\n" + ctx.strip())
 
-    global_index = MemoryStore.global_store().index_text().strip()
+    global_index = MemoryStore.global_store().index_text(
+        token_budget=memory_tokens
+    ).strip()
     if global_index and "—" in global_index:  # has at least one entry
         sections.append("# Long-term memory (global)\n\n" + global_index)
 
     if project_trusted:
         project_store = MemoryStore.project_store(project_root)
         if project_store:
-            project_index = project_store.index_text().strip()
+            project_index = project_store.index_text(token_budget=memory_tokens).strip()
             if project_index and "—" in project_index:
                 sections.append("# Long-term memory (project)\n\n" + project_index)
 

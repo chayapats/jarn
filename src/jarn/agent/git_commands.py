@@ -24,9 +24,11 @@ class GitDiff:
     """Snapshot of the working tree relevant to commit/review."""
 
     is_repo: bool
-    staged: str
-    unstaged: str
-    status: str
+    staged: str = ""
+    unstaged: str = ""
+    untracked: str = ""
+    status: str = ""
+    stderr: str = ""
 
     @property
     def has_staged(self) -> bool:
@@ -34,11 +36,13 @@ class GitDiff:
 
     @property
     def has_changes(self) -> bool:
-        return bool(self.staged.strip() or self.unstaged.strip())
+        return bool(
+            self.staged.strip() or self.unstaged.strip() or self.untracked.strip()
+        )
 
 
-def _run_git(root: Path, *args: str) -> tuple[int, str]:
-    """Run a git command under ``root``; return (returncode, stdout).
+def _run_git(root: Path, *args: str) -> tuple[int, str, str]:
+    """Run a git command under ``root``; return (returncode, stdout, stderr).
 
     Never raises — a missing git binary or a non-repo directory yields a
     non-zero code with empty output so callers degrade gracefully.
@@ -52,19 +56,53 @@ def _run_git(root: Path, *args: str) -> tuple[int, str]:
             timeout=15,
         )
     except (OSError, subprocess.SubprocessError):
-        return 1, ""
-    return proc.returncode, proc.stdout
+        return 1, "", ""
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def _untracked_diff(root: Path) -> tuple[str, str]:
+    """Build a unified diff for untracked files (``/dev/null`` → file)."""
+    code, listing, err = _run_git(
+        root, "ls-files", "--others", "--exclude-standard"
+    )
+    if code != 0:
+        return "", err.strip()
+    parts: list[str] = []
+    stderr_bits: list[str] = []
+    for rel in listing.splitlines():
+        rel = rel.strip()
+        if not rel:
+            continue
+        dcode, diff, derr = _run_git(root, "diff", "--no-index", "/dev/null", rel)
+        if diff.strip():
+            parts.append(diff)
+        if dcode != 0 and derr.strip():
+            stderr_bits.append(derr.strip())
+    return "\n".join(parts), "\n".join(stderr_bits) or err.strip()
 
 
 def gather_diff(root: Path) -> GitDiff:
-    """Collect staged + unstaged diffs and a short status for ``root``."""
-    code, _ = _run_git(root, "rev-parse", "--is-inside-work-tree")
+    """Collect staged + unstaged diffs, untracked new files, and short status."""
+    code, _, _ = _run_git(root, "rev-parse", "--is-inside-work-tree")
     if code != 0:
-        return GitDiff(is_repo=False, staged="", unstaged="", status="")
-    _, staged = _run_git(root, "diff", "--staged")
-    _, unstaged = _run_git(root, "diff")
-    _, status = _run_git(root, "status", "--short")
-    return GitDiff(is_repo=True, staged=staged, unstaged=unstaged, status=status)
+        return GitDiff(
+            is_repo=False, staged="", unstaged="", untracked="", status=""
+        )
+    _, staged, staged_err = _run_git(root, "diff", "--staged")
+    _, unstaged, unstaged_err = _run_git(root, "diff")
+    _, status, status_err = _run_git(root, "status", "--short")
+    untracked, untracked_err = _untracked_diff(root)
+    stderr = "\n".join(
+        s for s in (staged_err, unstaged_err, status_err, untracked_err) if s.strip()
+    ).strip()
+    return GitDiff(
+        is_repo=True,
+        staged=staged,
+        unstaged=unstaged,
+        untracked=untracked,
+        status=status,
+        stderr=stderr,
+    )
 
 
 def _clip(text: str) -> str:
@@ -81,11 +119,16 @@ def commit_prompt(diff: GitDiff) -> str | None:
         body = diff.staged
         staging_note = "There are staged changes."
     else:
-        body = diff.unstaged
+        body = "\n".join(
+            part for part in (diff.unstaged, diff.untracked) if part.strip()
+        )
         staging_note = (
             "Nothing is staged yet — stage the relevant changes first with "
             "`git add`."
         )
+    stderr_note = ""
+    if diff.stderr:
+        stderr_note = f"\nGit stderr:\n```\n{diff.stderr[:2000]}\n```\n"
     return (
         "Create a git commit for the current changes.\n\n"
         f"{staging_note} Write a concise commit message that follows this "
@@ -93,6 +136,7 @@ def commit_prompt(diff: GitDiff) -> str | None:
         "show it to me, then run `git commit`. Do not push.\n\n"
         f"Working-tree status:\n```\n{diff.status.strip()}\n```\n\n"
         f"Diff:\n```diff\n{_clip(body).strip()}\n```\n"
+        f"{stderr_note}"
     )
 
 
@@ -100,13 +144,21 @@ def review_prompt(diff: GitDiff) -> str | None:
     """Seeded prompt for ``/review``; ``None`` when there's nothing to review."""
     if not diff.is_repo:
         return None
-    body = "\n".join(part for part in (diff.staged, diff.unstaged) if part.strip())
+    body = "\n".join(
+        part
+        for part in (diff.staged, diff.unstaged, diff.untracked)
+        if part.strip()
+    )
     if not body.strip():
         return None
+    stderr_note = ""
+    if diff.stderr:
+        stderr_note = f"\nGit stderr:\n```\n{diff.stderr[:2000]}\n```\n"
     return (
         "Review the following diff of the current working tree. This is a "
         "read-only review — do NOT edit any files. Report correctness bugs "
         "first (cite file:line), then quality / simplification notes. Be "
         "concise and only flag real issues.\n\n"
         f"Diff:\n```diff\n{_clip(body).strip()}\n```\n"
+        f"{stderr_note}"
     )

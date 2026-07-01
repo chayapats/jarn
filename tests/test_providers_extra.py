@@ -318,6 +318,77 @@ def test_list_remote_models_malformed_payload_returns_empty():
         assert list_remote_models(prov) == []
 
 
+def test_list_remote_models_passes_auth_headers():
+    from jarn.providers import list_remote_models
+
+    payload = {"data": [{"id": "local-model"}]}
+    captured: list[dict] = []
+
+    def _get(url, *args, **kwargs):
+        captured.append(kwargs.get("headers") or {})
+        return _FakeResp(payload)
+
+    prov = ProviderConfig(
+        type=ProviderType.OPENAI_COMPATIBLE,
+        base_url="http://localhost:8000/v1",
+        api_key="secret-key",
+        headers={"X-Custom": "yes"},
+    )
+    with patch("httpx.get", _get):
+        assert list_remote_models(prov) == ["local-model"]
+    assert captured[0]["Authorization"] == "Bearer secret-key"
+    assert captured[0]["X-Custom"] == "yes"
+
+
+def test_cache_invalidation():
+    """After invalidate_cache, build() re-resolves the provider with fresh config."""
+    from unittest.mock import MagicMock
+
+    from jarn.config.schema import RoutingConfig
+    from jarn.providers.models import ModelFactory
+
+    cfg = Config(
+        default_profile="p",
+        providers={"p": ProviderConfig(type=ProviderType.OPENAI, api_key="old-key")},
+        routing=RoutingConfig(main="p/model"),
+    )
+    factory = ModelFactory(cfg)
+    first = MagicMock(name="first")
+    second = MagicMock(name="second")
+
+    with patch("langchain.chat_models.init_chat_model", side_effect=[first, second]) as m:
+        assert factory.build("p/model") is first
+        cfg.providers["p"].api_key = "new-key"
+        factory.invalidate_cache()
+        assert factory.build("p/model") is second
+
+    assert m.call_count == 2
+    assert m.call_args_list[0].kwargs["api_key"] == "old-key"
+    assert m.call_args_list[1].kwargs["api_key"] == "new-key"
+
+
+def test_fallback_propagates_secret_error():
+    from jarn.config.schema import RoutingConfig
+    from jarn.config.secrets import SecretResolutionError
+    from jarn.providers.models import ModelFactory
+
+    cfg = Config(
+        default_profile="p",
+        providers={
+            "p": ProviderConfig(type=ProviderType.OPENAI, api_key="k"),
+            "fb": ProviderConfig(type=ProviderType.OPENAI, api_key="keychain:jarn/fb"),
+        },
+        routing=RoutingConfig(main="p/model", fallback=["fb/model"]),
+    )
+    factory = ModelFactory(cfg)
+
+    with (
+        patch("jarn.providers.models.resolve", side_effect=SecretResolutionError("missing")),
+        pytest.raises(SecretResolutionError, match="missing"),
+    ):
+        factory.fallback_models()
+
+
 # -- remote_context_window (local-model context size for the gauge) ---------
 
 

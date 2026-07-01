@@ -151,3 +151,24 @@ def test_background_tools_absent_on_docker(base_config, tmp_path):
     base_config.execution.backend = "docker"
     names = _capture_tools(base_config, tmp_path, patch_backend=True)
     assert "run_in_background" not in names
+
+
+def test_no_fd_leak(tmp_path):
+    """Parent log FDs are closed after Popen spawns the child."""
+    from jarn.agent.background import ProcessManager, _open_fd_count
+
+    before = _open_fd_count()
+    mgr = ProcessManager()
+    proc = mgr.start("echo fd-leak-test", cwd=str(tmp_path))
+    _wait(mgr, proc.id)
+    after = _open_fd_count()
+    if before is not None and after is not None:
+        assert after <= before + 2, "parent should not retain per-job log FDs"
+
+
+def test_prune_exited(tmp_path):
+    mgr = ProcessManager()
+    proc = mgr.start("echo prune-me", cwd=str(tmp_path))
+    _wait(mgr, proc.id)
+    assert mgr.list() == []
+    assert mgr.status(proc.id) is None

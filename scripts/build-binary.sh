@@ -8,7 +8,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "==> Installing build deps"
-uv pip install pyinstaller >/dev/null
+uv sync --extra build >/dev/null
 
 echo "==> Building (this can take a couple of minutes)"
 ( cd packaging && uv run pyinstaller jarn.spec --noconfirm --distpath ../dist --workpath ../build/pyinstaller )

@@ -164,6 +164,10 @@ class SessionDriver:
     #: Accumulates assistant TEXT chunks for the current turn so a single
     #: ``assistant`` event is written per turn rather than one per streaming token.
     _turn_text: str = ""
+    #: Last cumulative usage seen per (thread, model) — streaming providers resend totals.
+    _last_usage_totals: dict[tuple[str, str], tuple[int, int, int, int]] = field(
+        default_factory=dict, repr=False
+    )
 
     def _config(self) -> dict[str, Any]:
         return {"configurable": {"thread_id": self.thread_id}}
@@ -193,6 +197,10 @@ class SessionDriver:
         if self.transcript is not None and not resume:
             self.transcript.write_user(user_input, ts=_time.time())
         self._turn_text = ""
+        if not resume:
+            self._last_usage_totals = {
+                k: v for k, v in self._last_usage_totals.items() if k[0] != self.thread_id
+            }
 
         # Snapshot the working tree before the agent can edit files, so /undo can
         # revert this turn. Best-effort — a checkpoint failure must never abort
@@ -442,19 +450,48 @@ class SessionDriver:
 
     def _record_usage(self, msg: Any) -> None:
         usage = getattr(msg, "usage_metadata", None)
-        if usage:
-            # LangChain reports prompt-cache tokens under ``input_token_details``
-            # (``cache_read`` / ``cache_creation``); absent for providers/turns
-            # without caching, in which case both default to 0.
-            details = usage.get("input_token_details") or {}
-            self.tracker.record(
-                self._resolve_model_ref(msg),
-                int(usage.get("input_tokens", 0)),
-                int(usage.get("output_tokens", 0)),
-                tool=_first_tool_name(msg),
-                cache_read_tokens=int(details.get("cache_read", 0)),
-                cache_creation_tokens=int(details.get("cache_creation", 0)),
-            )
+        if not usage:
+            return
+        # LangChain reports prompt-cache tokens under ``input_token_details``
+        # (``cache_read`` / ``cache_creation``); absent for providers/turns
+        # without caching, in which case both default to 0.
+        details = usage.get("input_token_details") or {}
+        cumulative = (
+            int(usage.get("input_tokens", 0)),
+            int(usage.get("output_tokens", 0)),
+            int(details.get("cache_read", 0)),
+            int(details.get("cache_creation", 0)),
+        )
+        model_ref = self._resolve_model_ref(msg)
+        usage_key = (self.thread_id, model_ref)
+        prev = self._last_usage_totals.get(usage_key)
+        is_continuation = False
+        if prev is not None:
+            monotonic = cumulative[0] >= prev[0] and cumulative[1] >= prev[1]
+            if monotonic:
+                delta = tuple(max(0, c - p) for c, p in zip(cumulative, prev, strict=True))
+                if not any(delta):
+                    return
+                input_tokens, output_tokens, cache_read, cache_creation = delta
+                is_continuation = True
+            else:
+                # A new API call within the same turn (per-call totals, not cumulative).
+                input_tokens, output_tokens, cache_read, cache_creation = cumulative
+        else:
+            input_tokens, output_tokens, cache_read, cache_creation = cumulative
+        self._last_usage_totals[usage_key] = cumulative
+
+        tools = _tool_names(msg)
+        self.tracker.record(
+            self._resolve_model_ref(msg),
+            input_tokens,
+            output_tokens,
+            tools=tools if len(tools) > 1 else None,
+            tool=tools[0] if len(tools) == 1 else None,
+            cache_read_tokens=cache_read,
+            cache_creation_tokens=cache_creation,
+            increment_call=not is_continuation,
+        )
 
     def _resolve_model_ref(self, msg: Any) -> str:
         """Attribute a streamed chunk to the model that actually produced it.
@@ -673,20 +710,23 @@ def _reasoning_of(msg: Any) -> str:
     return "".join(parts)
 
 
-def _first_tool_name(msg: Any) -> str | None:
-    """The tool a model call requested, for per-tool cost attribution.
-
-    The usage-bearing AI chunk also carries the (accumulated) tool calls it
-    decided on — ``tool_calls`` on a complete message, ``tool_call_chunks`` while
-    streaming. The first named call labels this call's cost; ``None`` (a plain
-    reply) falls back to ``RESPONSE_TOOL`` in the tracker so totals reconcile.
-    """
+def _tool_names(msg: Any) -> list[str]:
+    """All tools a model call requested, for per-tool cost attribution."""
+    names: list[str] = []
+    seen: set[str] = set()
     for attr in ("tool_calls", "tool_call_chunks"):
         for call in getattr(msg, attr, None) or []:
             name = call.get("name") if isinstance(call, dict) else None
-            if name:
-                return str(name)
-    return None
+            if name and name not in seen:
+                seen.add(str(name))
+                names.append(str(name))
+    return names
+
+
+def _first_tool_name(msg: Any) -> str | None:
+    """The first tool a model call requested (compat shim)."""
+    names = _tool_names(msg)
+    return names[0] if names else None
 
 
 #: Substrings / exception-name fragments that mark a provider error as worth a

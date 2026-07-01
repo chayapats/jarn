@@ -8,8 +8,23 @@ permissions:
   contents: write
 
 jobs:
+  # Re-run CI gates before any publish step — no release without a green preflight.
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --extra dev
+      - run: uv run ruff check src tests scripts
+      - run: uv run mypy src/
+      - run: uv run pytest -q
+      - run: uv run pytest tests/test_packaging.py -q
+
   # Build and publish the PyPI artifacts (sdist + wheel) via Trusted Publishing.
   pypi:
+    needs: preflight
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -36,6 +51,7 @@ jobs:
   # GitHub Release and uploaded as a `binary-<target>` workflow artifact that the
   # npm job repackages.
   binaries:
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:
@@ -55,8 +71,12 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-      - run: uv sync --extra dev
+      - run: uv sync --extra dev --extra build
       - run: ./scripts/build-binary.sh
+      - name: Smoke-test binary
+        run: |
+          ./dist/jarn --version
+          ./dist/jarn doctor --json
       - name: Upload binary artifact (for the npm job)
         uses: actions/upload-artifact@v4
         with:
@@ -74,7 +94,7 @@ jobs:
   # (each carrying its prebuilt binary) plus the `jarn-cli` launcher package whose
   # optionalDependencies pin those three to this exact version.
   npm:
-    needs: binaries
+    needs: [preflight, binaries]
     runs-on: ubuntu-latest
     environment: NPM_TOKEN   # the NPM_TOKEN secret lives in this environment (mirrors the pypi job)
     permissions:
@@ -96,6 +116,10 @@ jobs:
           node --test npm/test/build.test.mjs
       - name: Assemble npm packages
         run: node npm/build-packages.mjs --version "${GITHUB_REF_NAME#v}" --binaries binaries --out npm/dist
+      - name: Smoke-test assembled npm binary
+        run: |
+          chmod +x npm/dist/jarn-cli-linux-x64/bin/jarn
+          npm/dist/jarn-cli-linux-x64/bin/jarn --version
       # NOTE: no --provenance — npm provenance requires a PUBLIC source repo, and
       # this repo is private (open-core: public at launch). Re-add --provenance
       # (and id-token: write above) once the repo is public.
