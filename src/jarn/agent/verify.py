@@ -9,8 +9,18 @@ project markers; results are advisory hints, not commands run automatically
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+_MAKE_TARGET_RE = re.compile(r"^([A-Za-z0-9_.-]+)\s*:", re.MULTILINE)
+
+_NODE_SCRIPT_BUCKETS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("test",), "test"),
+    (("build",), "build"),
+    (("lint",), "lint"),
+    (("check", "typecheck"), "lint"),
+)
 
 
 @dataclass(slots=True)
@@ -54,7 +64,7 @@ def _detect_node(root: Path, caps: ProjectCapabilities) -> None:
         data = json.loads(pkg.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return
-    scripts = data.get("scripts", {}) or {}
+    scripts: dict[str, str] = data.get("scripts", {}) or {}
     runner = "npm run"
     if (root / "pnpm-lock.yaml").is_file():
         runner = "pnpm"
@@ -62,16 +72,52 @@ def _detect_node(root: Path, caps: ProjectCapabilities) -> None:
         runner = "yarn"
     elif (root / "bun.lockb").is_file():
         runner = "bun run"
-    for name, bucket in (("test", caps.test), ("build", caps.build), ("lint", caps.lint)):
-        if name in scripts:
-            bucket.append(f"{runner} {name}")
+    for script_name in scripts:
+        lower = script_name.lower()
+        for keywords, bucket_name in _NODE_SCRIPT_BUCKETS:
+            if any(kw in lower for kw in keywords):
+                bucket = getattr(caps, bucket_name)
+                cmd = f"{runner} {script_name}"
+                if cmd not in bucket:
+                    bucket.append(cmd)
+                break
+
+
+def _pyproject_text(root: Path) -> str:
+    path = root / "pyproject.toml"
+    if not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _has_pytest_config(root: Path, pyproject: str) -> bool:
+    if (root / "pytest.ini").is_file():
+        return True
+    if "[tool.pytest.ini_options]" in pyproject:
+        return True
+    if "[tool.pytest]" in pyproject:
+        return True
+    # dev dependency on pytest
+    return bool(re.search(r'["\']pytest["\']', pyproject))
+
+
+def _has_ruff_config(root: Path, pyproject: str) -> bool:
+    if (root / "ruff.toml").is_file():
+        return True
+    return "[tool.ruff]" in pyproject
 
 
 def _detect_python(root: Path, caps: ProjectCapabilities) -> None:
-    has_py_project = (root / "pyproject.toml").is_file() or (root / "pytest.ini").is_file()
-    if has_py_project and ((root / "tests").is_dir() or (root / "pyproject.toml").is_file()):
+    pyproject = _pyproject_text(root)
+    has_pyproject = (root / "pyproject.toml").is_file()
+    if _has_pytest_config(root, pyproject) and (
+        (root / "tests").is_dir() or has_pyproject
+    ):
         caps.test.append("pytest -q")
-    if (root / "ruff.toml").is_file() or (root / "pyproject.toml").is_file():
+    if _has_ruff_config(root, pyproject):
         caps.lint.append("ruff check .")
 
 
@@ -83,8 +129,9 @@ def _detect_make(root: Path, caps: ProjectCapabilities) -> None:
         text = mk.read_text(encoding="utf-8")
     except OSError:
         return
+    targets = set(_MAKE_TARGET_RE.findall(text))
     for target, bucket in (("test", caps.test), ("build", caps.build), ("lint", caps.lint)):
-        if f"\n{target}:" in f"\n{text}":
+        if target in targets:
             bucket.append(f"make {target}")
 
 
