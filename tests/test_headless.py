@@ -11,6 +11,10 @@ import pytest
 from jarn.agent.session import ApprovalRequest, EventKind
 from jarn.config.schema import PermissionMode
 from jarn.headless import (
+    EXIT_ERROR,
+    EXIT_REFUSED,
+    EXIT_SUCCESS,
+    EXIT_TIMEOUT,
     HeadlessRefusal,
     HeadlessResult,
     _make_fail_closed_approver,
@@ -24,15 +28,28 @@ from jarn.permissions import Action, ActionKind, Decision, PermissionResult
 # ---------------------------------------------------------------------------
 
 
-def _stub_controller(monkeypatch, text: str = "Hello from model"):
+def _stub_controller(
+    monkeypatch,
+    text: str = "Hello from model",
+    *,
+    tool_events: int = 0,
+    run_turn_side_effect=None,
+):
     """Patch Controller so ensure_runtime and make_driver are no-ops.
 
     ``make_driver`` returns a stub whose ``run_turn`` yields a single TEXT event
-    followed by DONE.
+    followed by DONE. When ``tool_events`` > 0, TOOL_START events are yielded first.
+    ``run_turn_side_effect`` may be an async generator function used instead.
     """
     from jarn.agent.session import Event
 
     async def _fake_run_turn(prompt, *, resume: bool = False):
+        if run_turn_side_effect is not None:
+            async for item in run_turn_side_effect(prompt, resume=resume):
+                yield item
+            return
+        for _ in range(tool_events):
+            yield Event(kind=EventKind.TOOL_START, text="execute")
         yield Event(kind=EventKind.TEXT, text=text)
         yield Event(kind=EventKind.DONE)
 
@@ -193,8 +210,8 @@ async def test_fail_closed_approver_raises_in_plan_mode():
 
 
 @pytest.mark.asyncio
-async def test_fail_closed_approver_denies_in_auto_edit_mode():
-    """In auto-edit mode, danger-guard items still get denied (not raised)."""
+async def test_fail_closed_approver_raises_in_auto_edit_mode():
+    """In auto-edit mode, danger-guard items still raise HeadlessRefusal."""
     approver = _make_fail_closed_approver(PermissionMode.AUTO_EDIT)
     req = ApprovalRequest(
         action=Action(kind=ActionKind.SHELL, target="rm -rf /", tool="execute"),
@@ -203,9 +220,10 @@ async def test_fail_closed_approver_denies_in_auto_edit_mode():
             dangerous=True, block_remember_always=True,
         ),
     )
-    reply = await approver(req)
-    assert reply.approved is False
-    assert "auto-denied" in reply.message
+    with pytest.raises(HeadlessRefusal) as exc_info:
+        await approver(req)
+    assert "execute" in str(exc_info.value)
+    assert "danger-guard" in exc_info.value.reason
 
 
 def test_headless_gated_tool_exits_nonzero_and_prints_message(
@@ -240,9 +258,193 @@ def test_headless_gated_tool_exits_nonzero_and_prints_message(
 
     code = run_headless("run something risky", base_config, tmp_path)
 
-    assert code == 1
+    assert code == EXIT_REFUSED
     err = capsys.readouterr().err
     assert "headless" in err.lower() or "gated" in err.lower() or "refused" in err.lower()
+
+
+# ---------------------------------------------------------------------------
+# Multi-turn cap
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_multi_turn_cap(tmp_path, monkeypatch, base_config):
+    """--max-turns bounds consecutive run_turn calls; stops when no tools fire."""
+    from jarn.agent.session import Event
+
+    calls: list[tuple[str, bool]] = []
+
+    async def _multi_run_turn(prompt, *, resume: bool = False):
+        calls.append((prompt, resume))
+        if len(calls) == 1:
+            yield Event(kind=EventKind.TOOL_START, text="read_file")
+            yield Event(kind=EventKind.TEXT, text="step one")
+            yield Event(kind=EventKind.DONE)
+            return
+        yield Event(kind=EventKind.TEXT, text="final answer")
+        yield Event(kind=EventKind.DONE)
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _stub_controller(monkeypatch, run_turn_side_effect=_multi_run_turn)
+
+    result = await _run_headless(
+        "do the thing", base_config, tmp_path, max_turns=5,
+    )
+
+    assert len(calls) == 2
+    assert calls[0] == ("do the thing", False)
+    assert calls[1] == ("", True)
+    assert result.turns == 2
+    assert result.result == "step onefinal answer"
+    assert result.tool_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_multi_turn_cap_respects_limit(tmp_path, monkeypatch, base_config):
+    """When max_turns=1, only one run_turn runs even if tools were used."""
+    from jarn.agent.session import Event
+
+    calls: list[int] = []
+
+    async def _always_tools(prompt, *, resume: bool = False):
+        calls.append(1)
+        yield Event(kind=EventKind.TOOL_START, text="execute")
+        yield Event(kind=EventKind.TEXT, text="partial")
+        yield Event(kind=EventKind.DONE)
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _stub_controller(monkeypatch, run_turn_side_effect=_always_tools)
+
+    result = await _run_headless(
+        "keep going", base_config, tmp_path, max_turns=1,
+    )
+
+    assert len(calls) == 1
+    assert result.turns == 1
+    assert result.tool_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# JSON tool_calls + structured errors
+# ---------------------------------------------------------------------------
+
+
+def test_json_includes_tool_calls(tmp_path, monkeypatch, base_config, capsys):
+    """--json success payload includes tool_calls count."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _stub_controller(monkeypatch, text="done", tool_events=2)
+
+    code = run_headless("do something", base_config, tmp_path, as_json=True)
+
+    assert code == EXIT_SUCCESS
+    data = json.loads(capsys.readouterr().out)
+    assert data["tool_calls"] == 2
+    assert data["turns"] == 1
+
+
+def test_json_structured_error_on_refusal(tmp_path, monkeypatch, base_config, capsys):
+    """--json emits {error: {kind, message}} on refusal."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+
+    async def _raising_run_turn(prompt, *, resume: bool = False):
+        raise HeadlessRefusal("execute", "ask mode requires confirmation")
+        yield  # pragma: no cover - makes this an async generator
+
+    fake_driver = MagicMock()
+    fake_driver.run_turn = _raising_run_turn
+
+    import jarn.headless as headless_mod
+
+    async def _fake_ensure_runtime(self):
+        pass
+
+    async def _fake_aclose(self):
+        pass
+
+    monkeypatch.setattr(headless_mod.Controller, "ensure_runtime", _fake_ensure_runtime)
+    monkeypatch.setattr(headless_mod.Controller, "make_driver", lambda self, a: fake_driver)
+    monkeypatch.setattr(headless_mod.Controller, "validate", lambda self: (True, "ready"))
+    monkeypatch.setattr(headless_mod.Controller, "enrich_turn_input", lambda self, t: t)
+    monkeypatch.setattr(headless_mod.Controller, "aclose", _fake_aclose)
+
+    code = run_headless("risky", base_config, tmp_path, as_json=True)
+
+    assert code == EXIT_REFUSED
+    data = json.loads(capsys.readouterr().out)
+    assert data["error"]["kind"] == "refusal"
+    assert "confirmation" in data["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# Exit codes
+# ---------------------------------------------------------------------------
+
+
+def test_exit_codes(tmp_path, monkeypatch, base_config, capsys):
+    """Distinct exit codes for success, generic error, refusal, budget, timeout."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    import jarn.headless as headless_mod
+    from jarn.agent.session import Event
+    from jarn.cost import BudgetExceeded
+
+    async def _fake_ensure_runtime(self):
+        pass
+
+    async def _fake_aclose(self):
+        pass
+
+    monkeypatch.setattr(headless_mod.Controller, "ensure_runtime", _fake_ensure_runtime)
+    monkeypatch.setattr(headless_mod.Controller, "aclose", _fake_aclose)
+    monkeypatch.setattr(headless_mod.Controller, "enrich_turn_input", lambda self, t: t)
+
+    # Success
+    _stub_controller(monkeypatch, text="ok")
+    assert run_headless("ok", base_config, tmp_path) == EXIT_SUCCESS
+
+    # Generic error
+    monkeypatch.setattr(
+        headless_mod.Controller,
+        "validate",
+        lambda self: (False, "no key"),
+    )
+    assert run_headless("x", base_config, tmp_path) == EXIT_ERROR
+    assert "no key" in capsys.readouterr().err
+
+    # Refusal
+    monkeypatch.setattr(headless_mod.Controller, "validate", lambda self: (True, "ready"))
+
+    async def _refuse(prompt, *, resume: bool = False):
+        raise HeadlessRefusal("write_file", "plan mode is read-only")
+        yield  # pragma: no cover - makes this an async generator
+
+    fake_driver = MagicMock()
+    fake_driver.run_turn = _refuse
+    monkeypatch.setattr(headless_mod.Controller, "make_driver", lambda self, a: fake_driver)
+
+    assert run_headless("x", base_config, tmp_path) == EXIT_REFUSED
+
+    # Budget hard-stop via ERROR event
+    async def _budget_stop(prompt, *, resume: bool = False):
+        yield Event(
+            kind=EventKind.ERROR,
+            text=str(BudgetExceeded(spent=1.5, limit=1.0)),
+            data={"budget": True},
+        )
+
+    fake_driver.run_turn = _budget_stop
+    assert run_headless("x", base_config, tmp_path) == EXIT_REFUSED
+
+    # Timeout
+    async def _timeout(prompt, *, resume: bool = False):
+        yield Event(
+            kind=EventKind.ERROR,
+            text="Error: request timed out after 30 seconds",
+            data={},
+        )
+
+    fake_driver.run_turn = _timeout
+    assert run_headless("x", base_config, tmp_path) == EXIT_TIMEOUT
 
 
 # ---------------------------------------------------------------------------

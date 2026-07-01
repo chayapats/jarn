@@ -63,7 +63,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--json",
         action="store_true",
-        help="With -p: emit a JSON object {result, tokens, cost, turns} instead of plain text.",
+        help=(
+            "With -p: emit JSON instead of plain text. On success: "
+            "{result, tokens, cost, turns, tool_calls}. On failure: "
+            "{error: {kind, message}}."
+        ),
     )
     parser.add_argument(
         "--model",
@@ -110,13 +114,21 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=1,
         metavar="N",
-        help="Maximum agent turns (default: 1).",
+        help=(
+            "With -p: maximum agent turns on the same thread (default: 1). "
+            "Stops early when a turn completes without tool calls."
+        ),
     )
     parser.add_argument(
         "--cwd",
         dest="headless_cwd",
         metavar="PATH",
         help="Working directory for this headless run.",
+    )
+
+    parser.epilog = (
+        "Headless exit codes (jarn -p): 0 success, 1 generic error, "
+        "2 approval refused or budget hard-stop, 124 timeout."
     )
 
     sub = parser.add_subparsers(dest="command")
@@ -483,6 +495,9 @@ def _collect_doctor(
     diag["context"] = {
         "repo_map": cfg.context.repo_map,
         "repo_map_tokens": cfg.context.repo_map_tokens,
+        "memory_tokens": cfg.context.memory_tokens,
+        "wiki_index_tokens": cfg.context.wiki_index_tokens,
+        "project_context_tokens": cfg.context.project_context_tokens,
     }
 
     from jarn.doctor_extensions import collect_extensions

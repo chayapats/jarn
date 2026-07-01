@@ -1,7 +1,7 @@
 """Headless one-shot runner for non-interactive / CI use.
 
-``jarn -p "do X"`` drives ONE user turn through the same controller + session
-path the REPL uses, prints the assistant's final text to stdout, and exits.
+``jarn -p "do X"`` drives one or more agent turns through the same controller +
+session path the REPL uses, prints the assistant's final text to stdout, and exits.
 
 Fail-closed safety: in headless mode there is no human to approve a gated tool.
 If the effective permission mode is ``ask`` or ``plan`` and an approval is
@@ -26,15 +26,28 @@ from jarn.agent.session import (
     EventKind,
 )
 from jarn.config.schema import Config, PermissionMode
+from jarn.cost import BudgetExceeded
 from jarn.tui.controller import Controller
 
 # Auto-approving modes: the user explicitly opted in, so headless may proceed.
 _AUTO_MODES = frozenset({PermissionMode.AUTO_EDIT, PermissionMode.YOLO})
 
+# Exit codes for ``jarn -p`` (documented in CLI --help and docs/CONFIGURATION.md).
+EXIT_SUCCESS = 0
+EXIT_ERROR = 1
+EXIT_REFUSED = 2
+EXIT_TIMEOUT = 124
+
+_TIMEOUT_MSG_HINTS = (
+    "timed out",
+    "timeout",
+    "time out",
+)
+
 
 @dataclass(slots=True)
 class HeadlessResult:
-    """The outcome of a single headless turn."""
+    """The outcome of a headless run."""
 
     result: str
     """The assistant's final text reply."""
@@ -43,15 +56,19 @@ class HeadlessResult:
     cost: float = 0.0
     """Total session cost in USD."""
     turns: int = 1
+    """How many agent turns completed (bounded by ``--max-turns``)."""
     tool_calls: int = 0
-    """How many tool invocations the agent made during the turn (diagnostic)."""
+    """How many tool invocations the agent made across all turns."""
 
 
 class HeadlessRefusal(Exception):
-    """Raised when fail-closed safety blocks a gated tool in a non-auto mode.
+    """Raised when fail-closed safety blocks a gated tool.
 
     Carries the tool name and reason so the caller can emit a clear message.
     """
+
+    kind = "refusal"
+    exit_code = EXIT_REFUSED
 
     def __init__(self, tool: str, reason: str) -> None:
         super().__init__(f"headless: gated tool refused — {tool!r}: {reason}")
@@ -59,7 +76,75 @@ class HeadlessRefusal(Exception):
         self.reason = reason
 
 
-def _make_fail_closed_approver(mode: PermissionMode) -> Approver:
+class HeadlessFailure(Exception):
+    """Structured headless failure with a stable exit code and error kind."""
+
+    def __init__(self, kind: str, message: str, *, exit_code: int = EXIT_ERROR) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
+        self.exit_code = exit_code
+
+
+def _is_timeout_message(text: str) -> bool:
+    lowered = text.lower()
+    return any(hint in lowered for hint in _TIMEOUT_MSG_HINTS)
+
+
+def _classify_exception(exc: BaseException) -> HeadlessFailure:
+    if isinstance(exc, HeadlessRefusal):
+        return HeadlessFailure(
+            exc.kind,
+            str(exc),
+            exit_code=exc.exit_code,
+        )
+    if isinstance(exc, BudgetExceeded):
+        return HeadlessFailure("budget", str(exc), exit_code=EXIT_REFUSED)
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return HeadlessFailure("timeout", str(exc), exit_code=EXIT_TIMEOUT)
+    if isinstance(exc, HeadlessFailure):
+        return exc
+    message = str(exc)
+    if _is_timeout_message(message):
+        return HeadlessFailure("timeout", message, exit_code=EXIT_TIMEOUT)
+    return HeadlessFailure("error", message, exit_code=EXIT_ERROR)
+
+
+def _error_from_event(text: str, data: dict[str, Any] | None) -> HeadlessFailure:
+    payload = data or {}
+    if payload.get("budget"):
+        return HeadlessFailure("budget", text, exit_code=EXIT_REFUSED)
+    if _is_timeout_message(text):
+        return HeadlessFailure("timeout", text, exit_code=EXIT_TIMEOUT)
+    return HeadlessFailure("error", text, exit_code=EXIT_ERROR)
+
+
+def _emit_failure(
+    failure: HeadlessFailure,
+    *,
+    as_json: bool,
+    hint: str | None = None,
+) -> int:
+    if as_json:
+        print(json.dumps({"error": {"kind": failure.kind, "message": failure.message}}))
+    else:
+        print(f"error: {failure.message}", file=sys.stderr)
+        if hint:
+            print(hint, file=sys.stderr)
+    return failure.exit_code
+
+
+def _result_payload(result: HeadlessResult) -> dict[str, Any]:
+    return {
+        "result": result.result,
+        "tokens": result.tokens,
+        "cost": result.cost,
+        "turns": result.turns,
+        "tool_calls": result.tool_calls,
+    }
+
+
+def _make_fail_closed_approver(_mode: PermissionMode) -> Approver:
     """Return an :class:`Approver` that implements the fail-closed rule.
 
     For auto-approving modes (auto-edit / yolo) the engine already resolves
@@ -73,15 +158,7 @@ def _make_fail_closed_approver(mode: PermissionMode) -> Approver:
     async def _approver(req: ApprovalRequest) -> ApprovalReply:
         tool = req.action.tool or "tool"
         reason = req.result.reason or "requires confirmation"
-        # Either mode: an ASK that reaches the approver means no human is
-        # available. Always deny, but the message differs for UX.
-        if mode in _AUTO_MODES:
-            # Even in auto mode, danger-guard items require a human.
-            return ApprovalReply(
-                approved=False,
-                message=f"headless auto-denied ({reason})",
-            )
-        # Non-auto modes: surface a clear error instead of silently denying.
+        # An ASK that reaches the approver means no human is available.
         raise HeadlessRefusal(tool, reason)
 
     return _approver
@@ -96,16 +173,23 @@ async def _run_headless(
     max_turns: int = 1,
     system_prompt_override: str | None = None,
 ) -> HeadlessResult:
-    """Async core: build the runtime, run one turn, return results.
+    """Async core: build the runtime, run up to ``max_turns``, return results.
 
-    ``max_turns`` is reserved for future multi-turn headless workflows; the
-    current implementation always completes in one model turn (the agent
-    itself may still use multiple tool calls internally — that is one "turn"
-    from the user's perspective).
+    Each turn is one ``SessionDriver.run_turn`` call on the same thread. After
+    the first turn the driver resumes without appending a new user message so the
+    agent can keep working. The loop stops when the cap is reached or a turn
+    completes without any tool calls (the agent emitted a final answer).
 
     ``system_prompt_override`` is forwarded to the Controller / build_runtime for
     the eval harness's harness-prompt A/B (see build_runtime).
     """
+    if max_turns < 1:
+        raise HeadlessFailure(
+            "error",
+            f"--max-turns must be >= 1, got {max_turns}",
+            exit_code=EXIT_ERROR,
+        )
+
     controller = Controller(
         config, project_root, project_trusted=project_trusted,
         system_prompt_override=system_prompt_override,
@@ -113,7 +197,7 @@ async def _run_headless(
     try:
         ok, message = controller.validate()
         if not ok:
-            raise RuntimeError(f"provider not ready: {message}")
+            raise HeadlessFailure("error", f"provider not ready: {message}")
 
         await controller.ensure_runtime()
 
@@ -125,13 +209,39 @@ async def _run_headless(
 
         text_parts: list[str] = []
         tool_calls = 0
-        async for event in driver.run_turn(enriched):
-            if event.kind is EventKind.TEXT:
-                text_parts.append(event.text)
-            elif event.kind is EventKind.TOOL_START:
-                tool_calls += 1
-            elif event.kind is EventKind.ERROR:
-                raise RuntimeError(event.text)
+        turns_completed = 0
+        resume = False
+        turn_input = enriched
+
+        while turns_completed < max_turns:
+            turns_completed += 1
+            tool_calls_this_turn = 0
+            async for event in driver.run_turn(turn_input, resume=resume):
+                if event.kind is EventKind.TEXT:
+                    text_parts.append(event.text)
+                elif event.kind is EventKind.TOOL_START:
+                    tool_calls += 1
+                    tool_calls_this_turn += 1
+                elif event.kind is EventKind.ERROR:
+                    raise _error_from_event(event.text, event.data)
+                elif event.kind is EventKind.APPROVAL:
+                    lowered = event.text.lower()
+                    if lowered.startswith(("rejected", "blocked")):
+                        raise HeadlessRefusal(
+                            event.data.get("target", "tool"),
+                            event.text,
+                        )
+                    if "auto-denied" in lowered:
+                        raise HeadlessRefusal(
+                            event.data.get("target", "tool"),
+                            event.text,
+                        )
+
+            if tool_calls_this_turn == 0 or turns_completed >= max_turns:
+                break
+
+            turn_input = ""
+            resume = True
 
         reply_text = "".join(text_parts)
 
@@ -146,7 +256,10 @@ async def _run_headless(
         cost = tracker.total.cost_usd
 
         return HeadlessResult(
-            result=reply_text, tokens=tokens, cost=cost, turns=1,
+            result=reply_text,
+            tokens=tokens,
+            cost=cost,
+            turns=turns_completed,
             tool_calls=tool_calls,
         )
     finally:
@@ -164,9 +277,18 @@ def run_headless(
 ) -> int:
     """Synchronous entry point called by the CLI.
 
-    Runs the headless turn, writes output to stdout, and returns an exit code.
-    Returns 0 on success, 1 on any error or fail-closed refusal.
+    Runs the headless turn(s), writes output to stdout, and returns an exit code.
+
+    Exit codes:
+        0 — success
+        1 — generic error
+        2 — approval refused or session budget hard-stop
+        124 — timeout
     """
+    refusal_hint = (
+        "hint: pass --permission-mode auto-edit or yolo to allow unattended tool use "
+        "(at your own risk)."
+    )
     try:
         result = asyncio.run(
             _run_headless(
@@ -177,30 +299,14 @@ def run_headless(
                 max_turns=max_turns,
             )
         )
-    except HeadlessRefusal as exc:
-        print(
-            f"error: {exc}",
-            file=sys.stderr,
-        )
-        print(
-            "hint: pass --permission-mode auto-edit or yolo to allow unattended tool use "
-            "(at your own risk).",
-            file=sys.stderr,
-        )
-        return 1
     except Exception as exc:  # noqa: BLE001
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        failure = _classify_exception(exc)
+        hint = refusal_hint if failure.kind == "refusal" else None
+        return _emit_failure(failure, as_json=as_json, hint=hint)
 
     if as_json:
-        out: dict[str, Any] = {
-            "result": result.result,
-            "tokens": result.tokens,
-            "cost": result.cost,
-            "turns": result.turns,
-        }
-        print(json.dumps(out))
+        print(json.dumps(_result_payload(result)))
     else:
         print(result.result, end="" if result.result.endswith("\n") else "\n")
 
-    return 0
+    return EXIT_SUCCESS
