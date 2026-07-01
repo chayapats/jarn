@@ -111,3 +111,16 @@ def test_large_diff_truncated():
     assert p is not None
     assert "diff truncated" in p
     assert len(p) < 40000
+
+
+def test_review_includes_untracked(repo):
+    (repo / "a.txt").write_text("one\nmodified\n")
+    (repo / "new.txt").write_text("brand new file\n")
+    d = gather_diff(repo)
+    assert d.is_repo and d.has_changes
+    assert "modified" in d.unstaged or "modified" in d.staged
+    assert "brand new file" in d.untracked
+    p = review_prompt(d)
+    assert p is not None
+    assert "modified" in p
+    assert "brand new file" in p
