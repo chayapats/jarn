@@ -1148,7 +1148,12 @@ class Controller:
             return False, str(exc)
         store = settings.ConfigStore(paths.global_config_path())
         backup = store.read_text()
-        store.set(key, value)
+        try:
+            store.set(key, value)
+        except settings.ConfigCorruptError as exc:
+            # Corrupt global config: do not wipe it. Surface the repair hint
+            # (the message names the .bak backup). The file is left untouched.
+            return False, str(exc)
         try:
             new_cfg = load_config(
                 project_root=self.project_root, project_trusted=self.project_trusted

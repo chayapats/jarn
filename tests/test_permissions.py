@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from jarn.config.schema import PermissionMode, PermissionRules
 from jarn.permissions import (
     Action,
@@ -207,6 +209,38 @@ def test_rule_store_preserves_comments(tmp_path):
     data = yaml.safe_load(text)
     assert data["permissions"]["allow"] == ["git status", "npm run"]
     assert data["permission_mode"] == "ask"
+
+
+def test_rule_store_corrupt_not_wiped(tmp_path):
+    """A corrupt project config must NOT be overwritten by add_allow; .bak saved."""
+    from jarn.config._yaml_store import ConfigCorruptError
+    from jarn.permissions.rule_store import PermissionRuleStore
+
+    cfg = tmp_path / ".jarn" / "config.yaml"
+    cfg.parent.mkdir(parents=True)
+    corrupt = "permissions: [oops, ,\n  allow: [unbalanced:"
+    cfg.write_text(corrupt, encoding="utf-8")
+
+    store = PermissionRuleStore(cfg)
+    with pytest.raises(ConfigCorruptError, match="NOT modified"):
+        store.add_allow("npm run")
+    # File untouched (still corrupt, not a 1-key wipe).
+    assert cfg.read_text() == corrupt
+    # A backup was saved for repair.
+    assert cfg.with_name(cfg.name + ".bak").is_file()
+
+
+def test_rule_store_missing_file_bootstrap(tmp_path):
+    """A missing project config bootstraps from {} — add_allow creates it."""
+    from jarn.permissions.rule_store import PermissionRuleStore
+
+    cfg = tmp_path / ".jarn" / "config.yaml"
+    assert not cfg.exists()
+    assert PermissionRuleStore(cfg).add_allow("npm run") is True
+    import yaml
+
+    data = yaml.safe_load(cfg.read_text())
+    assert data["permissions"]["allow"] == ["npm run"]
 
 
 def test_deny_session_blocks():

@@ -12,23 +12,19 @@ atomically (tmp + ``os.replace``).
 
 from __future__ import annotations
 
-import io
-import os
 from pathlib import Path
 
-from ruamel.yaml import YAML
-from ruamel.yaml.error import YAMLError
-
-
-def _yaml() -> YAML:
-    y = YAML()  # round-trip mode: preserves comments + style
-    y.preserve_quotes = True
-    return y
+from jarn.config._yaml_store import atomic_write_yaml, load_yaml_doc
 
 
 class PermissionRuleStore:
     """Appends allow-rules to a project ``config.yaml`` (atomic, idempotent,
-    comment-preserving)."""
+    comment-preserving).
+
+    A corrupt project config is never silently wiped: :meth:`add_allow` raises
+    :class:`ConfigCorruptError` (after saving a ``.bak``) instead of overwriting
+    the file with a near-empty dict. A missing file bootstraps from ``{}``.
+    """
 
     def __init__(self, config_path: Path | None) -> None:
         #: ``None`` when running outside a project — persistence is then a no-op.
@@ -38,7 +34,8 @@ class PermissionRuleStore:
         """Append ``rule`` to ``permissions.allow``. Returns True if written.
 
         No-op (returns False) when there is no project config path or the rule
-        is already present.
+        is already present. Raises :class:`ConfigCorruptError` if the project
+        config is unreadable (the file is left untouched and a ``.bak`` is saved).
         """
         if self.config_path is None or not rule:
             return False
@@ -58,21 +55,10 @@ class PermissionRuleStore:
         return True
 
     def _load(self) -> dict:
-        path = self.config_path
-        if path is None or not path.is_file():
+        if self.config_path is None:
             return {}
-        try:
-            loaded = _yaml().load(path.read_text(encoding="utf-8"))
-        except (OSError, YAMLError):
-            return {}
-        return loaded if isinstance(loaded, dict) else {}
+        return load_yaml_doc(self.config_path)
 
     def _atomic_write(self, data: dict) -> None:
-        path = self.config_path
-        assert path is not None
-        path.parent.mkdir(parents=True, exist_ok=True)
-        buf = io.StringIO()
-        _yaml().dump(data, buf)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(buf.getvalue(), encoding="utf-8")
-        os.replace(tmp, path)
+        assert self.config_path is not None
+        atomic_write_yaml(self.config_path, data)
