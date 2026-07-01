@@ -385,6 +385,8 @@ def build_runtime(
                 root,
                 project_trusted=project_trusted,
                 context_files=config.compat.context_files,
+                memory_tokens=config.context.memory_tokens,
+                project_context_tokens=config.context.project_context_tokens,
             ),
             auto_skill_catalog(skills),
             capabilities.as_prompt_block(),
@@ -405,6 +407,7 @@ def build_runtime(
             system_prompt,
             root,
             project_trusted=project_trusted,
+            wiki_index_tokens=config.context.wiki_index_tokens,
         )
         tools = wiki_tools
 
@@ -427,7 +430,11 @@ def build_runtime(
     if config.execution.backend == "local" and config.execution.background:
         from jarn.agent.background import build_background_tools
 
-        tools = [*tools, *build_background_tools(root or Path.cwd())]
+        tools = [*tools, *build_background_tools(
+            root or Path.cwd(),
+            max_concurrent=config.execution.background_max_concurrent,
+            max_lifetime_secs=config.execution.background_max_lifetime_secs,
+        )]
 
     # Plan-mode handoff tool: lets the agent present a plan and request approval
     # to leave read-only plan mode. Gated as an interrupt (below) and special-cased
@@ -512,6 +519,7 @@ def _add_wiki_tools(
     root: Path | None,
     *,
     project_trusted: bool,
+    wiki_index_tokens: int | None = None,
 ) -> tuple[list[Any], str]:
     """Register the four wiki tools and optionally inject the wiki index.
 
@@ -609,7 +617,7 @@ def _add_wiki_tools(
 
     if project_trusted:
         # Full combined index (project + global).
-        index_text = store.index_text()
+        index_text = store.index_text(token_budget=wiki_index_tokens)
     else:
         # Untrusted project: build a global-only store so project pages are
         # excluded from injection.  The tools still have access to both tiers
@@ -618,7 +626,7 @@ def _add_wiki_tools(
         from jarn.memory.wiki import WikiStore as _WS
 
         global_only = _WS(global_wiki_dir=store.global_wiki_dir)
-        index_text = global_only.index_text()
+        index_text = global_only.index_text(token_budget=wiki_index_tokens)
 
     if index_text.strip():
         index_parts.append(index_text.strip())

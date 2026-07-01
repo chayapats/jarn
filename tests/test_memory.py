@@ -379,3 +379,23 @@ def test_memory_crud_unaffected_by_dump(tmp_path, monkeypatch, base_config):
     assert "Deleted" in delete_result.text
 
     ctrl.close()
+
+
+def test_index_budget(tmp_path):
+    """A huge MEMORY.md index is truncated to the configured token budget."""
+    from jarn.memory.store import MemoryStore
+    from jarn.memory.tokens import count_tokens
+
+    store = MemoryStore(tmp_path / "memory")
+    for i in range(200):
+        store.save(
+            Memory(
+                name=f"Memory {i}",
+                description="x" * 200,
+                body="body",
+                type="project",
+            )
+        )
+    index = store.index_text(token_budget=100)
+    assert "(truncated" in index
+    assert count_tokens(index) <= 110  # small slack for notice overhead

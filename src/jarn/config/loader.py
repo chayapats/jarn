@@ -287,6 +287,25 @@ def _build_config(raw: dict[str, Any]) -> Config:
         raise ConfigError(
             f"context.repo_map_tokens must be > 0 (got {repo_map_tokens_raw})."
         )
+    memory_tokens_raw = _coerce_int(ctx.get("memory_tokens", 4096), "context.memory_tokens")
+    if memory_tokens_raw <= 0:
+        raise ConfigError(
+            f"context.memory_tokens must be > 0 (got {memory_tokens_raw})."
+        )
+    wiki_index_tokens_raw = _coerce_int(
+        ctx.get("wiki_index_tokens", 1024), "context.wiki_index_tokens"
+    )
+    if wiki_index_tokens_raw <= 0:
+        raise ConfigError(
+            f"context.wiki_index_tokens must be > 0 (got {wiki_index_tokens_raw})."
+        )
+    project_context_tokens_raw = _coerce_int(
+        ctx.get("project_context_tokens", 8192), "context.project_context_tokens"
+    )
+    if project_context_tokens_raw <= 0:
+        raise ConfigError(
+            f"context.project_context_tokens must be > 0 (got {project_context_tokens_raw})."
+        )
     cfg.context = ContextConfig(
         auto_compact=_normalize_bool(
             ctx.get("auto_compact", True), "context.auto_compact"
@@ -297,6 +316,9 @@ def _build_config(raw: dict[str, Any]) -> Config:
         ),
         repo_map=repo_map_raw,
         repo_map_tokens=repo_map_tokens_raw,
+        memory_tokens=memory_tokens_raw,
+        wiki_index_tokens=wiki_index_tokens_raw,
+        project_context_tokens=project_context_tokens_raw,
     )
 
     ex = raw.get("execution", {}) or {}
@@ -343,6 +365,8 @@ def _build_config(raw: dict[str, Any]) -> Config:
     cfg.execution = ExecutionConfig(
         backend=backend_raw,
         background=_normalize_bool(ex.get("background", True), "execution.background"),
+        background_max_concurrent=ex.get("background_max_concurrent"),
+        background_max_lifetime_secs=ex.get("background_max_lifetime_secs"),
         sandbox_provider=str(ex.get("sandbox_provider", "langsmith")),
         docker_image=str(ex.get("docker_image", "python:3.12")),
         multimodal=_normalize_bool(ex.get("multimodal", True), "execution.multimodal"),
