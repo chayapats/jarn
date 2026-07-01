@@ -328,3 +328,28 @@ def is_reference(value: str | None) -> bool:
     if value is None:
         return False
     return bool(_ENV_RE.match(value) or _KEYCHAIN_RE.match(value) or _FILE_RE.match(value))
+
+
+#: A long, mixed-alphabet string with no spaces — a likely raw API key with no
+#: vendor prefix. Requires a reasonable character variety so short or repetitive
+#: test fixtures (``sk-test``, ``lm-studio``) and URLs are not flagged.
+_HIGH_ENTROPY = re.compile(r"^[A-Za-z0-9+/_=\-]{32,}$")
+
+
+def looks_like_secret(value: object) -> bool:
+    """Heuristic: does *value* look like a real secret rather than a reference?
+
+    Used by the config loader to catch inline plaintext ``api_key`` values. It
+    matches the vendor prefixes shared with :func:`redact_secrets`
+    (``sk-…``, ``Bearer …``, PEM blocks, ``ghp_``/``xoxb-``/``AKIA``/``AIza``/
+    ``glpat-``) plus a ≥32-char high-entropy fallback for prefixless keys. Short
+    or repetitive values (``sk-test``, ``lm-studio``, empty) return ``False`` so
+    local providers and test fixtures don't trip the check.
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    if _SK_KEY.search(value) or _VENDOR_KEYS.search(value) or _BEARER.search(value):
+        return True
+    if "-----BEGIN" in value and "PRIVATE KEY-----" in value:
+        return True
+    return bool(_HIGH_ENTROPY.match(value)) and len(set(value)) >= 8

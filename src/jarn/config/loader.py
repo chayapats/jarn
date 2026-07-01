@@ -8,6 +8,7 @@ which are concatenated so a project can extend (not just replace) global rules.
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,7 @@ _KNOWN_TOP_LEVEL_KEYS = {
     "default_profile",
     "default_model",
     "permission_mode",
+    "strict_secrets",
     "providers",
     "routing",
     "budget",
@@ -174,8 +176,11 @@ def _build_config(raw: dict[str, Any]) -> Config:
                 f"Unknown permission_mode {raw['permission_mode']!r}; "
                 f"expected one of {[m.value for m in PermissionMode]}"
             ) from exc
+    if "strict_secrets" in raw:
+        cfg.strict_secrets = _normalize_bool(raw["strict_secrets"], "strict_secrets")
 
     cfg.providers = _build_providers(raw.get("providers", {}))
+    _validate_inline_api_keys(cfg.providers, cfg.strict_secrets)
 
     routing = raw.get("routing", {}) or {}
     from jarn.config.schema import _VALID_PROMPT_CACHE
@@ -407,6 +412,50 @@ def _build_providers(raw: dict[str, Any]) -> dict[str, ProviderConfig]:
             extra={k: v for k, v in spec.items() if k not in known},
         )
     return providers
+
+
+class InlineSecretWarning(UserWarning):
+    """Emitted when a provider defines an inline plaintext ``api_key``.
+
+    Inline keys sit in config.yaml on disk and in memory, contradicting the
+    "referenced, never inlined" guidance. Default behaviour is to warn; set
+    ``strict_secrets: true`` to turn this into a hard :class:`ConfigError`.
+    """
+
+
+def _validate_inline_api_keys(
+    providers: dict[str, ProviderConfig], strict: bool
+) -> None:
+    """Warn/error on providers whose ``api_key`` is an inline plaintext secret.
+
+    A reference (``${ENV}``, ``keychain:``, ``file:``) is never flagged — only a
+    literal that :func:`looks_like_secret` recognises. Empty keys and short
+    local-provider tokens (e.g. ``lm-studio``) pass silently.
+    """
+    from jarn.config.secrets import is_reference, looks_like_secret
+
+    offenders: list[str] = []
+    for name, prov in providers.items():
+        ref = prov.api_key
+        if ref is None or is_reference(ref):
+            continue
+        if looks_like_secret(ref):
+            offenders.append(name)
+            if not strict:
+                warnings.warn(
+                    f"Provider {name!r} has an inline plaintext api_key in "
+                    "config.yaml — move it to a reference (keychain:..., "
+                    "file:..., or ${ENV_VAR}) so it isn't persisted to disk. "
+                    "Set strict_secrets: true to reject this.",
+                    InlineSecretWarning,
+                    stacklevel=2,
+                )
+    if strict and offenders:
+        raise ConfigError(
+            f"Provider(s) {offenders!r} define inline plaintext api_keys but "
+            "strict_secrets is on. Move each to a reference (keychain:..., "
+            "file:..., or ${ENV_VAR})."
+        )
 
 
 def _build_hook(raw: dict[str, Any]) -> HookSpec:

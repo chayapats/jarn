@@ -329,6 +329,10 @@ class Config:
     default_profile: str = "openrouter"
     default_model: str | None = None
     permission_mode: PermissionMode = PermissionMode.ASK
+    #: When True, inline plaintext ``api_key`` literals in config.yaml are
+    #: rejected at load; when False (default) they emit a warning. Back-compat
+    #: default is False so existing setups keep working, just noisier.
+    strict_secrets: bool = False
 
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
     routing: RoutingConfig = field(default_factory=RoutingConfig)

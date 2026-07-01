@@ -36,6 +36,10 @@ in your project directory when you approve them (or automatically in permissive 
   stripped until you approve (`Trust this project's config?` or `jarn trust <path>`).
 - **Secrets:** API keys live in `~/.jarn/config.yaml` or your OS keychain. Project
   config can reference `${ENV}` — only trust projects you would run code from.
+  Inline plaintext keys in `config.yaml` are discouraged: the loader emits an
+  `InlineSecretWarning` for any literal that looks like a real key, and rejects
+  it outright when `strict_secrets: true` (recommended for CI / shared hosts).
+  Prefer `keychain:jarn/<provider>`, `file:jarn/<provider>`, or `${ENV_VAR}`.
 - **Network:** `web_fetch` / `web_search` and MCP tools are gated through the permission
   engine. `web_fetch` blocks private/loopback/metadata addresses by default.
 
