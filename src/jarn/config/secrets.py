@@ -13,6 +13,7 @@ raise :class:`SecretResolutionError` so onboarding can surface a clear message.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import threading
@@ -168,10 +169,8 @@ def _store_file_secret(service: str, account: str, value: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(value, encoding="utf-8")
     path.chmod(0o600)
-    try:
+    with contextlib.suppress(OSError):
         path.parent.chmod(0o700)
-    except OSError:
-        pass
     return path
 
 
