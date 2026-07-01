@@ -1,0 +1,59 @@
+name: Nightly eval
+
+on:
+  schedule:
+    # 06:00 UTC daily — optional live-LLM regression signal (non-blocking).
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Guard (requires NIGHTLY_EVAL_ENABLED secret)
+        id: gate
+        env:
+          NIGHTLY_EVAL_ENABLED: ${{ secrets.NIGHTLY_EVAL_ENABLED }}
+        run: |
+          if [ "${NIGHTLY_EVAL_ENABLED:-}" = "true" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Nightly eval disabled — set NIGHTLY_EVAL_ENABLED repo secret to 'true' to enable."
+          fi
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.enabled == 'true'
+      - uses: astral-sh/setup-uv@v5
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          python-version: "3.12"
+      - name: Sync deps
+        if: steps.gate.outputs.enabled == 'true'
+        run: uv sync --extra dev
+      - name: Write eval config
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          EVAL_API_KEY: ${{ secrets.EVAL_API_KEY }}
+        run: |
+          mkdir -p ~/.jarn
+          cat > ~/.jarn/config.yaml <<EOF
+          providers:
+            openrouter:
+              type: openrouter
+              api_key: ${EVAL_API_KEY}
+              base_url: https://openrouter.ai/api/v1
+          default_model: openrouter/deepseek/deepseek-chat
+          EOF
+      - name: Run smoke evals (small fixture set)
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          uv run python scripts/eval.py --fixture fix-off-by-one --json
+          uv run python scripts/eval.py --fixture fix-failing-test --json
+      - name: Upload eval summary
+        if: always() && steps.gate.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-eval-${{ github.run_id }}
+          path: evals/baseline.json
+          if-no-files-found: ignore
