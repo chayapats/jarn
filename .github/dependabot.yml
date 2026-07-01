@@ -1,0 +1,11 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    lockfile-path: uv.lock
+  - package-ecosystem: npm
+    directory: /npm
+    schedule:
+      interval: weekly
