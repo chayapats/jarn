@@ -228,36 +228,36 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 **Deps:** none
 **Effort:** M
 
-### T-1-9 — Make the `ci` preset safe-by-default
+### T-1-9 — Make the `ci` preset safe-by-default ✅
 **Problem:** `config/profiles.py` `ci` preset = `permission_mode: yolo` + `local_sandbox: require`. If launched on a CI host where the sandbox runtime is unavailable, YOLO + pattern-only guard is risky.
 **Files:** `src/jarn/config/profiles.py`, `tests/test_preset_unify.py`, `docs/CONFIGURATION.md`
 **Action:**
 1. Change `ci` preset to `permission_mode: ask` + an explicit allowlist, **or** keep `yolo` but require `execution.backend: docker` (fail launch with a clear error if docker is unavailable).
 2. Document in `docs/CONFIGURATION.md` that `ci` is only safe with the docker backend.
 **DoD:**
-- [ ] `ci` preset no longer silently runs YOLO on a host without a sandbox.
-- [ ] Test asserts the preset's safety constraint.
-- [ ] Docs updated.
+- [x] `ci` preset no longer silently runs YOLO on a host without a sandbox.
+- [x] Test asserts the preset's safety constraint.
+- [x] Docs updated.
 **Tests:** update `test_preset_unify.py` / `test_profiles.py`.
 **Risk:** existing CI users on YOLO need to adjust. Mitigation: keep a `ci-yolo` preset name for opt-in dangerous behavior, documented.
 **Deps:** none
 **Effort:** S
 
-### T-1-10 — Tighten secret-file permissions + keychain read-path validation
+### T-1-10 — Tighten secret-file permissions + keychain read-path validation ✅
 **Problem:** `secrets._store_file_secret` sets `0600` on the file and `0700` on the immediate parent only; `~/.jarn` may remain `755`. `keychain:` `service` is not validated with `_ACCOUNT_RE` on the read path (only the file store validates).
 **Files:** `src/jarn/config/secrets.py`, `tests/test_secrets.py`
 **Action:**
 1. Ensure the whole `~/.jarn/secrets/` tree is `0700` (create with mode, `chmod` each existing ancestor up to `~/.jarn/secrets`).
 2. Run `_validate_account` on `service` and `account` for `keychain:` references on read, mirroring the file-store path.
 **DoD:**
-- [ ] Test: after `store_secret` file fallback, `~/.jarn/secrets/` and every ancestor up to it is `0700`, file is `0600`.
-- [ ] Test: `keychain:bad/service!` raises on read (invalid account chars).
+- [x] Test: after `store_secret` file fallback, `~/.jarn/secrets/` and every ancestor up to it is `0700`, file is `0600`.
+- [x] Test: `keychain:bad/service!` raises on read (invalid account chars).
 **Tests:** `test_secrets.test_secret_tree_permissions`, `test_secrets.test_keychain_read_validates_account`.
 **Risk:** low
 **Deps:** none
 **Effort:** S
 
-### T-1-11 — Restrict `ProviderConfig.extra` to a per-provider allowlist
+### T-1-11 — Restrict `ProviderConfig.extra` to a per-provider allowlist ✅
 **Problem:** `loader._build_providers` forwards any unknown key in `extra` verbatim to LangChain `init_chat_model`. Malicious/mistyped YAML can inject arbitrary kwargs (headers, URLs).
 **Files:** `src/jarn/config/loader.py`, `src/jarn/config/schema.py`, `tests/test_providers_extra.py`
 **Action:**
@@ -265,14 +265,14 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 2. Reject unknown `extra` keys at load with a `ConfigError` naming the provider and the bad key.
 3. For keys that *should* be passable but are sensitive (e.g. custom headers), require them under a typed `ProviderConfig.headers` field that goes through redaction.
 **DoD:**
-- [ ] Test: a provider with a disallowed `extra` key is rejected at load.
-- [ ] Test: allowed `extra` keys (e.g. `base_url`) still reach the provider constructor.
+- [x] Test: a provider with a disallowed `extra` key is rejected at load.
+- [x] Test: allowed `extra` keys (e.g. `base_url`) still reach the provider constructor.
 **Tests:** extend `test_providers_extra.py`.
 **Risk:** users currently relying on arbitrary `extra` kwargs break. Mitigation: allowlist the common safe ones; ship migration note.
 **Deps:** none
 **Effort:** M
 
-### T-1-12 — Validate MCP/subagent URLs + hook events at load (early SSRF/spawn guard)
+### T-1-12 — Validate MCP/subagent URLs + hook events at load (early SSRF/spawn guard) ✅
 **Problem:** `MCPServer.transport` is a free string; `url`/`command` not validated (SSRF/arbitrary spawn gated only by project trust, not schema). `AsyncSubagentSpec.url`/`headers` not validated at load. Hook event typos silently no-op (overlaps T-1-8).
 **Files:** `src/jarn/config/loader.py`, `src/jarn/config/schema.py`, `tests/test_config.py`
 **Action:**
@@ -280,14 +280,14 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 2. Validate `AsyncSubagentSpec.url` (absolute http(s)) and `headers` (dict[str,str]) at load.
 3. Reuse the web_tools SSRF allowlist for MCP HTTP URLs as a defense-in-depth check (warning, not hard block, since MCP endpoints may be internal by design).
 **DoD:**
-- [ ] Test: invalid `transport`, non-absolute `url`, and `command` with `;`/`|` are rejected at load.
-- [ ] Test: invalid subagent `url` is rejected at load.
+- [x] Test: invalid `transport`, non-absolute `url`, and `command` with `;`/`|` are rejected at load.
+- [x] Test: invalid subagent `url` is rejected at load.
 **Tests:** `test_config.test_mcp_validation`, `test_config.test_subagent_validation`.
 **Risk:** low
 **Deps:** none
 **Effort:** S
 
-### T-1-13 — Document the `JARN_HOME` override threat
+### T-1-13 — Document the `JARN_HOME` override threat ✅
 **Problem:** `config/paths.py` trusts `JARN_HOME` blindly; a hijacked env (CI, shared shell) can redirect the secrets dir + trust store.
 **Files:** `src/jarn/config/paths.py`, `docs/CONFIGURATION.md`, `SECURITY.md`
 **Action:**
@@ -295,22 +295,22 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 2. Document the threat in `SECURITY.md`: only set `JARN_HOME` in trusted environments; never inherit it from a cloned project's instructions.
 3. (Optional) require an explicit opt-in env (`JARN_ALLOW_CUSTOM_HOME=1`) when the path is non-default and outside `~`.
 **DoD:**
-- [ ] `doctor` flags a non-default `JARN_HOME`.
-- [ ] `SECURITY.md` documents the threat.
+- [x] `doctor` flags a non-default `JARN_HOME`.
+- [x] `SECURITY.md` documents the threat.
 **Tests:** `test_settings.test_doctor_warns_custom_jarn_home`.
 **Risk:** low
 **Deps:** none
 **Effort:** S
 
 ### Phase 1 — Definition of Done
-- [ ] All 13 tasks merged with passing targeted tests.
-- [ ] No inline secret can reach a provider without a warning; no secret can persist to transcripts/logs unredacted.
-- [ ] Corrupt YAML can never wipe a config file; a `.bak` exists.
-- [ ] Out-of-scope writes (CWD-relative / symlink escape) are refused.
-- [ ] Untrusted projects cannot override `routing/budget/wiki/…`; `/trust` is TOCTOU-safe.
-- [ ] Hooks no longer inherit the full env; hook failures are visible.
-- [ ] `guard.py` covers the documented bypass classes; `SECURITY.md` honestly states its limits.
-- [ ] Full `pytest -q`, `ruff`, `mypy` green; no behavior regression for trusted-repo users.
+- [x] All 13 tasks merged with passing targeted tests.
+- [x] No inline secret can reach a provider without a warning; no secret can persist to transcripts/logs unredacted.
+- [x] Corrupt YAML can never wipe a config file; a `.bak` exists.
+- [x] Out-of-scope writes (CWD-relative / symlink escape) are refused.
+- [x] Untrusted projects cannot override `routing/budget/wiki/…`; `/trust` is TOCTOU-safe.
+- [x] Hooks no longer inherit the full env; hook failures are visible.
+- [x] `guard.py` covers the documented bypass classes; `SECURITY.md` honestly states its limits.
+- [x] Full `pytest -q`, `ruff`, `mypy` green; no behavior regression for trusted-repo users.
 
 ---
 
