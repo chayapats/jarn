@@ -118,16 +118,25 @@ def _check_pct(value: int, path: str) -> int:
     return value
 
 
+def _parse_yaml_text(text: str, source: Path | None) -> dict[str, Any]:
+    """Parse a YAML string into a dict, validating the top-level is a mapping.
+
+    Shared by :func:`_read_yaml` (path-based) and the trust flow (bytes-based,
+    so the fingerprint and the loaded config come from one read — no TOCTOU).
+    """
+    try:
+        data = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"Invalid YAML in {source}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"Top-level config in {source} must be a mapping.")
+    return data
+
+
 def _read_yaml(path: Path | None) -> dict[str, Any]:
     if path is None or not path.is_file():
         return {}
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as exc:
-        raise ConfigError(f"Invalid YAML in {path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ConfigError(f"Top-level config in {path} must be a mapping.")
-    return data
+    return _parse_yaml_text(path.read_text(encoding="utf-8"), path)
 
 
 def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
@@ -583,6 +592,7 @@ def load_config(
     project_path: Path | None = None,
     project_root: Path | None = None,
     project_trusted: bool = True,
+    project_raw: dict[str, Any] | None = None,
 ) -> Config:
     """Load, merge, and validate configuration from both tiers.
 
@@ -595,6 +605,11 @@ def load_config(
     secrets. The launcher decides trust (see :mod:`jarn.config.trust`); the
     default is ``True`` so the global tier and explicitly-trusted callers behave
     as before.
+
+    ``project_raw`` lets a caller pass the already-read project tier dict so the
+    fingerprinted content and the loaded content are guaranteed identical (no
+    TOCTOU between the trust decision and the load). When ``None`` the project
+    path is read here as before.
     """
     gpath = global_path if global_path is not None else paths.global_config_path()
     ppath = (
@@ -603,7 +618,8 @@ def load_config(
         else paths.project_config_path(project_root)
     )
 
-    project_raw = _read_yaml(ppath)
+    if project_raw is None:
+        project_raw = _read_yaml(ppath)
     if not project_trusted:
         from jarn.config.trust import sanitize_project
 
