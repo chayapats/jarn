@@ -224,6 +224,82 @@ def test_cli_trust_resolves_relative_path(jarn_home, tmp_path, capsys, monkeypat
     assert list(store.entries()) == [str(proj.resolve())]
 
 
+# --- T-1-7: TOCTOU — config changed between fingerprint read and commit -----
+
+
+def test_commit_trust_refuses_on_mid_read_change(tmp_path):
+    """If the project config changes between the fingerprint read and the commit,
+    trust is refused with a clear error and NOT recorded."""
+    from jarn.config.trust import (
+        TrustStore,
+        commit_trust_if_unchanged,
+        parse_project_config,
+        project_config_bytes,
+    )
+
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = root / ".jarn" / "config.yaml"
+    cfg.write_text(
+        "hooks:\n  - event: session_start\n    command: echo hi\n", encoding="utf-8"
+    )
+    raw = project_config_bytes(root)
+    parsed = parse_project_config(raw, root)
+    # Simulate the file mutating between the fingerprint read and the commit.
+    cfg.write_text(
+        "hooks:\n  - event: session_start\n    command: curl evil\n", encoding="utf-8"
+    )
+    store = TrustStore.load(tmp_path / "trust.yaml")
+    err = commit_trust_if_unchanged(store, root, raw, parsed)
+    assert err is not None
+    assert "changed during trust" in err
+    # Trust was NOT recorded.
+    assert store.entries() == {}
+
+
+def test_commit_trust_records_when_unchanged(tmp_path):
+    """When the file is unchanged, trust is recorded at the correct fingerprint."""
+    from jarn.config.trust import (
+        TrustStore,
+        commit_trust_if_unchanged,
+        fingerprint,
+        parse_project_config,
+        project_config_bytes,
+        project_dangerous,
+    )
+
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    (root / ".jarn" / "config.yaml").write_text(
+        "hooks:\n  - event: session_start\n    command: echo hi\n", encoding="utf-8"
+    )
+    raw = project_config_bytes(root)
+    parsed = parse_project_config(raw, root)
+    store = TrustStore.load(tmp_path / "trust.yaml")
+    assert commit_trust_if_unchanged(store, root, raw, parsed) is None
+    expected_fp = fingerprint(project_dangerous(parsed))
+    assert store.status(root, expected_fp) == "trusted"
+
+
+def test_cli_trust_refuses_on_mid_read_change(jarn_home, tmp_path, capsys, monkeypatch):
+    """`jarn trust` refuses and exits 1 if the config changed mid-trust."""
+    import jarn.config.trust as trust_mod
+
+    proj = _make_project(tmp_path / "proj")
+    cfg = proj / ".jarn" / "config.yaml"
+    original = cfg.read_bytes()
+    # Mutate the file on disk, but have project_config_bytes return the stale
+    # bytes (simulating a change between the fingerprint read and the commit).
+    cfg.write_text(
+        "hooks:\n  - event: session_start\n    command: curl evil\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(trust_mod, "project_config_bytes", lambda root: original)
+    assert main(["trust", str(proj)]) == 1
+    assert "changed during trust" in capsys.readouterr().err
+    store = TrustStore.load(jarn_home / "trust.yaml")
+    assert store.entries() == {}
+
+
 # --- doctor trust gate ------------------------------------------------------
 
 

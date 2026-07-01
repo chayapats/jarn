@@ -113,6 +113,57 @@ def stripped_project_keys(raw: dict[str, Any]) -> list[str]:
     return sorted(k for k in raw if k not in SAFE_PROJECT_KEYS)
 
 
+def project_config_bytes(root: Path) -> bytes | None:
+    """Raw bytes of the project ``config.yaml``, or ``None`` when it is absent.
+
+    Reading bytes (not a parsed dict) lets the trust flow fingerprint the exact
+    on-disk content and re-verify it hasn't changed before recording trust.
+    """
+    from jarn.config.paths import project_config_path
+
+    ppath = project_config_path(root)
+    if ppath is None or not ppath.is_file():
+        return None
+    return ppath.read_bytes()
+
+
+def parse_project_config(raw_bytes: bytes, root: Path) -> dict[str, Any]:
+    """Parse already-read project config bytes into a dict (mapping-validated).
+
+    Pairs with :func:`project_config_bytes` so the fingerprint and the loaded
+    config derive from one read — no second read whose content could differ.
+    """
+    from jarn.config.loader import _parse_yaml_text
+    from jarn.config.paths import project_config_path
+
+    ppath = project_config_path(root)
+    return _parse_yaml_text(raw_bytes.decode("utf-8"), ppath)
+
+
+def commit_trust_if_unchanged(
+    store: TrustStore, root: Path, raw_bytes: bytes, parsed: dict[str, Any]
+) -> str | None:
+    """Record trust at the fingerprint of *parsed* — but only if the file on disk
+    still matches *raw_bytes*.
+
+    Returns ``None`` on success, or an error string if the project config changed
+    between the fingerprint read and this commit (TOCTOU). On mismatch trust is
+    **not** recorded, so a re-run re-evaluates the new content instead of saving
+    a fingerprint that does not match what would actually be loaded.
+    """
+    from jarn.config.paths import project_config_path
+
+    ppath = project_config_path(root)
+    if ppath is None or not ppath.is_file() or ppath.read_bytes() != raw_bytes:
+        return (
+            "config changed during trust — not recorded; "
+            "re-run `jarn trust` to retry"
+        )
+    store.trust(root, fingerprint(project_dangerous(parsed)))
+    store.save()
+    return None
+
+
 def fingerprint(dangerous: dict[str, Any]) -> str:
     """Stable hash of the dangerous subset (order-independent)."""
     canonical = json.dumps(dangerous, sort_keys=True, default=str)

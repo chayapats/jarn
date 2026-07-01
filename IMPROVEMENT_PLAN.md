@@ -197,14 +197,14 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 **Deps:** none
 **Effort:** M
 
-### T-1-7 — Fix TOCTOU on `/trust` (single read)
+### T-1-7 — Fix TOCTOU on `/trust` (single read) ✅
 **Problem:** `trust.py` takes the fingerprint from `_read_yaml` then runs a **separate** `load_config()`; disk can change between reads → stored fingerprint may not match the loaded config.
 **Files:** `src/jarn/config/trust.py`, `tests/test_trust.py`
 **Action:**
 1. Read the project YAML **once**; derive the fingerprint from that exact bytes object and pass the parsed/merged config forward (or re-verify the fingerprint against a second read and refuse if mismatched).
 2. After merge, optionally re-hash the merged result and store both for audit.
 **DoD:**
-- [ ] A test that mutates the project config between the two reads (simulated) is refused with a clear "config changed during trust" error.
+- [x] A test that mutates the project config between the two reads (simulated) is refused with a clear "config changed during trust" error.
 **Tests:** `test_trust.test_toctou_refuses_on_mid_read_change`.
 **Risk:** low
 **Deps:** T-1-6

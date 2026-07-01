@@ -11,7 +11,7 @@ from __future__ import annotations
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from rich.markup import escape as _escape_markup
 
@@ -1037,31 +1037,51 @@ class Controller:
         if self.project_trusted:
             return CommandResult("This project is already trusted.")
 
-        from jarn.config import paths
-        from jarn.config.loader import _read_yaml
+        # Read the project config once: fingerprint the exact on-disk bytes and
+        # re-verify they haven't changed before recording trust (TOCTOU guard).
+        # The same parsed dict is then passed to load_config so the fingerprinted
+        # content and the loaded content are identical.
+        root = self.project_root
         from jarn.config.trust import (
             TrustStore,
+            commit_trust_if_unchanged,
             fingerprint,
+            parse_project_config,
+            project_config_bytes,
             project_dangerous,
         )
 
-        ppath = paths.project_config_path(self.project_root)
-        danger = project_dangerous(_read_yaml(ppath)) if ppath else {}
         store = TrustStore.load()
-        store.trust(self.project_root, fingerprint(danger))
-        store.save()
+        raw_bytes = project_config_bytes(root)
+        if raw_bytes is None:
+            # No project config: nothing dangerous to fingerprint, but the user
+            # still wants to lift the untrusted floor. Trust at the empty
+            # fingerprint and reload from the global tier only.
+            project_raw: dict[str, Any] = {}
+            danger: dict[str, Any] = {}
+            store.trust(root, fingerprint({}))
+            store.save()
+        else:
+            project_raw = parse_project_config(raw_bytes, root)
+            danger = project_dangerous(project_raw)
+            err = commit_trust_if_unchanged(store, root, raw_bytes, project_raw)
+            if err is not None:
+                return CommandResult(f"{err}")
 
         self.project_trusted = True
-        # RELOAD the config from disk now that the project is trusted. A simple
-        # re-resolve can't fix this: the launch-time untrusted floor already
-        # OVERWROTE config.permission_mode with the review-only clamp (plan) and
-        # the loader had stripped the project's capability keys. Reloading with
-        # project_trusted=True restores both the configured mode and the project
+        # RELOAD the config from the already-read project tier now that the
+        # project is trusted. A simple re-resolve can't fix this: the launch-time
+        # untrusted floor already OVERWROTE config.permission_mode with the
+        # review-only clamp (plan) and the loader had stripped the project's
+        # capability keys. Reloading with project_trusted=True (and the same
+        # project_raw) restores both the configured mode and the project
         # hooks / MCP / providers, so the rebuilt runtime is genuinely unlocked.
         from jarn.config.loader import load_config
         from jarn.config.profiles import resolve_effective_profile
 
-        self.config = load_config(project_root=self.project_root, project_trusted=True)
+        self.config = load_config(
+            project_root=root, project_trusted=True, project_raw=project_raw
+        )
         resolve_effective_profile(self.config, project_trusted=True, cli_profile=None)
         self.engine.mode = self.config.permission_mode
         self.engine.rules = self.config.permissions
@@ -1074,7 +1094,7 @@ class Controller:
                 ".jarn/config.yaml are now active.[/dim]"
             )
         return CommandResult(
-            f"Trusted {self.project_root}. Review-only floor lifted; "
+            f"Trusted {root}. Review-only floor lifted; "
             f"mode is now {self.config.permission_mode.value} (rebuilding).{note}",
             rebuilt=True,
         )

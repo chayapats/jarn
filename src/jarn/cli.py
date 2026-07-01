@@ -245,9 +245,16 @@ def _cmd_headless(
         )
         return 1
 
-    # Use the same trust logic as the interactive launch.
-    trusted = _resolve_project_trust(root)
-    cfg = load_config(project_root=root, project_trusted=trusted)
+    # Use the same trust logic as the interactive launch. The project tier is
+    # read once and passed forward so the fingerprinted content is exactly what
+    # gets loaded (no TOCTOU between the trust decision and the load).
+    trusted, project_raw, trust_err = _resolve_project_trust(root)
+    if trust_err is not None:
+        print(f"error: {trust_err}", file=sys.stderr)
+        return 1
+    cfg = load_config(
+        project_root=root, project_trusted=trusted, project_raw=project_raw
+    )
     _warn_policy_profile_deprecated(cfg)
     setup_logging(cfg.observability.log_level)
     configure_langsmith(cfg.observability.langsmith)
@@ -647,9 +654,12 @@ def _print_extensions(console: Any, ext: dict) -> None:
 
 def _cmd_trust(*, path: str | None, remove: bool, as_json: bool = False) -> int:
     """List, trust, or untrust project roots in the shared trust store."""
-    from jarn.config import paths
-    from jarn.config.loader import _read_yaml
-    from jarn.config.trust import TrustStore, fingerprint, project_dangerous
+    from jarn.config.trust import (
+        TrustStore,
+        commit_trust_if_unchanged,
+        parse_project_config,
+        project_config_bytes,
+    )
 
     store = TrustStore.load()
 
@@ -667,17 +677,20 @@ def _cmd_trust(*, path: str | None, remove: bool, as_json: bool = False) -> int:
         print(f"Untrusted {root}")
         return 0
 
-    ppath = paths.project_config_path(root)
-    if ppath is None or not ppath.is_file():
+    # Read the project config once: fingerprint the exact on-disk bytes, then
+    # re-verify they haven't changed before recording trust (TOCTOU guard).
+    raw_bytes = project_config_bytes(root)
+    if raw_bytes is None:
         print(
             f"No project config at {root}/.jarn/config.yaml — nothing to trust.",
             file=sys.stderr,
         )
         return 1
-
-    danger = project_dangerous(_read_yaml(ppath))
-    store.trust(root, fingerprint(danger))
-    store.save()
+    parsed = parse_project_config(raw_bytes, root)
+    err = commit_trust_if_unchanged(store, root, raw_bytes, parsed)
+    if err is not None:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
     print(f"Trusted {root}")
     return 0
 
@@ -721,10 +734,17 @@ def _cmd_launch(*, resume: bool = False, profile_override: str | None = None) ->
 
     # Trust boundary: a project's .jarn/config.yaml can run hooks / spawn MCP
     # servers / override providers (secret exfil). Don't honour those keys from an
-    # untrusted project until the user explicitly approves them.
-    trusted = _resolve_project_trust(root)
+    # untrusted project until the user explicitly approves them. The project tier
+    # is read once and passed forward so the fingerprinted content is exactly what
+    # gets loaded (no TOCTOU between the trust decision and the load).
+    trusted, project_raw, trust_err = _resolve_project_trust(root)
+    if trust_err is not None:
+        print(f"error: {trust_err}", file=sys.stderr)
+        return 1
 
-    cfg = load_config(project_root=root, project_trusted=trusted)
+    cfg = load_config(
+        project_root=root, project_trusted=trusted, project_raw=project_raw
+    )
     _warn_policy_profile_deprecated(cfg)
     setup_logging(cfg.observability.log_level)
     configure_langsmith(cfg.observability.langsmith)
@@ -746,38 +766,54 @@ def _cmd_launch(*, resume: bool = False, profile_override: str | None = None) ->
     return run_inline(cfg, root, resume=resume, project_trusted=trusted)
 
 
-def _resolve_project_trust(root: Path) -> bool:
+def _resolve_project_trust(root: Path) -> tuple[bool, dict[str, Any], str | None]:
     """Decide whether to honour the project's capability-granting config keys.
+
+    Returns ``(trusted, project_raw, error)``. ``project_raw`` is the project
+    tier dict read from the **same bytes** used to fingerprint it, so the caller
+    can pass it straight into ``load_config(project_raw=...)`` with no second
+    read (TOCTOU). ``error`` is non-None only when the config changed between the
+    fingerprint and the commit — the caller should surface it and abort.
 
     Returns ``True`` when the project is already trusted (at its current
     fingerprint) or the user approves the prompt; ``False`` otherwise (the
     dangerous keys are then stripped at load time). No-op (trusted) when the
     project declares nothing dangerous.
     """
-    from jarn.config import paths
-    from jarn.config.loader import _read_yaml
     from jarn.config.trust import (
         TrustStore,
+        commit_trust_if_unchanged,
         fingerprint,
+        parse_project_config,
+        project_config_bytes,
         project_dangerous,
     )
 
-    ppath = paths.project_config_path(root)
-    danger = project_dangerous(_read_yaml(ppath))
+    raw_bytes = project_config_bytes(root)
+    if raw_bytes is None:
+        return True, {}, None  # no project config → trusted, empty tier
+    project_raw = parse_project_config(raw_bytes, root)
+
+    danger = project_dangerous(project_raw)
     if not danger:
-        return True
+        return True, project_raw, None
 
     store = TrustStore.load()
     fp = fingerprint(danger)
     status = store.status(root, fp)
     if status == "trusted":
-        return True
+        return True, project_raw, None
 
     granted = _prompt_project_trust(root, danger, status)
-    if granted:
-        store.trust(root, fp)
-        store.save()
-    return granted
+    if not granted:
+        return False, project_raw, None
+    # The user took time to answer; re-verify the file hasn't changed since we
+    # fingerprinted it. If it has, refuse — the stored fingerprint would not
+    # match what we'd actually load.
+    err = commit_trust_if_unchanged(store, root, raw_bytes, project_raw)
+    if err is not None:
+        return False, project_raw, err
+    return True, project_raw, None
 
 
 def _prompt_project_trust(root: Path, danger: dict, status: str) -> bool:
