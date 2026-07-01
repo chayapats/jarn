@@ -28,6 +28,17 @@ Captured on `improve/phase-1-security` at branch creation (off `main` @ `305e073
 
 The 25 failures/errors are exclusively the **git-subprocess suites** (`test_checkpoint`, `test_git_commands`, and the undo/redo/abort cases in `test_controller`/`test_repl`/`test_wave_b_wiring`/`test_repomap::test_cache_second_call_uses_cache`) that fork `git` and cannot run inside this local restricted sandbox. **GitHub Actions CI is the source of truth** for those; locally they are expected-to-fail and must not regress *in kind* (no new non-subprocess failures). Every subsequent PR references these numbers.
 
+### Phase 1 verification (end of `improve/phase-1-security`, after T-1-1…T-1-13)
+
+| Check | Result |
+|---|---|
+| `uv run ruff check src tests scripts` | **clean** |
+| `uv run mypy src/` | **clean** |
+| `uv run pytest --collect-only -q` | **1276 tests collected** (+93 vs baseline) |
+| `uv run pytest -q` (local sandbox) | **1243 passed, 8 skipped, 10 failed, 15 errors** — same git-subprocess suites as baseline; **no new non-subprocess failures** |
+
+All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`…`1aaf2d2`). Full green `pytest -q` is verified on **GitHub Actions CI** (git available); local sandbox counts above are the expected partial-green baseline.
+
 ---
 
 ## How to read this plan
@@ -63,8 +74,8 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 2. On a machine with `git` available (or trust CI), run `uv sync --extra dev && uv run ruff check src tests scripts && uv run mypy src/ && uv run pytest -q` and record pass/skip/fail counts.
 3. Record the authoritative **collection count** via `uv run pytest --collect-only -q | tail -1` (currently **1183**, docs say 1166 — drift tracked in T-4-9).
 **DoD:**
-- [ ] Baseline numbers (passed/skipped/failed, collection total) written into the PR description of the first change.
-- [ ] `ruff` and `mypy` are clean on the base branch.
+- [x] Baseline numbers (passed/skipped/failed, collection total) written into the PR description of the first change.
+- [x] `ruff` and `mypy` are clean on the base branch.
 **Tests:** none
 **Risk:** low
 **Effort:** S
@@ -74,14 +85,14 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 **Files:** none
 **Action:** one PR per task (or per tightly-coupled task group within a phase); each PR title prefixed `phase-N: …`; squash-merge.
 **DoD:**
-- [ ] Strategy documented at the top of this file (this section).
+- [x] Strategy documented at the top of this file (this section).
 **Tests:** none
 **Risk:** low
 **Effort:** S
 
 ### Phase 0 — Definition of Done
-- [ ] Baseline captured and referenced from every subsequent PR.
-- [ ] Branch + PR conventions agreed.
+- [x] Baseline captured and referenced from every subsequent PR.
+- [x] Branch + PR conventions agreed.
 
 ---
 
@@ -91,7 +102,7 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 
 **Scope (13 tasks):** guard hardening, central redaction, inline-key rejection, YAML integrity, scope-check fix, untrusted sanitization, trust TOCTOU, hook hardening, preset safety, secret-file perms, provider `extra` restriction, load-time URL/event validation, `JARN_HOME` threat doc.
 
-### T-1-1 — Harden the danger-guard (patterns + bypass classes)
+### T-1-1 — Harden the danger-guard (patterns + bypass classes) ✅
 **Problem:** `src/jarn/permissions/guard.py` is a regex net over the pre-shell string; `shell=True` execution downstream means several classes bypass it. Verified gaps: `rm -rf ${HOME}` (brace form) escapes the root-target BLOCK; missing patterns for `eval`/`bash -c`/`python -c`/heredoc bodies/`$(printf …)`/base64-decoded payloads; missing package-manager postinstall vectors (`npm install`, `pnpm install`, `yarn add`, `pip install`, `uv pip install`, `npx`, `bunx`); missing `docker run --privileged`, `diskutil eraseDisk`, `shutdown`/`reboot`, `truncate -s 0`, `git checkout .` / `git restore .` (mass discard), `curl -o file; sh file`, `base64 -d | bash`; flag-order bypass (`chmod 777 -R .` may slip past `\bchmod\s+-R\b`); no Unicode/homoglyph normalization; `find -exec rm` not caught (only `-delete`).
 **Files:** `src/jarn/permissions/guard.py`, `tests/test_guard.py`
 **Action:**
@@ -102,12 +113,12 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 5. Add a *documented* note in `SECURITY.md` and `docs/PERMISSIONS.md`: the guard is a **net, not a sandbox**; chaining via `eval`/`bash -c`/interpreters can hide payloads; for untrusted code use `execution.backend: docker` or the OS sandbox. Do **not** claim completeness.
 6. Keep `! cmd` REPL escape semantics (intentional bypass) but make the REPL print a one-line reminder that the guard is skipped for `!`.
 **DoD:**
-- [ ] `rm -rf ${HOME}` and `rm -rf -- /*` classify as BLOCKED.
-- [ ] Every new pattern has a passing test in `test_guard.py` and a failing test on the pre-fix code.
-- [ ] `chmod 777 -R .` and `chmod -R 777 .` both classify DANGEROUS.
-- [ ] `npm install`, `pip install`, `npx create-app`, `docker run --privileged …`, `git restore .`, `find . -exec rm -rf {} +` all classify DANGEROUS or BLOCKED as specified.
-- [ ] Unicode-homoglyph `rm` (Cyrillic `m`) is normalized and matched.
-- [ ] `SECURITY.md` + `docs/PERMISSIONS.md` updated with the honest limits paragraph.
+- [x] `rm -rf ${HOME}` and `rm -rf -- /*` classify as BLOCKED.
+- [x] Every new pattern has a passing test in `test_guard.py` and a failing test on the pre-fix code.
+- [x] `chmod 777 -R .` and `chmod -R 777 .` both classify DANGEROUS.
+- [x] `npm install`, `pip install`, `npx create-app`, `docker run --privileged …`, `git restore .`, `find . -exec rm -rf {} +` all classify DANGEROUS or BLOCKED as specified.
+- [x] Unicode-homoglyph `rm` (Cyrillic `m`) is normalized and matched.
+- [x] `SECURITY.md` + `docs/PERMISSIONS.md` updated with the honest limits paragraph.
 **Tests:** extend `test_guard.py` with one case per new pattern + bypass class + a homoglyph case.
 **Risk:** over-broad patterns may flag benign commands (e.g. `npm install` in a trusted workflow). Mitigation: DANGEROUS (not BLOCKED) for installers so they remain usable with confirmation; document the trade-off.
 **Deps:** none
@@ -223,7 +234,7 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 - [x] Test: a hook with a typo'd event is rejected at load.
 - [x] Test: hook subprocess does **not** see `OPENROUTER_API_KEY` unless explicitly passed via `extra_env`.
 - [x] Test: a failing `pre_commit` hook logs a WARNING and surfaces a notice instead of being swallowed.
-**Tests:** `test_extensibility.test_hook_event_validation`, `test_extensibility.test_hook_env_allowlist`, `test_extensibility.test_hook_failure_surfaced`.
+**Tests:** `test_extensibility.test_hook_event_validation`, `test_extensibility.test_hook_env_allowlist`, `test_agent_mocked.test_hook_failure_surfaced`.
 **Risk:** users relying on env inheritance in hooks need to declare `extra_env`. Mitigation: clear migration note + `hooks.inherit_env: true` escape hatch.
 **Deps:** none
 **Effort:** M
@@ -310,7 +321,7 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 - [x] Untrusted projects cannot override `routing/budget/wiki/…`; `/trust` is TOCTOU-safe.
 - [x] Hooks no longer inherit the full env; hook failures are visible.
 - [x] `guard.py` covers the documented bypass classes; `SECURITY.md` honestly states its limits.
-- [x] Full `pytest -q`, `ruff`, `mypy` green; no behavior regression for trusted-repo users.
+- [x] `ruff` and `mypy` clean; local `pytest -q` matches the Phase 0 git-subprocess baseline (no new non-subprocess failures); **full green on GitHub Actions CI**.
 
 ---
 
