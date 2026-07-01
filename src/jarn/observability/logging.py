@@ -6,6 +6,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 from jarn.config import paths
+from jarn.config.secrets import redact_secrets
 
 _LEVELS = {
     "debug": logging.DEBUG,
@@ -13,6 +14,26 @@ _LEVELS = {
     "warning": logging.WARNING,
     "error": logging.ERROR,
 }
+
+
+class RedactingFilter(logging.Filter):
+    """Scrub secret-shaped substrings from every log record before it is emitted.
+
+    A resolved API key that leaks into a log line (via an interpolated ``{exc}``
+    or a debug dump) would persist to ``jarn.log`` indefinitely. This filter
+    formats the record, runs it through the central redactor, and writes the
+    redacted string back onto the record so the handler's formatter emits the
+    scrubbed version. It is best-effort, matching the transcript redactor.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            formatted = record.getMessage()
+        except Exception:  # noqa: BLE001 - never let logging itself crash a turn
+            return True
+        record.msg = redact_secrets(formatted)
+        record.args = ()
+        return True
 
 
 def setup_logging(level: str = "info") -> logging.Logger:
@@ -38,5 +59,6 @@ def setup_logging(level: str = "info") -> logging.Logger:
     handler.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     )
+    handler.addFilter(RedactingFilter())
     logger.addHandler(handler)
     return logger

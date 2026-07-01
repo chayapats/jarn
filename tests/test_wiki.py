@@ -447,10 +447,14 @@ def test_wiki_write_auto_allowed_in_auto_edit(tmp_path: Path) -> None:
     assert result.decision.value == "allow"
 
 
-def test_wiki_write_slug_asks_in_auto_edit_without_full_path(tmp_path: Path) -> None:
-    """When the target is a bare slug (not a full path), the engine cannot confirm
-    it's in-scope, so auto-edit falls back to ASK — consistent with the engine's
-    general behaviour for WRITE actions with non-resolvable targets."""
+def test_wiki_write_slug_auto_allowed_in_auto_edit(tmp_path: Path) -> None:
+    """A bare slug resolves project-relative, so auto-edit auto-allows it.
+
+    Since T-1-5, relative WRITE targets are anchored to ``project_root`` (not the
+    process CWD), so a bare wiki slug like ``my-page`` resolves inside the project
+    and is in-scope — matching the permissions_bridge intent that wiki_write is
+    auto-allowed in auto-edit/yolo and prompted only in ask mode.
+    """
     from jarn.agent.permissions_bridge import tool_to_action
     from jarn.config.schema import PermissionMode
     from jarn.permissions import PermissionEngine
@@ -458,8 +462,7 @@ def test_wiki_write_slug_asks_in_auto_edit_without_full_path(tmp_path: Path) -> 
     engine = PermissionEngine(mode=PermissionMode.AUTO_EDIT, project_root=tmp_path)
     action = tool_to_action("wiki_write", {"page": "my-page"})
     result = engine.evaluate(action)
-    # A bare slug is out-of-scope from the engine's perspective; it prompts.
-    assert result.decision.value == "ask"
+    assert result.decision.value == "allow"
 
 
 def test_wiki_write_prompts_in_ask_mode(tmp_path: Path) -> None:

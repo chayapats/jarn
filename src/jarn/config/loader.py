@@ -8,8 +8,11 @@ which are concatenated so a project can extend (not just replace) global rules.
 
 from __future__ import annotations
 
+import re
+import warnings
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -38,12 +41,39 @@ from jarn.config.schema import (
 
 _LIST_EXTEND_KEYS = {"hooks", "mcp_servers", "async_subagents"}
 
+#: Safe ``extra`` kwargs forwarded to ``init_chat_model`` per provider. Unknown
+#: keys are rejected at load so mistyped YAML can't inject arbitrary constructor
+#: kwargs (headers, URLs, …). Use the typed ``headers`` field for HTTP auth.
+_PROVIDER_EXTRA_KEYS = frozenset({
+    "max_retries",
+    "timeout",
+    "temperature",
+    "top_p",
+    "max_tokens",
+    "streaming",
+    "model_kwargs",
+    "extra_body",
+    "frequency_penalty",
+    "presence_penalty",
+    "stop",
+    "n",
+    "seed",
+    "keep_alive",
+})
+
+_VALID_MCP_TRANSPORTS = frozenset({"stdio", "http", "sse", "streamable_http"})
+# Shell metacharacters — MCP stdio spawns without shell=True, so reject these.
+_STDIO_CMD_META = re.compile(r"[;|&`$<>(){}]")
+
 #: The authoritative set of recognised top-level config keys. Anything else is a
 #: typo or an unsupported feature and is rejected loudly rather than ignored.
 _KNOWN_TOP_LEVEL_KEYS = {
     "default_profile",
     "default_model",
     "permission_mode",
+    "strict_secrets",
+    "hook_inherit_env",
+    "hook_global_require_trust",
     "providers",
     "routing",
     "budget",
@@ -116,16 +146,25 @@ def _check_pct(value: int, path: str) -> int:
     return value
 
 
+def _parse_yaml_text(text: str, source: Path | None) -> dict[str, Any]:
+    """Parse a YAML string into a dict, validating the top-level is a mapping.
+
+    Shared by :func:`_read_yaml` (path-based) and the trust flow (bytes-based,
+    so the fingerprint and the loaded config come from one read — no TOCTOU).
+    """
+    try:
+        data = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"Invalid YAML in {source}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"Top-level config in {source} must be a mapping.")
+    return data
+
+
 def _read_yaml(path: Path | None) -> dict[str, Any]:
     if path is None or not path.is_file():
         return {}
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as exc:
-        raise ConfigError(f"Invalid YAML in {path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ConfigError(f"Top-level config in {path} must be a mapping.")
-    return data
+    return _parse_yaml_text(path.read_text(encoding="utf-8"), path)
 
 
 def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
@@ -174,8 +213,19 @@ def _build_config(raw: dict[str, Any]) -> Config:
                 f"Unknown permission_mode {raw['permission_mode']!r}; "
                 f"expected one of {[m.value for m in PermissionMode]}"
             ) from exc
+    if "strict_secrets" in raw:
+        cfg.strict_secrets = _normalize_bool(raw["strict_secrets"], "strict_secrets")
+    if "hook_inherit_env" in raw:
+        cfg.hook_inherit_env = _normalize_bool(
+            raw["hook_inherit_env"], "hook_inherit_env"
+        )
+    if "hook_global_require_trust" in raw:
+        cfg.hook_global_require_trust = _normalize_bool(
+            raw["hook_global_require_trust"], "hook_global_require_trust"
+        )
 
     cfg.providers = _build_providers(raw.get("providers", {}))
+    _validate_inline_api_keys(cfg.providers, cfg.strict_secrets)
 
     routing = raw.get("routing", {}) or {}
     from jarn.config.schema import _VALID_PROMPT_CACHE
@@ -383,6 +433,52 @@ def _build_config(raw: dict[str, Any]) -> Config:
     return cfg
 
 
+def _validate_absolute_http_url(url: str, *, context: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ConfigError(
+            f"{context} must be an absolute http(s) URL (got {url!r})."
+        )
+
+
+def _warn_mcp_url_ssrf(url: str, *, name: str) -> None:
+    """Defense-in-depth: warn when an MCP HTTP URL targets a private/loopback host."""
+    from jarn.agent.web_tools import _check_host
+
+    host = urlparse(url).hostname or ""
+    _ips, reason = _check_host(host)
+    if reason is not None:
+        warnings.warn(
+            f"MCP server {name!r} url {url!r} targets a private/loopback host "
+            f"({reason}). MCP endpoints may reach internal services by design; "
+            "ensure you trust this config.",
+            stacklevel=3,
+        )
+
+
+def _validate_stdio_command(command: str, *, context: str) -> None:
+    if _STDIO_CMD_META.search(command):
+        raise ConfigError(
+            f"{context} must not contain shell metacharacters "
+            f"(got {command!r}). MCP stdio servers are spawned without a shell."
+        )
+
+
+def _validate_string_headers(headers: object, *, context: str) -> dict[str, str]:
+    if headers is None:
+        return {}
+    if not isinstance(headers, dict):
+        raise ConfigError(f"{context} must be a mapping (got {headers!r}).")
+    out: dict[str, str] = {}
+    for key, val in headers.items():
+        if not isinstance(key, str) or not isinstance(val, str):
+            raise ConfigError(
+                f"{context} keys and values must be strings (got {key!r}: {val!r})."
+            )
+        out[key] = val
+    return out
+
+
 def _build_providers(raw: dict[str, Any]) -> dict[str, ProviderConfig]:
     providers: dict[str, ProviderConfig] = {}
     for name, spec in (raw or {}).items():
@@ -399,14 +495,70 @@ def _build_providers(raw: dict[str, Any]) -> dict[str, ProviderConfig]:
                 f"Provider {name!r} has unknown type {type_str!r}; "
                 f"expected one of {[p.value for p in ProviderType]}"
             ) from exc
-        known = {"type", "api_key", "base_url"}
+        known = {"type", "api_key", "base_url", "headers"}
+        extra = {k: v for k, v in spec.items() if k not in known}
+        bad_extra = set(extra) - _PROVIDER_EXTRA_KEYS
+        if bad_extra:
+            raise ConfigError(
+                f"Provider {name!r} ({ptype.value}) has unknown extra key(s) "
+                f"{sorted(bad_extra)}. Allowed: {sorted(_PROVIDER_EXTRA_KEYS)}. "
+                "Use the top-level 'headers' field for HTTP auth headers."
+            )
+        headers = _validate_string_headers(
+            spec.get("headers"), context=f"Provider {name!r} 'headers'"
+        )
         providers[name] = ProviderConfig(
             type=ptype,
             api_key=spec.get("api_key"),
             base_url=spec.get("base_url"),
-            extra={k: v for k, v in spec.items() if k not in known},
+            headers=headers,
+            extra=extra,
         )
     return providers
+
+
+class InlineSecretWarning(UserWarning):
+    """Emitted when a provider defines an inline plaintext ``api_key``.
+
+    Inline keys sit in config.yaml on disk and in memory, contradicting the
+    "referenced, never inlined" guidance. Default behaviour is to warn; set
+    ``strict_secrets: true`` to turn this into a hard :class:`ConfigError`.
+    """
+
+
+def _validate_inline_api_keys(
+    providers: dict[str, ProviderConfig], strict: bool
+) -> None:
+    """Warn/error on providers whose ``api_key`` is an inline plaintext secret.
+
+    A reference (``${ENV}``, ``keychain:``, ``file:``) is never flagged — only a
+    literal that :func:`looks_like_secret` recognises. Empty keys and short
+    local-provider tokens (e.g. ``lm-studio``) pass silently.
+    """
+    from jarn.config.secrets import is_reference, looks_like_secret
+
+    offenders: list[str] = []
+    for name, prov in providers.items():
+        ref = prov.api_key
+        if ref is None or is_reference(ref):
+            continue
+        if looks_like_secret(ref):
+            offenders.append(name)
+            if not strict:
+                warnings.warn(
+                    f"Provider {name!r} has an inline plaintext api_key in "
+                    "config.yaml — move it to a reference (keychain:..., "
+                    "file:..., or ${ENV_VAR}) so it isn't persisted to disk. "
+                    "Set strict_secrets: true to reject this.",
+                    InlineSecretWarning,
+                    stacklevel=2,
+                )
+    if strict and offenders:
+        raise ConfigError(
+            f"Provider(s) {offenders!r} define inline plaintext api_keys but "
+            "strict_secrets is on. Move each to a reference (keychain:..., "
+            "file:..., or ${ENV_VAR})."
+        )
 
 
 def _build_hook(raw: dict[str, Any]) -> HookSpec:
@@ -417,6 +569,16 @@ def _build_hook(raw: dict[str, Any]) -> HookSpec:
     if not isinstance(raw["command"], str):
         raise ConfigError(
             f"Hook 'command' must be a string (got {raw['command']!r})."
+        )
+    # Validate the event name against the allowed enum so a typo (e.g.
+    # ``sesion_start``) fails loudly at load instead of silently never matching.
+    from jarn.extensibility.hooks import HookEvent
+
+    valid_events = {e.value for e in HookEvent}
+    if raw["event"] not in valid_events:
+        raise ConfigError(
+            f"Hook 'event' must be one of {sorted(valid_events)} "
+            f"(got {raw['event']!r})."
         )
     return HookSpec(
         event=raw["event"],
@@ -435,41 +597,66 @@ def _build_async_subagent(raw: dict[str, Any]) -> AsyncSubagentSpec:
             raise ConfigError(
                 f"async_subagent '{key}' must be a string (got {raw[key]!r})."
             )
-    headers = raw.get("headers")
-    if headers is not None and not isinstance(headers, dict):
-        raise ConfigError(
-            f"async_subagent 'headers' must be a mapping (got {headers!r})."
-        )
+    headers = _validate_string_headers(
+        raw.get("headers"), context="async_subagent 'headers'"
+    )
+    url = raw.get("url")
+    if url is not None:
+        if not isinstance(url, str):
+            raise ConfigError(
+                f"async_subagent 'url' must be a string (got {url!r})."
+            )
+        _validate_absolute_http_url(url, context="async_subagent 'url'")
     return AsyncSubagentSpec(
         name=raw["name"],
         description=raw["description"],
         graph_id=raw["graph_id"],
-        url=raw.get("url"),
-        headers=dict(headers or {}),
+        url=url,
+        headers=headers,
     )
 
 
 def _build_mcp(raw: dict[str, Any]) -> MCPServer:
     if "name" not in raw:
         raise ConfigError(f"MCP server entry must have a 'name': {raw!r}")
+    name = str(raw["name"])
+    transport = str(raw.get("transport", "stdio"))
+    if transport not in _VALID_MCP_TRANSPORTS:
+        raise ConfigError(
+            f"MCP server {name!r} transport must be one of "
+            f"{sorted(_VALID_MCP_TRANSPORTS)} (got {transport!r})."
+        )
     args = raw.get("args", []) or []
     if not isinstance(args, list):
         raise ConfigError(f"MCP server 'args' must be a list (got {args!r}).")
     env = raw.get("env", {}) or {}
     if not isinstance(env, dict):
         raise ConfigError(f"MCP server 'env' must be a mapping (got {env!r}).")
-    headers = raw.get("headers")
-    if headers is not None and not isinstance(headers, dict):
-        raise ConfigError(
-            f"MCP server 'headers' must be a mapping (got {headers!r})."
-        )
+    command = raw.get("command")
+    if transport == "stdio":
+        if not command or not isinstance(command, str):
+            raise ConfigError(
+                f"MCP server {name!r} with transport 'stdio' needs a 'command' string."
+            )
+        _validate_stdio_command(command, context=f"MCP server {name!r} command")
+    url = raw.get("url")
+    if transport in ("http", "sse", "streamable_http"):
+        if not url or not isinstance(url, str):
+            raise ConfigError(
+                f"MCP server {name!r} with transport {transport!r} needs a 'url' string."
+            )
+        _validate_absolute_http_url(url, context=f"MCP server {name!r} url")
+        _warn_mcp_url_ssrf(url, name=name)
+    headers = _validate_string_headers(
+        raw.get("headers"), context=f"MCP server {name!r} 'headers'"
+    )
     return MCPServer(
-        name=str(raw["name"]),
-        transport=str(raw.get("transport", "stdio")),
-        command=raw.get("command"),
+        name=name,
+        transport=transport,
+        command=command if isinstance(command, str) else None,
         args=list(args),
-        url=raw.get("url"),
-        headers=dict(headers or {}),
+        url=url if isinstance(url, str) else None,
+        headers=headers,
         env=dict(env),
         enabled=_normalize_bool(raw.get("enabled", True), "mcp_server.enabled"),
     )
@@ -534,6 +721,7 @@ def load_config(
     project_path: Path | None = None,
     project_root: Path | None = None,
     project_trusted: bool = True,
+    project_raw: dict[str, Any] | None = None,
 ) -> Config:
     """Load, merge, and validate configuration from both tiers.
 
@@ -546,6 +734,11 @@ def load_config(
     secrets. The launcher decides trust (see :mod:`jarn.config.trust`); the
     default is ``True`` so the global tier and explicitly-trusted callers behave
     as before.
+
+    ``project_raw`` lets a caller pass the already-read project tier dict so the
+    fingerprinted content and the loaded content are guaranteed identical (no
+    TOCTOU between the trust decision and the load). When ``None`` the project
+    path is read here as before.
     """
     gpath = global_path if global_path is not None else paths.global_config_path()
     ppath = (
@@ -554,7 +747,8 @@ def load_config(
         else paths.project_config_path(project_root)
     )
 
-    project_raw = _read_yaml(ppath)
+    if project_raw is None:
+        project_raw = _read_yaml(ppath)
     if not project_trusted:
         from jarn.config.trust import sanitize_project
 

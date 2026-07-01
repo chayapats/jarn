@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from jarn.config.schema import PermissionMode, PermissionRules
 from jarn.permissions import (
     Action,
@@ -64,6 +66,63 @@ def test_auto_edit_allows_readonly_network_but_asks_mcp():
 def test_auto_edit_asks_out_of_scope_write(tmp_path):
     eng = _engine(PermissionMode.AUTO_EDIT, project_root=tmp_path)
     assert eng.evaluate(Action(ActionKind.WRITE, "/etc/hosts")).decision is Decision.ASK
+
+
+# -- T-1-5: scope check is CWD-independent + symlink escape -----------------
+
+
+def test_scope_cwd_independence_relative_traversal(tmp_path, monkeypatch):
+    """A relative ``../outside`` write is out-of-scope regardless of process CWD.
+
+    Before the fix, ``Path(target).resolve()`` anchored relative paths to the
+    process CWD, so an agent whose shell ran from a project subdir could write
+    ``../outside`` and be mis-classified as in-scope in auto-edit/yolo.
+    """
+    root = tmp_path / "proj"
+    (root / "src" / "sub").mkdir(parents=True)
+    eng = _engine(PermissionMode.AUTO_EDIT, project_root=root)
+    # Run the check from a CWD deeper than the project root.
+    monkeypatch.chdir(root / "src" / "sub")
+    r = eng.evaluate(Action(ActionKind.WRITE, "../outside.py"))
+    assert r.decision is not Decision.ALLOW
+    assert r.dangerous is True  # guard flagged write-outside-scope
+
+
+def test_scope_relative_inside_project_is_allowed(tmp_path, monkeypatch):
+    """A relative in-project write is allowed from any CWD (auto-edit)."""
+    root = tmp_path / "proj"
+    (root / "src" / "sub").mkdir(parents=True)
+    eng = _engine(PermissionMode.AUTO_EDIT, project_root=root)
+    monkeypatch.chdir(root / "src" / "sub")
+    # "./local.py" resolves to <root>/local.py — inside the project.
+    r = eng.evaluate(Action(ActionKind.WRITE, "local.py"))
+    assert r.decision is Decision.ALLOW
+
+
+def test_symlink_escape_is_rejected(tmp_path):
+    """A symlink inside the project pointing outside is rejected for writes."""
+    root = tmp_path / "proj"
+    (root / "src").mkdir(parents=True)
+    outside = tmp_path / "outside-target"
+    outside.mkdir()
+    link = root / "src" / "escape"
+    link.symlink_to(outside, target_is_directory=True)
+    eng = _engine(PermissionMode.AUTO_EDIT, project_root=root)
+    r = eng.evaluate(Action(ActionKind.WRITE, str(link / "x.py")))
+    assert r.decision is not Decision.ALLOW
+    assert r.dangerous is True
+
+
+def test_symlink_inside_project_is_allowed(tmp_path):
+    """A symlink inside the project pointing elsewhere inside is in-scope."""
+    root = tmp_path / "proj"
+    (root / "real").mkdir(parents=True)
+    (root / "src").mkdir(parents=True)
+    link = root / "src" / "alias"
+    link.symlink_to(root / "real", target_is_directory=True)
+    eng = _engine(PermissionMode.AUTO_EDIT, project_root=root)
+    r = eng.evaluate(Action(ActionKind.WRITE, str(link / "x.py")))
+    assert r.decision is Decision.ALLOW
 
 
 def test_yolo_allows_safe_shell():
@@ -207,6 +266,38 @@ def test_rule_store_preserves_comments(tmp_path):
     data = yaml.safe_load(text)
     assert data["permissions"]["allow"] == ["git status", "npm run"]
     assert data["permission_mode"] == "ask"
+
+
+def test_rule_store_corrupt_not_wiped(tmp_path):
+    """A corrupt project config must NOT be overwritten by add_allow; .bak saved."""
+    from jarn.config._yaml_store import ConfigCorruptError
+    from jarn.permissions.rule_store import PermissionRuleStore
+
+    cfg = tmp_path / ".jarn" / "config.yaml"
+    cfg.parent.mkdir(parents=True)
+    corrupt = "permissions: [oops, ,\n  allow: [unbalanced:"
+    cfg.write_text(corrupt, encoding="utf-8")
+
+    store = PermissionRuleStore(cfg)
+    with pytest.raises(ConfigCorruptError, match="NOT modified"):
+        store.add_allow("npm run")
+    # File untouched (still corrupt, not a 1-key wipe).
+    assert cfg.read_text() == corrupt
+    # A backup was saved for repair.
+    assert cfg.with_name(cfg.name + ".bak").is_file()
+
+
+def test_rule_store_missing_file_bootstrap(tmp_path):
+    """A missing project config bootstraps from {} — add_allow creates it."""
+    from jarn.permissions.rule_store import PermissionRuleStore
+
+    cfg = tmp_path / ".jarn" / "config.yaml"
+    assert not cfg.exists()
+    assert PermissionRuleStore(cfg).add_allow("npm run") is True
+    import yaml
+
+    data = yaml.safe_load(cfg.read_text())
+    assert data["permissions"]["allow"] == ["npm run"]
 
 
 def test_deny_session_blocks():

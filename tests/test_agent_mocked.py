@@ -542,6 +542,43 @@ async def test_non_blocking_pre_tool_hook_does_not_reject(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_hook_failure_surfaced(tmp_path, caplog):
+    """A failing non-blocking pre_commit hook logs a WARNING and surfaces a
+    user-visible NOTICE instead of being swallowed — the tool still proceeds."""
+    import logging as _logging
+
+    from jarn.config.schema import HookSpec
+    from jarn.extensibility.hooks import HookRunner
+
+    agent = FakeAgent(command="git commit -m wip")  # safe shell → auto-allow in YOLO
+    runner = HookRunner(
+        hooks=[HookSpec(event="pre_commit", command="echo nope >&2; exit 1")],
+        cwd=tmp_path,
+    )
+    driver = SessionDriver(
+        agent=agent, engine=PermissionEngine(mode=PermissionMode.YOLO),
+        tracker=CostTracker(), thread_id="t", hooks=runner,
+    )
+    caplog.clear()
+    with caplog.at_level(_logging.WARNING, logger="jarn"):
+        events = await _collect(driver, "go")
+
+    # Non-fatal: the commit was still auto-allowed (not blocked by the hook).
+    assert agent.resumed_with.resume["decisions"][0]["type"] == "approve"
+    # A user-visible NOTICE was emitted for the failure (not swallowed).
+    notice_texts = [e.text for e in events if e.kind is EventKind.NOTICE]
+    assert any("pre_commit hook failed" in t for t in notice_texts), notice_texts
+    # And the failure was logged at WARNING on the jarn logger (not other suites).
+    jarn_warnings = [
+        r for r in caplog.records
+        if r.name == "jarn"
+        and r.levelno == _logging.WARNING
+        and "pre_commit hook failed" in r.getMessage()
+    ]
+    assert jarn_warnings
+
+
+@pytest.mark.asyncio
 async def test_run_turn_tags_retryable_error_from_astream():
     """The real run_turn except-block emits an ERROR event tagged retryable."""
     class _BoomAgent:

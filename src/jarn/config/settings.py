@@ -14,13 +14,14 @@ unknown key tells the user so rather than silently corrupting the file.
 
 from __future__ import annotations
 
-import io
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from ruamel.yaml import YAML
-from ruamel.yaml.error import YAMLError
+from jarn.config._yaml_store import (
+    ConfigCorruptError,  # noqa: F401 - re-exported for callers (controller/tests)
+    atomic_write_yaml,
+    load_yaml_doc,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,14 +180,13 @@ def coerce(key: str, raw: str) -> object:
     return raw  # str
 
 
-def _yaml() -> YAML:
-    y = YAML()  # round-trip mode: preserves comments + style
-    y.preserve_quotes = True
-    return y
-
-
 class ConfigStore:
-    """Read/round-trip-write a single config.yaml (comment-preserving, atomic)."""
+    """Read/round-trip-write a single config.yaml (comment-preserving, atomic).
+
+    A corrupt or unreadable file is never silently wiped: :meth:`set` raises
+    :class:`ConfigCorruptError` (after saving a ``.bak``) instead of overwriting
+    the file with a near-empty dict. A missing file bootstraps from ``{}``.
+    """
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -205,7 +205,11 @@ class ConfigStore:
             self.path.write_text(text, encoding="utf-8")
 
     def set(self, key: str, value: object) -> None:
-        """Set ``key`` (dotted) to ``value`` in the file, preserving comments."""
+        """Set ``key`` (dotted) to ``value`` in the file, preserving comments.
+
+        Raises :class:`ConfigCorruptError` if the file is unreadable; the file is
+        left untouched and a ``.bak`` is saved.
+        """
         data = self._load()
         parts = key.split(".")
         node = data
@@ -219,21 +223,10 @@ class ConfigStore:
         self._atomic_write(data)
 
     def _load(self) -> dict:
-        if not self.path.is_file():
-            return {}
-        try:
-            loaded = _yaml().load(self.path.read_text(encoding="utf-8"))
-        except (OSError, YAMLError):
-            return {}
-        return loaded if isinstance(loaded, dict) else {}
+        return load_yaml_doc(self.path)
 
     def _atomic_write(self, data: dict) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        buf = io.StringIO()
-        _yaml().dump(data, buf)
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(buf.getvalue(), encoding="utf-8")
-        os.replace(tmp, self.path)
+        atomic_write_yaml(self.path, data)
 
 
 # Style tokens (theme-agnostic where it matters; cyan accent matches the brand).

@@ -13,7 +13,6 @@ and survive crashes (partial transcript beats no transcript).
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 import time
 import uuid
@@ -23,52 +22,21 @@ from pathlib import Path
 from typing import Any
 
 from jarn.config import paths
+from jarn.config.secrets import redact_secrets as _central_redact_secrets
 
 # Maximum characters retained from a tool output in the transcript.
 # Large outputs (e.g. full file reads) are truncated to keep JSONL files sane.
 _TRANSCRIPT_MAX_TOOL_CHARS = 2_000
 
-#: Placeholder substituted for any matched secret-shaped substring.
-_REDACTED = "[REDACTED]"
-
-#: Patterns matching common secret shapes that may appear in a prompt or reply.
-#: The transcript persists to disk indefinitely and is world-readable to the
-#: same user, so we scrub recognised secrets before writing. This is a defensive
-#: net, not a guarantee — it catches the common vendor key prefixes and
-#: ``NAME=secret`` env-style assignments for sensitive-looking variable names.
-_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # Vendor API-key prefixes: sk-..., sk-ant-..., ghp_/gho_/ghs_..., xoxb-...,
-    # AKIA... (AWS access key id), AIza... (Google), glpat-..., etc.
-    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
-    re.compile(r"\b(?:ghp|gho|ghs|ghr|ghu)_[A-Za-z0-9]{20,}\b"),
-    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"),
-    re.compile(r"\bglpat-[A-Za-z0-9_-]{16,}\b"),
-    # NAME=value assignments where NAME looks sensitive (KEY/TOKEN/SECRET/PASSWORD).
-    re.compile(
-        r"\b([A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|ACCESS_KEY)[A-Z0-9_]*)"
-        r"\s*[=:]\s*\S+",
-    ),
-)
-
 
 def redact_secrets(text: str) -> str:
-    """Replace recognised secret-shaped substrings in *text* with a placeholder.
+    """Thin back-compat alias for the central secret redactor.
 
-    Applied to user prompts and assistant replies before they are written to the
-    on-disk transcript so an accidentally-pasted key is not persisted verbatim.
+    Delegates to :func:`jarn.config.secrets.redact_secrets` so transcript
+    scrubbing stays in lockstep with log/error scrubbing. User prompts and
+    assistant replies are run through it before they are persisted.
     """
-    if not text:
-        return text
-    redacted = text
-    for pat in _SECRET_PATTERNS:
-        if pat.groups:
-            # Keep the variable name, redact only its value.
-            redacted = pat.sub(lambda m: f"{m.group(1)}={_REDACTED}", redacted)
-        else:
-            redacted = pat.sub(_REDACTED, redacted)
-    return redacted
+    return _central_redact_secrets(text)
 
 
 def default_db_path(project_root: Path | None = None) -> Path:
@@ -276,19 +244,27 @@ class TranscriptWriter:
         if args is not None:
             # Truncate large string argument values so a wiki_write / write_file
             # call with full file content doesn't bloat the transcript JSONL.
-            # Non-string values (ints, booleans, lists, …) are kept as-is.
+            # Non-string values (ints, booleans, lists, …) are kept as-is. String
+            # values are run through the central redactor first so an API key
+            # passed in a tool arg is not persisted verbatim.
             capped: dict[str, Any] = {}
             for k, v in args.items():
-                if isinstance(v, str) and len(v) > _TRANSCRIPT_MAX_TOOL_CHARS:
-                    capped[k] = v[:_TRANSCRIPT_MAX_TOOL_CHARS]
-                    capped[f"{k}__truncated"] = True
+                if isinstance(v, str):
+                    rv = _central_redact_secrets(v)
+                    if len(rv) > _TRANSCRIPT_MAX_TOOL_CHARS:
+                        capped[k] = rv[:_TRANSCRIPT_MAX_TOOL_CHARS]
+                        capped[f"{k}__truncated"] = True
+                    else:
+                        capped[k] = rv
                 else:
                     capped[k] = v
             record["args"] = capped
         if result is not None:
-            trimmed = result[:_TRANSCRIPT_MAX_TOOL_CHARS]
+            redacted = _central_redact_secrets(result) if isinstance(result, str) else result
+            redacted_str = redacted if isinstance(redacted, str) else str(redacted)
+            trimmed = redacted_str[:_TRANSCRIPT_MAX_TOOL_CHARS]
             record["result"] = trimmed
-            if len(result) > _TRANSCRIPT_MAX_TOOL_CHARS:
+            if len(redacted_str) > _TRANSCRIPT_MAX_TOOL_CHARS:
                 record["truncated"] = True
         self.append(record)
 

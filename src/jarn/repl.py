@@ -1299,10 +1299,13 @@ class InlineApp:
             c.print(f"[{palette.C_DIM}]! <cmd>  — run a shell command directly[/{palette.C_DIM}]")
             return
         # Make it unmistakable this runs on the host, outside the agent: no
-        # permission engine, no danger-guard, no sandbox.
+        # permission engine, no danger-guard, no sandbox. The ``!`` prefix is an
+        # intentional bypass the user typed themselves, so we still print a
+        # one-line reminder that the danger-guard is skipped for it.
         c.print(
             f"[{palette.C_ERROR}]⚡ host shell[/{palette.C_ERROR}] "
-            f"[{palette.C_DIM}]— runs on your machine directly; no agent, no approval[/{palette.C_DIM}]"
+            f"[{palette.C_DIM}]— runs on your machine directly; no agent, no "
+            f"approval, danger-guard skipped[/{palette.C_DIM}]"
         )
         cwd = self.controller.project_root or Path(".")
         backend = CancellableLocalShellBackend(str(cwd))

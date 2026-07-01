@@ -1,8 +1,11 @@
 """Project trust boundary.
 
 A project's ``.jarn/config.yaml`` is *untrusted input*: opening a repository must
-not, by itself, run code or leak secrets. Yet several config keys grant exactly
-those capabilities when merely loaded —
+not, by itself, run code, leak secrets, or quietly change behavior. Sanitization
+is **allowlist-based** — until a project is explicitly trusted, only ``ui``
+(cosmetic) and ``permissions.deny`` (safety-increasing) from the project tier are
+honoured. Every other top-level key is dropped. That covers the hard capability
+keys, for example:
 
 * ``hooks`` — shell commands run automatically on lifecycle events (e.g.
   ``session_start`` fires before the user does anything).
@@ -16,11 +19,15 @@ those capabilities when merely loaded —
 * ``policy`` — a profile could escalate ``permission_mode`` or loosen the sandbox.
 * ``permissions.allow`` — pre-approve commands without the user ever seeing them.
 
-So a project must be **explicitly trusted** before those keys take effect. Until
-then they are stripped (the rest of the project config — UI theme, context
-budget, deny rules — still applies). Trust is recorded per project root together
-with a *fingerprint* of the dangerous subset, so adding a hook to an
-already-trusted project re-triggers the prompt.
+…and the behavior/cost keys ``routing``, ``budget`` (``per_session_usd: 0``
+disables caps), ``wiki``, ``compat``, ``default_model``, ``default_profile``,
+``git``, ``plan``, ``context``, ``strict_secrets`` — all of which can change what
+the agent does or what it spends against your global credentials.
+
+So a project must be **explicitly trusted** before any of those take effect.
+Trust is recorded per project root together with a *fingerprint* of the stripped
+subset, so adding (or changing) a gated key in an already-trusted project
+re-triggers the prompt.
 """
 
 from __future__ import annotations
@@ -35,7 +42,19 @@ import yaml
 
 from jarn.config import paths
 
-#: Top-level project keys that grant capability or can exfiltrate secrets.
+#: Project-tier keys an **untrusted** project is allowed to set. Everything else
+#: is dropped until the project is explicitly trusted. Allowlist (not blocklist)
+#: so a newly-added config key defaults to *stripped* rather than *honoured*:
+#: ``ui`` is purely cosmetic; ``permissions`` is allowed only for its
+#: safety-increasing ``deny`` rules (``allow`` is stripped so an untrusted repo
+#: can't pre-approve commands without a prompt).
+SAFE_PROJECT_KEYS: frozenset[str] = frozenset({"ui", "permissions"})
+
+#: The hard capability-granting keys — the most severe subset of what an
+#: untrusted project loses. Retained for back-compat and for the trust-prompt UI
+#: to flag the truly dangerous entries; sanitization itself is allowlist-based
+#: (see :data:`SAFE_PROJECT_KEYS`) so ``routing``/``budget``/``wiki``/``git``/
+#: ``plan``/``context``/``compat``/``default_model`` are dropped too.
 #: ``observability`` is included because a project can set
 #: ``observability.langsmith: true`` to exfiltrate all conversation data to
 #: LangSmith — an untrusted project must not be allowed to enable that.
@@ -52,13 +71,14 @@ DANGEROUS_TOP_KEYS = (
 
 
 def project_dangerous(raw: dict[str, Any]) -> dict[str, Any]:
-    """Return the capability-granting subset of a project config.
+    """Return the subset of a project config that needs trust to take effect.
 
     Used to decide whether a trust prompt is needed and to fingerprint what the
-    user is being asked to trust. ``permissions.allow`` is surfaced separately
-    from the (safety-increasing) ``permissions.deny``.
+    user is being asked to trust. With allowlist-based sanitization this is
+    *everything outside* :data:`SAFE_PROJECT_KEYS`, plus ``permissions.allow``
+    (surfaced separately from the safety-increasing ``permissions.deny``).
     """
-    danger: dict[str, Any] = {k: raw[k] for k in DANGEROUS_TOP_KEYS if k in raw}
+    danger: dict[str, Any] = {k: raw[k] for k in raw if k not in SAFE_PROJECT_KEYS}
     allow = (raw.get("permissions") or {}).get("allow")
     if allow:
         danger["permissions.allow"] = allow
@@ -66,17 +86,109 @@ def project_dangerous(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def sanitize_project(raw: dict[str, Any]) -> dict[str, Any]:
-    """Drop capability-granting keys so an untrusted project can't run code or
-    leak secrets. Keeps benign keys and the safety-increasing ``permissions.deny``."""
-    safe = {k: v for k, v in raw.items() if k not in DANGEROUS_TOP_KEYS}
+    """Keep only the safe project-tier keys so an untrusted project can't run
+    code, leak secrets, redirect routing, disable budget caps, or change
+    behavior. Keeps ``ui`` (cosmetic) and the safety-increasing
+    ``permissions.deny``; drops everything else (trust the project to enable it).
+    """
+    safe = {k: v for k, v in raw.items() if k in SAFE_PROJECT_KEYS}
     perms = safe.get("permissions")
     if isinstance(perms, dict) and "allow" in perms:
+        # ``allow`` pre-approves commands without a prompt — never honour it
+        # from an untrusted project. Keep ``deny`` (safety-increasing).
         trimmed = {k: v for k, v in perms.items() if k != "allow"}
         if trimmed:
             safe["permissions"] = trimmed
         else:
             safe.pop("permissions", None)
     return safe
+
+
+def stripped_project_keys(raw: dict[str, Any]) -> list[str]:
+    """Names of the top-level project keys an untrusted load would drop (sorted).
+
+    Excludes ``permissions.allow`` (handled separately) and the safe keys.
+    Surfaced by ``jarn doctor`` for transparency.
+    """
+    return sorted(k for k in raw if k not in SAFE_PROJECT_KEYS)
+
+
+def project_config_bytes(root: Path) -> bytes | None:
+    """Raw bytes of the project ``config.yaml``, or ``None`` when it is absent.
+
+    Reading bytes (not a parsed dict) lets the trust flow fingerprint the exact
+    on-disk content and re-verify it hasn't changed before recording trust.
+    """
+    from jarn.config.paths import project_config_path
+
+    ppath = project_config_path(root)
+    if ppath is None or not ppath.is_file():
+        return None
+    return ppath.read_bytes()
+
+
+def parse_project_config(raw_bytes: bytes, root: Path) -> dict[str, Any]:
+    """Parse already-read project config bytes into a dict (mapping-validated).
+
+    Pairs with :func:`project_config_bytes` so the fingerprint and the loaded
+    config derive from one read — no second read whose content could differ.
+    """
+    from jarn.config.loader import _parse_yaml_text
+    from jarn.config.paths import project_config_path
+
+    ppath = project_config_path(root)
+    return _parse_yaml_text(raw_bytes.decode("utf-8"), ppath)
+
+
+def commit_trust_if_unchanged(
+    store: TrustStore, root: Path, raw_bytes: bytes, parsed: dict[str, Any]
+) -> str | None:
+    """Record trust at the fingerprint of *parsed* — but only if the file on disk
+    still matches *raw_bytes*.
+
+    Returns ``None`` on success, or an error string if the project config changed
+    between the fingerprint read and this commit (TOCTOU). On mismatch trust is
+    **not** recorded, so a re-run re-evaluates the new content instead of saving
+    a fingerprint that does not match what would actually be loaded.
+    """
+    from jarn.config.paths import project_config_path
+
+    ppath = project_config_path(root)
+    if ppath is None or not ppath.is_file() or ppath.read_bytes() != raw_bytes:
+        return (
+            "config changed during trust — not recorded; "
+            "re-run `jarn trust` to retry"
+        )
+    store.trust(root, fingerprint(project_dangerous(parsed)))
+    store.save()
+    return None
+
+
+#: Marker file recording a one-time accept for global lifecycle hooks. Lives in
+#: ``JARN_HOME`` (not per-project) because the threat is the *global* config's
+#: hooks running without any prompt. Project-tier hooks are already gated by the
+#: project trust boundary; this flag adds an extra one-time accept for the
+#: ungated global tier when ``hook_global_require_trust: true`` is set.
+GLOBAL_HOOKS_TRUST_MARKER = "global-hooks.trusted"
+
+
+def global_hooks_trusted(home: Path | None = None) -> bool:
+    """True if the user has recorded a one-time accept for global hooks."""
+    base = home if home is not None else paths.global_home()
+    return (base / GLOBAL_HOOKS_TRUST_MARKER).is_file()
+
+
+def trust_global_hooks(home: Path | None = None) -> Path:
+    """Write the one-time global-hooks accept marker, returning its path."""
+    base = home if home is not None else paths.global_home()
+    base.mkdir(parents=True, exist_ok=True)
+    marker = base / GLOBAL_HOOKS_TRUST_MARKER
+    marker.write_text(
+        "This file records a one-time accept to run global lifecycle hooks.\n"
+        "Remove it to re-trigger the `hook_global_require_trust` prompt.\n",
+        encoding="utf-8",
+    )
+    return marker
 
 
 def fingerprint(dangerous: dict[str, Any]) -> str:

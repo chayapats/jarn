@@ -8,10 +8,11 @@ testable on its own.
 
 from __future__ import annotations
 
+import logging
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from rich.markup import escape as _escape_markup
 
@@ -34,6 +35,13 @@ from jarn.tui import palette
 
 if TYPE_CHECKING:
     from jarn.memory import MemoryStore, RecallHit
+
+_log = logging.getLogger("jarn")
+
+
+def _log_hook_warning(message: str) -> None:
+    """Log a lifecycle-hook failure at WARNING (never silent, never fatal)."""
+    _log.warning("hooks: %s", message)
 
 
 @dataclass(slots=True)
@@ -111,6 +119,9 @@ class Controller:
         # the runtime is first ready, session_end on close.
         self._hooks_runner = None
         self._session_started = False
+        # Non-fatal lifecycle-hook notice to surface once (e.g. a failed
+        # session_start hook, or the global-hooks-trust gate refusing to run).
+        self._lifecycle_notice: str | None = None
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -182,12 +193,31 @@ class Controller:
         return self.runtime
 
     def _hook_runner(self):
-        """Lazily build the lifecycle :class:`HookRunner` (None if no hooks)."""
+        """Lazily build the lifecycle :class:`HookRunner` (None if no hooks).
+
+        Honours two hardening flags from config:
+        ``hook_global_require_trust`` skips hook execution entirely (and records
+        a notice) until the user has run ``jarn trust-hooks`` once — a one-time
+        accept for the otherwise-ungated global hooks tier. ``hook_inherit_env``
+        forwards the full env to hook subprocesses (default: minimal allowlist).
+        """
         if self._hooks_runner is None and self.config.hooks:
+            if self.config.hook_global_require_trust:
+                from jarn.config.trust import global_hooks_trusted
+
+                if not global_hooks_trusted():
+                    self._lifecycle_notice = (
+                        "lifecycle hooks disabled: `hook_global_require_trust` is on "
+                        "and global hooks haven't been accepted — run `jarn trust-hooks`."
+                    )
+                    _log_hook_warning(self._lifecycle_notice)
+                    return None
             from jarn.extensibility.hooks import HookRunner
 
             self._hooks_runner = HookRunner(
-                hooks=self.config.hooks, cwd=self.project_root or Path.cwd()
+                hooks=self.config.hooks,
+                cwd=self.project_root or Path.cwd(),
+                inherit_env=self.config.hook_inherit_env,
             )
         return self._hooks_runner
 
@@ -195,12 +225,25 @@ class Controller:
         runner = self._hook_runner()
         if runner is None:
             return
-        import contextlib
-
         from jarn.extensibility.hooks import HookEvent
 
-        with contextlib.suppress(Exception):
-            runner.run(HookEvent(event_name))
+        try:
+            results = runner.run(HookEvent(event_name))
+        except Exception as exc:  # noqa: BLE001 — non-fatal, must not kill the turn
+            msg = f"lifecycle hook {event_name} errored: {exc}"
+            _log_hook_warning(msg)
+            if self.last_error is None:
+                self.last_error = msg
+            return
+        for r in results:
+            if not r.ok:
+                msg = (
+                    f"{event_name} hook {r.spec.name or r.spec.command!r} "
+                    f"failed (exit {r.exit_code})"
+                )
+                _log_hook_warning(msg)
+                if self.last_error is None:
+                    self.last_error = msg
 
     def _config(self) -> dict:
         return {"configurable": {"thread_id": self.thread_id}}
@@ -967,6 +1010,7 @@ class Controller:
         # Echo the expansion so the user sees what the preset actually set.
         expansion = (
             f"mode={self.config.permission_mode.value}, "
+            f"backend={self.config.execution.backend}, "
             f"sandbox={self.config.execution.local_sandbox}, "
             f"network={'on' if self.config.execution.sandbox_allow_network else 'off'}"
         )
@@ -1037,31 +1081,51 @@ class Controller:
         if self.project_trusted:
             return CommandResult("This project is already trusted.")
 
-        from jarn.config import paths
-        from jarn.config.loader import _read_yaml
+        # Read the project config once: fingerprint the exact on-disk bytes and
+        # re-verify they haven't changed before recording trust (TOCTOU guard).
+        # The same parsed dict is then passed to load_config so the fingerprinted
+        # content and the loaded content are identical.
+        root = self.project_root
         from jarn.config.trust import (
             TrustStore,
+            commit_trust_if_unchanged,
             fingerprint,
+            parse_project_config,
+            project_config_bytes,
             project_dangerous,
         )
 
-        ppath = paths.project_config_path(self.project_root)
-        danger = project_dangerous(_read_yaml(ppath)) if ppath else {}
         store = TrustStore.load()
-        store.trust(self.project_root, fingerprint(danger))
-        store.save()
+        raw_bytes = project_config_bytes(root)
+        if raw_bytes is None:
+            # No project config: nothing dangerous to fingerprint, but the user
+            # still wants to lift the untrusted floor. Trust at the empty
+            # fingerprint and reload from the global tier only.
+            project_raw: dict[str, Any] = {}
+            danger: dict[str, Any] = {}
+            store.trust(root, fingerprint({}))
+            store.save()
+        else:
+            project_raw = parse_project_config(raw_bytes, root)
+            danger = project_dangerous(project_raw)
+            err = commit_trust_if_unchanged(store, root, raw_bytes, project_raw)
+            if err is not None:
+                return CommandResult(f"{err}")
 
         self.project_trusted = True
-        # RELOAD the config from disk now that the project is trusted. A simple
-        # re-resolve can't fix this: the launch-time untrusted floor already
-        # OVERWROTE config.permission_mode with the review-only clamp (plan) and
-        # the loader had stripped the project's capability keys. Reloading with
-        # project_trusted=True restores both the configured mode and the project
+        # RELOAD the config from the already-read project tier now that the
+        # project is trusted. A simple re-resolve can't fix this: the launch-time
+        # untrusted floor already OVERWROTE config.permission_mode with the
+        # review-only clamp (plan) and the loader had stripped the project's
+        # capability keys. Reloading with project_trusted=True (and the same
+        # project_raw) restores both the configured mode and the project
         # hooks / MCP / providers, so the rebuilt runtime is genuinely unlocked.
         from jarn.config.loader import load_config
         from jarn.config.profiles import resolve_effective_profile
 
-        self.config = load_config(project_root=self.project_root, project_trusted=True)
+        self.config = load_config(
+            project_root=root, project_trusted=True, project_raw=project_raw
+        )
         resolve_effective_profile(self.config, project_trusted=True, cli_profile=None)
         self.engine.mode = self.config.permission_mode
         self.engine.rules = self.config.permissions
@@ -1074,7 +1138,7 @@ class Controller:
                 ".jarn/config.yaml are now active.[/dim]"
             )
         return CommandResult(
-            f"Trusted {self.project_root}. Review-only floor lifted; "
+            f"Trusted {root}. Review-only floor lifted; "
             f"mode is now {self.config.permission_mode.value} (rebuilding).{note}",
             rebuilt=True,
         )
@@ -1148,7 +1212,12 @@ class Controller:
             return False, str(exc)
         store = settings.ConfigStore(paths.global_config_path())
         backup = store.read_text()
-        store.set(key, value)
+        try:
+            store.set(key, value)
+        except settings.ConfigCorruptError as exc:
+            # Corrupt global config: do not wipe it. Surface the repair hint
+            # (the message names the .bak backup). The file is left untouched.
+            return False, str(exc)
         try:
             new_cfg = load_config(
                 project_root=self.project_root, project_trusted=self.project_trusted
