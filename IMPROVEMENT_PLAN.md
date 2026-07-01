@@ -131,7 +131,7 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 **Deps:** none
 **Effort:** M
 
-### T-1-3 — Reject/warn on inline plaintext `api_key` at load
+### T-1-3 — Reject/warn on inline plaintext `api_key` at load ✅
 **Problem:** `secrets.resolve()` returns non-reference literals verbatim, so inline keys in `config.yaml` work — contradicting "referenced, never inlined" docs. Keys sit in memory and can leak via `repr`/crash dumps.
 **Files:** `src/jarn/config/loader.py`, `src/jarn/config/secrets.py`, `tests/test_config.py`, `tests/test_secrets.py`
 **Action:**
@@ -139,9 +139,9 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 2. Expand `secrets` secret-pattern set (used by both redaction and this check) to include `sk-proj-…`, `Bearer …`, PEM blocks, GitHub PATs (`ghp_…`), GitLab tokens (`glpat-…`).
 3. Update `docs/CONFIGURATION.md` and `SECURITY.md` to state inline keys are discouraged and, in strict mode, rejected.
 **DoD:**
-- [ ] Config with `api_key: sk-live-xxxx…` loads with a visible warning (non-strict) and is rejected with a clear error in strict mode.
-- [ ] Local providers (Ollama base URL token, empty key) still pass without warning.
-- [ ] Docs updated.
+- [x] Config with `api_key: sk-live-xxxx…` loads with a visible warning (non-strict) and is rejected with a clear error in strict mode.
+- [x] Local providers (Ollama base URL token, empty key) still pass without warning.
+- [x] Docs updated.
 **Tests:** `test_config.test_inline_api_key_warns`, `test_config.test_inline_api_key_strict_rejects`, `test_config.test_local_provider_no_warn`.
 **Risk:** existing users with inline keys get a noisy warning. Mitigation: warning only by default; provide a one-line migration hint ("move to `keychain:` or `${ENV}`").
 **Deps:** T-1-2 (shares the pattern set)

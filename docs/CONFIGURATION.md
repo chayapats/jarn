@@ -171,6 +171,7 @@ policy:
 # Keys are referenced, never inlined:
 #   ${ENV_VAR}                -> environment variable
 #   keychain:jarn/<provider>  -> OS keychain (via `keyring`)
+# A literal key loads with a warning (or a hard error if strict_secrets: true).
 #
 # Provider `type` is one of:
 #   OpenAI-compatible (ChatOpenAI + base_url): openrouter, openai, lmstudio, groq,
@@ -465,7 +466,7 @@ trusted.
 | `${OPENROUTER_API_KEY}` | the environment variable of that name |
 | `keychain:jarn/openrouter` | `keyring.get_password("jarn", "openrouter")` |
 | `file:jarn/openrouter` | `~/.jarn/secrets/jarn/openrouter` (mode `0600`) |
-| `sk-...` (literal) | itself (discouraged; avoid committing real keys) |
+| `sk-...` (literal) | itself — **discouraged**; triggers a load warning (or a hard error when `strict_secrets: true`). Avoid committing real keys. |
 
 The wizard can store a pasted key in your OS keychain and write the
 `keychain:jarn/<provider>` reference for you. On headless Linux (e.g. Raspberry
@@ -473,6 +474,29 @@ Pi over SSH) the OS keychain often has no backend — setup and `/key` then fall
 back automatically to `file:jarn/<provider>` under `~/.jarn/secrets/`.
 Resolution failures surface a clear message (and `jarn doctor` reports them
 per-provider).
+
+### Inline plaintext keys (`strict_secrets`)
+
+J.A.R.N. is built around *referenced, never inlined* keys. If a provider's
+`api_key` is a literal that looks like a real secret (an `sk-…`/`Bearer …`/PEM
+block/vendor PAT, or a ≥32-char high-entropy string), the loader emits an
+`InlineSecretWarning` at startup telling you to move it to a reference. Empty
+keys and short local-server tokens (e.g. `lm-studio`) are left alone.
+
+Set `strict_secrets: true` (top-level, default `false`) to turn that warning
+into a hard `ConfigError` — useful in CI or shared environments where an inline
+key should never load at all:
+
+```yaml
+strict_secrets: true
+providers:
+  openrouter:
+    type: openrouter
+    api_key: keychain:jarn/openrouter   # reference: always fine
+```
+
+The migration is one line per provider: replace the literal with `${ENV_VAR}`,
+`keychain:jarn/<provider>`, or `file:jarn/<provider>`.
 
 ## Pricing overrides
 

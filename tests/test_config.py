@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import warnings
+
 import pytest
 import yaml
 
-from jarn.config.loader import ConfigError, load_config
+from jarn.config.loader import ConfigError, InlineSecretWarning, load_config
 from jarn.config.schema import PermissionMode
 from jarn.config.secrets import SecretResolutionError, is_reference, resolve
 
@@ -307,3 +309,72 @@ def test_doctor_json_is_valid(tmp_path, monkeypatch, capsys):
     assert "providers" in data
     assert "permission_mode" in data
     assert "main_model" in data
+
+
+# ---------------------------------------------------------------------------
+# T-1-3: inline plaintext api_key warn/reject
+# ---------------------------------------------------------------------------
+
+_INLINE_KEY = "sk-proj-" + "A" * 40  # long enough to look like a real key
+
+
+def test_inline_api_key_warns(tmp_path, recwarn):
+    """A real-looking inline api_key loads with a visible warning (non-strict)."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"providers": {"openrouter": {"type": "openrouter", "api_key": _INLINE_KEY}}})
+    with pytest.warns(InlineSecretWarning, match="inline plaintext api_key"):
+        cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.strict_secrets is False  # default
+    assert cfg.providers["openrouter"].api_key == _INLINE_KEY  # still loads
+
+
+def test_inline_api_key_strict_rejects(tmp_path):
+    """strict_secrets: true turns an inline key into a ConfigError."""
+    gp = tmp_path / "g.yaml"
+    _write(
+        gp,
+        {
+            "strict_secrets": True,
+            "providers": {"openrouter": {"type": "openrouter", "api_key": _INLINE_KEY}},
+        },
+    )
+    with pytest.raises(ConfigError, match="inline plaintext api_keys"):
+        load_config(global_path=gp, project_path=None)
+
+
+def test_local_provider_no_warn(tmp_path, recwarn):
+    """Empty key and short local tokens (lm-studio) pass without warning."""
+    gp = tmp_path / "g.yaml"
+    _write(
+        gp,
+        {
+            "providers": {
+                "ollama": {"type": "ollama", "base_url": "http://localhost:11434"},
+                "lmstudio": {"type": "lmstudio", "api_key": "lm-studio"},
+            }
+        },
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any InlineSecretWarning would fail
+        cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.providers["ollama"].api_key is None
+    assert cfg.providers["lmstudio"].api_key == "lm-studio"
+
+
+def test_reference_api_key_no_warn(tmp_path):
+    """A reference (keychain:/file:/${ENV}) is never flagged even when strict."""
+    gp = tmp_path / "g.yaml"
+    _write(
+        gp,
+        {
+            "strict_secrets": True,
+            "providers": {
+                "a": {"type": "openrouter", "api_key": "${OPENROUTER_API_KEY}"},
+                "b": {"type": "openrouter", "api_key": "keychain:jarn/openrouter"},
+            },
+        },
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.providers["a"].api_key == "${OPENROUTER_API_KEY}"
