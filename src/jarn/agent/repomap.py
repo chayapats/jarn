@@ -250,23 +250,33 @@ def _discover_files(root: Path) -> list[Path]:
 # Cross-reference counting
 # ---------------------------------------------------------------------------
 
-def _build_xref_counts(entries: list[FileEntry]) -> dict[str, int]:
-    """Count how many files reference each file's stem.
+def _path_tokens(rel: str) -> set[str]:
+    """Path components and basename stems used for xref matching."""
+    tokens: set[str] = set()
+    for part in rel.replace("\\", "/").split("/"):
+        if not part:
+            continue
+        tokens.add(part)
+        stem, _, _ = part.partition(".")
+        if stem:
+            tokens.add(stem)
+    return tokens
 
-    A "reference" is a case-sensitive substring match of the stem (e.g.
-    ``repomap``) in another file's relative path.  This is intentionally
-    cheap — we are not parsing imports, just counting name appearances in
-    sibling paths, which correlates well with actual import graphs for
-    Python packages and Go modules.
+
+def _build_xref_counts(entries: list[FileEntry]) -> dict[str, int]:
+    """Count how many files reference each file's stem via path tokens.
+
+    Token lookup is O(tokens per file) so the pass is linear in the number of
+    files for typical shallow trees.
     """
     stems = {e.path.stem for e in entries}
-    counts: dict[str, int] = {s: 0 for s in stems}
+    counts: dict[str, int] = dict.fromkeys(stems, 0)
     for entry in entries:
-        for stem in stems:
-            if stem == entry.path.stem:
-                continue
-            if stem in entry.rel:
-                counts[stem] += 1
+        own = entry.path.stem
+        matched = stems & _path_tokens(entry.rel)
+        matched.discard(own)
+        for stem in matched:
+            counts[stem] += 1
     return counts
 
 
@@ -337,6 +347,21 @@ _SYMBOL_INDEX_CACHE: dict[str, list[SymbolRef]] = {}
 #: same-second staleness tradeoff as the dir-listing / symbol-index caches.
 _DISCOVERY_TTL = 1.0
 _DISCOVERY_CACHE: dict[str, tuple[float, list[Path], str]] = {}
+_REPO_MAP_MEM_CACHE: dict[str, str] = {}
+
+
+def _approx_file_count(root: Path) -> int:
+    """Cheap file-count probe to detect adds/removes without a full git ls-files."""
+    n = 0
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(root)
+        if any(_is_noise(part) for part in rel.parts):
+            continue
+        if p.suffix.lower() in _SUPPORTED_EXTS:
+            n += 1
+    return n
 
 
 def _discover_with_signature(root: Path) -> tuple[list[Path], str]:
@@ -349,9 +374,26 @@ def _discover_with_signature(root: Path) -> tuple[list[Path], str]:
     if cached is not None and now - cached[0] < _DISCOVERY_TTL:
         return cached[1], cached[2]
     files = _discover_files(root)
-    signature = _cheap_signature(files)
+    signature = _cheap_signature(files, root)
     _DISCOVERY_CACHE[key] = (now, files, signature)
     return files, signature
+
+
+def _git_tree_signature(root: Path) -> str:
+    """Short HEAD tree id when *root* is a git repo (empty string otherwise)."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD:"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()[:12]
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return ""
 
 
 def _cache_key(root: Path, signature: str) -> str:
@@ -363,15 +405,20 @@ def _cache_path(root: Path, signature: str) -> Path:
     return paths.cachedir() / "repomap" / f"{_cache_key(root, signature)}.json"
 
 
-def _cheap_signature(files: list[Path]) -> str:
-    """A cheap cache-invalidation key: file count + max mtime."""
+def _cheap_signature(files: list[Path], root: Path | None = None) -> str:
+    """A cheap cache-invalidation key: file count + max mtime + optional tree id."""
     if not files:
         return "empty:0"
     try:
         max_mtime = max(p.stat().st_mtime for p in files)
-        return f"{len(files)}:{max_mtime:.3f}"
+        base = f"{len(files)}:{max_mtime:.3f}"
     except OSError:
-        return f"{len(files)}:unknown"
+        base = f"{len(files)}:unknown"
+    if root is not None:
+        tree = _git_tree_signature(root)
+        if tree:
+            return f"{base}:{tree}"
+    return base
 
 
 def _load_cache(path: Path) -> str | None:
@@ -415,17 +462,33 @@ def build_repo_map(
     when the file count or the maximum mtime of discovered files changes.
     Cache I/O never raises.
     """
-    files = _discover_files(root)
-    signature = _cheap_signature(files)
+    files, signature = _discover_with_signature(root)
     cache_key_focus = f"{focus}:{signature}"
+    mem_key = _cache_key(root, cache_key_focus)
+    disc_key = str(root)
+    cached_disc = _DISCOVERY_CACHE.get(disc_key)
+    if cached_disc is not None:
+        cached_mem = _REPO_MAP_MEM_CACHE.get(mem_key)
+        if cached_mem is not None:
+            count_ok = _approx_file_count(root) == len(cached_disc[1])
+            sig_ok = _cheap_signature(cached_disc[1], root) == cached_disc[2]
+            if count_ok and sig_ok:
+                return cached_mem
+            _DISCOVERY_CACHE.pop(disc_key, None)
+            files, signature = _discover_with_signature(root)
+            cache_key_focus = f"{focus}:{signature}"
+            mem_key = _cache_key(root, cache_key_focus)
+
     cp = _cache_path(root, cache_key_focus)
     cached = _load_cache(cp)
     if cached is not None:
+        _REPO_MAP_MEM_CACHE[mem_key] = cached
         return cached
 
     entries = _build_entries(root, files)
     ranked = _rank(entries, root, focus=focus)
     map_text = _render(root, ranked, token_budget=token_budget)
+    _REPO_MAP_MEM_CACHE[mem_key] = map_text
     _save_cache(cp, map_text)
     return map_text
 
