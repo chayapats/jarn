@@ -248,11 +248,23 @@ The guard runs *before* modes and rules and cannot be bypassed by an allowlist.
 
 `rm` is classified by **flag presence**, not one positional pattern, so split
 (`rm -r -f /`) and long (`rm --recursive --force /`) forms are caught the same as
-`rm -rf /`; a recursive delete of a bare `/`, `~`, `/*`, or `$HOME` is BLOCKED even
-without `-f`. `git` rules tolerate flags between the verb and subcommand, so
-`git -C /repo reset --hard` is still flagged. The guard is **conservative by design**
-— over-asking is the safe failure mode. The authoritative pattern list is in
-`src/jarn/permissions/guard.py`.
+`rm -rf /`; a recursive delete of a bare `/`, `/*`, `~`, `$HOME`, or `${HOME}` is
+BLOCKED even without `-f`. `git` rules tolerate flags between the verb and
+subcommand, so `git -C /repo reset --hard` is still flagged. Recursive `chmod`/`chown`
+detect `-R` anywhere in the argv (so `chmod 777 -R .` and `chmod -R 777 .` both
+flag). The command string is NFKC-normalized and run through a best-effort
+homoglyph table before matching, so a disguised verb (e.g. Cyrillic `rm`) is
+still caught. The guard is **conservative by design** — over-asking is the safe
+failure mode. The authoritative pattern list is in `src/jarn/permissions/guard.py`.
+
+> **The guard is a net, not a sandbox.** It inspects the pre-shell command string
+> with patterns; it does not parse shell syntax. A payload can be hidden from
+> these patterns by chaining through an interpreter — `eval`, `bash -c`,
+> `python -c`, heredoc bodies, `$(printf …)`, or a `base64 -d | sh` indirection
+> the net does not recognise. For code you do not trust, run it with
+> `execution.backend: docker` or `execution.local_sandbox: require` — do not run
+> untrusted code on the host in `yolo` and rely on this net. We do not claim the
+> pattern set is complete. See [SECURITY.md](../SECURITY.md).
 
 ---
 
