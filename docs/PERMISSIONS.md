@@ -68,7 +68,13 @@ Shift+Tab to cycle at runtime. (`--permission-mode` is kept as a hidden CLI alia
 | `yolo` | allow | allow | allow | allow |
 
 "In-scope" means inside the project root. An out-of-scope write is never silently
-allowed; in `auto-edit` it downgrades to *ask*.
+allowed; in `auto-edit` it downgrades to *ask*. Relative write paths are resolved
+against the **project root**, not the agent's current working directory, so an
+`../outside` write is judged out-of-scope regardless of which subdir the shell is
+in. Symlinks are followed: a symlink inside the project that points *outside* it
+resolves out-of-scope and is treated as a dangerous write. This scope check is an
+*intent* gate; the tool layer re-checks the bound at syscall time to close the
+TOCTOU window between the permission decision and the actual write.
 
 Built-in web tools (`web_search`, `web_fetch`) auto-allow in `auto-edit`; other
 network (MCP, async subagents) still prompt `ask`.

@@ -164,7 +164,7 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 **Deps:** none
 **Effort:** S
 
-### T-1-5 — Fix scope-check CWD bug + symlink handling
+### T-1-5 — Fix scope-check CWD bug + symlink handling ✅
 **Problem:** `permissions/engine.py` L182-190 uses `Path(target).resolve()`, which resolves relative paths against the **process CWD**, not `project_root`. An agent in a subdir writing `../outside` can be mis-classified as in-scope in `auto-edit`/`yolo`.
 **Files:** `src/jarn/permissions/engine.py`, `tests/test_permissions.py`
 **Action:**
@@ -172,9 +172,9 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 2. For symlinks: resolve the real target but also reject writes where the symlink points outside `project_root` (TOCTOU mitigation: check at write time is already the engine's job; add a clear note that the engine checks intent, the tool layer enforces at syscall time).
 3. Add `..` traversal tests and a symlink-escape test.
 **DoD:**
-- [ ] `evaluate(write, "../outside")` from a CWD deeper than `project_root` is DANGEROUS/BLOCKED, not allowed.
-- [ ] Symlink pointing outside `project_root` is rejected for writes.
-- [ ] Normal in-project writes still allowed in `auto-edit`.
+- [x] `evaluate(write, "../outside")` from a CWD deeper than `project_root` is DANGEROUS/BLOCKED, not allowed.
+- [x] Symlink pointing outside `project_root` is rejected for writes.
+- [x] Normal in-project writes still allowed in `auto-edit`.
 **Tests:** `test_permissions.test_scope_cwd_independence`, `test_permissions.test_symlink_escape`.
 **Risk:** low
 **Deps:** none

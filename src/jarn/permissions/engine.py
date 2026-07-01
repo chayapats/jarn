@@ -193,11 +193,26 @@ class PermissionEngine:
         if self.project_root is None:
             return True
         try:
-            resolved = Path(target).expanduser().resolve()
             root = self.project_root.resolve()
-            return resolved == root or root in resolved.parents
         except (OSError, RuntimeError, ValueError):
             return False
+        try:
+            # Resolve relative targets against project_root, NOT the process
+            # CWD: an agent in a subdir writing "../outside" must be judged by
+            # intent relative to the project, not by where the shell happens to
+            # be running. ``root / target`` keeps absolute targets as-is and
+            # anchors relative ones (including ``~`` via expanduser).
+            #
+            # ``resolve()`` follows symlinks, so a symlink inside the project
+            # that points outside resolves out-of-scope and is rejected for
+            # writes. This is an *intent* check; the tool layer enforces the
+            # same bound again at syscall time (TOCTOU mitigation).
+            resolved = (root / target).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            return False
+        if resolved == root:
+            return True
+        return root in resolved.parents
 
     def _rule_for(self, action: Action) -> str:
         if action.kind is ActionKind.SHELL:
