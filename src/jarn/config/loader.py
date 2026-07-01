@@ -8,9 +8,11 @@ which are concatenated so a project can extend (not just replace) global rules.
 
 from __future__ import annotations
 
+import re
 import warnings
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -38,6 +40,30 @@ from jarn.config.schema import (
 )
 
 _LIST_EXTEND_KEYS = {"hooks", "mcp_servers", "async_subagents"}
+
+#: Safe ``extra`` kwargs forwarded to ``init_chat_model`` per provider. Unknown
+#: keys are rejected at load so mistyped YAML can't inject arbitrary constructor
+#: kwargs (headers, URLs, …). Use the typed ``headers`` field for HTTP auth.
+_PROVIDER_EXTRA_KEYS = frozenset({
+    "max_retries",
+    "timeout",
+    "temperature",
+    "top_p",
+    "max_tokens",
+    "streaming",
+    "model_kwargs",
+    "extra_body",
+    "frequency_penalty",
+    "presence_penalty",
+    "stop",
+    "n",
+    "seed",
+    "keep_alive",
+})
+
+_VALID_MCP_TRANSPORTS = frozenset({"stdio", "http", "sse", "streamable_http"})
+# Shell metacharacters — MCP stdio spawns without shell=True, so reject these.
+_STDIO_CMD_META = re.compile(r"[;|&`$<>(){}]")
 
 #: The authoritative set of recognised top-level config keys. Anything else is a
 #: typo or an unsupported feature and is rejected loudly rather than ignored.
@@ -407,6 +433,52 @@ def _build_config(raw: dict[str, Any]) -> Config:
     return cfg
 
 
+def _validate_absolute_http_url(url: str, *, context: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ConfigError(
+            f"{context} must be an absolute http(s) URL (got {url!r})."
+        )
+
+
+def _warn_mcp_url_ssrf(url: str, *, name: str) -> None:
+    """Defense-in-depth: warn when an MCP HTTP URL targets a private/loopback host."""
+    from jarn.agent.web_tools import _check_host
+
+    host = urlparse(url).hostname or ""
+    _ips, reason = _check_host(host)
+    if reason is not None:
+        warnings.warn(
+            f"MCP server {name!r} url {url!r} targets a private/loopback host "
+            f"({reason}). MCP endpoints may reach internal services by design; "
+            "ensure you trust this config.",
+            stacklevel=3,
+        )
+
+
+def _validate_stdio_command(command: str, *, context: str) -> None:
+    if _STDIO_CMD_META.search(command):
+        raise ConfigError(
+            f"{context} must not contain shell metacharacters "
+            f"(got {command!r}). MCP stdio servers are spawned without a shell."
+        )
+
+
+def _validate_string_headers(headers: object, *, context: str) -> dict[str, str]:
+    if headers is None:
+        return {}
+    if not isinstance(headers, dict):
+        raise ConfigError(f"{context} must be a mapping (got {headers!r}).")
+    out: dict[str, str] = {}
+    for key, val in headers.items():
+        if not isinstance(key, str) or not isinstance(val, str):
+            raise ConfigError(
+                f"{context} keys and values must be strings (got {key!r}: {val!r})."
+            )
+        out[key] = val
+    return out
+
+
 def _build_providers(raw: dict[str, Any]) -> dict[str, ProviderConfig]:
     providers: dict[str, ProviderConfig] = {}
     for name, spec in (raw or {}).items():
@@ -423,12 +495,24 @@ def _build_providers(raw: dict[str, Any]) -> dict[str, ProviderConfig]:
                 f"Provider {name!r} has unknown type {type_str!r}; "
                 f"expected one of {[p.value for p in ProviderType]}"
             ) from exc
-        known = {"type", "api_key", "base_url"}
+        known = {"type", "api_key", "base_url", "headers"}
+        extra = {k: v for k, v in spec.items() if k not in known}
+        bad_extra = set(extra) - _PROVIDER_EXTRA_KEYS
+        if bad_extra:
+            raise ConfigError(
+                f"Provider {name!r} ({ptype.value}) has unknown extra key(s) "
+                f"{sorted(bad_extra)}. Allowed: {sorted(_PROVIDER_EXTRA_KEYS)}. "
+                "Use the top-level 'headers' field for HTTP auth headers."
+            )
+        headers = _validate_string_headers(
+            spec.get("headers"), context=f"Provider {name!r} 'headers'"
+        )
         providers[name] = ProviderConfig(
             type=ptype,
             api_key=spec.get("api_key"),
             base_url=spec.get("base_url"),
-            extra={k: v for k, v in spec.items() if k not in known},
+            headers=headers,
+            extra=extra,
         )
     return providers
 
@@ -513,41 +597,66 @@ def _build_async_subagent(raw: dict[str, Any]) -> AsyncSubagentSpec:
             raise ConfigError(
                 f"async_subagent '{key}' must be a string (got {raw[key]!r})."
             )
-    headers = raw.get("headers")
-    if headers is not None and not isinstance(headers, dict):
-        raise ConfigError(
-            f"async_subagent 'headers' must be a mapping (got {headers!r})."
-        )
+    headers = _validate_string_headers(
+        raw.get("headers"), context="async_subagent 'headers'"
+    )
+    url = raw.get("url")
+    if url is not None:
+        if not isinstance(url, str):
+            raise ConfigError(
+                f"async_subagent 'url' must be a string (got {url!r})."
+            )
+        _validate_absolute_http_url(url, context="async_subagent 'url'")
     return AsyncSubagentSpec(
         name=raw["name"],
         description=raw["description"],
         graph_id=raw["graph_id"],
-        url=raw.get("url"),
-        headers=dict(headers or {}),
+        url=url,
+        headers=headers,
     )
 
 
 def _build_mcp(raw: dict[str, Any]) -> MCPServer:
     if "name" not in raw:
         raise ConfigError(f"MCP server entry must have a 'name': {raw!r}")
+    name = str(raw["name"])
+    transport = str(raw.get("transport", "stdio"))
+    if transport not in _VALID_MCP_TRANSPORTS:
+        raise ConfigError(
+            f"MCP server {name!r} transport must be one of "
+            f"{sorted(_VALID_MCP_TRANSPORTS)} (got {transport!r})."
+        )
     args = raw.get("args", []) or []
     if not isinstance(args, list):
         raise ConfigError(f"MCP server 'args' must be a list (got {args!r}).")
     env = raw.get("env", {}) or {}
     if not isinstance(env, dict):
         raise ConfigError(f"MCP server 'env' must be a mapping (got {env!r}).")
-    headers = raw.get("headers")
-    if headers is not None and not isinstance(headers, dict):
-        raise ConfigError(
-            f"MCP server 'headers' must be a mapping (got {headers!r})."
-        )
+    command = raw.get("command")
+    if transport == "stdio":
+        if not command or not isinstance(command, str):
+            raise ConfigError(
+                f"MCP server {name!r} with transport 'stdio' needs a 'command' string."
+            )
+        _validate_stdio_command(command, context=f"MCP server {name!r} command")
+    url = raw.get("url")
+    if transport in ("http", "sse", "streamable_http"):
+        if not url or not isinstance(url, str):
+            raise ConfigError(
+                f"MCP server {name!r} with transport {transport!r} needs a 'url' string."
+            )
+        _validate_absolute_http_url(url, context=f"MCP server {name!r} url")
+        _warn_mcp_url_ssrf(url, name=name)
+    headers = _validate_string_headers(
+        raw.get("headers"), context=f"MCP server {name!r} 'headers'"
+    )
     return MCPServer(
-        name=str(raw["name"]),
-        transport=str(raw.get("transport", "stdio")),
-        command=raw.get("command"),
+        name=name,
+        transport=transport,
+        command=command if isinstance(command, str) else None,
         args=list(args),
-        url=raw.get("url"),
-        headers=dict(headers or {}),
+        url=url if isinstance(url, str) else None,
+        headers=headers,
         env=dict(env),
         enabled=_normalize_bool(raw.get("enabled", True), "mcp_server.enabled"),
     )

@@ -263,6 +263,51 @@ def test_list_remote_models_non_local_provider_returns_empty():
         assert list_remote_models(prov) == []
 
 
+def test_disallowed_provider_extra_rejected_at_load(tmp_path):
+    import yaml
+
+    from jarn.config import ConfigError
+    from jarn.config.loader import load_config
+
+    gp = tmp_path / "g.yaml"
+    gp.write_text(
+        yaml.safe_dump(
+            {
+                "providers": {
+                    "openai": {
+                        "type": "openai",
+                        "api_key": "sk-test",
+                        "default_headers": {"X-Evil": "yes"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="unknown extra"):
+        load_config(global_path=gp, project_path=None)
+
+
+def test_allowed_provider_extra_reaches_constructor():
+    factory = _factory(ProviderType.OPENAI, api_key="k", extra={"timeout": 42})
+    with patch("langchain.chat_models.init_chat_model") as m:
+        m.return_value = object()
+        factory.build("p/model")
+    assert m.call_args.kwargs["timeout"] == 42
+
+
+def test_provider_headers_reach_constructor():
+    factory = _factory(
+        ProviderType.OPENAI,
+        api_key="k",
+        headers={"Authorization": "Bearer secret"},
+    )
+    with patch("langchain.chat_models.init_chat_model") as m:
+        m.return_value = object()
+        factory.build("p/model")
+    assert m.call_args.kwargs["default_headers"] == {"Authorization": "Bearer secret"}
+
+
 def test_list_remote_models_malformed_payload_returns_empty():
     from jarn.providers import list_remote_models
 

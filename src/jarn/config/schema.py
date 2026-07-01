@@ -57,6 +57,9 @@ class ProviderConfig:
     type: ProviderType
     api_key: str | None = None
     base_url: str | None = None
+    #: Optional HTTP headers forwarded to the provider client (e.g. custom auth).
+    #: Prefer this over stuffing headers into ``extra`` so they can be redacted.
+    headers: dict[str, str] = field(default_factory=dict)
     # Extra kwargs forwarded verbatim to the underlying chat model constructor.
     extra: dict[str, Any] = field(default_factory=dict)
 
