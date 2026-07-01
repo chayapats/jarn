@@ -1010,6 +1010,7 @@ class Controller:
         # Echo the expansion so the user sees what the preset actually set.
         expansion = (
             f"mode={self.config.permission_mode.value}, "
+            f"backend={self.config.execution.backend}, "
             f"sandbox={self.config.execution.local_sandbox}, "
             f"network={'on' if self.config.execution.sandbox_allow_network else 'off'}"
         )

@@ -99,3 +99,38 @@ def test_policy_profile_unset_is_silent(capsys, monkeypatch):
     monkeypatch.setattr(cli, "_warned_policy_profile", False)
     cli._warn_policy_profile_deprecated(_cfg())  # no preset set
     assert capsys.readouterr().err == ""
+
+
+# -- T-1-9: the ci preset is safe-by-default (docker-isolated, fail closed) ----
+
+
+def test_ci_preset_requires_docker_backend():
+    """The ci preset runs YOLO *only* behind the docker backend — never the
+    bare local host — so an unavailable sandbox fails the launch instead of
+    silently running YOLO on the host."""
+    from jarn.config.profiles import apply_profile
+
+    c = _cfg()
+    apply_profile(c, "ci")
+    assert c.permission_mode is PermissionMode.YOLO
+    assert c.execution.backend == "docker"
+    assert c.execution.local_sandbox == "off"  # OS sandbox is a local-backend concern
+
+
+def test_ci_preset_fails_closed_without_docker(tmp_path, monkeypatch):
+    """On a host where Docker is unavailable, the ci preset's docker backend
+    raises SandboxUnavailable (fail closed) — it must NOT silently fall back to
+    running YOLO on the host."""
+    from jarn.agent import builder
+    from jarn.agent.builder import SandboxUnavailable
+    from jarn.config.profiles import apply_profile
+
+    c = _cfg()
+    apply_profile(c, "ci")
+    # _make_docker_backend imports docker_available from docker_backend at call
+    # time, so patch the source module.
+    import jarn.agent.docker_backend as db
+
+    monkeypatch.setattr(db, "docker_available", lambda: False)
+    with pytest.raises(SandboxUnavailable):
+        builder._make_backend(c, tmp_path)

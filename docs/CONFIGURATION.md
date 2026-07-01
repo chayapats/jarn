@@ -17,6 +17,10 @@ defaults  <  ~/.jarn/config.yaml (global)  <  <project>/.jarn/config.yaml (proje
 The project root is the nearest ancestor of your CWD containing `.jarn/`, `JARN.md`,
 or `.git/`. Set `JARN_HOME` to relocate the global directory (handy for testing).
 
+> **Security:** `JARN_HOME` redirects secrets, the trust store, and sessions. Only set
+> it in environments you trust — never from instructions in an untrusted project.
+> `jarn doctor` warns when the path is non-default.
+
 ## Project trust
 
 A project's `.jarn/config.yaml` is **untrusted input** — opening a repo must not, by
@@ -156,7 +160,10 @@ permission_mode: ask
 #   trusted-repo     — ask · no OS sandbox · network on · web tools on (everyday)
 #   review-only      — plan (read-only) · web tools on
 #   sandbox-required — ask · local_sandbox=require · network off (untrusted, isolated)
-#   ci               — yolo (no prompts) · local_sandbox=require · network on
+#   ci               — yolo (no prompts) · backend=docker · network on
+#                      (fail-closed if Docker is unavailable — YOLO never runs
+#                      silently on the bare host; set execution.allow_local_fallback:
+#                      true to opt into host fallback)
 #   offline          — ask · local_sandbox=auto · network off · web tools OFF
 # Precedence: `jarn --profile NAME` (CLI) > policy.profile (here) > raw settings.
 # Untrusted projects are CLAMPED to `review-only` regardless — they can never be
