@@ -276,6 +276,56 @@ def test_valid_observability_log_level(tmp_path, level):
     assert cfg.observability.log_level == level
 
 
+def test_mcp_validation_rejects_bad_transport(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"mcp_servers": [{"name": "x", "transport": "ftp", "command": "run"}]})
+    with pytest.raises(ConfigError, match="transport"):
+        load_config(global_path=gp, project_path=None)
+
+
+def test_mcp_validation_rejects_shell_metacharacters(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(
+        gp,
+        {"mcp_servers": [{"name": "x", "transport": "stdio", "command": "echo; rm"}]},
+    )
+    with pytest.raises(ConfigError, match="metacharacters"):
+        load_config(global_path=gp, project_path=None)
+
+
+def test_mcp_validation_rejects_non_absolute_url(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(
+        gp,
+        {
+            "mcp_servers": [
+                {"name": "remote", "transport": "http", "url": "/relative/path"}
+            ]
+        },
+    )
+    with pytest.raises(ConfigError, match="absolute http"):
+        load_config(global_path=gp, project_path=None)
+
+
+def test_subagent_validation_rejects_bad_url(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(
+        gp,
+        {
+            "async_subagents": [
+                {
+                    "name": "worker",
+                    "description": "remote worker",
+                    "graph_id": "g1",
+                    "url": "not-a-url",
+                }
+            ]
+        },
+    )
+    with pytest.raises(ConfigError, match="absolute http"):
+        load_config(global_path=gp, project_path=None)
+
+
 def test_doctor_json_is_valid(tmp_path, monkeypatch, capsys):
     import json
 
