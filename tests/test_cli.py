@@ -234,3 +234,31 @@ def test_trust_hooks_cli_writes_marker(tmp_path, monkeypatch, capsys):
     rc = cli._cmd_trust_hooks()
     assert rc == 0
     assert global_hooks_trusted()
+
+
+def test_doctor_warns_custom_jarn_home(tmp_path, monkeypatch, capsys):
+    """Non-default JARN_HOME is surfaced in doctor output (secrets/trust redirect)."""
+    from jarn import cli
+    from jarn.config import paths
+
+    custom = tmp_path / "alt-jarn"
+    custom.mkdir()
+    monkeypatch.setenv("JARN_HOME", str(custom))
+    gp = custom / "config.yaml"
+    gp.write_text(
+        yaml.safe_dump(
+            {
+                "default_profile": "openrouter",
+                "providers": {"openrouter": {"type": "openrouter", "api_key": "sk-test"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
+
+    cli._cmd_doctor(as_json=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["jarn_home_overridden"] is True
+    assert "jarn_home_warning" in data
+    assert str(custom) in data["jarn_home_warning"]

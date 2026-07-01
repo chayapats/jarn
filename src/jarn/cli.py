@@ -357,6 +357,15 @@ def _collect_doctor(
     from jarn.providers import ModelFactory, ModelResolutionError
 
     gpath = paths.global_config_path()
+    home = paths.global_home()
+    diag["jarn_home"] = str(home)
+    overridden = paths.jarn_home_overridden()
+    diag["jarn_home_overridden"] = overridden
+    if overridden:
+        diag["jarn_home_warning"] = (
+            f"JARN_HOME is overridden ({home}) — secrets and the trust store "
+            "live here; only set JARN_HOME in environments you trust."
+        )
     diag["global_config"] = str(gpath)
     diag["global_config_present"] = gpath.is_file()
 
@@ -504,6 +513,8 @@ def _cmd_doctor(*, as_json: bool = False) -> int:
     gpath = diag["global_config"]
     present = diag["global_config_present"]
     console.print(f"global config: {gpath} {'[green]✔[/green]' if present else '[red]missing[/red]'}")
+    if diag.get("jarn_home_warning"):
+        console.print(f"[yellow]{diag['jarn_home_warning']}[/yellow]")
     console.print(f"project root: {diag['project_root'] or '[dim]none[/dim]'}")
     if diag.get("project_trusted") is False and diag.get("project_stripped_keys"):
         keys = ", ".join(diag["project_stripped_keys"])

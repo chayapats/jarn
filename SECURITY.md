@@ -40,6 +40,12 @@ in your project directory when you approve them (or automatically in permissive 
   `InlineSecretWarning` for any literal that looks like a real key, and rejects
   it outright when `strict_secrets: true` (recommended for CI / shared hosts).
   Prefer `keychain:jarn/<provider>`, `file:jarn/<provider>`, or `${ENV_VAR}`.
+- **`JARN_HOME` override:** Global state (config, secrets, trust store, sessions) lives
+  under `~/.jarn` by default. Setting `JARN_HOME` redirects all of that to another
+  directory. A hijacked environment — a CI job, a shared shell, or instructions in an
+  untrusted repo telling you to `export JARN_HOME=…` — can point secrets and trust
+  decisions at an attacker-controlled path. Only set `JARN_HOME` in environments you
+  control; `jarn doctor` warns when it is non-default.
 - **Network:** `web_fetch` / `web_search` and MCP tools are gated through the permission
   engine. `web_fetch` blocks private/loopback/metadata addresses by default.
 
