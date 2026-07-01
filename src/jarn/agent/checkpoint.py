@@ -36,9 +36,18 @@ import contextlib
 import os
 import subprocess
 import tempfile
+import threading
 import time as _time_module
 from dataclasses import dataclass, field
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
+
+#: Full snapshot ref suffix — avoids prefix collisions on large repos.
+_SNAP_REF_LEN = 40
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -158,9 +167,34 @@ def _read_ref_message(sha: str, root: Path) -> str:
 
 _UNDO_PREFIX = "refs/jarn/checkpoints/stack/undo/"
 _REDO_PREFIX = "refs/jarn/checkpoints/stack/redo/"
+_LOCK_NAME = ".jarn-checkpoint.lock"
+# In-process guard paired with the file lock (same-thread reentrancy).
+_THREAD_LOCK = threading.Lock()
 
 
-def _stack_push(prefix: str, sha: str, label: str, root: Path) -> bool:
+@contextlib.contextmanager
+def _checkpoint_lock(root: Path):
+    """Serialize stack mutations across threads and cooperating processes."""
+    lock_path = root / _LOCK_NAME
+    with _THREAD_LOCK:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+
+def _snap_ref(sha: str) -> str:
+    """Stable private ref name for a snapshot commit."""
+    return f"refs/jarn/checkpoints/snap/{sha[:_SNAP_REF_LEN]}"
+
+
+def _stack_push(prefix: str, sha: str, root: Path) -> bool:
     """Prepend ``sha`` to the stack at ``prefix`` (shift existing entries down).
 
     We re-index 0→1, 1→2, … *before* writing the new 0 so the operation is
@@ -434,20 +468,21 @@ class CheckpointManager:
                     message="nothing to snapshot (working tree already saved)",
                 )
 
-        # Store the snapshot SHA under a stable ref so it won't be GC'd.
-        ref = f"refs/jarn/checkpoints/snap/{sha[:16]}"
-        if not _update_ref(ref, sha, self.repo_root):
-            return SnapshotResult(ok=False, message="failed to store snapshot ref")
+        with _checkpoint_lock(self.repo_root):
+            # Store the snapshot SHA under a stable ref so it won't be GC'd.
+            ref = _snap_ref(sha)
+            if not _update_ref(ref, sha, self.repo_root):
+                return SnapshotResult(ok=False, message="failed to store snapshot ref")
 
-        # Push onto the undo stack.
-        if not _stack_push(_UNDO_PREFIX, sha, full_label, self.repo_root):
-            return SnapshotResult(ok=False, message="failed to update undo stack")
+            # Push onto the undo stack.
+            if not _stack_push(_UNDO_PREFIX, sha, self.repo_root):
+                return SnapshotResult(ok=False, message="failed to update undo stack")
 
-        # Clear redo: a new snapshot invalidates any pending redo points.
-        _stack_clear(_REDO_PREFIX, self.repo_root)
+            # Clear redo: a new snapshot invalidates any pending redo points.
+            _stack_clear(_REDO_PREFIX, self.repo_root)
 
-        # Prune oversized stacks.
-        self._prune_stack(_UNDO_PREFIX)
+            # Prune oversized stacks.
+            self._prune_stack(_UNDO_PREFIX)
 
         return SnapshotResult(ok=True, sha=sha, message=full_label)
 
@@ -464,29 +499,33 @@ class CheckpointManager:
         if not self._is_repo:
             return RestoreResult(ok=False, message="not a git repository")
 
-        undo_stack = _stack_read(_UNDO_PREFIX, self.repo_root)
-        if not undo_stack:
-            return RestoreResult(ok=False, message="nothing to undo")
+        with _checkpoint_lock(self.repo_root):
+            undo_stack = _stack_read(_UNDO_PREFIX, self.repo_root)
+            if not undo_stack:
+                return RestoreResult(ok=False, message="nothing to undo")
 
-        # Capture the current state as a redo-point FIRST (invariant #3).
-        redo_result = self._capture_redo_point()
-        if not redo_result.ok:
-            return RestoreResult(
-                ok=False,
-                message=f"could not save redo point: {redo_result.message}",
-            )
+            # Build the redo-point snapshot but defer the stack push until apply
+            # succeeds — otherwise a failed restore leaves an orphan on redo.
+            redo_result = self._build_redo_point()
+            if not redo_result.ok:
+                return RestoreResult(
+                    ok=False,
+                    message=f"could not save redo point: {redo_result.message}",
+                )
 
-        # Pop the top undo entry.
-        target_sha = _stack_pop(_UNDO_PREFIX, self.repo_root)
-        if target_sha is None:
-            return RestoreResult(ok=False, message="undo stack is empty")
+            target_sha = _stack_pop(_UNDO_PREFIX, self.repo_root)
+            if target_sha is None:
+                return RestoreResult(ok=False, message="undo stack is empty")
 
-        ok, err = _apply_snapshot(target_sha, self.repo_root)
-        if not ok:
-            # Roll back: the redo push already happened, but we must restore the
-            # undo stack to its original state.  Put the sha back at the top.
-            _stack_push(_UNDO_PREFIX, target_sha, "", self.repo_root)
-            return RestoreResult(ok=False, message=f"restore failed: {err}")
+            ok, err = _apply_snapshot(target_sha, self.repo_root)
+            if not ok:
+                _stack_push(_UNDO_PREFIX, target_sha, self.repo_root)
+                return RestoreResult(ok=False, message=f"restore failed: {err}")
+
+            if redo_result.sha:
+                _update_ref(_snap_ref(redo_result.sha), redo_result.sha, self.repo_root)
+                _stack_push(_REDO_PREFIX, redo_result.sha, self.repo_root)
+                self._prune_stack(_REDO_PREFIX)
 
         label = _read_ref_message(target_sha, self.repo_root)
         return RestoreResult(ok=True, message=f"undone: {label}")
@@ -502,33 +541,32 @@ class CheckpointManager:
         if not self._is_repo:
             return RestoreResult(ok=False, message="not a git repository")
 
-        redo_stack = _stack_read(_REDO_PREFIX, self.repo_root)
-        if not redo_stack:
-            return RestoreResult(ok=False, message="nothing to redo")
+        with _checkpoint_lock(self.repo_root):
+            redo_stack = _stack_read(_REDO_PREFIX, self.repo_root)
+            if not redo_stack:
+                return RestoreResult(ok=False, message="nothing to redo")
 
-        # Save current state back to undo stack.
-        ts = _time_module.time()
-        sha, err = _build_snapshot(
-            f"jarn-checkpoint: pre-redo @ {int(ts)}", self.repo_root
-        )
-        if sha is None:
-            return RestoreResult(
-                ok=False, message=f"could not save pre-redo snapshot: {err}"
+            ts = _time_module.time()
+            pre_sha, err = _build_snapshot(
+                f"jarn-checkpoint: pre-redo @ {int(ts)}", self.repo_root
             )
-        ref = f"refs/jarn/checkpoints/snap/{sha[:16]}"
-        _update_ref(ref, sha, self.repo_root)
-        _stack_push(_UNDO_PREFIX, sha, "", self.repo_root)
-        self._prune_stack(_UNDO_PREFIX)
+            if pre_sha is None:
+                return RestoreResult(
+                    ok=False, message=f"could not save pre-redo snapshot: {err}"
+                )
 
-        # Pop the redo entry.
-        target_sha = _stack_pop(_REDO_PREFIX, self.repo_root)
-        if target_sha is None:
-            return RestoreResult(ok=False, message="redo stack is empty")
+            target_sha = _stack_pop(_REDO_PREFIX, self.repo_root)
+            if target_sha is None:
+                return RestoreResult(ok=False, message="redo stack is empty")
 
-        ok, err = _apply_snapshot(target_sha, self.repo_root)
-        if not ok:
-            _stack_push(_REDO_PREFIX, target_sha, "", self.repo_root)
-            return RestoreResult(ok=False, message=f"redo failed: {err}")
+            ok, err = _apply_snapshot(target_sha, self.repo_root)
+            if not ok:
+                _stack_push(_REDO_PREFIX, target_sha, self.repo_root)
+                return RestoreResult(ok=False, message=f"redo failed: {err}")
+
+            _update_ref(_snap_ref(pre_sha), pre_sha, self.repo_root)
+            _stack_push(_UNDO_PREFIX, pre_sha, self.repo_root)
+            self._prune_stack(_UNDO_PREFIX)
 
         label = _read_ref_message(target_sha, self.repo_root)
         return RestoreResult(ok=True, message=f"redone: {label}")
@@ -546,24 +584,27 @@ class CheckpointManager:
 
     # -- internals ----------------------------------------------------------
 
-    def _capture_redo_point(self) -> SnapshotResult:
-        """Snapshot the current state onto the redo stack (called inside undo)."""
+    def _build_redo_point(self) -> SnapshotResult:
+        """Build a redo-point snapshot without mutating the redo stack."""
         ts = _time_module.time()
         sha, err = _build_snapshot(
             f"jarn-checkpoint: pre-undo @ {int(ts)}", self.repo_root
         )
         if sha is None:
-            # No commits or nothing changed — treat as ok (no data loss possible
-            # because there's nothing uncommitted to capture).
             if "no commits" in err or "nothing to" in err:
                 return SnapshotResult(ok=True, sha="", message=err)
             return SnapshotResult(ok=False, message=err)
-
-        ref = f"refs/jarn/checkpoints/snap/{sha[:16]}"
-        _update_ref(ref, sha, self.repo_root)
-        _stack_push(_REDO_PREFIX, sha, "", self.repo_root)
-        self._prune_stack(_REDO_PREFIX)
         return SnapshotResult(ok=True, sha=sha)
+
+    def _capture_redo_point(self) -> SnapshotResult:
+        """Snapshot the current state onto the redo stack (called inside undo)."""
+        result = self._build_redo_point()
+        if not result.ok or not result.sha:
+            return result
+        _update_ref(_snap_ref(result.sha), result.sha, self.repo_root)
+        _stack_push(_REDO_PREFIX, result.sha, self.repo_root)
+        self._prune_stack(_REDO_PREFIX)
+        return result
 
     def _prune_stack(self, prefix: str) -> None:
         """Remove stack entries beyond ``max_stack``."""
