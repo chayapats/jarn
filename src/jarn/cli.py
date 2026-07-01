@@ -392,6 +392,20 @@ def _collect_doctor(
         UNTRUSTED_FLOOR_PROFILE if not project_trusted else (cfg.policy.profile or "none")
     )
 
+    # Transparency: name the project-tier keys an untrusted load dropped so the
+    # user knows what `jarn trust` would enable. Empty when trusted or no project.
+    stripped: list[str] = []
+    if not project_trusted and root is not None:
+        from jarn.config.paths import project_config_path
+        from jarn.config.trust import stripped_project_keys
+
+        ppath = project_config_path(root)
+        if ppath is not None and ppath.is_file():
+            from jarn.config.loader import _read_yaml
+
+            stripped = stripped_project_keys(_read_yaml(ppath) or {})
+    diag["project_stripped_keys"] = stripped
+
     factory = ModelFactory(cfg)
     ok = True
     providers: list[dict] = []
@@ -477,6 +491,12 @@ def _cmd_doctor(*, as_json: bool = False) -> int:
     present = diag["global_config_present"]
     console.print(f"global config: {gpath} {'[green]✔[/green]' if present else '[red]missing[/red]'}")
     console.print(f"project root: {diag['project_root'] or '[dim]none[/dim]'}")
+    if diag.get("project_trusted") is False and diag.get("project_stripped_keys"):
+        keys = ", ".join(diag["project_stripped_keys"])
+        console.print(
+            f"[yellow]project untrusted — stripped keys: {keys}[/yellow]"
+            " [dim](run `jarn trust <root>` to enable)[/dim]"
+        )
 
     if not present:
         console.print("\n[yellow]No config — run [b]jarn setup[/b].[/yellow]")

@@ -180,7 +180,7 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 **Deps:** none
 **Effort:** S
 
-### T-1-6 — Complete untrusted-project sanitization (allowlist for project tier)
+### T-1-6 — Complete untrusted-project sanitization (allowlist for project tier) ✅
 **Problem:** `config/trust.py` `DANGEROUS_TOP_KEYS` strips only `providers/hooks/mcp_servers/observability`. Untrusted projects can still merge `routing`, `budget` (`per_session_usd: 0` disables caps), `wiki.enabled`, `compat`, `default_model`, `git`, `plan`, `context` while using the user's global credentials → cost abuse + behavior change with no trust prompt.
 **Files:** `src/jarn/config/trust.py`, `src/jarn/config/loader.py`, `tests/test_trust.py`
 **Action:**
@@ -189,9 +189,9 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 3. Add a `jarn doctor` line showing which project keys were stripped for transparency.
 4. Update `docs/PERMISSIONS.md` "Untrusted repos" section.
 **DoD:**
-- [ ] `test_trust` asserts each of `routing/budget/wiki/compat/default_model/git/plan/context` is stripped when untrusted.
-- [ ] Existing trusted-repo behavior unchanged.
-- [ ] `doctor` output lists stripped keys for an untrusted repo.
+- [x] `test_trust` asserts each of `routing/budget/wiki/compat/default_model/git/plan/context` is stripped when untrusted.
+- [x] Existing trusted-repo behavior unchanged.
+- [x] `doctor` output lists stripped keys for an untrusted repo.
 **Tests:** expand `test_trust.py` with one assertion per newly-stripped key.
 **Risk:** projects that legitimately set `routing`/`budget` in `.jarn/config.yaml` will require trust before those take effect — expected and documented.
 **Deps:** none

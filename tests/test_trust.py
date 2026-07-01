@@ -264,6 +264,42 @@ def test_doctor_fails_closed_on_untrusted_project(jarn_home, tmp_path, monkeypat
     data = json.loads(capsys.readouterr().out)
     assert data["project_trusted"] is False
     assert data["permission_mode"] != "yolo"
+    # Doctor reports which project keys were dropped for transparency.
+    stripped = data.get("project_stripped_keys") or []
+    for key in ("hooks", "mcp_servers", "permission_mode", "providers"):
+        assert key in stripped, f"doctor must list stripped key {key!r}"
+
+
+def test_doctor_lists_stripped_keys_in_human_output(jarn_home, tmp_path, monkeypatch, capsys):
+    """The human-readable doctor output names the stripped project keys."""
+    from jarn import cli
+    from jarn.config import paths
+
+    gp = jarn_home / "config.yaml"
+    gp.write_text(
+        "providers:\n  openrouter:\n    type: openrouter\n    api_key: sk-test\n"
+        "    base_url: https://openrouter.ai/api/v1\n",
+        encoding="utf-8",
+    )
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".jarn").mkdir()
+    # A project with a behavior key (routing) plus a dangerous key (hooks).
+    (proj / ".jarn" / "config.yaml").write_text(
+        "hooks:\n  - event: session_start\n    command: echo hi\n"
+        "routing:\n  main: openai/gpt-5\n"
+        "budget:\n  per_session_usd: 0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: proj)
+
+    with patch("jarn.providers.ModelFactory.build_main", return_value=object()):
+        cli._cmd_doctor(as_json=False)
+    out = capsys.readouterr().out
+    assert "project untrusted" in out
+    assert "routing" in out and "budget" in out and "hooks" in out
+    assert "jarn trust" in out
 
 
 def test_untrusted_project_excludes_prompt_extensions(tmp_path, base_config):
@@ -366,3 +402,76 @@ def test_project_dangerous_includes_observability() -> None:
         "project_dangerous must include 'observability' (LangSmith exfil vector)"
     )
     assert "ui" not in danger
+
+
+# --- T-1-6: allowlist sanitization -----------------------------------------
+
+
+def test_sanitize_strips_behavior_and_cost_keys() -> None:
+    """Each capability/behavior/cost key is dropped for an untrusted project."""
+    raw = {
+        "routing": {"main": "openai/gpt-5"},
+        "budget": {"per_session_usd": 0},
+        "wiki": {"enabled": True},
+        "compat": {"legacy": True},
+        "default_model": "openai/gpt-5",
+        "git": {"autocheckpoint": False},
+        "plan": {"exit_mode": "auto-edit"},
+        "context": {"repo_map": "auto"},
+        "strict_secrets": False,
+        "default_profile": "openai",
+        "ui": {"theme": "light"},
+        "permissions": {"deny": ["git push"]},
+    }
+    safe = sanitize_project(raw)
+    for key in (
+        "routing", "budget", "wiki", "compat", "default_model",
+        "git", "plan", "context", "strict_secrets", "default_profile",
+    ):
+        assert key not in safe, f"untrusted project must not keep {key!r}"
+    # Safe keys survive.
+    assert safe["ui"] == {"theme": "light"}
+    assert safe["permissions"] == {"deny": ["git push"]}
+
+
+def test_load_config_untrusted_strips_routing_and_budget(tmp_path, monkeypatch):
+    """routing/budget from an untrusted project do NOT reach the merged config."""
+    gp = tmp_path / "global.yaml"
+    gp.write_text(
+        "providers:\n  openrouter:\n    type: openrouter\n    api_key: ${OPENAI_API_KEY}\n"
+        "    base_url: https://openrouter.ai/api/v1\n"
+        "routing:\n  main: openrouter/anthropic/claude-3.5\n"
+        "budget:\n  per_session_usd: 5.0\n",
+        encoding="utf-8",
+    )
+    pp = tmp_path / "project.yaml"
+    pp.write_text(
+        "routing:\n  main: openai/gpt-5\n"
+        "budget:\n  per_session_usd: 0\n"
+        "default_model: openai/gpt-5\n"
+        "wiki:\n  enabled: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "real-secret")
+
+    untrusted = load_config(global_path=gp, project_path=pp, project_trusted=False)
+    # Global routing/budget win (project values stripped, not merged).
+    assert untrusted.routing.main == "openrouter/anthropic/claude-3.5"
+    assert untrusted.budget.per_session_usd == 5.0
+    assert untrusted.default_model is None
+    assert untrusted.wiki.enabled is False  # project wiki.enabled dropped
+
+    trusted = load_config(global_path=gp, project_path=pp, project_trusted=True)
+    assert trusted.routing.main == "openai/gpt-5"
+    assert trusted.budget.per_session_usd == 0
+    assert trusted.default_model == "openai/gpt-5"
+    assert trusted.wiki.enabled is True
+
+
+def test_stripped_project_keys_lists_dropped_names() -> None:
+    from jarn.config.trust import stripped_project_keys
+
+    raw = {"routing": {}, "budget": {}, "ui": {}, "permissions": {"deny": []}}
+    assert stripped_project_keys(raw) == ["budget", "routing"]
+    # A purely-safe project strips nothing.
+    assert stripped_project_keys({"ui": {}}) == []
