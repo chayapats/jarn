@@ -47,6 +47,9 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
 ]
+build = [
+    "pyinstaller==6.21.0",
+]
 
 [project.scripts]
 jarn = "jarn.cli:main"
