@@ -46,6 +46,22 @@ in your project directory when you approve them (or automatically in permissive 
 - Protection against prompt injection leading to social-engineered approvals —
   review approval prompts carefully
 
+### The danger-guard is a net, not a sandbox
+
+The danger-guard (`src/jarn/permissions/guard.py`) inspects the **pre-shell command
+string** with patterns before the permission engine decides whether to run it. It
+catches the common catastrophic shapes (`rm -rf /`, `mkfs`, force-push, pipe-to-shell,
+privileged containers, package-manager postinstalls, mass working-tree discards, …)
+and applies NFKC + best-effort homoglyph normalization so a disguised verb like
+Cyrillic `rm` is still matched.
+
+It does **not** parse shell syntax. A payload can be hidden from these patterns by
+chaining through an interpreter — `eval`, `bash -c`, `python -c`, heredoc bodies,
+`$(printf …)`, or a `base64 -d | sh` indirection the net doesn't recognise. The guard
+is a defense-in-depth **net**; for code you do not trust, run it with
+`execution.backend: docker` or the OS sandbox (`execution.local_sandbox: require`),
+not on the host in `yolo`. We do not claim the pattern set is complete.
+
 ## Hardening checklist for operators
 
 1. Run `jarn doctor` after cloning an unfamiliar repository.
