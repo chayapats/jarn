@@ -12,13 +12,17 @@ Decision precedence (highest first):
 from __future__ import annotations
 
 import fnmatch
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from jarn.config._yaml_store import ConfigCorruptError
 from jarn.config.schema import PermissionMode, PermissionRules
 from jarn.permissions.guard import GuardLevel, inspect_command, inspect_path_write
+
+_log = logging.getLogger("jarn")
 
 #: Programs whose payload is an *argument*, so "program + first arg" would
 #: allowlist arbitrary code (e.g. ``bash -c <anything>``). Remembered approvals
@@ -135,7 +139,13 @@ class PermissionEngine:
             self._session_allow.append(rule)
         if scope is RememberScope.ALWAYS:
             if self.persist is not None:
-                self.persist(rule)
+                try:
+                    self.persist(rule)
+                except ConfigCorruptError as exc:
+                    # The project config is corrupt; the in-memory allow still
+                    # applies for this session. Persistence is skipped — the
+                    # user sees the repair hint at the next config load.
+                    _log.warning("Could not persist allow-rule: %s", exc)
             return rule
         return None
 
@@ -183,11 +193,26 @@ class PermissionEngine:
         if self.project_root is None:
             return True
         try:
-            resolved = Path(target).expanduser().resolve()
             root = self.project_root.resolve()
-            return resolved == root or root in resolved.parents
         except (OSError, RuntimeError, ValueError):
             return False
+        try:
+            # Resolve relative targets against project_root, NOT the process
+            # CWD: an agent in a subdir writing "../outside" must be judged by
+            # intent relative to the project, not by where the shell happens to
+            # be running. ``root / target`` keeps absolute targets as-is and
+            # anchors relative ones (including ``~`` via expanduser).
+            #
+            # ``resolve()`` follows symlinks, so a symlink inside the project
+            # that points outside resolves out-of-scope and is rejected for
+            # writes. This is an *intent* check; the tool layer enforces the
+            # same bound again at syscall time (TOCTOU mitigation).
+            resolved = (root / target).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            return False
+        if resolved == root:
+            return True
+        return root in resolved.parents
 
     def _rule_for(self, action: Action) -> str:
         if action.kind is ActionKind.SHELL:

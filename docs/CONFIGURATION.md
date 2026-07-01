@@ -17,6 +17,10 @@ defaults  <  ~/.jarn/config.yaml (global)  <  <project>/.jarn/config.yaml (proje
 The project root is the nearest ancestor of your CWD containing `.jarn/`, `JARN.md`,
 or `.git/`. Set `JARN_HOME` to relocate the global directory (handy for testing).
 
+> **Security:** `JARN_HOME` redirects secrets, the trust store, and sessions. Only set
+> it in environments you trust — never from instructions in an untrusted project.
+> `jarn doctor` warns when the path is non-default.
+
 ## Project trust
 
 A project's `.jarn/config.yaml` is **untrusted input** — opening a repo must not, by
@@ -156,7 +160,10 @@ permission_mode: ask
 #   trusted-repo     — ask · no OS sandbox · network on · web tools on (everyday)
 #   review-only      — plan (read-only) · web tools on
 #   sandbox-required — ask · local_sandbox=require · network off (untrusted, isolated)
-#   ci               — yolo (no prompts) · local_sandbox=require · network on
+#   ci               — yolo (no prompts) · backend=docker · network on
+#                      (fail-closed if Docker is unavailable — YOLO never runs
+#                      silently on the bare host; set execution.allow_local_fallback:
+#                      true to opt into host fallback)
 #   offline          — ask · local_sandbox=auto · network off · web tools OFF
 # Precedence: `jarn --profile NAME` (CLI) > policy.profile (here) > raw settings.
 # Untrusted projects are CLAMPED to `review-only` regardless — they can never be
@@ -171,6 +178,7 @@ policy:
 # Keys are referenced, never inlined:
 #   ${ENV_VAR}                -> environment variable
 #   keychain:jarn/<provider>  -> OS keychain (via `keyring`)
+# A literal key loads with a warning (or a hard error if strict_secrets: true).
 #
 # Provider `type` is one of:
 #   OpenAI-compatible (ChatOpenAI + base_url): openrouter, openai, lmstudio, groq,
@@ -314,6 +322,8 @@ permissions:
     - "curl *"
 
 # ── Hooks (lifecycle automation) ─────────────────────────────────────────
+hook_inherit_env: false          # true → hook subprocesses inherit full os.environ
+hook_global_require_trust: false # true → hooks disabled until `jarn trust-hooks` once
 hooks:
   - event: post_edit       # pre_tool|post_tool|post_edit|pre_commit|session_start|session_end
     command: "ruff check --fix ."
@@ -465,7 +475,7 @@ trusted.
 | `${OPENROUTER_API_KEY}` | the environment variable of that name |
 | `keychain:jarn/openrouter` | `keyring.get_password("jarn", "openrouter")` |
 | `file:jarn/openrouter` | `~/.jarn/secrets/jarn/openrouter` (mode `0600`) |
-| `sk-...` (literal) | itself (discouraged; avoid committing real keys) |
+| `sk-...` (literal) | itself — **discouraged**; triggers a load warning (or a hard error when `strict_secrets: true`). Avoid committing real keys. |
 
 The wizard can store a pasted key in your OS keychain and write the
 `keychain:jarn/<provider>` reference for you. On headless Linux (e.g. Raspberry
@@ -473,6 +483,50 @@ Pi over SSH) the OS keychain often has no backend — setup and `/key` then fall
 back automatically to `file:jarn/<provider>` under `~/.jarn/secrets/`.
 Resolution failures surface a clear message (and `jarn doctor` reports them
 per-provider).
+
+### Inline plaintext keys (`strict_secrets`)
+
+J.A.R.N. is built around *referenced, never inlined* keys. If a provider's
+`api_key` is a literal that looks like a real secret (an `sk-…`/`Bearer …`/PEM
+block/vendor PAT, or a ≥32-char high-entropy string), the loader emits an
+`InlineSecretWarning` at startup telling you to move it to a reference. Empty
+keys and short local-server tokens (e.g. `lm-studio`) are left alone.
+
+Set `strict_secrets: true` (top-level, default `false`) to turn that warning
+into a hard `ConfigError` — useful in CI or shared environments where an inline
+key should never load at all:
+
+```yaml
+strict_secrets: true
+providers:
+  openrouter:
+    type: openrouter
+    api_key: keychain:jarn/openrouter   # reference: always fine
+```
+
+The migration is one line per provider: replace the literal with `${ENV_VAR}`,
+`keychain:jarn/<provider>`, or `file:jarn/<provider>`.
+
+### Hardening lifecycle hooks (`hook_inherit_env`, `hook_global_require_trust`)
+
+Hooks are shell commands J.A.R.N. runs automatically (see
+[Extending — Hooks](EXTENDING.md#4-hooks)). Two top-level flags harden them:
+
+- **`hook_inherit_env`** (default `false`) — hook subprocesses get only a minimal
+  env allowlist (`PATH`/`HOME`/`JARN_*` + declared `extra_env`), **not** your full
+  `os.environ`, so a compromised hook can't exfiltrate `*_API_KEY` values you've
+  exported. Set `true` only if a hook genuinely needs a provider key from your
+  env. This flag is stripped from *untrusted* project configs, so a repo you
+  haven't trusted can't enable it to leak your secrets.
+- **`hook_global_require_trust`** (default `false`) — global hooks
+  (`~/.jarn/config.yaml`) run without a per-project prompt. Set `true` to require
+  a one-time accept (`jarn trust-hooks`) before *any* hook runs; until then the
+  hook runner is disabled and a notice tells you to run the command. Delete
+  `~/.jarn/global-hooks.trusted` to re-gate.
+
+Hook failures are never swallowed: non-zero exits are logged at `WARNING` and
+surfaced as a UI notice; a *blocking* `pre_commit`/`pre_tool` failure still
+rejects the action. An unknown `event:` name is rejected at load.
 
 ## Pricing overrides
 

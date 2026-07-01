@@ -44,8 +44,9 @@ def test_apply_profile_matches_table(base_config, name):
     assert cfg.execution.local_sandbox == effect["local_sandbox"]
     assert cfg.execution.sandbox_allow_network == effect["sandbox_allow_network"]
     assert cfg.policy.web_tools == effect["web_tools"]
-    # backend is unaffected by every profile.
-    assert cfg.execution.backend == "local"
+    # Most profiles leave backend untouched; ``ci`` pins docker for isolation.
+    expected_backend = effect.get("backend", "local")
+    assert cfg.execution.backend == expected_backend
 
 
 #: Hardcoded expected effect per profile, drawn from the SPEC — independent of
@@ -56,7 +57,7 @@ _EXPECTED = {
     "trusted-repo": (PermissionMode.ASK, "off", True, True),
     "review-only": (PermissionMode.PLAN, "off", True, True),
     "sandbox-required": (PermissionMode.ASK, "require", False, True),
-    "ci": (PermissionMode.YOLO, "require", True, True),
+    "ci": (PermissionMode.YOLO, "off", True, True),
     "offline": (PermissionMode.ASK, "auto", False, False),
 }
 
@@ -305,7 +306,8 @@ def test_preset_command_echoes_expansion(tmp_path, monkeypatch, base_config):
     ctrl = _controller(tmp_path, monkeypatch, base_config)
     res = ctrl.handle_command("preset", "ci")
     assert res.rebuilt is True
-    assert "mode=yolo" in res.text and "sandbox=require" in res.text
+    assert "mode=yolo" in res.text and "backend=docker" in res.text
+    assert ctrl.config.execution.backend == "docker"
     assert ctrl.config.permission_mode.value == "yolo"
     ctrl.close()
 

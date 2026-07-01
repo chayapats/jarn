@@ -216,6 +216,54 @@ def test_hook_matcher_filters(tmp_path):
     assert len(runner.run(HookEvent.POST_EDIT, target="a.py")) == 1
 
 
+def test_hook_event_validation_rejects_typo(tmp_path):
+    """A hook with a typo'd event name is rejected at load, not silently no-op'd."""
+    import yaml
+
+    from jarn.config import ConfigError
+    from jarn.config.loader import load_config
+
+    gp = tmp_path / "g.yaml"
+    gp.write_text(
+        yaml.safe_dump(
+            {"hooks": [{"event": "sesion_start", "command": "echo hi"}]}
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="must be one of"):
+        load_config(global_path=gp, project_path=None)
+
+
+def test_hook_env_allowlist_hides_api_key(tmp_path, monkeypatch):
+    """By default a hook subprocess does NOT see ``*_API_KEY`` env vars; only the
+    minimal allowlist + declared ``extra_env`` (or ``inherit_env`` opt-in) reach it."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "secret-xyz")
+    cmd = "echo ${OPENROUTER_API_KEY:-MISSING}"
+    runner = HookRunner(
+        hooks=[HookSpec(event="post_edit", command=cmd)], cwd=tmp_path
+    )
+
+    # Default: allowlist → key is NOT inherited.
+    out = runner.run(HookEvent.POST_EDIT)[0].stdout
+    assert "secret-xyz" not in out
+    assert "MISSING" in out
+
+    # Declared via extra_env → explicitly passed through.
+    out = runner.run(
+        HookEvent.POST_EDIT, extra_env={"OPENROUTER_API_KEY": "secret-xyz"}
+    )[0].stdout
+    assert "secret-xyz" in out
+
+    # Opt-in inherit_env restores the old leak-everything behavior.
+    leaky = HookRunner(
+        hooks=[HookSpec(event="post_edit", command=cmd)],
+        cwd=tmp_path,
+        inherit_env=True,
+    )
+    out = leaky.run(HookEvent.POST_EDIT)[0].stdout
+    assert "secret-xyz" in out
+
+
 # --- MCP per-server lifecycle / health isolation -------------------------
 
 

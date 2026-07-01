@@ -399,6 +399,56 @@ def test_tool_arg_non_string_values_not_truncated(tmp_path: Path) -> None:
     assert args_recorded["items"] == [1, 2, 3]
 
 
+def test_tool_result_secret_is_redacted(tmp_path: Path) -> None:
+    """A tool result containing a key-shaped string is scrubbed before persist."""
+    w = TranscriptWriter("redact-tool", sessions_dir=tmp_path)
+    secret = "sk-proj-" + "Z" * 30
+    w.write_tool("execute", ts=1.0, result=f"output: {secret} done")
+    w.close()
+
+    obj = json.loads(w.path.read_text(encoding="utf-8").strip())
+    assert secret not in obj["result"]
+    assert "sk-…" in obj["result"]
+
+
+def test_tool_arg_secret_is_redacted(tmp_path: Path) -> None:
+    """A secret-shaped string arg value is scrubbed before persist."""
+    w = TranscriptWriter("redact-arg", sessions_dir=tmp_path)
+    token = "ghp_" + "a" * 36
+    w.write_tool("http", ts=1.0, args={"headers": f"Authorization: Bearer {token}"})
+    w.close()
+
+    obj = json.loads(w.path.read_text(encoding="utf-8").strip())
+    assert token not in json.dumps(obj["args"])
+    assert "[REDACTED]" in json.dumps(obj["args"])
+
+
+def test_logging_redacts_secrets(tmp_path: Path, monkeypatch) -> None:
+    """The RedactingFilter scrubs key-shaped substrings from emitted log lines."""
+    import logging
+
+    from jarn.observability.logging import RedactingFilter
+
+    records: list[str] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record.getMessage())
+
+    logger = logging.getLogger("jarn.test.redact")
+    logger.handlers.clear()
+    logger.setLevel(logging.DEBUG)
+    h = _CaptureHandler()
+    h.addFilter(RedactingFilter())
+    logger.addHandler(h)
+
+    secret = "sk-ant-api03-" + "Q" * 40
+    logger.info("building model with key=%s", secret)
+    assert records
+    assert secret not in records[-1]
+    assert "sk-…" in records[-1]
+
+
 def test_no_env_var_leaks_into_transcript(tmp_path: Path, monkeypatch) -> None:
     """A tool output that contains a sentinel secret value must not appear in the
     transcript when the caller correctly passes only the summary, not raw content.

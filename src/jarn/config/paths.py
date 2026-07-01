@@ -22,12 +22,34 @@ CONFIG_FILENAME = "config.yaml"
 
 
 def global_home() -> Path:
-    """Return the global J.A.R.N. home directory (``~/.jarn`` by default)."""
+    """Return the global J.A.R.N. home directory (``~/.jarn`` by default).
+
+    Overridable via ``$JARN_HOME``. Treat a non-default value as trusted-input
+    only — a hijacked env (CI job, shared shell, malicious repo instructions) can
+    redirect secrets and the trust store to an attacker-controlled directory.
+    See ``SECURITY.md`` and ``jarn doctor`` (which warns when overridden).
+    """
     override = os.environ.get("JARN_HOME")
     if override:
         return Path(override).expanduser()
     # Keep it predictable and user-editable: prefer ~/.jarn over an OS app dir.
     return Path.home() / ".jarn"
+
+
+def default_global_home() -> Path:
+    """The canonical home when ``JARN_HOME`` is unset (``~/.jarn``)."""
+    return Path.home() / ".jarn"
+
+
+def jarn_home_overridden() -> bool:
+    """True when ``JARN_HOME`` redirects away from the default ``~/.jarn``."""
+    override = os.environ.get("JARN_HOME")
+    if not override:
+        return False
+    try:
+        return global_home().resolve() != default_global_home().resolve()
+    except OSError:
+        return True
 
 
 def global_config_path() -> Path:
