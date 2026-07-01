@@ -22,19 +22,26 @@ runs. The model is three orthogonal concepts plus one shortcut:
 ### Project trust boundary
 
 A project's `.jarn/config.yaml` is **untrusted input** — opening a repository must not,
-by itself, run code or leak secrets. Before J.A.R.N. honors any *capability-granting*
-key from the project tier, it asks you to trust the project (once per root; you are
-re-prompted if those keys change). Gated keys:
+by itself, run code, leak secrets, or quietly change behavior. Sanitization is
+**allowlist-based**: until you trust the project, only `ui` (cosmetic) and
+`permissions.deny` (safety-increasing) from the project tier are honoured.
+**Every other top-level key is dropped**, including — but not limited to — the
+hard capability keys and the behavior/cost keys:
 
 `hooks` · `mcp_servers` · `async_subagents` · `providers` · `execution` ·
 `permission_mode` · `policy` · `observability` · `permissions.allow`
+· `routing` · `budget` · `wiki` · `compat` · `default_model` · `default_profile`
+· `git` · `plan` · `context` · `strict_secrets`
 
-Until you trust the project these keys are **ignored** (the rest still applies) and the
-session continues safely. Why it matters: otherwise a hostile repo could add a
-`session_start` hook that runs shell the moment you open it, spawn a stdio MCP server
-(an arbitrary command), or point a provider `base_url` at an attacker while referencing
-your real `${API_KEY}` — exfiltrating it on the next model call. Decisions live in
-`~/.jarn/trust.yaml` (project path + a fingerprint of the dangerous subset). See
+`jarn doctor` lists exactly which keys were stripped for an untrusted repo, and
+`jarn trust <root>` (or `/trust` in the REPL) enables them. Why the allowlist is
+strict: a hostile repo could otherwise add a `session_start` hook that runs shell
+the moment you open it, spawn a stdio MCP server (an arbitrary command), point a
+provider `base_url` at an attacker while referencing your real `${API_KEY}`
+(exfiltrating it on the next call), set `budget.per_session_usd: 0` to disable
+cost caps, or pin `routing`/`default_model` to an expensive model billed to your
+credentials. Decisions live in `~/.jarn/trust.yaml` (project path + a fingerprint
+of the stripped subset, so any change re-prompts). See
 [CONFIGURATION.md](CONFIGURATION.md#project-trust).
 
 Project-tier prompt extensions are gated by the same boundary: until a project is

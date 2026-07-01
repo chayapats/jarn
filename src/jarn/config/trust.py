@@ -1,8 +1,11 @@
 """Project trust boundary.
 
 A project's ``.jarn/config.yaml`` is *untrusted input*: opening a repository must
-not, by itself, run code or leak secrets. Yet several config keys grant exactly
-those capabilities when merely loaded —
+not, by itself, run code, leak secrets, or quietly change behavior. Sanitization
+is **allowlist-based** — until a project is explicitly trusted, only ``ui``
+(cosmetic) and ``permissions.deny`` (safety-increasing) from the project tier are
+honoured. Every other top-level key is dropped. That covers the hard capability
+keys, for example:
 
 * ``hooks`` — shell commands run automatically on lifecycle events (e.g.
   ``session_start`` fires before the user does anything).
@@ -16,11 +19,15 @@ those capabilities when merely loaded —
 * ``policy`` — a profile could escalate ``permission_mode`` or loosen the sandbox.
 * ``permissions.allow`` — pre-approve commands without the user ever seeing them.
 
-So a project must be **explicitly trusted** before those keys take effect. Until
-then they are stripped (the rest of the project config — UI theme, context
-budget, deny rules — still applies). Trust is recorded per project root together
-with a *fingerprint* of the dangerous subset, so adding a hook to an
-already-trusted project re-triggers the prompt.
+…and the behavior/cost keys ``routing``, ``budget`` (``per_session_usd: 0``
+disables caps), ``wiki``, ``compat``, ``default_model``, ``default_profile``,
+``git``, ``plan``, ``context``, ``strict_secrets`` — all of which can change what
+the agent does or what it spends against your global credentials.
+
+So a project must be **explicitly trusted** before any of those take effect.
+Trust is recorded per project root together with a *fingerprint* of the stripped
+subset, so adding (or changing) a gated key in an already-trusted project
+re-triggers the prompt.
 """
 
 from __future__ import annotations
@@ -35,7 +42,19 @@ import yaml
 
 from jarn.config import paths
 
-#: Top-level project keys that grant capability or can exfiltrate secrets.
+#: Project-tier keys an **untrusted** project is allowed to set. Everything else
+#: is dropped until the project is explicitly trusted. Allowlist (not blocklist)
+#: so a newly-added config key defaults to *stripped* rather than *honoured*:
+#: ``ui`` is purely cosmetic; ``permissions`` is allowed only for its
+#: safety-increasing ``deny`` rules (``allow`` is stripped so an untrusted repo
+#: can't pre-approve commands without a prompt).
+SAFE_PROJECT_KEYS: frozenset[str] = frozenset({"ui", "permissions"})
+
+#: The hard capability-granting keys — the most severe subset of what an
+#: untrusted project loses. Retained for back-compat and for the trust-prompt UI
+#: to flag the truly dangerous entries; sanitization itself is allowlist-based
+#: (see :data:`SAFE_PROJECT_KEYS`) so ``routing``/``budget``/``wiki``/``git``/
+#: ``plan``/``context``/``compat``/``default_model`` are dropped too.
 #: ``observability`` is included because a project can set
 #: ``observability.langsmith: true`` to exfiltrate all conversation data to
 #: LangSmith — an untrusted project must not be allowed to enable that.
@@ -52,13 +71,14 @@ DANGEROUS_TOP_KEYS = (
 
 
 def project_dangerous(raw: dict[str, Any]) -> dict[str, Any]:
-    """Return the capability-granting subset of a project config.
+    """Return the subset of a project config that needs trust to take effect.
 
     Used to decide whether a trust prompt is needed and to fingerprint what the
-    user is being asked to trust. ``permissions.allow`` is surfaced separately
-    from the (safety-increasing) ``permissions.deny``.
+    user is being asked to trust. With allowlist-based sanitization this is
+    *everything outside* :data:`SAFE_PROJECT_KEYS`, plus ``permissions.allow``
+    (surfaced separately from the safety-increasing ``permissions.deny``).
     """
-    danger: dict[str, Any] = {k: raw[k] for k in DANGEROUS_TOP_KEYS if k in raw}
+    danger: dict[str, Any] = {k: raw[k] for k in raw if k not in SAFE_PROJECT_KEYS}
     allow = (raw.get("permissions") or {}).get("allow")
     if allow:
         danger["permissions.allow"] = allow
@@ -66,17 +86,31 @@ def project_dangerous(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def sanitize_project(raw: dict[str, Any]) -> dict[str, Any]:
-    """Drop capability-granting keys so an untrusted project can't run code or
-    leak secrets. Keeps benign keys and the safety-increasing ``permissions.deny``."""
-    safe = {k: v for k, v in raw.items() if k not in DANGEROUS_TOP_KEYS}
+    """Keep only the safe project-tier keys so an untrusted project can't run
+    code, leak secrets, redirect routing, disable budget caps, or change
+    behavior. Keeps ``ui`` (cosmetic) and the safety-increasing
+    ``permissions.deny``; drops everything else (trust the project to enable it).
+    """
+    safe = {k: v for k, v in raw.items() if k in SAFE_PROJECT_KEYS}
     perms = safe.get("permissions")
     if isinstance(perms, dict) and "allow" in perms:
+        # ``allow`` pre-approves commands without a prompt — never honour it
+        # from an untrusted project. Keep ``deny`` (safety-increasing).
         trimmed = {k: v for k, v in perms.items() if k != "allow"}
         if trimmed:
             safe["permissions"] = trimmed
         else:
             safe.pop("permissions", None)
     return safe
+
+
+def stripped_project_keys(raw: dict[str, Any]) -> list[str]:
+    """Names of the top-level project keys an untrusted load would drop (sorted).
+
+    Excludes ``permissions.allow`` (handled separately) and the safe keys.
+    Surfaced by ``jarn doctor`` for transparency.
+    """
+    return sorted(k for k in raw if k not in SAFE_PROJECT_KEYS)
 
 
 def fingerprint(dangerous: dict[str, Any]) -> str:
