@@ -28,7 +28,7 @@ from jarn.config.defaults import (
     PROVIDER_BASE_URLS,
     PROVIDER_ENV_VARS,
 )
-from jarn.config.secrets import SecretResolutionError, resolve, store_keychain
+from jarn.config.secrets import SecretResolutionError, file_fallback_notice, resolve, store_secret
 from jarn.onboarding.wizard import (
     _CONFIG_HEADER,
     _build_config_dict,
@@ -112,6 +112,7 @@ class SetupApp(App):
         self._model_manual = False
         self._model_hint: str | None = None
         self._model_hinted_value: str | None = None
+        self._secret_notice: str | None = None
         # Probe the environment so we can offer an existing key and tag the
         # recommended provider (parity with the plain-text wizard).
         self.env_hit: tuple[str, str] | None = _detect_env_key()
@@ -203,6 +204,9 @@ class SetupApp(App):
         self.query_one("#crumbs", Static).update(crumbs)
         body = self.query_one("#step", Vertical)
         await body.remove_children()
+        if self._secret_notice:
+            await body.mount(Static(f"[yellow]{self._secret_notice}[/yellow]"))
+            self._secret_notice = None
         await body.mount(widget)
         widget.focus()
 
@@ -391,12 +395,27 @@ class SetupApp(App):
     async def _step_confirm(self) -> None:
         a = self.answers
         base_line = f"base_url: [b]{a['base_url']}[/b]\n" if a.get("base_url") else ""
+        key_ref = a.get("key_ref", "(none — local)")
+        notice = ""
+        if key_ref.startswith("file:"):
+            from jarn.config.secrets import StoredSecret
+
+            prov = a["provider"]
+            env = PROVIDER_ENV_VARS.get(prov, f"{prov.upper()}_API_KEY")
+            text = file_fallback_notice(
+                StoredSecret(reference=key_ref, backend="file"),
+                provider=prov,
+                env_var=env,
+            )
+            if text:
+                notice = f"\n[yellow]{text}[/yellow]\n"
         summary = (
             f"provider: [b]{a['provider']}[/b]\n"
             f"{base_line}"
             f"model:    [b]{a.get('model','')}[/b]\n"
-            f"key:      [b]{a.get('key_ref','(none — local)')}[/b]\n"
+            f"key:      [b]{key_ref}[/b]\n"
             f"theme:    [b]{a.get('theme','dark')}[/b]\n"
+            f"{notice}"
         )
         body = Vertical(
             Static(summary),
@@ -457,8 +476,12 @@ class SetupApp(App):
         if self.step == "key":
             prov = self.answers["provider"]
             if value:
-                store_keychain("jarn", prov, value)
-                self.answers["key_ref"] = f"keychain:jarn/{prov}"
+                stored = store_secret("jarn", prov, value)
+                self.answers["key_ref"] = stored.reference
+                env = PROVIDER_ENV_VARS.get(prov, f"{prov.upper()}_API_KEY")
+                self._secret_notice = file_fallback_notice(
+                    stored, provider=prov, env_var=env
+                )
             else:
                 self._set_env_key_ref()
             await self._goto(self._next_after_key())

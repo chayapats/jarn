@@ -102,9 +102,16 @@ async def test_cloud_provider_without_key_prompts_before_confirm(
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     _clear_provider_env(monkeypatch)
     stored: dict[tuple[str, str], str] = {}
+
+    def _fake_store(service: str, account: str, value: str):
+        from jarn.config.secrets import StoredSecret
+
+        stored[(service, account)] = value
+        return StoredSecret(reference=f"keychain:{service}/{account}", backend="keychain")
+
     monkeypatch.setattr(
-        "jarn.onboarding.tui_wizard.store_keychain",
-        lambda service, account, value: stored.__setitem__((service, account), value),
+        "jarn.onboarding.tui_wizard.store_secret",
+        _fake_store,
     )
     from jarn.config import paths
     from jarn.config.loader import load_config
@@ -213,3 +220,42 @@ async def test_local_provider_never_prompts_for_key(tmp_path, monkeypatch):
         await pilot.pause()
         assert app.step == "base_url"
         assert "key_ref" not in app.answers
+
+
+@pytest.mark.asyncio
+async def test_tui_shows_file_fallback_notice_after_key_paste(tmp_path, monkeypatch):
+    """When keychain fails, the next setup step should explain what happened."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _clear_provider_env(monkeypatch)
+
+    from jarn.config.secrets import StoredSecret
+    from jarn.onboarding.tui_wizard import SetupApp
+
+    def _fake_store(service: str, account: str, value: str) -> StoredSecret:
+        return StoredSecret(reference=f"file:{service}/{account}", backend="file")
+
+    monkeypatch.setattr("jarn.onboarding.tui_wizard.store_secret", _fake_store)
+
+    app = SetupApp()
+    async with app.run_test(size=(90, 40)) as pilot:
+        await pilot.pause()
+        idx = list(ALL_PROVIDERS).index("openai_compatible")
+        ol = app.query_one("#step-list")
+        ol.highlighted = idx
+        await pilot.press("enter")  # provider
+        await pilot.pause()
+        await pilot.press("enter")  # storage: env → missing key → key step
+        await pilot.pause()
+        assert app.step == "key"
+        inp = app.query_one("#step-input")
+        inp.value = "sk-pi"
+        await pilot.press("enter")
+        await pilot.pause()
+        from textual.widgets import Static
+
+        notice_widgets = [
+            w for w in app.query("#step Static").results(Static)
+            if "What to do next" in str(w.render())
+        ]
+        assert notice_widgets, "expected a file-fallback notice on the next step"
+        assert "Continue setup" in str(notice_widgets[0].render())
