@@ -464,11 +464,15 @@ trusted.
 |---|---|
 | `${OPENROUTER_API_KEY}` | the environment variable of that name |
 | `keychain:jarn/openrouter` | `keyring.get_password("jarn", "openrouter")` |
+| `file:jarn/openrouter` | `~/.jarn/secrets/jarn/openrouter` (mode `0600`) |
 | `sk-...` (literal) | itself (discouraged; avoid committing real keys) |
 
 The wizard can store a pasted key in your OS keychain and write the
-`keychain:jarn/<provider>` reference for you. Resolution failures surface a clear
-message (and `jarn doctor` reports them per-provider).
+`keychain:jarn/<provider>` reference for you. On headless Linux (e.g. Raspberry
+Pi over SSH) the OS keychain often has no backend — setup and `/key` then fall
+back automatically to `file:jarn/<provider>` under `~/.jarn/secrets/`.
+Resolution failures surface a clear message (and `jarn doctor` reports them
+per-provider).
 
 ## Pricing overrides
 
