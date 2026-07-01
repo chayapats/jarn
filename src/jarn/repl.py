@@ -505,6 +505,25 @@ class InlineApp:
         if self.app is not None:
             self.app.invalidate()
 
+    def _clear_scrollback(self) -> None:
+        """Clear terminal scrollback and reset the live region above the input."""
+        self._stream_text = ""
+        self._stream_md_cache = None
+        self._stream_is_reasoning = False
+        self._last_tool_outputs = []
+        self._last_todos_sig = None
+        if self.app is not None:
+            self.app.invalidate()
+        f = self.console.file
+        if hasattr(f, "truncate") and hasattr(f, "seek"):
+            # Headless / test consoles (StringIO) — reset the buffer in place.
+            f.truncate(0)
+            f.seek(0)
+        else:
+            # Real TTY: erase scrollback + visible screen (DEC reset + home + erase).
+            self.console.file.write("\x1b[3J\x1b[H\x1b[2J")
+            self.console.file.flush()
+
     def _menu_html(self) -> HTML:
         lines: list[str] = []
         if self._menu_header:
@@ -1383,6 +1402,11 @@ class InlineApp:
             self._maybe_autocheckpoint_hint()
             return
         if name == "compact":
+            sub = args.strip().lower()
+            if sub == "status" or sub:
+                result = self.controller.handle_command(name, args)
+                c.print(result.text)
+                return
             await self._cmd_compact()
             return
         if name in ("commit", "review"):
@@ -1433,6 +1457,8 @@ class InlineApp:
             c.print(f"[{palette.C_DIM}]yolo cancelled — mode unchanged.[/{palette.C_DIM}]")
             return
         result = self.controller.handle_command(name, args)
+        if result.clear_screen:
+            self._clear_scrollback()
         c.print(result.text)
         if result.rebuilt:
             self.controller.runtime = None
