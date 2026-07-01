@@ -8,6 +8,7 @@ aborts the action that triggered it (e.g. block the commit if tests fail).
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 from dataclasses import dataclass
@@ -16,6 +17,43 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from jarn.config.schema import HookSpec
+
+_log = logging.getLogger("jarn")
+
+#: Env vars a hook subprocess gets by default. Deliberately minimal: no
+#: ``*_API_KEY`` / ``*_TOKEN`` / cloud-cred vars, so a compromised hook can't
+#: exfiltrate secrets the user happens to have exported. ``JARN_*`` is included
+#: (config/home paths, never secrets). Anything else must be declared via
+#: ``extra_env`` (or ``hook_inherit_env: true`` to restore the old behavior).
+_ALLOWED_ENV: frozenset[str] = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TMPDIR",
+        "TMP",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TERM",
+        "TZ",
+    }
+)
+
+
+def _base_env() -> dict[str, str]:
+    """Minimal env for a hook subprocess: allowlist + every ``JARN_*`` var."""
+    env: dict[str, str] = {}
+    for key in _ALLOWED_ENV:
+        val = os.environ.get(key)
+        if val is not None:
+            env[key] = val
+    for key, val in os.environ.items():
+        if key.startswith("JARN_"):
+            env[key] = val
+    return env
 
 
 class HookEvent(str, Enum):
@@ -45,11 +83,19 @@ class HookResult:
 
 @dataclass(slots=True)
 class HookRunner:
-    """Runs hooks for a given event, scoped to a working directory."""
+    """Runs hooks for a given event, scoped to a working directory.
+
+    ``inherit_env`` defaults to ``False``: hook subprocesses get only the
+    minimal :data:`_ALLOWED_ENV` allowlist (+ ``JARN_*`` + declared
+    ``extra_env``), not the full ``os.environ``, so secrets exported into the
+    agent's env don't leak to hook scripts. Set ``True`` to restore the old
+    inherit-everything behavior (opt-in via ``hook_inherit_env: true``).
+    """
 
     hooks: list[HookSpec]
     cwd: Path
     timeout: int = 120
+    inherit_env: bool = False
 
     def for_event(self, event: HookEvent, *, target: str | None = None) -> list[HookSpec]:
         out = []
@@ -70,7 +116,9 @@ class HookRunner:
     ) -> list[HookResult]:
         """Run all hooks for ``event``. Stops early if a blocking hook aborts."""
         results: list[HookResult] = []
-        env = {**os.environ}
+        env: dict[str, str] = (
+            {**os.environ} if self.inherit_env else _base_env()
+        )
         env["JARN_HOOK_EVENT"] = event.value
         if target:
             env["JARN_HOOK_TARGET"] = target

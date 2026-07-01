@@ -625,6 +625,48 @@ def test_cmd_trust_already_trusted(tmp_path, monkeypatch, base_config):
     ctrl.close()
 
 
+def test_global_require_trust_gates_hooks(tmp_path, monkeypatch, base_config):
+    """``hook_global_require_trust: true`` blocks the hook runner until the
+    one-time marker exists, then allows it after `jarn trust-hooks`."""
+    from jarn.config.schema import HookSpec
+    from jarn.config.trust import global_hooks_trusted, trust_global_hooks
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    base_config.hooks = [HookSpec(event="session_start", command="echo hi")]
+    base_config.hook_global_require_trust = True
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    ctrl = Controller(base_config, root)
+
+    # No marker yet → runner is gated off and a notice is recorded.
+    assert not global_hooks_trusted()
+    assert ctrl._hook_runner() is None
+    assert ctrl._lifecycle_notice and "trust-hooks" in ctrl._lifecycle_notice
+
+    # After the one-time accept, hooks build normally.
+    trust_global_hooks()
+    ctrl._hooks_runner = None  # reset the lazy cache
+    runner = ctrl._hook_runner()
+    assert runner is not None
+    assert runner.inherit_env is False  # allowlist by default
+    ctrl.close()
+
+
+def test_hook_inherit_env_forwarded_to_runner(tmp_path, monkeypatch, base_config):
+    """``hook_inherit_env: true`` reaches the HookRunner (restores full-env)."""
+    from jarn.config.schema import HookSpec
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    base_config.hooks = [HookSpec(event="session_start", command="echo hi")]
+    base_config.hook_inherit_env = True
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    ctrl = Controller(base_config, root)
+    runner = ctrl._hook_runner()
+    assert runner is not None and runner.inherit_env is True
+    ctrl.close()
+
+
 def test_cmd_doctor_shows_provider_and_mode(tmp_path, monkeypatch, base_config):
     """/doctor returns the same checks as jarn doctor: key state, mode, profile."""
     from io import StringIO

@@ -210,7 +210,7 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 **Deps:** T-1-6
 **Effort:** S
 
-### T-1-8 — Harden lifecycle hooks (shell, env, global-hook trust)
+### T-1-8 — Harden lifecycle hooks (shell, env, global-hook trust) ✅
 **Problem:** `extensibility/hooks.py` runs `subprocess.run(..., shell=True)` with full `os.environ` merged in. Project hooks are trust-gated, but **global** hooks in `~/.jarn/config.yaml` always run. Shell injection if global config is compromised; secrets in env leak to hook subprocesses. `HookEvent` typos silently no-op. `controller._fire_lifecycle` wraps `runner.run` in `suppress(Exception)` → failures silent.
 **Files:** `src/jarn/extensibility/hooks.py`, `src/jarn/tui/controller.py`, `src/jarn/config/loader.py`, `docs/EXTENDING.md`
 **Action:**
@@ -220,9 +220,9 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 4. Stop swallowing hook failures silently in `_fire_lifecycle`: log at WARNING and, for blocking events, surface a user-visible notice (non-fatal) instead of `suppress(Exception)`.
 5. Document the threat model in `docs/EXTENDING.md` (hooks run shell on the host; only trust repos / your own global config).
 **DoD:**
-- [ ] Test: a hook with a typo'd event is rejected at load.
-- [ ] Test: hook subprocess does **not** see `OPENROUTER_API_KEY` unless explicitly passed via `extra_env`.
-- [ ] Test: a failing `pre_commit` hook logs a WARNING and surfaces a notice instead of being swallowed.
+- [x] Test: a hook with a typo'd event is rejected at load.
+- [x] Test: hook subprocess does **not** see `OPENROUTER_API_KEY` unless explicitly passed via `extra_env`.
+- [x] Test: a failing `pre_commit` hook logs a WARNING and surfaces a notice instead of being swallowed.
 **Tests:** `test_extensibility.test_hook_event_validation`, `test_extensibility.test_hook_env_allowlist`, `test_extensibility.test_hook_failure_surfaced`.
 **Risk:** users relying on env inheritance in hooks need to declare `extra_env`. Mitigation: clear migration note + `hooks.inherit_env: true` escape hatch.
 **Deps:** none

@@ -164,6 +164,33 @@ def commit_trust_if_unchanged(
     return None
 
 
+#: Marker file recording a one-time accept for global lifecycle hooks. Lives in
+#: ``JARN_HOME`` (not per-project) because the threat is the *global* config's
+#: hooks running without any prompt. Project-tier hooks are already gated by the
+#: project trust boundary; this flag adds an extra one-time accept for the
+#: ungated global tier when ``hook_global_require_trust: true`` is set.
+GLOBAL_HOOKS_TRUST_MARKER = "global-hooks.trusted"
+
+
+def global_hooks_trusted(home: Path | None = None) -> bool:
+    """True if the user has recorded a one-time accept for global hooks."""
+    base = home if home is not None else paths.global_home()
+    return (base / GLOBAL_HOOKS_TRUST_MARKER).is_file()
+
+
+def trust_global_hooks(home: Path | None = None) -> Path:
+    """Write the one-time global-hooks accept marker, returning its path."""
+    base = home if home is not None else paths.global_home()
+    base.mkdir(parents=True, exist_ok=True)
+    marker = base / GLOBAL_HOOKS_TRUST_MARKER
+    marker.write_text(
+        "This file records a one-time accept to run global lifecycle hooks.\n"
+        "Remove it to re-trigger the `hook_global_require_trust` prompt.\n",
+        encoding="utf-8",
+    )
+    return marker
+
+
 def fingerprint(dangerous: dict[str, Any]) -> str:
     """Stable hash of the dangerous subset (order-independent)."""
     canonical = json.dumps(dangerous, sort_keys=True, default=str)

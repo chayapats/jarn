@@ -315,6 +315,8 @@ permissions:
     - "curl *"
 
 # ── Hooks (lifecycle automation) ─────────────────────────────────────────
+hook_inherit_env: false          # true → hook subprocesses inherit full os.environ
+hook_global_require_trust: false # true → hooks disabled until `jarn trust-hooks` once
 hooks:
   - event: post_edit       # pre_tool|post_tool|post_edit|pre_commit|session_start|session_end
     command: "ruff check --fix ."
@@ -497,6 +499,27 @@ providers:
 
 The migration is one line per provider: replace the literal with `${ENV_VAR}`,
 `keychain:jarn/<provider>`, or `file:jarn/<provider>`.
+
+### Hardening lifecycle hooks (`hook_inherit_env`, `hook_global_require_trust`)
+
+Hooks are shell commands J.A.R.N. runs automatically (see
+[Extending — Hooks](EXTENDING.md#4-hooks)). Two top-level flags harden them:
+
+- **`hook_inherit_env`** (default `false`) — hook subprocesses get only a minimal
+  env allowlist (`PATH`/`HOME`/`JARN_*` + declared `extra_env`), **not** your full
+  `os.environ`, so a compromised hook can't exfiltrate `*_API_KEY` values you've
+  exported. Set `true` only if a hook genuinely needs a provider key from your
+  env. This flag is stripped from *untrusted* project configs, so a repo you
+  haven't trusted can't enable it to leak your secrets.
+- **`hook_global_require_trust`** (default `false`) — global hooks
+  (`~/.jarn/config.yaml`) run without a per-project prompt. Set `true` to require
+  a one-time accept (`jarn trust-hooks`) before *any* hook runs; until then the
+  hook runner is disabled and a notice tells you to run the command. Delete
+  `~/.jarn/global-hooks.trusted` to re-gate.
+
+Hook failures are never swallowed: non-zero exits are logged at `WARNING` and
+surfaced as a UI notice; a *blocking* `pre_commit`/`pre_tool` failure still
+rejects the action. An unknown `event:` name is rejected at load.
 
 ## Pricing overrides
 

@@ -246,7 +246,53 @@ hooks:
 Events: `pre_tool`, `post_tool`, `post_edit`, `pre_commit`, `session_start`,
 `session_end`. The triggering context is available to the command via
 `$JARN_HOOK_EVENT` and `$JARN_HOOK_TARGET`. A *blocking* hook that exits non-zero
-stops the action and remaining hooks for that event.
+stops the action and remaining hooks for that event. An unknown/typo'd event name
+(e.g. `sesion_start`) is rejected at load with a `ConfigError` rather than
+silently never firing.
+
+### Threat model — hooks run shell on your host
+
+A hook is an arbitrary shell command J.A.R.N. runs **without asking**. Treat the
+files that declare hooks as code you trust:
+
+- **Project hooks** (`<repo>/.jarn/config.yaml`) are gated by the [project trust
+  boundary](PERMISSIONS.md#project-trust-boundary): an *untrusted* repo's hooks
+  are stripped, so simply opening a repository can't run shell. Trusting the repo
+  opts in to its hooks — re-trust is re-triggered whenever the hook set changes.
+- **Global hooks** (`~/.jarn/config.yaml`) always run — that's your own config,
+  not untrusted input. If that file is compromised (e.g. a dotfile sync gone
+  wrong, a shared machine), its hooks execute on `session_start` before you do
+  anything. To require a one-time accept for the global tier, set
+  `hook_global_require_trust: true` and run `jarn trust-hooks` once; until then
+  the hook runner is disabled. Delete `~/.jarn/global-hooks.trusted` to re-gate.
+
+### Environment: minimal allowlist by default
+
+Hook subprocesses do **not** inherit your full `os.environ` — that would leak
+every `*_API_KEY` / `*_TOKEN` you've exported into a hook script. By default a
+hook sees only a minimal allowlist (`PATH`, `HOME`, `USER`, `SHELL`, `TMPDIR`,
+`LANG`/`LC_*`, `TERM`) plus every `JARN_*` variable, the hook context vars
+(`JARN_HOOK_EVENT`, `JARN_HOOK_TARGET`), and anything you declare via `extra_env`
+at the call site.
+
+To pass a secret to a hook on purpose, declare it explicitly rather than relying
+on inheritance. To restore the old inherit-everything behavior (e.g. a hook that
+needs a provider key you've exported), opt in globally:
+
+```yaml
+hook_inherit_env: true   # hook subprocesses inherit the full environment
+```
+
+This flag is stripped from *untrusted* project configs, so a repo you haven't
+trusted can't turn env inheritance on to exfiltrate your secrets.
+
+### Failures are surfaced, not swallowed
+
+A failing hook is never silent: non-zero exits are logged at `WARNING` and, for
+`pre_*`/`post_*` hooks, surfaced to the UI as a notice. A *blocking* `pre_commit`
+/`pre_tool` hook that fails still rejects the action (e.g. tests fail → no
+commit); a *non-blocking* failure is non-fatal — the action proceeds, you just
+get told the hook failed.
 
 ## 5. MCP servers
 

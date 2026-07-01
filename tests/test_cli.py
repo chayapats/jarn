@@ -210,3 +210,27 @@ def test_headless_non_yolo_no_warning(tmp_path, monkeypatch, capsys):
     )
     captured = capsys.readouterr()
     assert "yolo" not in captured.err.lower()
+
+
+def test_trust_hooks_cli_writes_marker(tmp_path, monkeypatch, capsys):
+    """`jarn trust-hooks` writes the one-time global-hooks accept marker and
+    reports its path; a second call is idempotent."""
+    from jarn import cli
+    from jarn.config import paths
+    from jarn.config.trust import GLOBAL_HOOKS_TRUST_MARKER, global_hooks_trusted
+
+    home = tmp_path / "jarnhome"
+    monkeypatch.setattr(paths, "global_home", lambda: home)
+
+    assert not global_hooks_trusted()
+    rc = cli._cmd_trust_hooks()
+    assert rc == 0
+    assert global_hooks_trusted()
+    assert (home / GLOBAL_HOOKS_TRUST_MARKER).is_file()
+    out = capsys.readouterr().out
+    assert "global lifecycle hooks accepted" in out.lower()
+
+    # Idempotent: running again still succeeds and keeps the marker.
+    rc = cli._cmd_trust_hooks()
+    assert rc == 0
+    assert global_hooks_trusted()

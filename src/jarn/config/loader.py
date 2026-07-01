@@ -46,6 +46,8 @@ _KNOWN_TOP_LEVEL_KEYS = {
     "default_model",
     "permission_mode",
     "strict_secrets",
+    "hook_inherit_env",
+    "hook_global_require_trust",
     "providers",
     "routing",
     "budget",
@@ -187,6 +189,14 @@ def _build_config(raw: dict[str, Any]) -> Config:
             ) from exc
     if "strict_secrets" in raw:
         cfg.strict_secrets = _normalize_bool(raw["strict_secrets"], "strict_secrets")
+    if "hook_inherit_env" in raw:
+        cfg.hook_inherit_env = _normalize_bool(
+            raw["hook_inherit_env"], "hook_inherit_env"
+        )
+    if "hook_global_require_trust" in raw:
+        cfg.hook_global_require_trust = _normalize_bool(
+            raw["hook_global_require_trust"], "hook_global_require_trust"
+        )
 
     cfg.providers = _build_providers(raw.get("providers", {}))
     _validate_inline_api_keys(cfg.providers, cfg.strict_secrets)
@@ -475,6 +485,16 @@ def _build_hook(raw: dict[str, Any]) -> HookSpec:
     if not isinstance(raw["command"], str):
         raise ConfigError(
             f"Hook 'command' must be a string (got {raw['command']!r})."
+        )
+    # Validate the event name against the allowed enum so a typo (e.g.
+    # ``sesion_start``) fails loudly at load instead of silently never matching.
+    from jarn.extensibility.hooks import HookEvent
+
+    valid_events = {e.value for e in HookEvent}
+    if raw["event"] not in valid_events:
+        raise ConfigError(
+            f"Hook 'event' must be one of {sorted(valid_events)} "
+            f"(got {raw['event']!r})."
         )
     return HookSpec(
         event=raw["event"],
