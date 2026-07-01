@@ -12,13 +12,17 @@ Decision precedence (highest first):
 from __future__ import annotations
 
 import fnmatch
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from jarn.config._yaml_store import ConfigCorruptError
 from jarn.config.schema import PermissionMode, PermissionRules
 from jarn.permissions.guard import GuardLevel, inspect_command, inspect_path_write
+
+_log = logging.getLogger("jarn")
 
 #: Programs whose payload is an *argument*, so "program + first arg" would
 #: allowlist arbitrary code (e.g. ``bash -c <anything>``). Remembered approvals
@@ -135,7 +139,13 @@ class PermissionEngine:
             self._session_allow.append(rule)
         if scope is RememberScope.ALWAYS:
             if self.persist is not None:
-                self.persist(rule)
+                try:
+                    self.persist(rule)
+                except ConfigCorruptError as exc:
+                    # The project config is corrupt; the in-memory allow still
+                    # applies for this session. Persistence is skipped — the
+                    # user sees the repair hint at the next config load.
+                    _log.warning("Could not persist allow-rule: %s", exc)
             return rule
         return None
 

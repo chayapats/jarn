@@ -65,6 +65,68 @@ def test_config_store_restore(tmp_path):
     assert YAML().load(p.read_text())["wiki"]["enabled"] is True
 
 
+# -- T-1-4: fail-closed on corrupt YAML + backup ---------------------------
+
+
+def test_missing_file_bootstrap(tmp_path):
+    """A missing file is a legitimate bootstrap — set() creates it from {}."""
+    p = tmp_path / "config.yaml"
+    assert not p.exists()
+    settings.ConfigStore(p).set("wiki.enabled", True)
+    from ruamel.yaml import YAML
+    assert p.is_file()
+    assert YAML().load(p.read_text())["wiki"]["enabled"] is True
+
+
+def test_corrupt_config_not_wiped(tmp_path):
+    """A corrupt config.yaml must NOT be overwritten by set(); a .bak is saved."""
+    p = tmp_path / "config.yaml"
+    corrupt = "permission_mode: ask\nproviders: [oops, ,\n  unbalanced: ["
+    p.write_text(corrupt, encoding="utf-8")
+    store = settings.ConfigStore(p)
+    with pytest.raises(settings.ConfigCorruptError, match="NOT modified"):
+        store.set("wiki.enabled", True)
+    # File is left untouched (still the corrupt content, not a 1-key dict).
+    assert p.read_text() == corrupt
+    # A backup was saved for repair.
+    assert p.with_name(p.name + ".bak").is_file()
+
+
+def test_corrupt_non_dict_top_level_rejected(tmp_path):
+    """A YAML file whose top-level is a list (not a mapping) is corrupt."""
+    p = tmp_path / "config.yaml"
+    p.write_text("- a\n- b\n", encoding="utf-8")
+    store = settings.ConfigStore(p)
+    with pytest.raises(settings.ConfigCorruptError, match="mapping"):
+        store.set("wiki.enabled", True)
+    assert p.read_text() == "- a\n- b\n"
+
+
+def test_write_rotates_backup(tmp_path):
+    """A successful write backs up the previous file to <path>.bak."""
+    p = tmp_path / "config.yaml"
+    p.write_text("permission_mode: ask\n", encoding="utf-8")
+    settings.ConfigStore(p).set("wiki.enabled", True)
+    bak = p.with_name(p.name + ".bak")
+    assert bak.is_file()
+    assert bak.read_text() == "permission_mode: ask\n"
+
+
+def test_backup_keeps_last_two(tmp_path):
+    """A second write demotes the previous .bak to .bak.1 (last 2 kept)."""
+    p = tmp_path / "config.yaml"
+    p.write_text("v1: 1\n", encoding="utf-8")
+    store = settings.ConfigStore(p)
+    store.set("v2", 2)
+    store.set("v3", 3)
+    bak = p.with_name(p.name + ".bak")
+    bak1 = p.with_name(p.name + ".bak.1")
+    assert bak.is_file() and bak1.is_file()
+    # .bak is the most recent previous content; .bak.1 is the one before.
+    assert "v2" in bak.read_text()
+    assert "v1" in bak1.read_text()
+
+
 # -- /config command via the controller -------------------------------------
 
 

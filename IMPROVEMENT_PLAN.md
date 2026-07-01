@@ -147,7 +147,7 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 **Deps:** T-1-2 (shares the pattern set)
 **Effort:** S
 
-### T-1-4 — Fix YAML-corruption → config wipe (fail closed + backup)
+### T-1-4 — Fix YAML-corruption → config wipe (fail closed + backup) ✅
 **Problem:** `config/settings.ConfigStore._load()` returns `{}` on any YAML/OS error; the next `set()` atomically overwrites a valid `config.yaml` with a near-empty dict — silent loss of providers/hooks/MCP. Same pattern in `permissions/rule_store.py` L60-67.
 **Files:** `src/jarn/config/settings.py`, `src/jarn/permissions/rule_store.py`, `tests/test_settings.py`, `tests/test_permissions.py`
 **Action:**
@@ -156,9 +156,9 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 3. If the file is missing entirely, allow first-write with an empty dict (legitimate bootstrap) — distinguish "missing" from "corrupt".
 4. Surface a user-facing repair hint in the error ("Run `jarn doctor`; a backup was saved at …").
 **DoD:**
-- [ ] A test that corrupts `config.yaml` then calls `set()` proves the file is **not** overwritten and a `.bak` exists and a `ConfigCorruptError` is raised.
-- [ ] Same for `rule_store` allow-rule persistence.
-- [ ] Missing-file first-write still works (bootstrap test).
+- [x] A test that corrupts `config.yaml` then calls `set()` proves the file is **not** overwritten and a `.bak` exists and a `ConfigCorruptError` is raised.
+- [x] Same for `rule_store` allow-rule persistence.
+- [x] Missing-file first-write still works (bootstrap test).
 **Tests:** `test_settings.test_corrupt_config_not_wiped`, `test_permissions.test_corrupt_rule_store_not_wiped`, `test_settings.test_missing_file_bootstrap`.
 **Risk:** low
 **Deps:** none
