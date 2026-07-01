@@ -347,6 +347,8 @@ class ModelFactory:
 
         kwargs: dict[str, Any] = dict(provider.extra)
         kwargs.setdefault("max_retries", self.default_max_retries)
+        if provider.headers:
+            kwargs.setdefault("default_headers", dict(provider.headers))
 
         try:
             return self._construct_inner(ref, provider, kwargs, init_chat_model)
