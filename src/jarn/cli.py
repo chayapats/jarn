@@ -151,6 +151,11 @@ def main(argv: list[str] | None = None) -> int:
     p_trust.add_argument(
         "--json", action="store_true", help="Emit the trust list as JSON"
     )
+    sub.add_parser(
+        "trust-hooks",
+        help="Record a one-time accept to run global lifecycle hooks "
+        "(enables `hook_global_require_trust: true`)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -195,6 +200,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "trust":
         return _cmd_trust(path=args.path, remove=args.remove, as_json=args.json)
+    if args.command == "trust-hooks":
+        return _cmd_trust_hooks()
     return _cmd_launch(resume=args.resume, profile_override=preset_override)
 
 
@@ -692,6 +699,26 @@ def _cmd_trust(*, path: str | None, remove: bool, as_json: bool = False) -> int:
         print(f"error: {err}", file=sys.stderr)
         return 1
     print(f"Trusted {root}")
+    return 0
+
+
+def _cmd_trust_hooks() -> int:
+    """Record the one-time global-hooks accept marker.
+
+    Enables ``hook_global_require_trust: true``: until this marker exists, the
+    controller refuses to build a hook runner (so a compromised global config
+    can't auto-run shell on ``session_start``). Removing the marker re-triggers
+    the gate. The marker lives in ``JARN_HOME`` (not per-project).
+    """
+    from jarn.config import paths
+    from jarn.config.trust import GLOBAL_HOOKS_TRUST_MARKER, trust_global_hooks
+
+    marker = trust_global_hooks()
+    print(
+        f"Global lifecycle hooks accepted — marker at {marker}.\n"
+        f"`hook_global_require_trust: true` will now run hooks; delete "
+        f"{paths.global_home() / GLOBAL_HOOKS_TRUST_MARKER} to re-trigger the gate."
+    )
     return 0
 
 

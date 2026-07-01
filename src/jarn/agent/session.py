@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -34,6 +35,8 @@ from jarn.permissions import (
     PermissionResult,
     RememberScope,
 )
+
+_log = logging.getLogger("jarn")
 
 # LangChain message ``.type`` values that represent assistant output.
 _ASSISTANT_TYPES = {"ai", "AIMessageChunk"}
@@ -302,7 +305,11 @@ class SessionDriver:
                 async for ev, decision in self._resolve_interrupts([intr]):
                     if ev is not None:
                         yield ev
-                    intr_decisions.append(decision)
+                    # A ``None`` decision means "event only, no resolve vote"
+                    # (e.g. a non-fatal hook-failure NOTICE) — it must not be
+                    # sent to LangGraph as a resume decision.
+                    if decision is not None:
+                        intr_decisions.append(decision)
                 resolved.append((iid, intr_decisions))
             payload = _resume_payload(resolved)
 
@@ -371,9 +378,14 @@ class SessionDriver:
 
     # -- lifecycle hooks ----------------------------------------------------
 
-    async def _run_pre_hooks(self, name: str, action: Action) -> str | None:
+    async def _run_pre_hooks(
+        self, name: str, action: Action
+    ) -> tuple[str | None, list[str]]:
         """Run ``pre_tool`` (and ``pre_commit`` for git commits) before a gated
-        tool. Returns an abort reason if a *blocking* hook failed, else ``None``.
+        tool. Returns ``(abort_reason, notices)``: ``abort_reason`` is set only
+        if a *blocking* hook failed (the tool call is rejected); ``notices``
+        carries non-fatal warnings for non-blocking failures so they're surfaced
+        to the user instead of being swallowed.
 
         NOTE: only *gated* tools reach this (mutating + network/MCP); read-only
         tools never interrupt, so ``pre_tool`` does not fire for them. Hooks run
@@ -381,6 +393,7 @@ class SessionDriver:
         """
         from jarn.extensibility.hooks import HookEvent
 
+        notices: list[str] = []
         events = [HookEvent.PRE_TOOL]
         if name == "execute" and _looks_like_git_commit(action.target):
             events.append(HookEvent.PRE_COMMIT)
@@ -388,8 +401,24 @@ class SessionDriver:
             results = await asyncio.to_thread(self.hooks.run, event, target=action.target)
             for result in results:
                 if result.should_abort:
-                    return f"{event.value}: {_hook_detail(result)}"
-        return None
+                    _log.warning(
+                        "hooks: blocking %s hook failed (exit %s): %s",
+                        event.value,
+                        result.exit_code,
+                        _hook_detail(result),
+                    )
+                    return f"{event.value}: {_hook_detail(result)}", notices
+                if not result.ok:
+                    # Non-blocking failure: don't abort, but don't stay silent.
+                    detail = _hook_detail(result)
+                    _log.warning(
+                        "hooks: %s hook failed (exit %s): %s",
+                        event.value,
+                        result.exit_code,
+                        detail,
+                    )
+                    notices.append(f"{event.value} hook failed: {detail}")
+        return None, notices
 
     async def _run_post_hooks(self, name: str):
         """Run ``post_tool`` (and ``post_edit`` for writes/edits) after a tool
@@ -540,7 +569,11 @@ class SessionDriver:
                 # Pre-tool / pre-commit hooks run before the tool: a blocking
                 # hook that fails rejects the call (e.g. tests fail → no commit).
                 if self.hooks is not None:
-                    abort = await self._run_pre_hooks(name, action)
+                    abort, hook_notices = await self._run_pre_hooks(name, action)
+                    for note in hook_notices:
+                        # `_resolve_interrupts` yields ``(event, decision)`` tuples;
+                        # a NOTICE carries no decision, so pair it with ``None``.
+                        yield (Event(EventKind.NOTICE, text=note), None)
                     if abort is not None:
                         yield (
                             Event(EventKind.APPROVAL, text=f"blocked by hook: {name} ({abort})",

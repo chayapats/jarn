@@ -496,6 +496,8 @@ def test_sanitize_strips_behavior_and_cost_keys() -> None:
         "context": {"repo_map": "auto"},
         "strict_secrets": False,
         "default_profile": "openai",
+        "hook_inherit_env": True,
+        "hook_global_require_trust": True,
         "ui": {"theme": "light"},
         "permissions": {"deny": ["git push"]},
     }
@@ -503,6 +505,7 @@ def test_sanitize_strips_behavior_and_cost_keys() -> None:
     for key in (
         "routing", "budget", "wiki", "compat", "default_model",
         "git", "plan", "context", "strict_secrets", "default_profile",
+        "hook_inherit_env", "hook_global_require_trust",
     ):
         assert key not in safe, f"untrusted project must not keep {key!r}"
     # Safe keys survive.

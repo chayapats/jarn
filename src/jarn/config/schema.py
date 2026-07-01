@@ -333,6 +333,17 @@ class Config:
     #: rejected at load; when False (default) they emit a warning. Back-compat
     #: default is False so existing setups keep working, just noisier.
     strict_secrets: bool = False
+    #: When True, lifecycle-hook subprocesses inherit the *full* ``os.environ``
+    #: (pre-T-1-8 behavior, leaks secrets to hook scripts). Default False → hooks
+    #: get only a minimal allowlist (``PATH``/``HOME``/``JARN_*`` + declared
+    #: ``extra_env``), so a compromised hook can't exfiltrate ``*_API_KEY``.
+    hook_inherit_env: bool = False
+    #: When True, lifecycle hooks do not run until the user has recorded a
+    #: one-time accept for global hooks (``jarn trust-hooks``). Default False for
+    #: back-compat. Stripped from untrusted project configs (not in the
+    #: :data:`jarn.config.trust.SAFE_PROJECT_KEYS` allowlist), so only the global
+    #: tier or a trusted project can enable it.
+    hook_global_require_trust: bool = False
 
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
     routing: RoutingConfig = field(default_factory=RoutingConfig)

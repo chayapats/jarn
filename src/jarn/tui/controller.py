@@ -8,6 +8,7 @@ testable on its own.
 
 from __future__ import annotations
 
+import logging
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,13 @@ from jarn.tui import palette
 
 if TYPE_CHECKING:
     from jarn.memory import MemoryStore, RecallHit
+
+_log = logging.getLogger("jarn")
+
+
+def _log_hook_warning(message: str) -> None:
+    """Log a lifecycle-hook failure at WARNING (never silent, never fatal)."""
+    _log.warning("hooks: %s", message)
 
 
 @dataclass(slots=True)
@@ -111,6 +119,9 @@ class Controller:
         # the runtime is first ready, session_end on close.
         self._hooks_runner = None
         self._session_started = False
+        # Non-fatal lifecycle-hook notice to surface once (e.g. a failed
+        # session_start hook, or the global-hooks-trust gate refusing to run).
+        self._lifecycle_notice: str | None = None
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -182,12 +193,31 @@ class Controller:
         return self.runtime
 
     def _hook_runner(self):
-        """Lazily build the lifecycle :class:`HookRunner` (None if no hooks)."""
+        """Lazily build the lifecycle :class:`HookRunner` (None if no hooks).
+
+        Honours two hardening flags from config:
+        ``hook_global_require_trust`` skips hook execution entirely (and records
+        a notice) until the user has run ``jarn trust-hooks`` once — a one-time
+        accept for the otherwise-ungated global hooks tier. ``hook_inherit_env``
+        forwards the full env to hook subprocesses (default: minimal allowlist).
+        """
         if self._hooks_runner is None and self.config.hooks:
+            if self.config.hook_global_require_trust:
+                from jarn.config.trust import global_hooks_trusted
+
+                if not global_hooks_trusted():
+                    self._lifecycle_notice = (
+                        "lifecycle hooks disabled: `hook_global_require_trust` is on "
+                        "and global hooks haven't been accepted — run `jarn trust-hooks`."
+                    )
+                    _log_hook_warning(self._lifecycle_notice)
+                    return None
             from jarn.extensibility.hooks import HookRunner
 
             self._hooks_runner = HookRunner(
-                hooks=self.config.hooks, cwd=self.project_root or Path.cwd()
+                hooks=self.config.hooks,
+                cwd=self.project_root or Path.cwd(),
+                inherit_env=self.config.hook_inherit_env,
             )
         return self._hooks_runner
 
@@ -195,12 +225,25 @@ class Controller:
         runner = self._hook_runner()
         if runner is None:
             return
-        import contextlib
-
         from jarn.extensibility.hooks import HookEvent
 
-        with contextlib.suppress(Exception):
-            runner.run(HookEvent(event_name))
+        try:
+            results = runner.run(HookEvent(event_name))
+        except Exception as exc:  # noqa: BLE001 — non-fatal, must not kill the turn
+            msg = f"lifecycle hook {event_name} errored: {exc}"
+            _log_hook_warning(msg)
+            if self.last_error is None:
+                self.last_error = msg
+            return
+        for r in results:
+            if not r.ok:
+                msg = (
+                    f"{event_name} hook {r.spec.name or r.spec.command!r} "
+                    f"failed (exit {r.exit_code})"
+                )
+                _log_hook_warning(msg)
+                if self.last_error is None:
+                    self.last_error = msg
 
     def _config(self) -> dict:
         return {"configurable": {"thread_id": self.thread_id}}
