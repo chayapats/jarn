@@ -47,10 +47,14 @@ def test_current_provider_from_main_model_ref(tmp_path, monkeypatch):
 def test_set_provider_key_stores_in_keychain_not_config(tmp_path, monkeypatch):
     ctrl = _controller(tmp_path, monkeypatch)
     stored: dict[str, tuple[str, str]] = {}
-    monkeypatch.setattr(
-        "jarn.config.secrets.store_keychain",
-        lambda service, account, value: stored.__setitem__(account, (service, value)),
-    )
+
+    def _fake_store(service: str, account: str, value: str):
+        from jarn.config.secrets import StoredSecret
+
+        stored[account] = (service, value)
+        return StoredSecret(reference=f"keychain:{service}/{account}", backend="keychain")
+
+    monkeypatch.setattr("jarn.config.secrets.store_secret", _fake_store)
     # Pretend we already have a built runtime so we can prove it gets dropped.
     ctrl.runtime = object()  # type: ignore[assignment]
 
@@ -67,9 +71,13 @@ def test_set_provider_key_stores_in_keychain_not_config(tmp_path, monkeypatch):
 
 def test_set_provider_key_persists_reference_to_global_config(tmp_path, monkeypatch):
     ctrl = _controller(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        "jarn.config.secrets.store_keychain", lambda service, account, value: None
-    )
+
+    def _fake_store(service: str, account: str, value: str):
+        from jarn.config.secrets import StoredSecret
+
+        return StoredSecret(reference=f"keychain:{service}/{account}", backend="keychain")
+
+    monkeypatch.setattr("jarn.config.secrets.store_secret", _fake_store)
     ctrl.set_provider_key("sk-new-secret")
 
     text = paths.global_config_path().read_text(encoding="utf-8")
@@ -81,10 +89,14 @@ def test_set_provider_key_persists_reference_to_global_config(tmp_path, monkeypa
 def test_set_provider_key_unknown_provider_is_rejected(tmp_path, monkeypatch):
     ctrl = _controller(tmp_path, monkeypatch)
     calls: list[tuple[str, str, str]] = []
-    monkeypatch.setattr(
-        "jarn.config.secrets.store_keychain",
-        lambda service, account, value: calls.append((service, account, value)),
-    )
+
+    def _fake_store(service: str, account: str, value: str):
+        from jarn.config.secrets import StoredSecret
+
+        calls.append((service, account, value))
+        return StoredSecret(reference=f"keychain:{service}/{account}", backend="keychain")
+
+    monkeypatch.setattr("jarn.config.secrets.store_secret", _fake_store)
     result = ctrl.set_provider_key("sk-x", provider="nope")
     assert not result.rebuilt
     assert "isn't configured" in result.text
@@ -95,10 +107,14 @@ def test_set_provider_key_unknown_provider_is_rejected(tmp_path, monkeypatch):
 def test_set_provider_key_empty_is_noop(tmp_path, monkeypatch):
     ctrl = _controller(tmp_path, monkeypatch)
     calls: list[object] = []
-    monkeypatch.setattr(
-        "jarn.config.secrets.store_keychain",
-        lambda *a: calls.append(a),
-    )
+
+    def _fake_store(*a):
+        calls.append(a)
+        from jarn.config.secrets import StoredSecret
+
+        return StoredSecret(reference="keychain:jarn/openrouter", backend="keychain")
+
+    monkeypatch.setattr("jarn.config.secrets.store_secret", _fake_store)
     result = ctrl.set_provider_key("   ")
     assert not result.rebuilt
     assert calls == []
@@ -144,9 +160,13 @@ def _app(tmp_path, monkeypatch) -> InlineApp:
 @pytest.mark.asyncio
 async def test_key_command_prompts_then_rebuilds(tmp_path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        "jarn.config.secrets.store_keychain", lambda service, account, value: None
-    )
+
+    def _fake_store(service: str, account: str, value: str):
+        from jarn.config.secrets import StoredSecret
+
+        return StoredSecret(reference=f"keychain:{service}/{account}", backend="keychain")
+
+    monkeypatch.setattr("jarn.config.secrets.store_secret", _fake_store)
     # Prompt returns the pasted key.
     asked: list[str] = []
 
@@ -167,9 +187,13 @@ async def test_key_command_prompts_then_rebuilds(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_key_command_inline_arg_does_not_prompt(tmp_path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        "jarn.config.secrets.store_keychain", lambda service, account, value: None
-    )
+
+    def _fake_store(service: str, account: str, value: str):
+        from jarn.config.secrets import StoredSecret
+
+        return StoredSecret(reference=f"keychain:{service}/{account}", backend="keychain")
+
+    monkeypatch.setattr("jarn.config.secrets.store_secret", _fake_store)
 
     async def _fail_ask(prompt: str) -> str:  # pragma: no cover - must not be called
         raise AssertionError("inline /key must not prompt")

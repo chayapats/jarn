@@ -127,6 +127,7 @@ def test_resolve_literal_passthrough():
 
 def test_is_reference():
     assert is_reference("${X}")
+    assert is_reference("file:jarn/openrouter")
     assert is_reference("keychain:jarn/openrouter")
     assert not is_reference("literal")
     assert not is_reference(None)

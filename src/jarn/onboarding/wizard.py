@@ -28,7 +28,7 @@ from jarn.config.defaults import (
     PROVIDER_BASE_URLS,
     PROVIDER_ENV_VARS,
 )
-from jarn.config.secrets import store_keychain
+from jarn.config.secrets import file_fallback_notice, store_secret
 from jarn.providers import strip_profile
 from jarn.tui.logo import TAGLINE, WORDMARK
 
@@ -79,6 +79,7 @@ _CONFIG_HEADER = """\
 # API keys are referenced, never inlined:
 #   ${ENV_VAR}                -> read from the environment
 #   keychain:jarn/<provider>  -> read from the OS keychain
+#   file:jarn/<provider>      -> read from ~/.jarn/secrets/ (keychain fallback)
 # Docs: https://github.com/chayapats/jarn/tree/main/docs
 """
 
@@ -273,9 +274,13 @@ def _configure_key(
 
     key = Prompt.ask("  paste API key", password=True)
     if key:
-        store_keychain("jarn", profile, key)
-        console.print(f"  [green]✔[/green] stored in OS keychain (jarn/{profile})")
-        return f"keychain:jarn/{profile}"
+        stored = store_secret("jarn", profile, key)
+        notice = file_fallback_notice(stored, provider=profile, env_var=env_var)
+        if notice:
+            console.print(f"[yellow]{notice}[/yellow]")
+        else:
+            console.print(f"  [green]✔[/green] stored in OS keychain (jarn/{profile})")
+        return stored.reference
     return f"${{{env_var}}}"
 
 

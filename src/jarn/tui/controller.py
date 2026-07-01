@@ -830,16 +830,17 @@ class Controller:
     def set_provider_key(self, raw_key: str, *, provider: str | None = None) -> CommandResult:
         """Set the API key for ``provider`` (defaults to the current provider).
 
-        The secret is stored in the OS keychain (never inlined into committed
-        config) and the provider's ``api_key`` is pointed at a
-        ``keychain:jarn/<provider>`` reference — the same shape the onboarding
-        wizard writes. The reference is persisted to the global config so it
+        The secret is stored in the OS keychain when available, otherwise under
+        ``~/.jarn/secrets/``. The provider's ``api_key`` is pointed at the
+        resulting ``keychain:`` or ``file:`` reference — never inlined into
+        committed config. The reference is persisted to the global config so it
         survives a restart, and the runtime is dropped so the next turn rebuilds
         with the new key."""
         import contextlib
 
         from jarn.config import paths
-        from jarn.config.secrets import store_keychain
+        from jarn.config.defaults import PROVIDER_ENV_VARS
+        from jarn.config.secrets import file_fallback_notice, store_secret
         from jarn.config.settings import ConfigStore
 
         prov = (provider or self.current_provider() or "").strip()
@@ -857,13 +858,11 @@ class Controller:
         if not secret:
             return CommandResult("No key entered — unchanged.")
 
-        ref = f"keychain:jarn/{prov}"
         try:
-            store_keychain("jarn", prov, secret)
-        except Exception as exc:  # noqa: BLE001 - surface any keyring backend failure
-            return CommandResult(
-                f"Couldn't store the key in the OS keychain: {_escape_markup(str(exc))}"
-            )
+            stored = store_secret("jarn", prov, secret)
+        except ValueError as exc:
+            return CommandResult(f"Couldn't store the key: {_escape_markup(str(exc))}")
+        ref = stored.reference
         # Update the live config and persist the *reference* (not the secret) so a
         # restart still finds the key. Best-effort persistence: even if the file
         # write fails the in-session key already works.
@@ -873,9 +872,19 @@ class Controller:
         with contextlib.suppress(Exception):
             ConfigStore(paths.global_config_path()).set(f"providers.{prov}.api_key", ref)
         self.runtime = None  # force rebuild on next turn with the new key
+        notice = file_fallback_notice(
+            stored,
+            provider=prov,
+            env_var=PROVIDER_ENV_VARS.get(prov),
+        )
+        if notice:
+            return CommandResult(
+                f"Updated the {prov} API key.\n\n{notice}\n\nRebuilding on the next turn.",
+                rebuilt=True,
+            )
         return CommandResult(
-            f"Updated the {prov} API key (stored in the OS keychain). Rebuilding "
-            "on the next turn.",
+            f"Updated the {prov} API key (stored in the OS keychain). "
+            "Rebuilding on the next turn.",
             rebuilt=True,
         )
 
