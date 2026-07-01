@@ -198,3 +198,31 @@ def test_redact_keychain_error_scrubs_exc(monkeypatch):
         resolve("keychain:jarn/openrouter")
     assert leaked not in str(ei.value)
     assert "sk-…" in str(ei.value)
+
+
+def test_secret_tree_permissions(tmp_path, monkeypatch):
+    """After file fallback, ~/.jarn/secrets/ and ancestors are 0700; file is 0600."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("JARN_HOME", str(home))
+    # Simulate a permissive pre-existing tree.
+    secrets = home / "secrets" / "jarn"
+    secrets.mkdir(parents=True)
+    secrets.chmod(0o755)
+    (home / "secrets").chmod(0o755)
+
+    def _timeout(*_a, **_k):
+        raise TimeoutError("no keychain")
+
+    monkeypatch.setattr("jarn.config.secrets._keyring_call", _timeout)
+    store_secret("jarn", "openrouter", "sk-test")
+
+    secret_file = home / "secrets" / "jarn" / "openrouter"
+    assert secret_file.is_file()
+    assert (secret_file.stat().st_mode & 0o777) == 0o600
+    assert (secrets.stat().st_mode & 0o777) == 0o700
+    assert ((home / "secrets").stat().st_mode & 0o777) == 0o700
+
+
+def test_keychain_read_validates_account():
+    with pytest.raises(SecretResolutionError, match="invalid secret account"):
+        resolve("keychain:jarn/bad!")
