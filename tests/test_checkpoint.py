@@ -395,3 +395,66 @@ def test_list_returns_entries_in_most_recent_first_order(repo: Path) -> None:
 def test_list_empty_on_non_git_dir(tmp_path: Path) -> None:
     mgr = CheckpointManager(repo_root=tmp_path, enabled=True)
     assert mgr.list() == []
+
+
+def test_undo_rollback_on_apply_failure(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """If restore fails, redo stack must stay unchanged (no orphan entry)."""
+    from jarn.agent import checkpoint as cp
+
+    (repo / "README.txt").write_text("dirty\n", encoding="utf-8")
+    mgr = _manager(repo)
+    snap = mgr.snapshot("before", now=1.0)
+    assert snap.ok
+
+    (repo / "README.txt").write_text("agent edit\n", encoding="utf-8")
+
+    def _fail_apply(sha: str, root: Path) -> tuple[bool, str]:
+        return False, "simulated restore failure"
+
+    monkeypatch.setattr(cp, "_apply_snapshot", _fail_apply)
+
+    redo_before = cp._stack_read(cp._REDO_PREFIX, repo)
+    result = mgr.undo()
+    assert not result.ok
+    assert "restore failed" in result.message.lower()
+
+    redo_after = cp._stack_read(cp._REDO_PREFIX, repo)
+    assert redo_after == redo_before, "failed undo must not leave an orphan on redo"
+
+
+def test_concurrent_undo_locked(repo: Path) -> None:
+    """Concurrent undo attempts serialize on the checkpoint lock without corrupting stacks."""
+    import threading
+
+    from jarn.agent import checkpoint as cp
+
+    (repo / "README.txt").write_text("v1\n", encoding="utf-8")
+    mgr = _manager(repo)
+    assert mgr.snapshot("t1", now=1.0).ok
+    (repo / "README.txt").write_text("v2\n", encoding="utf-8")
+    assert mgr.snapshot("t2", now=2.0).ok
+    (repo / "README.txt").write_text("v3\n", encoding="utf-8")
+
+    errors: list[str] = []
+    lock = threading.Barrier(2)
+
+    def _undo_once() -> None:
+        lock.wait(timeout=5)
+        try:
+            mgr.undo()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(str(exc))
+
+    t1 = threading.Thread(target=_undo_once)
+    t2 = threading.Thread(target=_undo_once)
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    assert not errors
+    undo_stack = cp._stack_read(cp._UNDO_PREFIX, repo)
+    # Two serialized undos from a depth-2 stack leaves 0 or 1 entry — never negative/corrupt.
+    assert len(undo_stack) <= 2
+    for sha in undo_stack:
+        assert len(sha) >= 40

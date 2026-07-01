@@ -445,6 +445,68 @@ def test_build_symbol_index_empty_repo(tmp_path: Path) -> None:
     assert build_symbol_index(tmp_path) == []
 
 
+def _synthetic_repo(root: Path, n: int) -> None:
+    """Create *n* Python files with cross-referencing path tokens."""
+    pkg = root / "pkg"
+    pkg.mkdir(parents=True, exist_ok=True)
+    for i in range(n):
+        name = f"mod_{i}"
+        (pkg / f"{name}.py").write_text(f"def {name}(): pass\n", encoding="utf-8")
+        if i > 0:
+            (pkg / f"test_{name}.py").write_text(f"# uses {name}\n", encoding="utf-8")
+
+
+def test_xref_linear(tmp_path: Path) -> None:
+    """Xref counting scales ~linearly (5× files → ~5× time, not 25×)."""
+    import time as _time
+
+    from jarn.agent.repomap import _build_entries, _build_xref_counts
+
+    small = tmp_path / "small"
+    large = tmp_path / "large"
+    _synthetic_repo(small, 200)
+    _synthetic_repo(large, 1000)
+
+    small_entries = _build_entries(small, list((small / "pkg").glob("*.py")))
+    large_entries = _build_entries(large, list((large / "pkg").glob("*.py")))
+
+    t0 = _time.perf_counter()
+    _build_xref_counts(small_entries)
+    small_elapsed = _time.perf_counter() - t0
+
+    t1 = _time.perf_counter()
+    _build_xref_counts(large_entries)
+    large_elapsed = _time.perf_counter() - t1
+
+    ratio = large_elapsed / max(small_elapsed, 1e-9)
+    assert ratio < 12, f"xref build looks super-linear: ratio={ratio:.1f}"
+
+
+def test_discovery_cache_reused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """build_repo_map reuses TTL-cached discovery instead of re-forking git each call."""
+    (tmp_path / "mod.py").write_text("def fn(): pass", encoding="utf-8")
+
+    import jarn.agent.repomap as repomap_mod
+
+    repomap_mod._DISCOVERY_CACHE.clear()
+
+    discover_calls: list[Path] = []
+    _orig = repomap_mod._discover_files
+
+    def _spy(root: Path) -> list[Path]:
+        discover_calls.append(root)
+        return _orig(root)
+
+    monkeypatch.setattr("jarn.agent.repomap._discover_files", _spy)
+
+    build_repo_map(tmp_path, token_budget=4000)
+    build_repo_map(tmp_path, token_budget=4000)
+    build_repo_map(tmp_path, token_budget=4000)
+    assert len(discover_calls) == 1, (
+        "build_repo_map must share the discovery TTL cache"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Config validation (ConfigError)
 # ---------------------------------------------------------------------------

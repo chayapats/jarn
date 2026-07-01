@@ -371,3 +371,80 @@ def test_cost_of_uses_explicit_cache_rates_when_present():
         assert cost == 13.5
     finally:
         pricing._BUILTIN = orig
+
+
+def test_streaming_usage_dedup():
+    """Cumulative usage on repeated chunks records final totals once, not N×."""
+    from types import SimpleNamespace
+
+    from jarn.agent.session import SessionDriver
+    from jarn.cost import CostTracker
+
+    tracker = CostTracker()
+    driver = SessionDriver(
+        agent=None,
+        engine=None,  # type: ignore[arg-type]
+        tracker=tracker,
+        thread_id="t1",
+    )
+
+    for i in range(1, 11):
+        cumulative_in = i * 100
+        cumulative_out = i * 10
+        msg = SimpleNamespace(
+            usage_metadata={
+                "input_tokens": cumulative_in,
+                "output_tokens": cumulative_out,
+                "input_token_details": {},
+            },
+            response_metadata={},
+            tool_calls=[],
+            tool_call_chunks=[],
+        )
+        driver._record_usage(msg)
+
+    assert tracker.total.input_tokens == 1000
+    assert tracker.total.output_tokens == 100
+    assert tracker.total.calls == 1
+
+
+def test_concurrent_record():
+    """Concurrent record() calls produce deterministic totals under the tracker lock."""
+    import threading
+
+    tracker = CostTracker()
+    errors: list[str] = []
+
+    def _worker() -> None:
+        try:
+            for _ in range(50):
+                tracker.record("claude-opus-4-8", 10, 5, tool="execute")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(str(exc))
+
+    threads = [threading.Thread(target=_worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not errors
+    assert tracker.total.calls == 200
+    assert tracker.total.input_tokens == 2000
+    assert tracker.total.output_tokens == 1000
+
+
+def test_parallel_tool_cost_split():
+    """Parallel tool calls split per-tool attribution evenly."""
+    tracker = CostTracker()
+    tracker.record(
+        "claude-opus-4-8",
+        1000,
+        200,
+        tools=["execute", "read_file"],
+    )
+    assert tracker.total.input_tokens == 1000
+    assert tracker.per_tool["execute"].input_tokens == 500
+    assert tracker.per_tool["read_file"].input_tokens == 500
+    cost_sum = sum(u.cost_usd for u in tracker.per_tool.values())
+    assert abs(cost_sum - tracker.total.cost_usd) < 1e-9

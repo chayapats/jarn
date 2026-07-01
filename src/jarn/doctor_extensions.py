@@ -16,7 +16,7 @@ import yaml
 from jarn.config.schema import Config
 from jarn.extensibility.commands import BUILTIN_COMMANDS, command_dirs
 from jarn.extensibility.frontmatter import discover, parse
-from jarn.extensibility.skills import skill_dirs
+from jarn.extensibility.skills import load_skills, skill_dirs
 from jarn.extensibility.subagents import agent_dirs
 
 
@@ -37,7 +37,11 @@ def collect_extensions(
     config: Config,
 ) -> dict[str, Any]:
     """Return a JSON-serialisable extensions diagnostic block."""
-    skills = _scan_markdown_kind("skill", skill_dirs(project_root), project_trusted)
+    skills = _scan_skills(
+        project_root,
+        project_trusted,
+        read_claude_dir=config.compat.read_claude_dir,
+    )
     commands = _scan_commands(project_root, project_trusted)
     subagents = _scan_subagents(project_root, project_trusted)
     hooks = _config_hooks(config, project_trusted)
@@ -86,6 +90,118 @@ def collect_extensions(
 
 def _scope_for(path: Path, global_dir: Path) -> str:
     return "global" if str(path).startswith(str(global_dir)) else "project"
+
+
+def _scan_skills(
+    project_root: Path | None,
+    project_trusted: bool,
+    *,
+    read_claude_dir: bool,
+) -> list[MarkdownExtensionRow]:
+    """Scan skills using the same precedence as :func:`load_skills`."""
+    from jarn.config import paths
+
+    active = load_skills(
+        project_root,
+        project_trusted=project_trusted,
+        read_claude_dir=read_claude_dir,
+    )
+
+    pdir = paths.project_dir(project_root)
+    claude_pdir = paths.project_claude_dir(project_root)
+    global_jarn = paths.global_subdir("skills")
+    global_claude = paths.global_claude_subdir("skills")
+
+    def _scope(path: Path) -> str:
+        if pdir and str(path).startswith(str(pdir)):
+            return "project"
+        if claude_pdir and str(path).startswith(str(claude_pdir)):
+            return "project"
+        if str(path).startswith(str(global_jarn)) or str(path).startswith(str(global_claude)):
+            return "global"
+        return "project"
+
+    rows: list[MarkdownExtensionRow] = []
+    for path in discover(skill_dirs(project_root, read_claude_dir=read_claude_dir)):
+        try:
+            doc = parse(path)
+        except OSError as exc:
+            rows.append(
+                MarkdownExtensionRow(
+                    kind="skill",
+                    name=path.stem,
+                    scope=_scope(path),
+                    path=str(path),
+                    status="invalid",
+                    detail=str(exc),
+                )
+            )
+            continue
+
+        yaml_err = _frontmatter_yaml_error(path)
+        if yaml_err is not None:
+            rows.append(
+                MarkdownExtensionRow(
+                    kind="skill",
+                    name=path.stem,
+                    scope=_scope(path),
+                    path=str(path),
+                    status="invalid",
+                    detail=yaml_err,
+                )
+            )
+            continue
+
+        meta = doc.meta if isinstance(doc.meta, dict) else {}
+        name = str(meta.get("name") or path.stem)
+        scope = _scope(path)
+
+        if scope == "project" and not project_trusted:
+            rows.append(
+                MarkdownExtensionRow(
+                    kind="skill",
+                    name=name,
+                    scope=scope,
+                    path=str(path),
+                    status="skipped_untrusted",
+                )
+            )
+            continue
+
+        winner = active.get(name)
+        if winner and winner.path == path:
+            rows.append(
+                MarkdownExtensionRow(
+                    kind="skill",
+                    name=name,
+                    scope=scope,
+                    path=str(path),
+                    status="active",
+                )
+            )
+        elif winner:
+            rows.append(
+                MarkdownExtensionRow(
+                    kind="skill",
+                    name=name,
+                    scope=scope,
+                    path=str(path),
+                    status="shadowed",
+                    detail=f"shadowed by {winner.scope} at {winner.path}",
+                )
+            )
+        else:
+            rows.append(
+                MarkdownExtensionRow(
+                    kind="skill",
+                    name=name,
+                    scope=scope,
+                    path=str(path),
+                    status="shadowed",
+                    detail="shadowed by another skill file",
+                )
+            )
+    return rows
 
 
 def _scan_markdown_kind(

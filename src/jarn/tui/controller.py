@@ -914,6 +914,7 @@ class Controller:
         # key already works.
         with contextlib.suppress(Exception):
             ConfigStore(paths.global_config_path()).set(f"providers.{prov}.api_key", ref)
+        self._invalidate_model_cache()
         self.runtime = None  # force rebuild on next turn with the new key
         notice = file_fallback_notice(
             stored,
@@ -1161,7 +1162,17 @@ class Controller:
         main = self.config.resolved_main_model()
         self._candidates = ([main] if main else []) + list(self.config.routing.fallback)
         self._candidate_idx = 0
+        self._invalidate_model_cache()
         self.runtime = None  # rebuild with the new config
+
+    def _invalidate_model_cache(self) -> None:
+        """Clear cached chat models when config or secrets change."""
+        runtime = self.runtime
+        if runtime is None:
+            return
+        factory = getattr(runtime, "factory", None)
+        if factory is not None:
+            factory.invalidate_cache()
 
     def _cmd_config(self, args: str) -> CommandResult:
         """View or edit settings. ``/config`` lists them; ``/config get <key>``
@@ -1273,9 +1284,68 @@ class Controller:
                     f"  {_escape_markup(tool)}: ${usage.cost_usd:.4f} · "
                     f"{usage.total_tokens:,} tok · {usage.calls} calls"
                 )
+        lines.extend(self._context_injection_lines())
         return CommandResult("\n".join(lines))
 
+    def _context_injection_lines(self) -> list[str]:
+        """Token sizes for blocks injected into the system prompt."""
+        from jarn.memory.context import DEFAULT_CONTEXT_FILES, project_context_text
+        from jarn.memory.store import MemoryStore
+        from jarn.memory.tokens import count_tokens
+        from jarn.memory.wiki import WikiStore
+
+        ctx = self.config.context
+        lines = [
+            "",
+            "[b]Context injection[/b] [dim](/memory dump for full text)[/dim]",
+        ]
+
+        names = self.config.compat.context_files or DEFAULT_CONTEXT_FILES
+        proj_text = (
+            project_context_text(
+                self.project_root,
+                context_files=names,
+                token_budget=ctx.project_context_tokens,
+            )
+            if self.project_trusted
+            else None
+        )
+        proj_tok = count_tokens(proj_text) if proj_text else 0
+        lines.append(
+            f"  project context: {proj_tok:,} / {ctx.project_context_tokens:,} tok"
+        )
+
+        global_index = MemoryStore.global_store().index_text(token_budget=ctx.memory_tokens)
+        global_tok = count_tokens(global_index) if global_index.strip() else 0
+        lines.append(f"  memory (global): {global_tok:,} / {ctx.memory_tokens:,} tok")
+
+        project_tok = 0
+        if self.project_trusted:
+            project_store = MemoryStore.project_store(self.project_root)
+            if project_store:
+                project_index = project_store.index_text(token_budget=ctx.memory_tokens)
+                project_tok = count_tokens(project_index) if project_index.strip() else 0
+        lines.append(f"  memory (project): {project_tok:,} / {ctx.memory_tokens:,} tok")
+
+        wiki_store = WikiStore.build(self.project_root)
+        if self.project_trusted:
+            wiki_index = wiki_store.index_text(token_budget=ctx.wiki_index_tokens)
+        else:
+            from jarn.memory.wiki import WikiStore as _WS
+
+            wiki_index = _WS(global_wiki_dir=wiki_store.global_wiki_dir).index_text(
+                token_budget=ctx.wiki_index_tokens
+            )
+        wiki_tok = count_tokens(wiki_index) if wiki_index.strip() else 0
+        lines.append(f"  wiki index: {wiki_tok:,} / {ctx.wiki_index_tokens:,} tok")
+        return lines
+
     def _cmd_compact(self, args: str) -> CommandResult:
+        sub = args.strip().lower()
+        if sub and sub != "status":
+            return CommandResult(
+                f"Unknown /compact subcommand: {sub!r}. Try /compact status."
+            )
         return CommandResult(
             "Context auto-compaction is "
             + ("on" if self.config.context.auto_compact else "off")

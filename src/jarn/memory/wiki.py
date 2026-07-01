@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from jarn.config import paths
+from jarn.memory.tokens import truncate_to_token_budget
 
 #: Slugify: keep only letters, digits, hyphens, underscores. Max 80 chars.
 _SAFE_SLUG_RE = re.compile(r"[^a-z0-9_\-]+")
@@ -215,7 +216,7 @@ class WikiStore:
         self._rebuild_index(pages_dir.parent)
         return f"{tier}:{slug}.md"
 
-    def index_text(self) -> str:
+    def index_text(self, *, token_budget: int | None = None) -> str:
         """Assemble the combined one-line catalog for system-prompt injection.
 
         Project pages are listed first (they override global on slug conflict).
@@ -242,7 +243,10 @@ class WikiStore:
 
         if not lines:
             return ""
-        return "# Wiki index\n\n" + "\n".join(lines) + "\n"
+        text = "# Wiki index\n\n" + "\n".join(lines) + "\n"
+        if token_budget is not None:
+            return truncate_to_token_budget(text, token_budget)
+        return text
 
     # -- internals ------------------------------------------------------------
 

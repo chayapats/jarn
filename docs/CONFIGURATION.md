@@ -528,6 +528,41 @@ Hook failures are never swallowed: non-zero exits are logged at `WARNING` and
 surfaced as a UI notice; a *blocking* `pre_commit`/`pre_tool` failure still
 rejects the action. An unknown `event:` name is rejected at load.
 
+## Non-interactive mode (`jarn -p`)
+
+Run a single prompt without the TUI:
+
+```bash
+jarn -p "summarize README.md"
+jarn -p - < prompt.txt          # read prompt from stdin
+jarn -p "fix tests" --json      # machine-readable output
+jarn -p "refactor" --max-turns 3 --permission-mode auto-edit
+```
+
+`--json` prints one JSON object on stdout:
+
+- **Success:** `{result, tokens, cost, turns, tool_calls}`
+- **Failure:** `{error: {kind, message}}` (kinds include `error`, `refusal`,
+  `budget`, `timeout`)
+
+**Exit codes:**
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | Generic error (config, provider, unexpected failure) |
+| `2` | Approval refused (fail-closed in `ask`/`plan`, or danger-guard in auto modes) or session budget hard-stop |
+| `124` | Timeout |
+
+`--max-turns N` runs up to *N* agent turns on the same session thread. After the
+first turn, later turns resume without a new user message so the agent can keep
+working. The loop stops when the cap is reached or a turn finishes without any
+tool calls (final answer).
+
+In `ask` or `plan` mode, gated tools are **refused** (exit `2`) rather than
+auto-approved. Use `--permission-mode auto-edit` or `yolo` only when you accept
+unattended side effects; danger-guard still blocks catastrophic actions.
+
 ## Pricing overrides
 
 The cost estimate uses a built-in table (current as of June 2026). Override or extend

@@ -28,8 +28,14 @@ uv run python scripts/eval.py --update-baseline  # record current pass/fail
 
 This **drives a real model and costs tokens.** It requires a configured key
 (`jarn setup` first); if no config is found the runner prints a note and exits
-`2` (skip, not failure). It is **not** run in CI — the offline harness logic is
+`2` (skip, not failure). It is **not** run in PR CI — the offline harness logic is
 covered by `tests/test_eval_harness.py` instead.
+
+### Nightly (optional)
+
+`.github/workflows/nightly.yml` runs a small fixture set on a daily schedule when
+the repo secret `NIGHTLY_EVAL_ENABLED` is set to `true` (plus `EVAL_API_KEY` for
+the model). The job uses `continue-on-error` so it never blocks merges.
 
 ## Baseline
 
