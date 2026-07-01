@@ -108,6 +108,8 @@ def _keyring_call(
             if op == "get":
                 box["result"] = keyring.get_password(service, account)
             else:
+                if value is None:
+                    raise ValueError("value is required for keyring set")
                 keyring.set_password(service, account, value)
                 box["result"] = True
         except Exception as exc:  # noqa: BLE001 - any backend failure
