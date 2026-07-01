@@ -259,10 +259,10 @@ def _load_eval_config(model_override: str | None = None) -> Any:
     """Load config set for unattended edits on the host.
 
     Sets ``permission_mode=yolo`` directly (no prompts) rather than the ``ci``
-    profile — ``ci`` implies ``local_sandbox=require``, which would silently fall
-    through to host execution when no OS sandbox is present, falsely implying
-    sandboxed isolation. Eval fixtures are our own throwaway code in a temp dir,
-    so honest host execution is fine; we just don't claim isolation we don't have.
+    profile — ``ci`` now requires the docker backend (and fails closed if Docker
+    is unavailable), which is heavier than eval fixtures need. Eval fixtures are
+    our own throwaway code in a temp dir, so honest host execution is fine; we
+    just don't claim isolation we don't have.
 
     The config is loaded eval-neutral, NOT scoped to the JARN dev repo: we pass
     ``project_root=None`` so the JARN.md project context and the dev repo's

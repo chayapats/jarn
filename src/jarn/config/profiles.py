@@ -46,7 +46,13 @@ PROFILES: dict[str, dict] = {
     },
     "ci": {
         "permission_mode": "yolo",
-        "local_sandbox": "require",
+        # Docker is the isolation for CI — not the OS-level local sandbox. The
+        # docker backend fails closed (SandboxUnavailable) when Docker isn't
+        # available, so YOLO never silently runs on a bare CI host: you get a
+        # clear "Docker is not available" launch error instead. (Set
+        # execution.allow_local_fallback: true to opt INTO host fallback.)
+        "backend": "docker",
+        "local_sandbox": "off",
         "sandbox_allow_network": True,
         "web_tools": True,
     },
@@ -77,6 +83,8 @@ def apply_profile(config: Config, name: str) -> None:
             f"Unknown policy profile {name!r}; expected one of {sorted(PROFILE_NAMES)}"
         )
     config.permission_mode = PermissionMode(effect["permission_mode"])
+    if "backend" in effect:
+        config.execution.backend = effect["backend"]
     config.execution.local_sandbox = effect["local_sandbox"]
     config.execution.sandbox_allow_network = effect["sandbox_allow_network"]
     config.policy.web_tools = effect["web_tools"]
