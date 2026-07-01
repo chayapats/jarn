@@ -113,7 +113,7 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 **Deps:** none
 **Effort:** M
 
-### T-1-2 — Central secret redaction across transcripts + logs + errors
+### T-1-2 — Central secret redaction across transcripts + logs + errors ✅
 **Problem:** `src/jarn/config/secrets.py` has no central redactor. `memory/sessions.write_tool()` does not redact tool `result` or arg string values; `observability/logging.py` has no redaction filter. Resolved API keys in tool output can persist to `.jarn/sessions/*.jsonl` and `jarn.log`.
 **Files:** `src/jarn/config/secrets.py`, `src/jarn/memory/sessions.py`, `src/jarn/observability/logging.py`, callers
 **Action:**
@@ -123,9 +123,9 @@ The 25 failures/errors are exclusively the **git-subprocess suites** (`test_chec
 4. Add a `logging.RedactingFilter` that scrubs records using the central helper; attach it to the rotating handler in `logging.py`.
 5. In error formatters that interpolate `{spec!r}` / `{exc}` (e.g. `models.py`, `secrets._resolve_keychain`), pass messages through `redact_secrets`.
 **DoD:**
-- [ ] A transcript round-trip test confirms a synthetic `sk-…` key placed in a tool `result` and in an arg value is masked (`sk-…XXXX`) in the JSONL line.
-- [ ] A log capture test confirms a key logged via `logger.info` is masked in the log output.
-- [ ] Existing `test_secrets.py` / `test_transcript.py` still pass; `redact_secrets` has unit tests for every pattern.
+- [x] A transcript round-trip test confirms a synthetic `sk-…` key placed in a tool `result` and in an arg value is masked (`sk-…XXXX`) in the JSONL line.
+- [x] A log capture test confirms a key logged via `logger.info` is masked in the log output.
+- [x] Existing `test_secrets.py` / `test_transcript.py` still pass; `redact_secrets` has unit tests for every pattern.
 **Tests:** `test_secrets.test_redact_*`, `test_transcript.test_tool_redaction`, `test_observability.test_log_redaction`.
 **Risk:** redaction could mask a value the user actually needs in output. Mitigation: only mask high-entropy patterns + explicit known-secret set; keep first/last 4 chars for sk-style keys.
 **Deps:** none

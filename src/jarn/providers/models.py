@@ -351,8 +351,10 @@ class ModelFactory:
         try:
             return self._construct_inner(ref, provider, kwargs, init_chat_model)
         except SecretResolutionError as exc:
+            from jarn.config.secrets import redact_secrets
+
             raise ModelResolutionError(
-                f"Cannot build {ref.qualified!r}: {exc}"
+                redact_secrets(f"Cannot build {ref.qualified!r}: {exc}")
             ) from exc
 
     def _construct_inner(self, ref, provider, kwargs, init_chat_model) -> BaseChatModel:
