@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
@@ -22,11 +22,15 @@ jobs:
       - name: Sync deps
         run: uv sync --extra dev
       - name: Lint
-        run: uv run ruff check src tests
+        run: uv run ruff check src tests scripts
       - name: Type-check
         run: uv run mypy src/
       - name: Test
-        run: uv run pytest -q
+        run: >-
+          uv run pytest -q
+          --cov=src/jarn
+          --cov-report=term-missing
+          --cov-fail-under=74
         # Live-LLM e2e suite is intentionally excluded from CI (slow / costs tokens).
 
   packaging:
@@ -51,3 +55,23 @@ jobs:
         run: node --test npm/jarn-cli/test/launcher.test.js
       - name: Assembly-script tests
         run: node --test npm/test/build.test.mjs
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Sync deps
+        run: uv sync --extra dev
+      - name: Dependency audit (pip-audit)
+        run: |
+          uv pip install pip-audit
+          uv run pip-audit
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
