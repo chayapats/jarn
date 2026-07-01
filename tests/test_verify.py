@@ -6,11 +6,26 @@ from jarn.agent.verify import ProjectCapabilities, detect_capabilities
 
 
 def test_detect_python_project(tmp_path):
-    (tmp_path / "pyproject.toml").write_text("[tool.pytest]\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\n[tool.ruff]\n", encoding="utf-8"
+    )
     (tmp_path / "tests").mkdir()
     caps = detect_capabilities(tmp_path)
     assert "pytest -q" in caps.test
     assert "ruff check ." in caps.lint
+
+
+def test_pyproject_without_pytest_skips_pytest(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    caps = detect_capabilities(tmp_path)
+    assert "pytest -q" not in caps.test
+
+
+def test_pyproject_without_ruff_skips_ruff(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    caps = detect_capabilities(tmp_path)
+    assert "ruff check ." not in caps.lint
 
 
 def test_detect_node_project(tmp_path):
@@ -22,6 +37,27 @@ def test_detect_node_project(tmp_path):
     assert "npm run test" in caps.test
     assert "npm run build" in caps.build
     assert "npm run lint" in caps.lint
+
+
+def test_detect_node_test_unit_and_typecheck(tmp_path):
+    (tmp_path / "package.json").write_text(
+        '{"scripts": {"test:unit": "vitest run", "typecheck": "tsc --noEmit", "check": "biome check"}}',
+        encoding="utf-8",
+    )
+    caps = detect_capabilities(tmp_path)
+    assert "npm run test:unit" in caps.test
+    assert "npm run typecheck" in caps.lint
+    assert "npm run check" in caps.lint
+
+
+def test_makefile_target_detection(tmp_path):
+    (tmp_path / "Makefile").write_text(
+        ".PHONY: test\n\ntest:\n\tpytest -q\n\nbuild:\n\techo build\n",
+        encoding="utf-8",
+    )
+    caps = detect_capabilities(tmp_path)
+    assert "make test" in caps.test
+    assert "make build" in caps.build
 
 
 def test_prompt_block_empty_when_no_capabilities():
