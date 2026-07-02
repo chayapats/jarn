@@ -269,6 +269,15 @@ def _stack_clear(prefix: str, root: Path) -> None:
         i += 1
 
 
+#: Ephemeral runtime files that must never enter a snapshot tree — they may be
+#: locked (SQLite on Windows) and reverting them is never desirable.
+_SNAPSHOT_EXCLUDE: tuple[str, ...] = (
+    ".jarn/state.sqlite",
+    ".jarn/state.sqlite-wal",
+    ".jarn/state.sqlite-shm",
+)
+
+
 # ---------------------------------------------------------------------------
 # Core snapshot / restore logic
 # ---------------------------------------------------------------------------
@@ -305,6 +314,9 @@ def _build_snapshot(label: str, root: Path) -> tuple[str, str] | tuple[None, str
         r = _git(["add", "-A"], cwd=root, env=idx_env)
         if r.returncode != 0:
             return None, f"git add -A failed: {r.stderr.strip()}"
+
+        for rel in _SNAPSHOT_EXCLUDE:
+            _git(["reset", "HEAD", "--", rel], cwd=root, env=idx_env)
 
         # Write the tree.
         r = _git(["write-tree"], cwd=root, env=idx_env)

@@ -286,6 +286,12 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             HSplit([top, prompt, toolbar]),
             floats=[Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=8))],
         )
+        from prompt_toolkit.output import DummyOutput, create_output
+
+        try:
+            output = create_output()
+        except Exception:  # noqa: BLE001 — headless Windows CI has no console buffer
+            output = DummyOutput()
         return Application(
             layout=Layout(root, focused_element=prompt),
             key_bindings=self._kb,
@@ -293,6 +299,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             full_screen=False,
             mouse_support=False,
             refresh_interval=0.2,  # animate the thinking spinner / elapsed timer
+            output=output,
         )
 
     def _busy(self) -> bool:
