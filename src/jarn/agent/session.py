@@ -14,120 +14,63 @@ driver works headless (tests) and inside Textual.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
-import logging
-import shlex
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any
 
-from langgraph.types import Command, Overwrite
-
-from jarn.agent.permissions_bridge import tool_to_action
-from jarn.cost import BudgetExceeded, CostTracker
-from jarn.permissions import (
-    Action,
-    ActionKind,
-    Decision,
-    PermissionEngine,
-    PermissionResult,
-    RememberScope,
+from jarn.agent.events import (
+    ApprovalReply,
+    ApprovalRequest,
+    Approver,
+    Event,
+    EventKind,
+    SuggestedMemory,
+    _auto_reject,
 )
+from jarn.agent.interrupts import (
+    _action_requests,
+    _hook_detail,
+    _looks_like_git_commit,
+    _resume_payload,
+    resolve_interrupts,
+    run_post_hooks,
+    run_pre_hooks,
+)
+from jarn.agent.stream_handlers import (
+    _first_tool_name,
+    _is_auth_error,
+    _is_retryable_error,
+    _provider_of_ref,
+    _tool_summary,
+    _unpack_stream_item,
+    handle_message_chunk,
+    handle_update_chunk,
+    record_usage,
+    resolve_model_ref,
+)
+from jarn.cost import BudgetExceeded, CostTracker
+from jarn.permissions import PermissionEngine
 
-_log = logging.getLogger("jarn")
-
-# LangChain message ``.type`` values that represent assistant output.
-_ASSISTANT_TYPES = {"ai", "AIMessageChunk"}
-# Content-block / kwarg shapes various providers use for extended-reasoning text.
-_REASONING_TYPES = {"thinking", "reasoning", "reasoning_content"}
-# Upper bound on retained tool output for Ctrl+O expand (guards memory).
-_MAX_FULL_CHARS = 100_000
-
-
-# -- events emitted to the UI ----------------------------------------------
-
-class EventKind(str, Enum):
-    TEXT = "text"
-    REASONING = "reasoning"      # extended-thinking text (shown dim, secondary)
-    TOOL_START = "tool_start"
-    TOOL_END = "tool_end"
-    APPROVAL = "approval"        # informational: how an approval was resolved
-    NOTICE = "notice"
-    ERROR = "error"
-    DONE = "done"
-
-
-@dataclass(slots=True)
-class Event:
-    kind: EventKind
-    text: str = ""
-    data: dict[str, Any] = field(default_factory=dict)
-
-
-# -- approval contract ------------------------------------------------------
-
-@dataclass(slots=True)
-class SuggestedMemory:
-    """A memory the agent proposes for the user to approve, edit, or decline.
-
-    Carried on an :class:`ApprovalRequest` when the agent calls ``suggest_memory``.
-    The approver surfaces a "Save this memory?" prompt and, on approval, writes it
-    through the existing :class:`~jarn.memory.MemoryStore` (respecting the global
-    vs project tier and the project's trust gating)."""
-
-    name: str
-    description: str
-    body: str
-    type: str = "project"
-    #: ``"global"`` or ``"project"`` — which store tier to write to. Project writes
-    #: are refused on an untrusted project (the approver reports why).
-    scope: str = "project"
-
-
-@dataclass(slots=True)
-class ApprovalRequest:
-    action: Action
-    result: PermissionResult
-    description: str = ""
-    args: dict[str, Any] = field(default_factory=dict)
-    #: Set (to the proposed plan text) when this is a plan-mode handoff request
-    #: from ``exit_plan_mode`` rather than an ordinary tool approval. The approver
-    #: shows the plan and, on approval, escalates the permission mode.
-    plan: str | None = None
-    #: Set when this is an agent memory suggestion (``suggest_memory``) rather than
-    #: an ordinary tool approval. The approver shows it and, on approval, writes it
-    #: through the memory store.
-    suggested_memory: SuggestedMemory | None = None
-
-
-@dataclass(slots=True)
-class ApprovalReply:
-    approved: bool
-    scope: RememberScope = RememberScope.ONCE
-    message: str = ""           # reason shown to the model on rejection
-    #: When the user chose "edit before apply", the tool args edited in $EDITOR.
-    #: The turn resumes with a LangGraph ``edit`` decision carrying these args, so
-    #: the *edited* content lands on disk instead of the agent's original. ``None``
-    #: means a plain approve (run the tool with its original args).
-    # TODO(per-hunk): edit-before-apply replaces the whole new content/replacement.
-    # Per-hunk (partial) approval is deferred — it needs hunk parsing + partial
-    # apply of a unified diff; not implemented in this pass (see fable-todo.md P4.B).
-    edited_args: dict[str, Any] | None = None
-    #: For a plan-mode handoff (``exit_plan_mode``): the permission mode the user
-    #: chose to escalate to on approval (e.g. ``"auto-edit"``/``"ask"``). The
-    #: approver applies it; ``None`` for ordinary approvals.
-    plan_mode_target: str | None = None
-
-
-# approver(request) -> reply
-Approver = Callable[[ApprovalRequest], Awaitable[ApprovalReply]]
-
-
-async def _auto_reject(request: ApprovalRequest) -> ApprovalReply:
-    """Default approver used headless: deny anything that needs asking."""
-    return ApprovalReply(approved=False, message="auto-denied (no interactive approver)")
+__all__ = [
+    "ApprovalReply",
+    "ApprovalRequest",
+    "Approver",
+    "Event",
+    "EventKind",
+    "SessionDriver",
+    "SuggestedMemory",
+    "_action_requests",
+    "_auto_reject",
+    "_first_tool_name",
+    "_hook_detail",
+    "_is_auth_error",
+    "_is_retryable_error",
+    "_looks_like_git_commit",
+    "_provider_of_ref",
+    "_resume_payload",
+    "_tool_summary",
+    "_unpack_stream_item",
+]
 
 
 @dataclass(slots=True)
@@ -321,604 +264,27 @@ class SessionDriver:
                 resolved.append((iid, intr_decisions))
             payload = _resume_payload(resolved)
 
-    # -- stream handling ----------------------------------------------------
+    # -- thin wrappers for tests / backward compatibility -------------------
 
     def _handle_message_chunk(self, chunk: Any) -> Event | None:
-        msg = chunk[0] if isinstance(chunk, tuple) else chunk
-        self._record_usage(msg)
-        mtype = getattr(msg, "type", "")
-        # Tool results (ToolMessage) — e.g. a fetched web page — must not be
-        # dumped into the chat, but a one-line summary ("3 lines", "12 results")
-        # under the tool call mirrors Claude Code's "⎿ result" affordance.
-        if mtype == "tool":
-            full = _text_of(getattr(msg, "content", "")).strip()
-            tool_name = getattr(msg, "name", "") or ""
-            data: dict[str, Any] = {"summary": _tool_summary(full, tool_name)}
-            tool_call_id = getattr(msg, "tool_call_id", None)
-            if tool_call_id:
-                data["tool_call_id"] = str(tool_call_id)
-            # Keep the full payload (capped) for on-demand expand (Ctrl+O), but
-            # only when there is genuinely more to see than the summary line.
-            if full and (full.count("\n") or len(full) > 80):
-                data["full"] = full[:_MAX_FULL_CHARS]
-            return Event(EventKind.TOOL_END, text=getattr(msg, "name", "") or "tool", data=data)
-        # Otherwise only stream ASSISTANT text; the model's reply is what the
-        # user should see.
-        if mtype not in _ASSISTANT_TYPES:
-            return None
-        content = _text_of(getattr(msg, "content", ""))
-        if content:
-            return Event(EventKind.TEXT, text=content)
-        # No visible answer text in this chunk: surface extended-reasoning text
-        # (Anthropic thinking blocks, DeepSeek `reasoning_content`, …) if present.
-        reasoning = _reasoning_of(msg)
-        if reasoning:
-            return Event(EventKind.REASONING, text=reasoning)
-        return None
+        return handle_message_chunk(self, chunk)
 
     def _handle_update_chunk(self, chunk: dict[str, Any], interrupts: list[Any]):
-        if not isinstance(chunk, dict):
-            return
-        if "__interrupt__" in chunk:
-            for intr in chunk["__interrupt__"]:
-                interrupts.append(intr)
-            return
-        for _node, update in chunk.items():
-            if not isinstance(update, dict):
-                continue
-            messages = update.get("messages", []) or []
-            if isinstance(messages, Overwrite):
-                messages = messages.value or []
-            for msg in messages:
-                for call in getattr(msg, "tool_calls", None) or []:
-                    name = call.get("name", "tool")
-                    args = call.get("args", {}) or {}
-                    if name in ("write_file", "edit_file"):
-                        self._last_edit_target = str(
-                            args.get("file_path") or args.get("path")
-                            or args.get("filename") or ""
-                        )
-                    data: dict[str, Any] = {"args": args}
-                    call_id = call.get("id")
-                    if call_id:
-                        data["tool_call_id"] = str(call_id)
-                    yield Event(EventKind.TOOL_START, text=name, data=data)
-
-    # -- lifecycle hooks ----------------------------------------------------
-
-    async def _run_pre_hooks(
-        self, name: str, action: Action
-    ) -> tuple[str | None, list[str]]:
-        """Run ``pre_tool`` (and ``pre_commit`` for git commits) before a gated
-        tool. Returns ``(abort_reason, notices)``: ``abort_reason`` is set only
-        if a *blocking* hook failed (the tool call is rejected); ``notices``
-        carries non-fatal warnings for non-blocking failures so they're surfaced
-        to the user instead of being swallowed.
-
-        NOTE: only *gated* tools reach this (mutating + network/MCP); read-only
-        tools never interrupt, so ``pre_tool`` does not fire for them. Hooks run
-        off the event loop (``to_thread``) so a slow hook doesn't freeze the UI.
-        """
-        from jarn.extensibility.hooks import HookEvent
-
-        notices: list[str] = []
-        events = [HookEvent.PRE_TOOL]
-        if name == "execute" and _looks_like_git_commit(action.target):
-            events.append(HookEvent.PRE_COMMIT)
-        for event in events:
-            results = await asyncio.to_thread(self.hooks.run, event, target=action.target)
-            for result in results:
-                if result.should_abort:
-                    _log.warning(
-                        "hooks: blocking %s hook failed (exit %s): %s",
-                        event.value,
-                        result.exit_code,
-                        _hook_detail(result),
-                    )
-                    return f"{event.value}: {_hook_detail(result)}", notices
-                if not result.ok:
-                    # Non-blocking failure: don't abort, but don't stay silent.
-                    detail = _hook_detail(result)
-                    _log.warning(
-                        "hooks: %s hook failed (exit %s): %s",
-                        event.value,
-                        result.exit_code,
-                        detail,
-                    )
-                    notices.append(f"{event.value} hook failed: {detail}")
-        return None, notices
-
-    async def _run_post_hooks(self, name: str):
-        """Run ``post_tool`` (and ``post_edit`` for writes/edits) after a tool
-        completes. Report-only — the tool already ran — so a failing hook is
-        surfaced as a NOTICE rather than aborting the turn. ``post_edit`` is
-        scoped by the edited *file path* (so a ``matcher: "*.py"`` glob works),
-        ``post_tool`` by the tool name."""
-        from jarn.extensibility.hooks import HookEvent
-
-        targets = [(HookEvent.POST_TOOL, name)]
-        if name in ("write_file", "edit_file"):
-            targets.append((HookEvent.POST_EDIT, self._last_edit_target or name))
-        for event, target in targets:
-            results = await asyncio.to_thread(self.hooks.run, event, target=target)
-            for result in results:
-                if not result.ok:
-                    yield Event(
-                        EventKind.NOTICE,
-                        text=f"{event.value} hook failed: {_hook_detail(result)}",
-                    )
+        yield from handle_update_chunk(self, chunk, interrupts)
 
     def _record_usage(self, msg: Any) -> None:
-        usage = getattr(msg, "usage_metadata", None)
-        if not usage:
-            return
-        # LangChain reports prompt-cache tokens under ``input_token_details``
-        # (``cache_read`` / ``cache_creation``); absent for providers/turns
-        # without caching, in which case both default to 0.
-        details = usage.get("input_token_details") or {}
-        cumulative = (
-            int(usage.get("input_tokens", 0)),
-            int(usage.get("output_tokens", 0)),
-            int(details.get("cache_read", 0)),
-            int(details.get("cache_creation", 0)),
-        )
-        model_ref = self._resolve_model_ref(msg)
-        usage_key = (self.thread_id, model_ref)
-        prev = self._last_usage_totals.get(usage_key)
-        is_continuation = False
-        if prev is not None:
-            monotonic = cumulative[0] >= prev[0] and cumulative[1] >= prev[1]
-            if monotonic:
-                delta = tuple(max(0, c - p) for c, p in zip(cumulative, prev, strict=True))
-                if not any(delta):
-                    return
-                input_tokens, output_tokens, cache_read, cache_creation = delta
-                is_continuation = True
-            else:
-                # A new API call within the same turn (per-call totals, not cumulative).
-                input_tokens, output_tokens, cache_read, cache_creation = cumulative
-        else:
-            input_tokens, output_tokens, cache_read, cache_creation = cumulative
-        self._last_usage_totals[usage_key] = cumulative
-
-        tools = _tool_names(msg)
-        self.tracker.record(
-            self._resolve_model_ref(msg),
-            input_tokens,
-            output_tokens,
-            tools=tools if len(tools) > 1 else None,
-            tool=tools[0] if len(tools) == 1 else None,
-            cache_read_tokens=cache_read,
-            cache_creation_tokens=cache_creation,
-            increment_call=not is_continuation,
-        )
+        record_usage(self, msg)
 
     def _resolve_model_ref(self, msg: Any) -> str:
-        """Attribute a streamed chunk to the model that actually produced it.
-
-        The provider stamps the model on the message itself —
-        ``response_metadata['model_name']`` (OpenAI-compatible, incl. OpenRouter)
-        or ``['model']`` (Anthropic). We canonicalize that raw name to one of the
-        refs we know about (``known_model_refs``: main + subagents + summarizer) so
-        the per-model bucket uses our pricing-resolvable ref and the main model
-        keeps a single stable label. When the message carries no model (e.g. an
-        early streaming chunk) we fall back to the main model — preserving today's
-        single-model behavior exactly. Reading the reported model is reliable;
-        guessing from the subgraph namespace was not (it omits the subagent name).
-        """
-        meta = getattr(msg, "response_metadata", None)
-        name = ""
-        if isinstance(meta, dict):
-            name = str(meta.get("model_name") or meta.get("model") or "")
-        if not name:
-            return self.main_model_ref
-        # Canonicalize to the most specific known ref. Substring either direction so
-        # "claude-opus-4-8" <-> "anthropic/claude-opus-4-8" both resolve.
-        best: str | None = None
-        for ref in self.known_model_refs:
-            if ref and (name in ref or ref in name) and (best is None or len(ref) > len(best)):
-                best = ref
-        # No known ref matched: record under the provider's raw name (pricing still
-        # substring-resolves it) rather than mislabeling it as the main model.
-        return best if best is not None else name
-
-    # -- interrupt resolution ----------------------------------------------
+        return resolve_model_ref(self, msg)
 
     async def _resolve_interrupts(self, interrupts: list[Any]):
-        """For each gated tool call, yield (event, decision-dict)."""
-        for intr in interrupts:
-            for req in _action_requests(intr):
-                name = req.get("action") or req.get("name") or "tool"
-                args = req.get("args", {}) or {}
+        async for item in resolve_interrupts(self, interrupts):
+            yield item
 
-                # Plan-mode handoff: exit_plan_mode is callable *in* plan mode, so
-                # it bypasses the engine (which would deny it like any non-read
-                # action). The approver shows the plan and escalates the mode on
-                # approval; an approve resumes the tool (its return is the model's
-                # "go" signal), a reject keeps the agent planning.
-                if name == "exit_plan_mode":
-                    plan_text = str(args.get("plan", "")).strip()
-                    reply = await self.approver(
-                        ApprovalRequest(
-                            action=Action(ActionKind.READ, target="plan", tool=name),
-                            result=PermissionResult(Decision.ASK, "plan ready for review"),
-                            description=req.get("description", ""),
-                            args=args,
-                            plan=plan_text,
-                        )
-                    )
-                    if reply.approved:
-                        yield (
-                            Event(EventKind.APPROVAL, text="plan approved — executing",
-                                  data={"target": "plan"}),
-                            {"type": "approve"},
-                        )
-                    else:
-                        yield (
-                            Event(EventKind.APPROVAL, text="plan not approved — still planning",
-                                  data={"target": "plan"}),
-                            {"type": "reject",
-                             "message": reply.message
-                             or "Keep refining the plan; call exit_plan_mode again when ready."},
-                        )
-                    continue
+    async def _run_pre_hooks(self, name: str, action: Any) -> tuple[str | None, list[str]]:
+        return await run_pre_hooks(self, name, action)
 
-                # Memory suggestion: suggest_memory proposes a memory for the user
-                # to approve. It never mutates the world on its own (the approver
-                # does the write on approval), so it bypasses the engine and routes
-                # straight to the approver — an approve resumes the tool (its return
-                # is the model's confirmation), a reject keeps the agent going
-                # without writing anything.
-                if name == "suggest_memory":
-                    suggestion = SuggestedMemory(
-                        name=str(args.get("name", "")).strip(),
-                        description=str(args.get("description", "")).strip(),
-                        body=str(args.get("body", "")).strip(),
-                        type=str(args.get("type", "project")).strip() or "project",
-                        scope=str(args.get("scope", "project")).strip() or "project",
-                    )
-                    reply = await self.approver(
-                        ApprovalRequest(
-                            action=Action(ActionKind.READ, target="memory", tool=name),
-                            result=PermissionResult(Decision.ASK, "memory suggested"),
-                            description=req.get("description", ""),
-                            args=args,
-                            suggested_memory=suggestion,
-                        )
-                    )
-                    if reply.approved:
-                        yield (
-                            Event(EventKind.APPROVAL, text="memory saved",
-                                  data={"target": "memory"}),
-                            {"type": "approve"},
-                        )
-                    else:
-                        yield (
-                            Event(EventKind.APPROVAL, text="memory not saved",
-                                  data={"target": "memory"}),
-                            {"type": "reject",
-                             "message": reply.message or "User declined to save the memory."},
-                        )
-                    continue
-
-                action = tool_to_action(name, args)
-
-                # Pre-tool / pre-commit hooks run before the tool: a blocking
-                # hook that fails rejects the call (e.g. tests fail → no commit).
-                if self.hooks is not None:
-                    abort, hook_notices = await self._run_pre_hooks(name, action)
-                    for note in hook_notices:
-                        # `_resolve_interrupts` yields ``(event, decision)`` tuples;
-                        # a NOTICE carries no decision, so pair it with ``None``.
-                        yield (Event(EventKind.NOTICE, text=note), None)
-                    if abort is not None:
-                        yield (
-                            Event(EventKind.APPROVAL, text=f"blocked by hook: {name} ({abort})",
-                                  data={"target": action.target}),
-                            {"type": "reject", "message": abort},
-                        )
-                        continue
-
-                result = self.engine.evaluate(action)
-
-                if result.decision is Decision.ALLOW:
-                    yield (
-                        Event(EventKind.APPROVAL, text=f"auto-allowed: {name}",
-                              data={"target": action.target}),
-                        {"type": "approve"},
-                    )
-                elif result.decision is Decision.DENY:
-                    yield (
-                        Event(EventKind.APPROVAL, text=f"blocked: {name} ({result.reason})",
-                              data={"target": action.target, "dangerous": result.dangerous}),
-                        {"type": "reject", "message": result.reason},
-                    )
-                else:  # ASK
-                    reply = await self.approver(
-                        ApprovalRequest(action=action, result=result,
-                                        description=req.get("description", ""),
-                                        args=args)
-                    )
-                    if reply.approved:
-                        # A guard-dangerous action can never be remembered as
-                        # ALWAYS — downgrade to SESSION so it isn't persisted.
-                        scope = reply.scope
-                        if result.block_remember_always and scope is RememberScope.ALWAYS:
-                            scope = RememberScope.SESSION
-                        self.engine.remember(action, scope)
-                        if reply.edited_args is not None:
-                            # Edit-before-apply: resume with a LangGraph ``edit``
-                            # decision so the tool runs with the user-edited args —
-                            # the edited content is what lands on disk.
-                            yield (
-                                Event(EventKind.APPROVAL, text=f"approved (edited): {name}",
-                                      data={"target": action.target, "scope": scope.value}),
-                                {"type": "edit",
-                                 "edited_action": {"name": name, "args": reply.edited_args}},
-                            )
-                        else:
-                            yield (
-                                Event(EventKind.APPROVAL, text=f"approved: {name}",
-                                      data={"target": action.target, "scope": scope.value}),
-                                {"type": "approve"},
-                            )
-                    else:
-                        self.engine.deny_session(action)
-                        yield (
-                            Event(EventKind.APPROVAL, text=f"rejected: {name}",
-                                  data={"target": action.target}),
-                            {"type": "reject", "message": reply.message or "rejected by user"},
-                        )
-
-
-# -- helpers ----------------------------------------------------------------
-
-def _unpack_stream_item(item: Any) -> tuple[Any, str | None, Any]:
-    """Normalize a LangGraph astream item to ``(namespace, mode, chunk)``.
-
-    With ``subgraphs=True`` items are ``(namespace, mode, chunk)``; without it
-    they are ``(mode, chunk)`` (namespace then defaults to ``()``). The namespace
-    is a *tuple* path of subgraph node names (e.g. ``("tools:<id>", …)``) — it is
-    used to attribute usage to the subagent model that produced the chunk; subagent
-    *output* is still shown just like top-level output.
-    """
-    if isinstance(item, tuple):
-        if len(item) == 3:
-            return item[0], item[1], item[2]
-        if len(item) == 2:
-            return (), item[0], item[1]
-    return (), None, None
-
-
-def _reasoning_of(msg: Any) -> str:
-    """Extract extended-reasoning text from a chunk, across provider shapes."""
-    parts: list[str] = []
-    content = getattr(msg, "content", "")
-    if isinstance(content, list):
-        for block in content:
-            if isinstance(block, dict) and block.get("type") in _REASONING_TYPES:
-                parts.append(
-                    block.get("thinking")
-                    or block.get("reasoning")
-                    or block.get("reasoning_content")
-                    or block.get("text")
-                    or ""
-                )
-    extra = getattr(msg, "additional_kwargs", None) or {}
-    if isinstance(extra, dict) and extra.get("reasoning_content"):
-        parts.append(str(extra["reasoning_content"]))
-    return "".join(parts)
-
-
-def _tool_names(msg: Any) -> list[str]:
-    """All tools a model call requested, for per-tool cost attribution."""
-    names: list[str] = []
-    seen: set[str] = set()
-    for attr in ("tool_calls", "tool_call_chunks"):
-        for call in getattr(msg, attr, None) or []:
-            name = call.get("name") if isinstance(call, dict) else None
-            if name and name not in seen:
-                seen.add(str(name))
-                names.append(str(name))
-    return names
-
-
-def _first_tool_name(msg: Any) -> str | None:
-    """The first tool a model call requested (compat shim)."""
-    names = _tool_names(msg)
-    return names[0] if names else None
-
-
-#: Substrings / exception-name fragments that mark a provider error as worth a
-#: model fallback (transient or capacity-related, not a logic bug).
-_RETRYABLE_NAME_HINTS = ("timeout", "connecterror", "connectionerror", "ratelimit",
-                         "overloaded", "serviceunavailable", "apierror", "internalserver")
-# Narrow phrases only — a bare "connection"/"timeout" can appear in unrelated
-# tool-result strings, which would trigger a needless model rotation.
-_RETRYABLE_MSG_HINTS = ("rate limit", "rate-limit", "overloaded",
-                        "temporarily unavailable", "service unavailable",
-                        "connection reset", "connection refused", "connection aborted",
-                        "connection error", "read timed out", "request timed out")
-
-
-def _is_retryable_error(exc: BaseException) -> bool:
-    """Heuristic: is this a transient/capacity provider error worth falling back?
-
-    Providers raise wildly different exception types, so we match on the type
-    name and message rather than a fixed exception class. A numeric ``status_code``
-    in the 429/5xx family also counts.
-    """
-    status = getattr(exc, "status_code", None)
-    if isinstance(status, int) and (status == 429 or 500 <= status < 600):
-        return True
-    name = type(exc).__name__.lower()
-    if any(h in name for h in _RETRYABLE_NAME_HINTS):
-        return True
-    msg = str(exc).lower()
-    return any(h in msg for h in _RETRYABLE_MSG_HINTS)
-
-
-#: Exception-name fragments and message phrases that mark a provider failure as an
-#: authentication/authorization rejection — an invalid/expired/missing API key.
-#: Rotating to another model won't fix this, so it is handled separately from the
-#: retryable heuristic above (see ``_is_retryable_error``).
-_AUTH_NAME_HINTS = ("authenticationerror", "permissiondenied", "unauthorized")
-_AUTH_MSG_HINTS = ("invalid x-api-key", "invalid api key", "invalid_api_key",
-                   "incorrect api key", "authentication_error", "authentication error",
-                   "unauthorized", "no auth credentials", "missing api key",
-                   "expired api key", "invalid bearer token", "permission denied")
-
-
-def _is_auth_error(exc: BaseException) -> bool:
-    """Heuristic: is this a 401/403 auth rejection (bad/expired/missing key)?
-
-    Matches on a numeric ``status_code`` of 401/403, the exception type name, or
-    known message phrases. Kept deliberately narrow so a generic "permission"
-    string in an unrelated tool result doesn't get misclassified.
-    """
-    status = getattr(exc, "status_code", None)
-    if isinstance(status, int) and status in (401, 403):
-        return True
-    name = type(exc).__name__.lower()
-    if any(h in name for h in _AUTH_NAME_HINTS):
-        return True
-    msg = str(exc).lower()
-    if "401" in msg or "403" in msg:
-        return True
-    return any(h in msg for h in _AUTH_MSG_HINTS)
-
-
-def _provider_of_ref(ref: str) -> str:
-    """Best-effort provider/profile name from a model ref (e.g. ``anthropic`` from
-    ``anthropic/claude-opus-4-8``). Returns ``""`` when it can't be determined so
-    the caller can fall back to a generic phrasing."""
-    if not ref or ref == "unknown":
-        return ""
-    return ref.split("/", 1)[0] if "/" in ref else ""
-
-
-def _looks_like_git_commit(command: str) -> bool:
-    """True if ``command`` actually invokes ``git commit`` (not a quoted string
-    or another git subcommand). Tolerates global flags like ``-C dir`` / ``-c k=v``."""
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        tokens = command.split()
-    i = 0
-    while i < len(tokens):
-        if tokens[i] == "git" or tokens[i].endswith("/git"):
-            j = i + 1
-            while j < len(tokens):
-                tok = tokens[j]
-                if tok in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"):
-                    j += 2  # flag that takes a value
-                    continue
-                if tok.startswith("-"):
-                    j += 1
-                    continue
-                return tok == "commit"
-            return False
-        i += 1
-    return False
-
-
-def _hook_detail(result: Any) -> str:
-    """Last meaningful line of a hook's output, for a compact abort/notice msg."""
-    text = (getattr(result, "stderr", "") or getattr(result, "stdout", "") or "").strip()
-    if text:
-        return text.splitlines()[-1]
-    return f"exit {getattr(result, 'exit_code', '?')}"
-
-
-def _web_search_summary(content: str) -> str:
-    """Richer one-line summary for web_search results: count + top source hosts."""
-    import re as _re
-    from urllib.parse import urlparse as _urlparse
-
-    # Count result entries (each starts with "- <Title>") by counting "  https?://" lines.
-    urls = _re.findall(r"^\s{2}(https?://[^\s]+)", content, _re.MULTILINE)
-    if not urls:
-        # Fallback: no URLs found — use generic summary.
-        return _tool_summary(content)
-    count = len(urls)
-    # Build a deduplicated list of hosts in order of first appearance.
-    seen: dict[str, None] = {}
-    for u in urls:
-        # .hostname (not .netloc) so a credential-bearing URL never leaks its
-        # user:pass@ userinfo (or :port) into the inline summary.
-        host = _urlparse(u).hostname or _urlparse(u).netloc or u
-        # Strip www. prefix for compactness.
-        if host.startswith("www."):
-            host = host[4:]
-        seen[host] = None
-    hosts = list(seen.keys())
-    # Show up to 3 hosts; append "…" when there are more.
-    shown = hosts[:3]
-    suffix = ", …" if len(hosts) > 3 else ""
-    hosts_str = ", ".join(shown) + suffix
-    return f"🔍 {count} result{'s' if count != 1 else ''} · {hosts_str}"
-
-
-def _tool_summary(content: str, tool_name: str = "") -> str:
-    """A compact one-line summary of a tool result (never the full payload)."""
-    if tool_name == "web_search":
-        return _web_search_summary(content)
-    txt = content.strip()
-    if not txt:
-        return "(no output)"
-    lines = txt.count("\n") + 1
-    if lines > 1:
-        return f"{lines} lines"
-    return txt if len(txt) <= 80 else txt[:79] + "…"
-
-
-def _text_of(content: Any) -> str:
-    """Flatten LangChain message content (str or list of blocks) to text."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        out = []
-        for block in content:
-            if isinstance(block, str):
-                out.append(block)
-            elif isinstance(block, dict) and block.get("type") == "text":
-                out.append(block.get("text", ""))
-        return "".join(out)
-    return ""
-
-
-def _resume_payload(resolved: list[tuple[Any, list[Any]]]) -> Command:
-    """Build the LangGraph resume ``Command`` for the pending interrupt(s).
-
-    ``resolved`` is ``[(interrupt_id, decisions), ...]`` — one entry per unique
-    pending interrupt, in resolution order.
-
-    A SINGLE pending interrupt resumes with the bundled ``{"decisions": [...]}``
-    value its HITL middleware expects. With MULTIPLE pending interrupts (each
-    delegated subagent raises its own), LangGraph requires the resume to be a map
-    keyed by interrupt id — otherwise it raises *"When there are multiple pending
-    interrupts, you must specify the interrupt id when resuming."*
-    (``langgraph/pregel/_loop.py``). The id is an xxh3-128 hexdigest, which is how
-    LangGraph recognises the value as a per-interrupt resume map.
-    """
-    keyed = [(iid, decisions) for iid, decisions in resolved if iid is not None]
-    if len(resolved) > 1 and len(keyed) == len(resolved):
-        return Command(resume={iid: {"decisions": decisions} for iid, decisions in keyed})
-    # Single interrupt (or, defensively, ids unavailable): the legacy bundled
-    # resume — flatten every decision into one list.
-    decisions = [d for _, ds in resolved for d in ds]
-    return Command(resume={"decisions": decisions})
-
-
-def _action_requests(interrupt: Any) -> list[dict[str, Any]]:
-    """Extract action-request dicts from a LangGraph interrupt value."""
-    value = getattr(interrupt, "value", interrupt)
-    if isinstance(value, dict) and "action_requests" in value:
-        return list(value["action_requests"])
-    if isinstance(value, list):
-        items: list[dict[str, Any]] = []
-        for v in value:
-            if isinstance(v, dict) and "action_requests" in v:
-                items.extend(v["action_requests"])
-        return items
-    return []
+    async def _run_post_hooks(self, name: str):
+        async for item in run_post_hooks(self, name):
+            yield item
