@@ -22,14 +22,14 @@ regex, enforces write isolation. ``"off"`` (the default) preserves the original
 from __future__ import annotations
 
 import logging
-import os
-import signal
 import subprocess
 import threading
 from pathlib import Path
 
 from deepagents.backends import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
+
+from jarn.agent.process_util import terminate_process_group
 
 logger = logging.getLogger("jarn.agent.local_backend")
 
@@ -203,13 +203,7 @@ class CancellableLocalShellBackend(LocalShellBackend):
     def _kill(self, proc: subprocess.Popen) -> None:
         if proc.poll() is not None:
             return
-        try:
-            if os.name == "posix":
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            else:  # pragma: no cover - non-posix fallback
-                proc.kill()
-        except (ProcessLookupError, OSError):
-            pass
+        terminate_process_group(proc.pid)
 
     def terminate_all(self) -> int:
         """Kill every still-running command's process group. Returns the count."""
