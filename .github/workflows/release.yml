@@ -126,12 +126,22 @@ jobs:
       # NOTE: no --provenance — npm provenance requires a PUBLIC source repo, and
       # this repo is private (open-core: public at launch). Re-add --provenance
       # (and id-token: write above) once the repo is public.
+      - name: Verify npm auth
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm whoami
       - name: Publish to npm (platform packages first, then the launcher)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           while read -r dir; do
             [ -n "$dir" ] || continue
+            name=$(node -p "require('./$dir/package.json').name")
+            version=$(node -p "require('./$dir/package.json').version")
+            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+              echo "==> skip ${name}@${version} (already published)"
+              continue
+            fi
             echo "==> npm publish $dir"
             npm publish "$dir" --access public
           done < npm/dist/publish-order.txt
