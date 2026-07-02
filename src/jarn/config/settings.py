@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from jarn.config._yaml_store import (
+from jarn.config.yaml_store import (
     ConfigCorruptError,  # noqa: F401 - re-exported for callers (controller/tests)
     atomic_write_yaml,
     load_yaml_doc,

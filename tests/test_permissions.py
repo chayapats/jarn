@@ -270,7 +270,7 @@ def test_rule_store_preserves_comments(tmp_path):
 
 def test_rule_store_corrupt_not_wiped(tmp_path):
     """A corrupt project config must NOT be overwritten by add_allow; .bak saved."""
-    from jarn.config._yaml_store import ConfigCorruptError
+    from jarn.config.yaml_store import ConfigCorruptError
     from jarn.permissions.rule_store import PermissionRuleStore
 
     cfg = tmp_path / ".jarn" / "config.yaml"
