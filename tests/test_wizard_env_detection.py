@@ -3,16 +3,16 @@
 Covers:
 - _detect_env_key: returns (provider, env_var) when a key is set, None otherwise.
 - _recommended_provider: correct recommendation in all three scenarios.
-- _provider_hint: correct cloud/local/custom labels.
+- provider_hint: correct cloud/local/custom labels.
 - _configure_key: stores ${ENV} reference (never the verbatim key) when env_hit matches.
 """
 
 from __future__ import annotations
 
+from jarn.onboarding.providers import provider_hint
 from jarn.onboarding.wizard import (
     _configure_key,
     _detect_env_key,
-    _provider_hint,
     _recommended_provider,
 )
 
@@ -103,7 +103,7 @@ class TestRecommendedProvider:
 
 
 # ---------------------------------------------------------------------------
-# _provider_hint
+# provider_hint
 # ---------------------------------------------------------------------------
 
 class TestProviderHint:
@@ -112,15 +112,15 @@ class TestProviderHint:
         for p in CLOUD_PROVIDERS:
             if p == CUSTOM_OPENAI_PROFILE:
                 continue
-            assert _provider_hint(p) == "cloud", f"{p} should be 'cloud'"
+            assert provider_hint(p) == "cloud", f"{p} should be 'cloud'"
 
     def test_custom_provider(self):
         from jarn.config.defaults import CUSTOM_OPENAI_PROFILE
-        assert _provider_hint(CUSTOM_OPENAI_PROFILE) == "custom"
+        assert provider_hint(CUSTOM_OPENAI_PROFILE) == "custom"
 
     def test_local_providers(self):
         for p in ("ollama", "lmstudio"):
-            assert _provider_hint(p) == "local", f"{p} should be 'local'"
+            assert provider_hint(p) == "local", f"{p} should be 'local'"
 
 
 # ---------------------------------------------------------------------------
