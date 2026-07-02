@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+import sys
+
+import pytest
+
+if sys.platform == "win32":
+    pytest.skip("linux_driver keyfix requires termios (Unix only)", allow_module_level=True)
+
 import textual.drivers.linux_driver as ld
 
 from jarn.tui.keyfix import apply_kitty_keyfix
