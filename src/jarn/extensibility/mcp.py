@@ -11,6 +11,7 @@ and is skipped rather than taking down the tools of every other server.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -107,9 +108,22 @@ async def load_mcp_tools(servers: list[MCPServer]) -> MCPLoadResult:
     if client is None:
         return result
 
+    timeout_by_name = {s.name: s.timeout_secs for s in servers if s.enabled}
+
     for name in client.connections:
+        timeout_secs = timeout_by_name.get(name, 30)
         try:
-            tools = await client.get_tools(server_name=name)
+            tools = await asyncio.wait_for(
+                client.get_tools(server_name=name),
+                timeout=timeout_secs,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Timed out loading MCP tools from %s after %ss", name, timeout_secs
+            )
+            result.health[name] = "error"
+            result.errors[name] = f"timed out after {timeout_secs}s"
+            continue
         except Exception as exc:  # noqa: BLE001 - one bad server shouldn't kill startup
             logger.warning("Failed to load MCP tools from %s: %s", name, exc)
             result.health[name] = "error"

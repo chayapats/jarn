@@ -1,12 +1,13 @@
-"""Observability wiring — logging and LangSmith tracing."""
+"""Observability wiring — logging and tracing."""
 
 from __future__ import annotations
 
 import logging
 import os
 
+from jarn.config.schema import ObservabilityConfig, TracingConfig
 from jarn.observability.logging import setup_logging
-from jarn.observability.tracing import configure_langsmith
+from jarn.observability.tracing import configure_langsmith, configure_otel, configure_tracing
 
 
 def test_setup_logging_writes_to_file(isolated_home):
@@ -40,3 +41,28 @@ def test_configure_langsmith_enabled_with_key(monkeypatch):
     assert configure_langsmith(True, project="myproj") is True
     assert os.environ["LANGSMITH_TRACING"] == "true"
     assert os.environ["LANGSMITH_PROJECT"] == "myproj"
+
+
+def test_configure_tracing_langsmith_backend(monkeypatch):
+    monkeypatch.setenv("LANGSMITH_API_KEY", "ls-test")
+    obs = ObservabilityConfig(langsmith=True, tracing=TracingConfig(backend="langsmith"))
+    assert configure_tracing(obs) is True
+
+
+def test_otel_backend():
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    processor = SimpleSpanProcessor(exporter)
+    assert configure_otel(span_processor=processor) is True
+
+    from opentelemetry import trace
+
+    tracer = trace.get_tracer("jarn.test")
+    with tracer.start_as_current_span("test-span"):
+        pass
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].name == "test-span"

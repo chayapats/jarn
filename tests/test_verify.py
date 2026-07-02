@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from jarn.agent.verify import ProjectCapabilities, detect_capabilities
 
 
@@ -69,3 +71,62 @@ def test_prompt_block_lists_detected_commands(tmp_path):
     block = detect_capabilities(tmp_path).as_prompt_block()
     assert "go test ./..." in block
     assert "Verification commands" in block
+
+
+@pytest.mark.asyncio
+async def test_gate_suggest(tmp_path):
+    from jarn.agent.events import EventKind
+    from jarn.agent.session import SessionDriver
+    from jarn.agent.verify import verify_after_edit
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    (tmp_path / "go.mod").write_text("module example.com/x\n", encoding="utf-8")
+    driver = SessionDriver(
+        agent=None,
+        engine=PermissionEngine(),
+        tracker=CostTracker(),
+        thread_id="t",
+        verify_gate="suggest",
+        project_root=tmp_path,
+    )
+    ev = await verify_after_edit(driver, "write_file")
+    assert ev is not None
+    assert ev.kind is EventKind.NOTICE
+    assert "go test ./..." in ev.text
+
+
+@pytest.mark.asyncio
+async def test_gate_auto_runs_detected_command(tmp_path):
+    from jarn.agent.events import EventKind
+    from jarn.agent.session import SessionDriver
+    from jarn.agent.verify import verify_after_edit
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    (tmp_path / "go.mod").write_text("module example.com/x\n", encoding="utf-8")
+    ran: list[str] = []
+
+    class _Resp:
+        exit_code = 0
+        output = "ok"
+
+    def _executor(cmd: str) -> _Resp:
+        ran.append(cmd)
+        return _Resp()
+
+    driver = SessionDriver(
+        agent=None,
+        engine=PermissionEngine(mode=PermissionMode.YOLO),
+        tracker=CostTracker(),
+        thread_id="t",
+        verify_gate="auto",
+        project_root=tmp_path,
+        verify_executor=_executor,
+    )
+    ev = await verify_after_edit(driver, "edit_file")
+    assert ran == ["go test ./..."]
+    assert ev is not None
+    assert ev.kind is EventKind.NOTICE
+    assert "passed" in ev.text

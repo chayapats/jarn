@@ -164,6 +164,20 @@ def _make_fail_closed_approver(_mode: PermissionMode) -> Approver:
     return _approver
 
 
+def _resolve_resume_session(controller: Controller, resume_session: str) -> str:
+    """Map ``last`` or an explicit thread id to a concrete thread id."""
+    if resume_session == "last":
+        sessions = controller.sessions.list(limit=1)
+        if not sessions:
+            raise HeadlessFailure(
+                "error",
+                "no sessions to resume",
+                exit_code=EXIT_ERROR,
+            )
+        return sessions[0].thread_id
+    return resume_session
+
+
 async def _run_headless(
     prompt: str,
     config: Config,
@@ -172,6 +186,7 @@ async def _run_headless(
     project_trusted: bool = True,
     max_turns: int = 1,
     system_prompt_override: str | None = None,
+    resume_session: str | None = None,
 ) -> HeadlessResult:
     """Async core: build the runtime, run up to ``max_turns``, return results.
 
@@ -201,17 +216,21 @@ async def _run_headless(
 
         await controller.ensure_runtime()
 
+        if resume_session:
+            thread_id = _resolve_resume_session(controller, resume_session)
+            controller.resume_thread(thread_id)
+
         mode = config.permission_mode
         approver: Approver = _make_fail_closed_approver(mode)
         driver = controller.make_driver(approver)
 
-        enriched = controller.enrich_turn_input(prompt)
+        enriched = controller.enrich_turn_input(prompt) if prompt else ""
 
         text_parts: list[str] = []
         tool_calls = 0
         turns_completed = 0
-        resume = False
-        turn_input = enriched
+        resume = bool(resume_session and not prompt)
+        turn_input = "" if resume else enriched
 
         while turns_completed < max_turns:
             turns_completed += 1
@@ -274,6 +293,7 @@ def run_headless(
     project_trusted: bool = True,
     as_json: bool = False,
     max_turns: int = 1,
+    resume_session: str | None = None,
 ) -> int:
     """Synchronous entry point called by the CLI.
 
@@ -297,6 +317,7 @@ def run_headless(
                 project_root,
                 project_trusted=project_trusted,
                 max_turns=max_turns,
+                resume_session=resume_session,
             )
         )
     except Exception as exc:  # noqa: BLE001

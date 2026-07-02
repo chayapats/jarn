@@ -448,3 +448,30 @@ def test_parallel_tool_cost_split():
     assert tracker.per_tool["read_file"].input_tokens == 500
     cost_sum = sum(u.cost_usd for u in tracker.per_tool.values())
     assert abs(cost_sum - tracker.total.cost_usd) < 1e-9
+
+
+def test_pricing_network_opt_out(monkeypatch, tmp_path):
+    """Network pricing fetch is skipped when config/env disables it."""
+    from jarn.cost import pricing
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path))
+    fetched: list[int] = []
+    monkeypatch.setattr(
+        pricing,
+        "_fetch_openrouter",
+        lambda: fetched.append(1) or {"x/y": {"input": 1.0, "output": 2.0, "context": 0}},
+    )
+    monkeypatch.setattr(pricing, "_disk_cache_fresh", lambda: False)
+
+    pricing.warm_catalog(force=True, network=False)
+    assert fetched == []
+
+    pricing.warm_catalog(force=True, network=True)
+    assert fetched == [1]
+
+    fetched.clear()
+    monkeypatch.setenv("JARN_NO_NETWORK_PRICING", "1")
+    pricing.warm_catalog(force=True, network=True)
+    assert fetched == []
+
+    assert pricing.lookup("claude-opus-4-8") is not None

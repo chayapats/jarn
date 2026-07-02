@@ -34,7 +34,33 @@ def test_command_completion_empty_prefix_lists_all(tmp_path):
 
 
 def test_no_completion_after_command_space(tmp_path):
-    assert _provider(tmp_path).complete("/mode ") == []
+    cands = _provider(tmp_path).complete("/mode ")
+    labels = [c.label for c in cands]
+    assert "plan" in labels and "ask" in labels and "auto-edit" in labels and "yolo" in labels
+    assert all(c.kind == "argument" for c in cands)
+
+
+def test_model_arg(tmp_path):
+    provider = CompletionProvider(
+        command_catalog={"model": "Show or switch model"},
+        project_root=tmp_path,
+        model_refs=["anthropic/claude-3-5-sonnet", "openai/gpt-4o"],
+    )
+    cands = provider.complete("/model anth")
+    labels = [c.label for c in cands]
+    assert labels == ["anthropic/claude-3-5-sonnet"]
+    assert cands[0].replacement == "/model anthropic/claude-3-5-sonnet"
+
+
+def test_preset_arg(tmp_path):
+    provider = CompletionProvider(
+        command_catalog={"preset": "Apply a policy preset"},
+        project_root=tmp_path,
+        preset_names=["trusted-repo", "review-only", "ci"],
+    )
+    cands = provider.complete("/preset rev")
+    assert [c.label for c in cands] == ["review-only"]
+    assert cands[0].replacement == "/preset review-only"
 
 
 def test_file_completion(tmp_path):

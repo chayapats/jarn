@@ -21,16 +21,32 @@ LLM tokens (DeepSeek-V4 via OpenRouter) are billed at OpenRouter, not Modal. The
 key comes from the Modal Secret ``jarn-openrouter``.
 
 Usage:
-    modal run scripts/swebench_modal.py::check_main   # verify the secret
-    modal run scripts/swebench_modal.py::ab_main      # the A/B
+    uv build
+    modal run contrib/swebench_modal.py::check_main   # verify the secret
+    modal run contrib/swebench_modal.py::ab_main      # the A/B
 """
 
 from __future__ import annotations
 
 import json
+import tomllib
 import urllib.request
+from pathlib import Path
 
 import modal
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _package_version() -> str:
+    data = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return str(data["project"]["version"])
+
+
+_JARN_VERSION = _package_version()
+_WHEEL_NAME = f"jarn-{_JARN_VERSION}-py3-none-any.whl"
+_WHEEL = _REPO_ROOT / "dist" / _WHEEL_NAME
+_CONTAINER_WHEEL = f"/root/{_WHEEL_NAME}"
 
 # Candidate instances — light, pytest-based repos likely within a strong model's
 # reach (so the prompt's discipline can change the outcome rather than hit a
@@ -45,7 +61,6 @@ INSTANCES = [
 
 MODEL_REF = "openrouter/deepseek/deepseek-v4-pro"
 JARN_PYTHON = "/usr/local/bin/python3"
-_WHEEL = "dist/jarn-0.3.0-py3-none-any.whl"
 
 HARNESS_ARMS: list[tuple[str, str | None]] = [
     ("jarn-full", None),
@@ -71,9 +86,9 @@ def _agent_image(instance_id: str) -> modal.Image:
     return (
         modal.Image.from_registry(_swebench_image(instance_id), add_python="3.12")
         .pip_install("swebench==4.1.0")
-        .add_local_file(_WHEEL, "/root/jarn-0.3.0-py3-none-any.whl", copy=True)
+        .add_local_file(str(_WHEEL), _CONTAINER_WHEEL, copy=True)
         .run_commands(
-            "/usr/local/bin/python3 -m pip install /root/jarn-0.3.0-py3-none-any.whl"
+            f"/usr/local/bin/python3 -m pip install {_CONTAINER_WHEEL}"
         )
     )
 

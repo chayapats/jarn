@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -52,7 +52,6 @@ class MemoryStore:
     """Read/write markdown memories in one directory tier."""
 
     root: Path
-    _: None = field(default=None, repr=False)
 
     @classmethod
     def global_store(cls) -> MemoryStore:
