@@ -360,10 +360,10 @@ in the agent process and would otherwise bypass the OS sandbox's network denial.
 ### Deprecated aliases
 
 `/profile`, `--profile` (CLI), and `policy.profile` (config key) are **deprecated
-aliases** for the preset concept. They still work but emit a deprecation notice at
-startup. The canonical names are `--preset` / `/preset`; `policy.profile` remains the
-(deprecated) config key — there is no `policy.preset`, since a preset is a launch-time
-shortcut, not a persistent axis. `--permission-mode` is kept as a hidden alias for
+aliases** for the preset concept (removal planned in **v0.6.0**). They still work
+but emit a deprecation notice at startup. The canonical names are `--preset` /
+`/preset`; `policy.profile` remains the (deprecated) config key — there is no
+`policy.preset`, since a preset is a launch-time shortcut, not a persistent axis. `--permission-mode` is kept as a hidden alias for
 `--mode`.
 
 ---

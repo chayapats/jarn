@@ -242,11 +242,45 @@ class MCPServer:
     env: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
     health: str | None = None    # last-known health: "ok" | "error" | None (unknown)
+    #: Per-server timeout for ``get_tools`` (seconds). Default 30.
+    timeout_secs: int = 30
+
+
+_VALID_VERIFY_GATES: frozenset[str] = frozenset({"off", "suggest", "auto"})
+
+
+@dataclass(slots=True)
+class VerifyConfig:
+    """Post-edit verification gate.
+
+    ``off``     — no post-edit verify prompts or runs.
+    ``suggest`` — (default) emit a NOTICE with the detected test command.
+    ``auto``    — run the detected test command via the execution backend when
+                  permissions allow (explicit opt-in).
+    """
+
+    gate: str = "suggest"
+
+
+@dataclass(slots=True)
+class PricingConfig:
+    """OpenRouter catalog fetch controls."""
+
+    #: When ``False``, :func:`jarn.cost.pricing.warm_catalog` skips network fetch
+    #: (bundled anchors + user overrides still apply). Also disabled by env
+    #: ``JARN_NO_NETWORK_PRICING=1``.
+    network: bool = True
+
+
+@dataclass(slots=True)
+class TracingConfig:
+    backend: str = "langsmith"    # langsmith | otel
 
 
 @dataclass(slots=True)
 class ObservabilityConfig:
-    langsmith: bool = False       # opt-in tracing
+    langsmith: bool = False       # opt-in LangSmith tracing (when backend is langsmith)
+    tracing: TracingConfig = field(default_factory=TracingConfig)
     telemetry: bool = False       # opt-in usage analytics, default OFF
     log_level: str = "info"
     transcript: bool = True       # append-only JSONL session transcript under .jarn/sessions/
@@ -374,6 +408,8 @@ class Config:
     git: GitConfig = field(default_factory=GitConfig)
     wiki: WikiConfig = field(default_factory=WikiConfig)
     plan: PlanConfig = field(default_factory=PlanConfig)
+    verify: VerifyConfig = field(default_factory=VerifyConfig)
+    pricing: PricingConfig = field(default_factory=PricingConfig)
 
     def resolved_main_model(self) -> str | None:
         """The model used for the top-level agent loop."""

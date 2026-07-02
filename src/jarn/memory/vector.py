@@ -68,7 +68,13 @@ class LocalEmbedder:
 
 @dataclass(slots=True)
 class ProviderEmbedder:
-    """Wraps a LangChain ``Embeddings`` instance."""
+    """Wraps a LangChain ``Embeddings`` instance.
+
+    .. note::
+
+       **Experimental / unwired.** The runtime always uses :class:`LocalEmbedder`
+       today; this class exists for future config-driven provider embeddings.
+    """
 
     embeddings: object
     name: str = "provider"

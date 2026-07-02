@@ -27,10 +27,13 @@ from jarn.config.schema import (
     PermissionRules,
     PlanConfig,
     PolicyConfig,
+    PricingConfig,
     ProviderConfig,
     ProviderType,
     RoutingConfig,
+    TracingConfig,
     UIConfig,
+    VerifyConfig,
     WikiConfig,
 )
 
@@ -456,6 +459,7 @@ class MCPServerModel(_StrictModel):
     env: dict[str, str] = Field(default_factory=dict)
     enabled: bool = True
     health: str | None = None
+    timeout_secs: int = 30
 
     @field_validator("transport", mode="before")
     @classmethod
@@ -491,6 +495,16 @@ class MCPServerModel(_StrictModel):
     def _enabled(cls, value: Any) -> bool:
         return _normalize_bool(value, "mcp_server.enabled")
 
+    @field_validator("timeout_secs", mode="before")
+    @classmethod
+    def _timeout_secs(cls, value: Any) -> int:
+        raw = _coerce_int(value, "mcp_server.timeout_secs")
+        if raw <= 0:
+            raise ConfigValidationError(
+                f"mcp_server.timeout_secs must be > 0 (got {raw})."
+            )
+        return raw
+
     @field_validator("headers", mode="before")
     @classmethod
     def _headers(cls, value: Any) -> dict[str, str]:
@@ -516,8 +530,25 @@ class MCPServerModel(_StrictModel):
         return self
 
 
+class TracingConfigModel(_StrictModel):
+    backend: str = "langsmith"
+
+    @field_validator("backend", mode="before")
+    @classmethod
+    def _backend(cls, value: Any) -> str:
+        raw = str(value)
+        valid = {"langsmith", "otel"}
+        if raw not in valid:
+            raise ConfigValidationError(
+                f"observability.tracing.backend must be one of {sorted(valid)} "
+                f"(got {raw!r})."
+            )
+        return raw
+
+
 class ObservabilityConfigModel(_StrictModel):
     langsmith: bool = False
+    tracing: TracingConfigModel = Field(default_factory=TracingConfigModel)
     telemetry: bool = False
     log_level: str = "info"
     transcript: bool = True
@@ -627,6 +658,31 @@ class PlanConfigModel(_StrictModel):
         return raw
 
 
+class VerifyConfigModel(_StrictModel):
+    gate: str = "suggest"
+
+    @field_validator("gate", mode="before")
+    @classmethod
+    def _gate(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_VERIFY_GATES
+
+        raw = str(value)
+        if raw not in _VALID_VERIFY_GATES:
+            raise ConfigValidationError(
+                f"verify.gate must be one of {sorted(_VALID_VERIFY_GATES)} (got {raw!r})."
+            )
+        return raw
+
+
+class PricingConfigModel(_StrictModel):
+    network: bool = True
+
+    @field_validator("network", mode="before")
+    @classmethod
+    def _network(cls, value: Any) -> bool:
+        return _normalize_bool(value, "pricing.network")
+
+
 class ConfigModel(_StrictModel):
     config_version: int = CURRENT_CONFIG_VERSION
     default_profile: str = "openrouter"
@@ -651,6 +707,8 @@ class ConfigModel(_StrictModel):
     git: GitConfigModel = Field(default_factory=GitConfigModel)
     wiki: WikiConfigModel = Field(default_factory=WikiConfigModel)
     plan: PlanConfigModel = Field(default_factory=PlanConfigModel)
+    verify: VerifyConfigModel = Field(default_factory=VerifyConfigModel)
+    pricing: PricingConfigModel = Field(default_factory=PricingConfigModel)
 
     @field_validator("permission_mode", mode="before")
     @classmethod
@@ -820,6 +878,7 @@ def config_to_dataclass(model: ConfigModel) -> Config:
                 env=dict(m.env),
                 enabled=m.enabled,
                 health=m.health,
+                timeout_secs=m.timeout_secs,
             )
             for m in model.mcp_servers
         ],
@@ -835,6 +894,7 @@ def config_to_dataclass(model: ConfigModel) -> Config:
         ],
         observability=ObservabilityConfig(
             langsmith=model.observability.langsmith,
+            tracing=TracingConfig(backend=model.observability.tracing.backend),
             telemetry=model.observability.telemetry,
             log_level=model.observability.log_level,
             transcript=model.observability.transcript,
@@ -855,4 +915,6 @@ def config_to_dataclass(model: ConfigModel) -> Config:
         ),
         wiki=WikiConfig(enabled=model.wiki.enabled),
         plan=PlanConfig(exit_mode=model.plan.exit_mode),
+        verify=VerifyConfig(gate=model.verify.gate),
+        pricing=PricingConfig(network=model.pricing.network),
     )

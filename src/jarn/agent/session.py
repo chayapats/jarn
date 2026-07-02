@@ -36,6 +36,7 @@ from jarn.agent.interrupts import (
     run_post_hooks,
     run_pre_hooks,
 )
+from jarn.agent.prompts import date_context
 from jarn.agent.stream_handlers import (
     _first_tool_name,
     _is_auth_error,
@@ -104,9 +105,17 @@ class SessionDriver:
     checkpoint: Any = None
     #: Most recent write/edit file path, so post_edit hooks can scope by path.
     _last_edit_target: str = ""
+    #: Last date block injected into the agent payload (per-turn re-injection).
+    _last_date: str | None = field(default=None, repr=False)
     #: Accumulates assistant TEXT chunks for the current turn so a single
     #: ``assistant`` event is written per turn rather than one per streaming token.
     _turn_text: str = ""
+    #: Post-edit verify gate: ``off`` | ``suggest`` | ``auto`` (from config).
+    verify_gate: str = "off"
+    #: Project root for capability detection (``None`` disables verify).
+    project_root: Any = None
+    #: Optional shell executor for ``verify.gate: auto`` (mock-friendly).
+    verify_executor: Any = None
     #: Last cumulative usage seen per (thread, model) — streaming providers resend totals.
     _last_usage_totals: dict[tuple[str, str], tuple[int, int, int, int]] = field(
         default_factory=dict, repr=False
@@ -130,10 +139,17 @@ class SessionDriver:
 
         self.tracker.check_or_raise()
 
-        payload: Any = (
-            {"messages": []} if resume
-            else {"messages": [{"role": "user", "content": user_input}]}
-        )
+        messages: list[dict[str, str]] = []
+        date_block = date_context()
+        if self._last_date != date_block:
+            messages.append({"role": "system", "content": date_block})
+            self._last_date = date_block
+
+        if resume:
+            payload: Any = {"messages": messages}
+        else:
+            messages.append({"role": "user", "content": user_input})
+            payload = {"messages": messages}
 
         # Emit the user prompt to the transcript before the model is called so a
         # crash mid-turn still records what the user asked.
@@ -183,6 +199,12 @@ class SessionDriver:
                             if ev.kind is EventKind.TOOL_END and self.hooks is not None:
                                 async for note in self._run_post_hooks(ev.text):
                                     yield note
+                            if ev.kind is EventKind.TOOL_END:
+                                from jarn.agent.verify import verify_after_edit
+
+                                notice = await verify_after_edit(self, ev.text)
+                                if notice is not None:
+                                    yield notice
                         # Mid-turn budget enforcement: usage was just recorded for
                         # this message, so re-check the hard-stop the same way it is
                         # checked before the turn and abort cleanly if exceeded.

@@ -158,7 +158,7 @@ def test_no_ambient_key_allows_nonlocal_url(base_config, tmp_path, monkeypatch):
         AsyncSubagentSpec(name="r", description="d", graph_id="g",
                           url="https://evil.example.com/agent"),
     )
-    assert rt.warnings == ()
+    assert rt.agent is not None
 
 
 def test_local_url_allows_build_even_with_ambient_key(

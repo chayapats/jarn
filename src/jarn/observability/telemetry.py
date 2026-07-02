@@ -65,6 +65,29 @@ class Telemetry:
                 fh.write(json.dumps(row) + "\n")
         self._buffer.clear()
 
+    def status_summary(self) -> dict[str, Any]:
+        """User-facing telemetry audit snapshot for ``/telemetry status``."""
+        path = self.sink_path
+        size_bytes = 0
+        event_count = 0
+        if path is not None and path.is_file():
+            try:
+                size_bytes = path.stat().st_size
+                event_count = sum(
+                    1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+                )
+            except OSError:
+                pass
+        install_path = paths.global_home() / ".install_id"
+        install_present = bool(self.install_id) or install_path.is_file()
+        return {
+            "enabled": self.enabled,
+            "path": str(path) if path is not None else "",
+            "size_bytes": size_bytes,
+            "event_count": event_count,
+            "install_id_present": install_present,
+        }
+
 
 def _install_id() -> str:
     """Stable, anonymous per-install id stored locally."""

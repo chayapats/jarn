@@ -16,7 +16,7 @@ import yaml
 from jarn.config.schema import Config
 from jarn.extensibility.commands import BUILTIN_COMMANDS, command_dirs
 from jarn.extensibility.frontmatter import discover, parse
-from jarn.extensibility.skills import load_skills, skill_dirs
+from jarn.extensibility.skills import _skill_dirs_ordered, load_skills
 from jarn.extensibility.subagents import agent_dirs
 
 
@@ -122,7 +122,7 @@ def _scan_skills(
         return "project"
 
     rows: list[MarkdownExtensionRow] = []
-    for path in discover(skill_dirs(project_root, read_claude_dir=read_claude_dir)):
+    for path in discover(_skill_dirs_ordered(project_root, read_claude_dir=read_claude_dir)):
         try:
             doc = parse(path)
         except OSError as exc:

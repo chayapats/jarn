@@ -176,8 +176,10 @@ preview appear inline.
 - **Shift+Tab** cycles the permission mode (plan → ask → auto-edit → yolo); the new
   mode flashes on the input border and stays in the status bar.
 - **Ctrl+O** (or **`/expand`**) opens the last turn's full tool output in the pager.
-- **Ctrl+V** (macOS) pastes an image/screenshot from the clipboard — it's saved under
+- **Ctrl+V** pastes an image/screenshot from the clipboard — it's saved under
   `.jarn/pastes/` and inserted as an `@path` the agent reads on send.
+  Supported on **macOS** (PNG/TIFF/JPEG), **Linux** (Wayland `wl-paste` or X11
+  `xclip`), and **Windows** (PowerShell); images over 10 MB are rejected.
 - **Esc** cancels the running turn. **Ctrl+C** cancels a turn / clears the input,
   and **twice in a row** exits (Claude Code-style). **Ctrl+Q** also quits.
 - **Copy text:** the terminal owns selection — just **drag to select and ⌘C**
@@ -313,7 +315,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1326 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1343 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

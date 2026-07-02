@@ -37,3 +37,22 @@ def test_from_config_default_off(monkeypatch, tmp_path):
     monkeypatch.setenv("JARN_HOME", str(tmp_path))
     assert Telemetry.from_config(False).enabled is False
     assert Telemetry.from_config(True).enabled is True
+
+
+def test_status_command(tmp_path, monkeypatch, base_config):
+    from jarn.controller.commands.diagnostics import cmd_telemetry
+    from jarn.controller.core import Controller
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    sink = tmp_path / "telemetry.jsonl"
+    ctrl = Controller(base_config, tmp_path / "proj")
+    ctrl.telemetry = Telemetry(enabled=True, sink_path=sink, install_id="abc123")
+    ctrl.telemetry.record("turn", when=1.0, tokens=10, cost_cents=1.5)
+    ctrl.telemetry.flush()
+
+    out = cmd_telemetry(ctrl, "status").text.lower()
+    assert "enabled" in out
+    assert "telemetry.jsonl" in out
+    assert "events on disk: 1" in out
+    assert "install id: present" in out
+    ctrl.close()

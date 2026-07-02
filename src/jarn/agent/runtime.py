@@ -119,8 +119,6 @@ class JarnRuntime:
     #: reports (response_metadata) against this set; see :class:`SessionDriver`.
     known_model_refs: tuple[str, ...] = ()
     backend: Any = None              # execution backend (for cancel/terminate)
-    #: Reserved for non-fatal build-time warnings surfaced to the TUI.
-    warnings: tuple[str, ...] = ()
 
 
 def _async_subagent_specs(config: Config) -> list[Any]:
@@ -282,5 +280,4 @@ def build_runtime(
         main_model_ref=main_ref,
         known_model_refs=tuple(sorted(known_refs)),
         backend=backend,
-        warnings=(),
     )

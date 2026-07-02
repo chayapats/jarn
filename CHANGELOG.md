@@ -11,6 +11,9 @@ All notable changes to J.A.R.N. are documented here. Format follows
   `tool_calls` and structured `{error: {kind, message}}`; exit codes `0`/`1`/`2`/`124`.
 - **Context token budgets** — `context.memory_tokens`, `wiki_index_tokens`, and
   `project_context_tokens` cap injected prompt size with truncation notices.
+- **OpenTelemetry tracing** — `observability.tracing.backend: langsmith | otel`
+  (default `langsmith`); optional `jarn[otel]` extra exports spans via OTLP
+  (`OTEL_EXPORTER_OTLP_ENDPOINT`).
 - **CI hardening** — release preflight gates, coverage floor (74%), `scripts/` lint,
   Windows matrix, `pip-audit` + gitleaks security job, Dependabot, nightly eval workflow.
 - **Doc-sync test** — README/CONTRIBUTING/RELEASE test counts enforced against pytest collection.
@@ -22,6 +25,16 @@ All notable changes to J.A.R.N. are documented here. Format follows
 - Cost attribution splits evenly across parallel tool calls in a turn; streaming usage
   deduplicates cumulative provider chunks.
 - Doctor skill shadowing matches runtime (`.jarn` wins over `.claude`).
+- **`policy.profile` / `--profile` / `/profile`** deprecated with removal planned in
+  **v0.6.0** — use `--preset` / `/preset` instead.
+- SWE-bench Modal A/B script moved to `contrib/` (research tooling, not shipped).
+
+### Removed
+
+- Unused `pytest-textual-snapshot` dev dependency.
+- Dead code: `MemoryStore._` placeholder field, unused `JarnRuntime.warnings`,
+  duplicate `skill_dirs()` helper, unused splash `model`/`mode` params,
+  duplicate `DANGEROUS_COMMAND_HINTS` in defaults.
 
 ### Fixed
 

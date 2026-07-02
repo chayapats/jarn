@@ -2,16 +2,21 @@
 
 Detects how a project builds/tests/lints so the agent (via the system prompt and
 hooks) can verify its own changes. Detection is best-effort and based on common
-project markers; results are advisory hints, not commands run automatically
-(running them is gated by the permission engine like any other shell command).
+project markers; results are advisory hints unless ``verify.gate`` is ``auto``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from jarn.agent.session import SessionDriver
 
 _MAKE_TARGET_RE = re.compile(r"^([A-Za-z0-9_.-]+)\s*:", re.MULTILINE)
 
@@ -142,3 +147,64 @@ def _detect_rust_go(root: Path, caps: ProjectCapabilities) -> None:
     if (root / "go.mod").is_file():
         caps.test.append("go test ./...")
         caps.build.append("go build ./...")
+
+
+def primary_test_command(project_root: Path | None) -> str | None:
+    """Return the first detected test command for *project_root*, if any."""
+    if not project_root:
+        return None
+    caps = detect_capabilities(project_root)
+    return caps.test[0] if caps.test else None
+
+
+async def verify_after_edit(driver: SessionDriver, tool_name: str) -> Any | None:
+    """Apply the configured verify gate after a write/edit tool completes.
+
+    Returns a :class:`~jarn.agent.events.Event` NOTICE to yield, or ``None``.
+    """
+    from jarn.agent.events import Event, EventKind
+    from jarn.permissions import Action, ActionKind, Decision
+
+    gate = getattr(driver, "verify_gate", "off")
+    if gate == "off" or tool_name not in ("write_file", "edit_file"):
+        return None
+
+    cmd = primary_test_command(getattr(driver, "project_root", None))
+    if not cmd:
+        return None
+
+    if gate == "suggest":
+        return Event(
+            EventKind.NOTICE,
+            text=f"verify: detected test command: `{cmd}`",
+        )
+
+    # auto — run when permissions allow.
+    action = Action(ActionKind.SHELL, target=cmd, tool="execute")
+    result = driver.engine.evaluate(action)
+    if result.decision is not Decision.ALLOW:
+        return Event(
+            EventKind.NOTICE,
+            text=(
+                f"verify: skipped `{cmd}` "
+                f"({result.decision.value}: {result.reason})"
+            ),
+        )
+
+    executor: Callable[[str], Any] | None = getattr(driver, "verify_executor", None)
+    if executor is None:
+        return Event(
+            EventKind.NOTICE,
+            text=f"verify: no execution backend for `{cmd}`",
+        )
+
+    resp = await asyncio.to_thread(executor, cmd)
+    exit_code = int(getattr(resp, "exit_code", 1))
+    output = (getattr(resp, "output", "") or "").strip()
+    status = "passed" if exit_code == 0 else f"failed (exit {exit_code})"
+    text = f"verify: `{cmd}` {status}"
+    if output:
+        last = output.splitlines()[-1]
+        if last:
+            text += f" — {last}"
+    return Event(EventKind.NOTICE, text=text)
