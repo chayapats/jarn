@@ -23,6 +23,14 @@ def test_local_embedder_deterministic():
     assert len(e.embed("hello")) == 256
 
 
+def test_provider_embedder_marked_experimental_unwired():
+    from jarn.memory.vector import ProviderEmbedder
+
+    doc = (ProviderEmbedder.__doc__ or "").lower()
+    assert "experimental" in doc
+    assert "unwired" in doc
+
+
 def test_local_embedder_normalized():
     import math
     v = LocalEmbedder().embed("some text here")
