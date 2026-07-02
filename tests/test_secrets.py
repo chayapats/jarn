@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from jarn.config.secrets import (
@@ -43,6 +45,7 @@ def test_store_secret_uses_keychain_when_available(monkeypatch, tmp_path):
     assert calls == [("jarn", "openrouter", "sk-test")]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix file permission bits")
 def test_store_secret_falls_back_to_file_on_keychain_timeout(monkeypatch, tmp_path):
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
 
@@ -200,6 +203,7 @@ def test_redact_keychain_error_scrubs_exc(monkeypatch):
     assert "sk-…" in str(ei.value)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix file permission bits")
 def test_secret_tree_permissions(tmp_path, monkeypatch):
     """After file fallback, ~/.jarn/secrets/ and ancestors are 0700; file is 0600."""
     home = tmp_path / "home"
