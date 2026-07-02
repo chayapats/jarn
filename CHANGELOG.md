@@ -32,7 +32,10 @@ All notable changes to J.A.R.N. are documented here. Format follows
 - Model factory cache invalidated on `/key` and config reload; `SecretResolutionError` propagates.
 - `verify.py` fewer false positives (pytest/ruff only when configured; better Node/Makefile detection).
 - `/review` includes untracked new files.
+- Checkpoint lock file lives under ``.git/`` so duplicate snapshots deduplicate correctly.
+- CI: skip ``mypy`` on Windows runners; upgrade deps to clear ``pip-audit`` findings.
 
+## [0.4.4] - 2026-06-18
 
 ### Added
 

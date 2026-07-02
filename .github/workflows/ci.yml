@@ -23,7 +23,9 @@ jobs:
         run: uv sync --extra dev
       - name: Lint
         run: uv run ruff check src tests scripts
+      # POSIX-only APIs (fcntl, killpg, …) are not modeled on win32; type-check on Unix.
       - name: Type-check
+        if: runner.os != 'Windows'
         run: uv run mypy src/
       - name: Test
         run: >-

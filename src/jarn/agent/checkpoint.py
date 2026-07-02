@@ -167,15 +167,23 @@ def _read_ref_message(sha: str, root: Path) -> str:
 
 _UNDO_PREFIX = "refs/jarn/checkpoints/stack/undo/"
 _REDO_PREFIX = "refs/jarn/checkpoints/stack/redo/"
-_LOCK_NAME = ".jarn-checkpoint.lock"
+_LOCK_BASENAME = "jarn-checkpoint.lock"
 # In-process guard paired with the file lock (same-thread reentrancy).
 _THREAD_LOCK = threading.Lock()
+
+
+def _lock_path(root: Path) -> Path:
+    """Return the lock file path — always under ``.git/`` so snapshots stay clean."""
+    git_dir = root / ".git"
+    if git_dir.is_dir():
+        return git_dir / _LOCK_BASENAME
+    return root / f".{_LOCK_BASENAME}"
 
 
 @contextlib.contextmanager
 def _checkpoint_lock(root: Path):
     """Serialize stack mutations across threads and cooperating processes."""
-    lock_path = root / _LOCK_NAME
+    lock_path = _lock_path(root)
     with _THREAD_LOCK:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
