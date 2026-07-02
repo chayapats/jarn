@@ -1,0 +1,595 @@
+"""The terminal front-end (:class:`InlineApp`) — layout, stream, and lifecycle."""
+# mypy: ignore-errors
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import io
+import logging
+import shutil
+import time
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from prompt_toolkit.application import Application
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.filters import Condition
+from prompt_toolkit.formatted_text import ANSI, HTML
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.layout import Layout
+from prompt_toolkit.layout.containers import (
+    ConditionalContainer,
+    Float,
+    FloatContainer,
+    HSplit,
+    Window,
+)
+from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.layout.menus import CompletionsMenu
+from prompt_toolkit.layout.processors import BeforeInput
+from prompt_toolkit.patch_stdout import patch_stdout
+from prompt_toolkit.styles import Style
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.markup import escape as _rich_escape
+
+from jarn.config.schema import Config
+from jarn.extensibility.commands import completion_catalog, parse_input
+from jarn.repl import turn as repl_turn
+from jarn.repl.commands import CommandMixin
+from jarn.repl.completer import _ShellEscapeLexer, _SlashFileCompleter
+from jarn.repl.keys import KeysMixin
+from jarn.repl.overlays import OverlayMixin
+from jarn.repl_renderer import REASONING_STREAM_PREFIX
+from jarn.repl_renderer import esc as _esc
+from jarn.tui import palette
+from jarn.tui.completion import CompletionProvider
+from jarn.tui.controller import Controller
+from jarn.tui.input_queue import InputQueue
+from jarn.tui.logo import SHORTCUT_HINT, splash, splash_compact
+from jarn.tui.toolbar import render_toolbar
+from jarn.version import __version__
+
+if TYPE_CHECKING:
+    from jarn.config.settings import ConfigPanel
+
+
+class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
+    def __init__(
+        self,
+        config: Config,
+        project_root: Path | None,
+        *,
+        resume: bool = False,
+        project_trusted: bool = True,
+    ) -> None:
+        self.config = config
+        self.controller = Controller(
+            config, project_root, project_trusted=project_trusted
+        )
+        # force_terminal so Rich still emits colour through prompt_toolkit's
+        # patch_stdout proxy (which isn't a real TTY). Cap the width to a readable
+        # measure (~100 cols) so prose/markdown wrap nicely on wide terminals
+        # instead of running long horizontal lines.
+        width = min(shutil.get_terminal_size((100, 24)).columns, 100)
+        self.console = Console(force_terminal=True, width=width)
+        from jarn.config.paths import global_home
+
+        hist = global_home() / "history"
+        hist.parent.mkdir(parents=True, exist_ok=True)
+        self.input = Buffer(
+            multiline=True,
+            completer=_SlashFileCompleter(self._completer),
+            complete_while_typing=True,
+            history=FileHistory(str(hist)),
+        )
+        self._kb = self._build_keys()
+        self._armed = False                       # ctrl+c double-press to exit
+        self._last_tool_outputs: list[tuple[str, str]] = []  # for Ctrl+O expand
+        self._turn_task: asyncio.Task | None = None
+        self._pastes: dict[str, str] = {}          # collapsed token -> full paste
+        self._paste_n = 0
+        self._input_queue = InputQueue()
+        self._resume_task: asyncio.Task | None = None
+        self._line_future: asyncio.Future | None = None       # app-native asks
+        self._yolo_confirm_inflight = False    # de-dupe rapid Shift+Tab→yolo presses
+        self._menu_future: asyncio.Future | None = None     # arrow-key pickers
+        self._menu_options: list[tuple[str, object]] = []
+        self._menu_index = 0
+        self._menu_header = ""
+        self._menu_cancel: object | None = None
+        # Single-keypress fast-path for the *approval* menu only: maps a typed
+        # char (e.g. "y"/"a" → allow, "n"/"d" → deny) to the option value it
+        # resolves to. None for every other picker, so letter keys type normally.
+        self._menu_fastkeys: dict[str, object] | None = None
+        self._stream_text = ""                    # in-progress region above input
+        # Cache for the live markdown->ANSI render: _stream_control runs on every
+        # prompt_toolkit redraw (refresh_interval + invalidate per delta), so cache
+        # (source, rendered_ansi) and only re-render when the buffer actually grew.
+        self._stream_md_cache: tuple[str, str] | None = None
+        # True while the live region holds a reasoning block (render it plain dim,
+        # not markdown — see _set_stream / _stream_control).
+        self._stream_is_reasoning = False
+        self._turn_start: float | None = None     # for the elapsed timer
+        # One stable thinking word per session (don't re-roll every turn — the
+        # churning label reads as noise). Shared with the renderer spinner.
+        self._thinking_word = palette.session_thinking_word()
+        self._turn_stream_chars = 0   # streamed output chars this turn (live tok estimate)
+        self._turn_base_output = 0    # tracker output tokens at turn start (real-usage delta)
+        self._turn_base_input = 0     # tracker input tokens at turn start (prompt-size delta)
+        self._first_token_at: float | None = None   # first streamed delta (for tok/s)
+        self._flash_html: HTML | None = None       # transient region message
+        self._flash_until = 0.0
+        self._expanded = False                     # pager overlay open?
+        self._last_todos_sig: str | None = None    # de-dupe the todo checklist
+        self._pager_buffer = Buffer(read_only=True)
+        self._pager_window: Window | None = None
+        #: Resolved when the pager closes — lets an approval prompt block on the
+        #: user finishing a "view full diff" before it re-shows the menu.
+        self._pager_closed: asyncio.Future[None] | None = None
+        self._config_open = False                  # interactive /config panel open?
+        self._config_panel: ConfigPanel | None = None
+        self._config_window: Window | None = None
+        self._resume_on_start = resume               # show the /resume picker on launch
+        self.app: Application | None = None
+
+    async def run(self) -> None:
+        c = self.console
+        _model = self.config.resolved_main_model()
+        _mode = self.config.permission_mode.value
+        _splash_cfg = self.config.ui.splash
+        from jarn.config.paths import global_home
+        _first_run_marker = global_home() / "state" / "first_run_done"
+        _is_first_run = not _first_run_marker.exists()
+        if _is_first_run:
+            # Recording the marker is best-effort: a read-only home must re-show
+            # the full splash next time, never crash startup.
+            with contextlib.suppress(OSError):
+                _first_run_marker.parent.mkdir(parents=True, exist_ok=True)
+                _first_run_marker.touch()
+            c.print(splash(__version__, _model, _mode))
+        elif _splash_cfg == "full":
+            c.print(splash(__version__, _model, _mode))
+        elif _splash_cfg == "compact":
+            c.print(splash_compact(__version__, _model, _mode))
+        else:  # off
+            c.print(SHORTCUT_HINT)
+        c.print(f"[{palette.C_DIM}]terminal mode · Enter send · Shift+Enter newline · "
+                f"Shift+Tab mode · Esc interrupt · Ctrl+O or /expand · Ctrl+C exit[/{palette.C_DIM}]")
+        ok, message = self.controller.validate()
+        if not ok:
+            c.print(
+                f"[{palette.C_ERROR}]Provider not ready: {_rich_escape(message)}"
+                f"[/{palette.C_ERROR}]  [{palette.C_DIM}]run `jarn setup`[/{palette.C_DIM}]"
+            )
+        # Startup notice: name the context file loaded into the system prompt.
+        if self.controller.project_trusted and self.controller.project_root is not None:
+            from jarn.memory.context import resolve_context_file
+            _ctx_path = resolve_context_file(
+                self.controller.project_root,
+                context_files=self.config.compat.context_files,
+            )
+            if _ctx_path is not None:
+                c.print(
+                    f"[{palette.C_DIM}]context: {_ctx_path.name}[/{palette.C_DIM}]"
+                )
+        # One-time untrusted-project notice: the review-only floor is active and
+        # capability keys were stripped. Surfaced once in scrollback (not per turn)
+        # so the user knows why modes are clamped and how to unlock.
+        if not self.controller.project_trusted and self.controller.project_root is not None:
+            c.print(
+                f"[{palette.C_WARN}]⚠ This project is untrusted[/{palette.C_WARN}] "
+                f"[{palette.C_DIM}]— review-only floor active (modes clamped to plan; "
+                f"project hooks/MCP/providers ignored). Run [/{palette.C_DIM}]"
+                f"[{palette.C_NOTICE}]/trust[/{palette.C_NOTICE}]"
+                f"[{palette.C_DIM}] or [/{palette.C_DIM}]"
+                f"[{palette.C_NOTICE}]jarn trust[/{palette.C_NOTICE}]"
+                f"[{palette.C_DIM}] to unlock.[/{palette.C_DIM}]"
+            )
+        self._warm_pricing_catalog()
+        await self._ensure_extensions()
+        self.app = self._build_app()
+        try:
+            # patch_stdout routes all printed output above the pinned input, into
+            # the terminal's native scrollback — the Claude-Code layout.
+            with patch_stdout(raw=True):
+                # Schedule the resume picker as a background task so it runs once
+                # the loop is live (_ask needs the running app/event loop).
+                if self._resume_on_start:
+                    # Keep a strong reference — the loop only weakly holds tasks.
+                    self._resume_task = asyncio.create_task(self._resume_picker())
+                await self.app.run_async()
+        finally:
+            await self.controller.aclose()
+
+    async def _ensure_extensions(self) -> None:
+        """Load skills/commands/MCP before the first turn so /skills and custom
+        slash commands work immediately after launch."""
+        try:
+            await self.controller.ensure_runtime()
+        except Exception as exc:  # noqa: BLE001
+            self.console.print(
+                f"[{palette.C_WARN}]extensions not loaded:[/{palette.C_WARN}] {exc}  "
+                f"[{palette.C_DIM}]· send a message or run jarn setup[/{palette.C_DIM}]"
+            )
+
+    def _warm_pricing_catalog(self) -> None:
+        """Refresh the OpenRouter price/context-window catalog in the background
+        (only when an OpenRouter provider is configured). Network-safe and
+        non-blocking — the gauge/cost just use the prior cache until it lands."""
+        from jarn.config.schema import ProviderType
+
+        if not any(p.type is ProviderType.OPENROUTER for p in self.config.providers.values()):
+            return
+        import threading
+
+        from jarn.cost import pricing
+
+        threading.Thread(target=pricing.warm_catalog, daemon=True).start()
+    def _build_app(self) -> Application:
+        # dont_extend_height so each window sizes to its CONTENT (not the screen):
+        # otherwise the windows expand to their max and the input floats up the
+        # screen with a gap above the toolbar.
+        # The live block is a transient FORMATTED markdown render of the in-progress
+        # run (prose commits to scrollback once at the run seam), so an unclosed
+        # fence / long paragraph is no longer clipped at a hard 8 lines.
+        # dont_extend_height keeps it content-sized; _stream_height adds a
+        # terminal-height-aware cap (rows - reserve) so a very tall live block clips
+        # instead of pushing the input + toolbar off the bottom of the screen.
+        stream = Window(
+            FormattedTextControl(self._stream_control),
+            height=self._stream_height, wrap_lines=True,
+            dont_extend_height=True, style=f"fg:{palette.C_DIM}",
+        )
+        prompt = Window(
+            BufferControl(
+                self.input,
+                input_processors=[BeforeInput("› ", style="bold")],
+                lexer=_ShellEscapeLexer(),
+            ),
+            height=Dimension(min=1, max=10), wrap_lines=True, dont_extend_height=True,
+        )
+        toolbar = Window(
+            FormattedTextControl(self._toolbar), height=1, style="class:bottom-toolbar",
+        )
+        # In-app pager overlay (Ctrl+O / /expand): a scrollable read-only view of
+        # the last turn's full tool output, toggled with Ctrl+O. Rendered by the
+        # app so the turn keeps running behind it; the input + toolbar stay PINNED
+        # at the bottom (only the region above swaps stream ↔ pager).
+        self._pager_window = Window(
+            BufferControl(self._pager_buffer, focusable=True), wrap_lines=True,
+        )
+        pager_header = Window(
+            FormattedTextControl(self._pager_header), height=1, style="class:bottom-toolbar",
+        )
+        # Interactive settings panel overlay (/config). FormattedTextControl is
+        # non-focusable; the global key bindings (gated on _config_open) drive it.
+        self._config_window = Window(
+            FormattedTextControl(self._config_render), wrap_lines=True,
+        )
+        top = HSplit([
+            ConditionalContainer(
+                stream,
+                filter=Condition(lambda: not self._expanded and not self._config_open),
+            ),
+            ConditionalContainer(
+                HSplit([pager_header, self._pager_window]),
+                filter=Condition(lambda: self._expanded),
+            ),
+            ConditionalContainer(
+                self._config_window, filter=Condition(lambda: self._config_open)
+            ),
+        ])
+        root = FloatContainer(
+            HSplit([top, prompt, toolbar]),
+            floats=[Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=8))],
+        )
+        return Application(
+            layout=Layout(root, focused_element=prompt),
+            key_bindings=self._kb,
+            style=Style.from_dict(palette.toolbar_style_dict()),
+            full_screen=False,
+            mouse_support=False,
+            refresh_interval=0.2,  # animate the thinking spinner / elapsed timer
+        )
+
+    def _busy(self) -> bool:
+        return self._turn_task is not None and not self._turn_task.done()
+
+    def _cancel_turn(self, *, note_edits: bool = False) -> None:
+        """Cancel the running turn AND kill any shell process it spawned.
+
+        Cancelling the asyncio task alone leaves a host subprocess (e.g. a long
+        ``sleep``/build) running; terminating the backend's process tree makes
+        Esc/Ctrl+C actually stop the work.
+
+        ``note_edits`` is set by the Esc/Ctrl+C path (not ``/abort``, which
+        rolls back itself): when the cancelled turn already applied file edits,
+        those edits stay on disk, so we print a clear note that they remain and
+        how to revert them (``/abort`` rolls them back; offered when a
+        turn-start checkpoint exists)."""
+        if self._turn_task is not None:
+            self._turn_task.cancel()
+        killed = self.controller.terminate_shells()
+        if killed:
+            self.console.print(f"[{palette.C_DIM}]stopped {killed} running command(s)[/{palette.C_DIM}]")
+        if note_edits and self._turn_made_edits():
+            note = self.controller.cancel_edit_note()
+            if note:
+                self.console.print(f"[{palette.C_DIM}]{_rich_escape(note)}[/{palette.C_DIM}]")
+
+    def _turn_made_edits(self) -> bool:
+        """Whether the just-cancelled turn applied a file edit (write/edit) —
+        detected from the live tool-output sink, same signal as the
+        /undo-unavailable hint."""
+        return any(n in ("write_file", "edit_file") for n, _ in self._last_tool_outputs)
+
+    def _set_stream(self, text: str) -> None:
+        """Show ``text`` in the live region above the input (in-progress prose or
+        an approval/picker prompt). Empty string collapses the region."""
+        self._stream_text = text
+        # Reasoning blocks arrive through this same sink with a sentinel prefix;
+        # flag them so _stream_control renders them plain (not markdown-collapsed).
+        self._stream_is_reasoning = text.startswith(REASONING_STREAM_PREFIX)
+        if self.app is not None:
+            self.app.invalidate()
+
+    def _render_stream_md(self, source: str) -> str:
+        """Render the growing markdown buffer to an ANSI string for the live region.
+
+        Uses a force_terminal capture Console at the SAME width as ``self.console``
+        (the scrollback console) so the live block wraps identically to the
+        committed block — no reflow jump when the run finally commits. Cached on
+        the source string: _stream_control runs on every redraw, so we only re-run
+        the Rich render when the buffer actually changed (O(buffer) per change, not
+        per frame)."""
+        if self._stream_md_cache is not None and self._stream_md_cache[0] == source:
+            return self._stream_md_cache[1]
+        # Same width as the scrollback console so the live block wraps identically
+        # to the committed block (no reflow jump on commit, and they stay matched
+        # across a terminal resize).
+        width = self.console.width
+        buf = io.StringIO()
+        cap = Console(force_terminal=True, width=width, file=buf)
+        cap.print(Markdown(source.strip(), code_theme=palette.CODE_THEME), end="")
+        rendered = buf.getvalue().rstrip("\n")
+        self._stream_md_cache = (source, rendered)
+        return rendered
+
+    def _render_dim_ansi(self, text: str) -> str:
+        """Render a one-line dim footer to an ANSI string (palette colour may be a
+        name or hex, so let Rich emit the escape rather than hand-building it)."""
+        buf = io.StringIO()
+        cap = Console(force_terminal=True, width=self.console.width, file=buf)
+        cap.print(f"[{palette.C_DIM}]{_rich_escape(text)}[/{palette.C_DIM}]", end="")
+        return buf.getvalue().rstrip("\n")
+
+    def _stream_height(self) -> Dimension:
+        """Height for the live region: content-sized, but capped so a very tall
+        in-progress block (long paragraph / big code block) can't push the input
+        and toolbar off the bottom of the screen. Reserve a few rows for the input
+        + toolbar; the live block clips at that cap, the input stays pinned."""
+        rows = shutil.get_terminal_size((80, 24)).lines
+        return Dimension(min=0, max=max(4, rows - 4))
+
+    def _stream_control(self):
+        """Region above the input: in-progress text, an animated thinking
+        indicator while the model works, a transient flash (mode change, etc.),
+        else nothing."""
+        if self._menu_future is not None and self._menu_options:
+            return self._menu_html()
+        if self._stream_text:
+            if self._busy():
+                # The streamed assistant prose renders LIVE as one growing
+                # FORMATTED markdown block (Rich -> ANSI), not dim escaped raw
+                # source — that kills the grey-raw-then-recommit double render and
+                # the mid-construct literal markup. The dim gen-stat footer (live
+                # token/rate) stays, since streamed text replaces the spinner.
+                # Reasoning is the exception: render it plain dim so the multi-line
+                # "✻ thinking\n…" block keeps its line breaks (markdown collapses
+                # the soft break onto one line).
+                if self._stream_is_reasoning:
+                    rendered = self._render_dim_ansi(self._stream_text)
+                else:
+                    rendered = self._render_stream_md(self._stream_text)
+                footer = self._render_dim_ansi(
+                    f"{self._gen_stat()} · esc to interrupt"
+                )
+                # Drop the leading blank line when the buffer is still empty (pure
+                # newlines streamed before the first real prose) — show just the footer.
+                return ANSI(f"{rendered}\n{footer}" if rendered else footer)
+            # Not busy: a picker / _ask prompt lives here as PLAIN text — never
+            # markdown-rendered (it isn't markdown and must show verbatim).
+            return self._stream_text
+        if self._busy():
+            return self._thinking_line()
+        if self._flash_html is not None and time.monotonic() < self._flash_until:
+            return self._flash_html
+        return ""
+
+    def _flash(self, html: HTML, secs: float = 2.0) -> None:
+        """Show a transient one-line message above the input (auto-clears) — used
+        for ephemeral feedback (mode switch, etc.) so nothing lands in scrollback."""
+        self._flash_html = html
+        self._flash_until = time.monotonic() + secs
+        if self.app is not None:
+            self.app.invalidate()
+
+    def _clear_scrollback(self) -> None:
+        """Clear terminal scrollback and reset the live region above the input."""
+        self._stream_text = ""
+        self._stream_md_cache = None
+        self._stream_is_reasoning = False
+        self._last_tool_outputs = []
+        self._last_todos_sig = None
+        if self.app is not None:
+            self.app.invalidate()
+        f = self.console.file
+        if hasattr(f, "truncate") and hasattr(f, "seek"):
+            # Headless / test consoles (StringIO) — reset the buffer in place.
+            f.truncate(0)
+            f.seek(0)
+        else:
+            # Real TTY: erase scrollback + visible screen (DEC reset + home + erase).
+            self.console.file.write("\x1b[3J\x1b[H\x1b[2J")
+            self.console.file.flush()
+
+    def _menu_html(self) -> HTML:
+        lines: list[str] = []
+        if self._menu_header:
+            lines.append(f'<style fg="{palette.C_DIM}">{_esc(self._menu_header)}</style>')
+        for i, (label, _) in enumerate(self._menu_options):
+            if i == self._menu_index:
+                lines.append(
+                    f'<style fg="{palette.C_USER}"><b>› {_esc(label)}</b></style>'
+                )
+            else:
+                lines.append(f'<style fg="{palette.C_DIM}">  {_esc(label)}</style>')
+        lines.append(
+            f'<style fg="{palette.C_DIM}">↑/↓ select · Enter confirm</style>'
+        )
+        return HTML("\n".join(lines))
+
+    def _gen_stat(self) -> str:
+        """Live turn stat for the spinner / stream footer.
+
+        Two phases: while still processing the prompt (no token streamed yet) show
+        the PROMPT size; once output is generating show OUTPUT tokens + tok/s.
+
+        Output tokens use the provider's real per-chunk usage when it reports it
+        (e.g. Anthropic); otherwise a ``~`` estimate from the streamed text
+        (~4 chars/token), so a local model (LM Studio) — which streams without
+        per-chunk usage — still shows the counter moving. The rate is measured from
+        the first streamed token, so it reflects generation speed, not the
+        prompt-processing (prefill) wait."""
+        if self._first_token_at is None:
+            # Still thinking / prefilling — there is no generation rate yet, so
+            # show the prompt size instead (real input delta if the provider has
+            # reported it, else the prior context size as a proxy).
+            prompt = self.controller.tracker.total.input_tokens - self._turn_base_input
+            if prompt > 0:
+                return f"prompt {prompt} tok"
+            ctx = self.controller.tracker.context_tokens
+            return f"prompt ~{ctx} tok" if ctx > 0 else ""
+        est = self._turn_stream_chars // 4
+        real = self.controller.tracker.total.output_tokens - self._turn_base_output
+        gen, approx = (real, "") if real > 0 else (est, "~")
+        out = f"{approx}{gen} tok"
+        if gen > 0:
+            dur = time.monotonic() - self._first_token_at
+            if dur >= 0.5:
+                out += f" · {gen / dur:.0f} tok/s"
+        return out
+
+    def _thinking_line(self) -> HTML:
+        start = self._turn_start or time.monotonic()
+        elapsed = int(time.monotonic() - start)
+        frame = palette.SPINNER_FRAMES[int(time.monotonic() * 5) % len(palette.SPINNER_FRAMES)]
+        word = self._thinking_word or "Working"
+        return HTML(
+            f'{palette.styled_fg(palette.C_TOOL, frame)} '
+            f'{palette.styled_fg(palette.C_DIM, f"{word}… ({elapsed}s · {self._gen_stat()} · esc to interrupt)")}'
+        )
+
+    def _count_stream_chars(self, delta: str) -> None:
+        """Accumulate streamed output chars this turn (for the live token estimate),
+        stamping the first delta so tok/s measures generation, not prefill."""
+        if self._first_token_at is None:
+            self._first_token_at = time.monotonic()
+        self._turn_stream_chars += len(delta)
+    def _toolbar(self):
+        from jarn.providers import strip_profile
+
+        cfg = self.controller.config
+        model = strip_profile(cfg.resolved_main_model() or "unconfigured", cfg.default_profile)
+        tracker = self.controller.tracker
+        ctx_frac: float | None = None
+        ctx = self.controller.context_status()
+        if ctx is not None:
+            _tokens, _window, ctx_frac = ctx
+        width = shutil.get_terminal_size((100, 24)).columns
+        return render_toolbar(
+            model=model,
+            mode=cfg.permission_mode.value,
+            cost_line=tracker.summary_line(),
+            cost_status=tracker.status(),
+            trusted=self.controller.project_trusted,
+            queue_count=len(self._input_queue),
+            context_frac=ctx_frac,
+            width=width,
+        )
+
+    def _completer(self) -> CompletionProvider:
+        custom = self.controller.runtime.commands if self.controller.runtime else None
+        return CompletionProvider(
+            command_catalog=completion_catalog(custom),
+            project_root=self.controller.project_root,
+        )
+
+    def _drain_queue(self) -> None:
+        """Start the next queued line as a new turn (mirrors the submit path)."""
+        if not self._busy():
+            item = self._input_queue.pop_next()
+            if item is None:
+                return
+            # No prompt echo here: the line was already echoed once with the
+            # `» queued: …` marker at submit time (see _submit). Re-echoing it as
+            # `› …` on drain would put two scrollback lines per queued input.
+            self._turn_start = time.monotonic()
+            self._turn_stream_chars = 0
+            self._turn_base_output = self.controller.tracker.total.output_tokens
+            self._turn_base_input = self.controller.tracker.total.input_tokens
+            self._first_token_at = None
+            self._turn_task = asyncio.create_task(self._handle(item.payload))
+
+    async def _handle(self, text: str) -> None:
+        """Run one submitted line (a turn, a command, or a shell escape) as a cancellable task."""
+        try:
+            parsed = parse_input(text)
+            if parsed.is_command:
+                await self._command(parsed.name, parsed.args)
+            elif parsed.is_shell:
+                await self._shell_escape(parsed.shell_command)
+            else:
+                # Reset + pass the list as a sink so tool outputs accumulate LIVE
+                # — Ctrl+O works mid-turn, not only after the answer completes.
+                self._last_tool_outputs = []
+                await repl_turn._run_turn(
+                    self.console, self.controller, text, self._ask,
+                    pick=self._pick_approval, view=self._view_full_diff,
+                    edit=self._edit_before_apply,
+                    live_sink=self._set_stream, spinner=False,
+                    tool_sink=self._last_tool_outputs,
+                    token_sink=self._count_stream_chars,
+                )
+                await self._render_todos()
+                self._maybe_autocheckpoint_hint()
+        except asyncio.CancelledError:
+            self.console.print(f"\n[{palette.C_DIM}]interrupted[/{palette.C_DIM}]")
+        except Exception as exc:  # noqa: BLE001
+            # The TUI must not print a traceback (it corrupts the display), so log
+            # the full one to the file logger and point the user at it — an
+            # otherwise-opaque mid-turn failure (e.g. a langgraph error) is then
+            # diagnosable instead of a bare one-line message.
+            logging.getLogger("jarn").error("turn failed", exc_info=exc)
+            from jarn.config import paths
+
+            self.console.print(
+                f"[{palette.C_ERROR}]{_rich_escape(str(exc))}[/{palette.C_ERROR}]"
+            )
+            # soft_wrap so a long log path isn't word-wrapped mid-token (that split
+            # ".../jarn.log" across a line on narrow / CI-width terminals).
+            self.console.print(
+                f"[{palette.C_DIM}]full traceback → "
+                f"{paths.global_logs_dir() / 'jarn.log'}[/{palette.C_DIM}]",
+                soft_wrap=True,
+            )
+        finally:
+            self._turn_task = None
+            self._turn_start = None
+            self._set_stream("")
+            if self.app is not None:
+                self.app.invalidate()
+            self._drain_queue()

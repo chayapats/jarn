@@ -57,7 +57,7 @@ def test_wheel_contains_repl_entrypoints(built_artifacts):
     wheel = built_artifacts["wheel"]
     with zipfile.ZipFile(wheel) as zf:
         names = zf.namelist()
-    assert any(n.endswith("jarn/repl.py") for n in names)
+    assert any(n.endswith("jarn/repl/__init__.py") for n in names)
     assert any(n.endswith("jarn/cli.py") for n in names)
     assert not any(".jarn" in n for n in names)
 

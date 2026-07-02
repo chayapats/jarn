@@ -1,0 +1,83 @@
+"""The terminal front-end (``jarn``) — a Claude-Code-style persistent app.
+
+A **prompt_toolkit** :class:`Application` (``full_screen=False``) pins the input
+box at the bottom of the *normal* terminal buffer while all conversation output
+is printed *above* it — through :func:`patch_stdout` — into the terminal's native
+scrollback (one scroll for everything; native selection/copy). The in-progress
+assistant paragraph previews in a small region just above the input.
+
+The agent turn runs as a **cancellable task**, so **Esc** (or Ctrl+C) interrupts
+mid-stream while the input stays live. Enter sends, Shift+Enter (Ctrl+J) inserts a
+newline, Shift+Tab cycles the permission mode, Tab completes ``/commands`` and
+``@`` mentions (``@file``, ``@folder:``, ``@symbol:``), ↑/↓ navigate history,
+Ctrl+O expands the last tool output. Approvals
+and pickers are app-native (captured through the same input). It reuses the
+UI-agnostic :class:`~jarn.tui.controller.Controller` and
+:class:`~jarn.agent.session.SessionDriver`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+from pathlib import Path
+
+from jarn.config.schema import Config
+from jarn.repl import turn
+from jarn.repl.app import InlineApp
+from jarn.repl.auth_errors import _friendly_auth_error, _provider_hint
+from jarn.repl.completer import _ShellEscapeLexer
+from jarn.repl.turn import (
+    _EDIT_BEFORE_APPLY,
+    _EDIT_MEMORY,
+    _VIEW_FULL_DIFF,
+    _apply_mode_ref,
+    _apply_model_ref,
+    _approval_options,
+    _approve,
+    _edit_text_in_editor,
+    _editable_field,
+    _run_turn,
+)
+from jarn.tui import palette
+
+
+def run_inline(
+    config: Config,
+    project_root: Path | None,
+    *,
+    resume: bool = False,
+    project_trusted: bool = True,
+) -> int:
+    """CLI entry point for native inline mode."""
+    from jarn.tui.keyfix import apply_repl_keyfix
+
+    apply_repl_keyfix()
+    palette.configure_ui(theme=config.ui.theme, accent=config.ui.accent)
+    with contextlib.suppress(KeyboardInterrupt, EOFError):
+        asyncio.run(
+            InlineApp(
+                config, project_root, resume=resume, project_trusted=project_trusted
+            ).run()
+        )
+    return 0
+
+
+__all__ = [
+    "InlineApp",
+    "turn",
+    "_EDIT_BEFORE_APPLY",
+    "_EDIT_MEMORY",
+    "_ShellEscapeLexer",
+    "_VIEW_FULL_DIFF",
+    "_apply_mode_ref",
+    "_apply_model_ref",
+    "_approval_options",
+    "_approve",
+    "_editable_field",
+    "_edit_text_in_editor",
+    "_friendly_auth_error",
+    "_provider_hint",
+    "_run_turn",
+    "run_inline",
+]
