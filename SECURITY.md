@@ -4,6 +4,7 @@
 
 | Version | Supported |
 |---------|-----------|
+| 0.5.x   | Yes (alpha — security fixes; no SLA) |
 | 0.4.x   | Yes (alpha — security fixes; no SLA) |
 | 0.1.x   | Best-effort only |
 

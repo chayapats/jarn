@@ -5,18 +5,32 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-02
+
 ### Added
 
-- **Headless multi-turn** — `jarn -p` honors `--max-turns`; JSON output includes
-  `tool_calls` and structured `{error: {kind, message}}`; exit codes `0`/`1`/`2`/`124`.
+- **Headless multi-turn** — `jarn -p` honors `--max-turns`; `--resume-session` continues a
+  prior thread; JSON output includes `tool_calls` and structured `{error: {kind, message}}`;
+  exit codes `0`/`1`/`2`/`124`.
 - **Context token budgets** — `context.memory_tokens`, `wiki_index_tokens`, and
   `project_context_tokens` cap injected prompt size with truncation notices.
 - **OpenTelemetry tracing** — `observability.tracing.backend: langsmith | otel`
   (default `langsmith`); optional `jarn[otel]` extra exports spans via OTLP
   (`OTEL_EXPORTER_OTLP_ENDPOINT`).
+- **Image paste** — Linux (Wayland/X11), Windows, and macOS clipboard support with
+  format fallbacks and a size cap.
+- **Arg-aware slash completion** — `/model`, `/preset`, `/mode`, `/resume`, `/mcp`, and
+  related commands complete arguments after the command name.
+- **Verify gate** — `verify.gate: suggest | auto` surfaces or runs detected test commands
+  after edits.
+- **`/telemetry status`** — audit local telemetry storage (path, size, event count).
+- **MCP per-server timeout** and `/mcp status --refresh` health re-check.
+- **Pricing network opt-out** — `pricing.network: false` / `JARN_NO_NETWORK_PRICING=1`
+  skips the OpenRouter startup fetch.
 - **CI hardening** — release preflight gates, coverage floor (74%), `scripts/` lint,
   Windows matrix, `pip-audit` + gitleaks security job, Dependabot, nightly eval workflow.
 - **Doc-sync test** — README/CONTRIBUTING/RELEASE test counts enforced against pytest collection.
+- **Pydantic config validation** with `config_version` and a v0→v1 migrator.
 
 ### Changed
 
@@ -27,7 +41,14 @@ All notable changes to J.A.R.N. are documented here. Format follows
 - Doctor skill shadowing matches runtime (`.jarn` wins over `.claude`).
 - **`policy.profile` / `--profile` / `/profile`** deprecated with removal planned in
   **v0.6.0** — use `--preset` / `/preset` instead.
+- Untrusted project config uses an allowlist — `routing`, `budget`, `wiki`, and related
+  keys require `jarn trust` before they take effect.
+- Hook subprocesses inherit a minimal env allowlist by default (`hooks.inherit_env: true`
+  restores the old behavior).
+- The `ci` preset requires the Docker execution backend (fail-closed on hosts without Docker).
 - SWE-bench Modal A/B script moved to `contrib/` (research tooling, not shipped).
+- Internal refactor: `repl`, `controller`, `session`, and `builder` split into packages;
+  unified slash-command registry drives dispatch and `/help`.
 
 ### Removed
 
@@ -46,7 +67,18 @@ All notable changes to J.A.R.N. are documented here. Format follows
 - `verify.py` fewer false positives (pytest/ruff only when configured; better Node/Makefile detection).
 - `/review` includes untracked new files.
 - Checkpoint lock file lives under ``.git/`` so duplicate snapshots deduplicate correctly.
+- Corrupt YAML no longer wipes `config.yaml` or rule stores — fail-closed with `.bak` backup.
+- Scope checks resolve paths against `project_root`, not process CWD; symlink escapes rejected.
+- Central secret redaction across transcripts, logs, and error messages.
 - CI: skip ``mypy`` on Windows runners; upgrade deps to clear ``pip-audit`` findings.
+
+### Security
+
+- Danger-guard expanded (installers, `docker run --privileged`, mass git discard, homoglyphs);
+  honest limits documented in SECURITY.md.
+- Inline plaintext API keys warn at load (`strict_secrets: true` rejects).
+- Provider `extra` kwargs restricted to per-provider allowlists; MCP/subagent URLs validated at load.
+- Secret-file tree permissions tightened; keychain account validation on read path.
 
 ## [0.4.4] - 2026-06-18
 
@@ -412,6 +444,7 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Windows: use WSL; native Windows terminal is unsupported
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
+[0.5.0]: https://github.com/chayapats/jarn/releases/tag/v0.5.0
 [0.4.4]: https://github.com/chayapats/jarn/releases/tag/v0.4.4
 [0.4.3]: https://github.com/chayapats/jarn/releases/tag/v0.4.3
 [0.4.2]: https://github.com/chayapats/jarn/releases/tag/v0.4.2
