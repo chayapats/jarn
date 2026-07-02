@@ -341,14 +341,23 @@ mcp_servers:
   - name: remote-tools
     transport: http
     url: https://example.com/mcp
+    timeout_secs: 30       # per-server tool-load timeout (default 30)
 # Tools are loaded per-server in isolation: one server failing to start no longer
 # drops the others (see EXTENDING.md). After a load, J.A.R.N. mirrors each server's
 # last-known status onto an optional `health` field ("ok" | "error"; default unset).
-# It's informational only — no UI currently surfaces it.
+# Use `/mcp status` (or `/mcp status --refresh`) in the REPL to inspect health.
+
+# ── Verification gate (post-edit) ────────────────────────────────────────
+verify:
+  gate: suggest            # off | suggest | auto — after write_file/edit_file,
+                           # suggest emits the detected test command; auto runs it
+                           # (permissions + danger-guard still apply)
 
 # ── Observability ────────────────────────────────────────────────────────
 observability:
   langsmith: false         # opt-in tracing (needs LANGSMITH_API_KEY)
+  tracing:
+    backend: langsmith     # langsmith | otel — otel needs `pip install jarn[otel]`
   telemetry: false         # opt-in local usage analytics, default OFF (see ROADMAP)
   log_level: info          # debug | info | warning | error
   transcript: true         # append-only JSONL session transcript under .jarn/sessions/
@@ -537,6 +546,8 @@ jarn -p "summarize README.md"
 jarn -p - < prompt.txt          # read prompt from stdin
 jarn -p "fix tests" --json      # machine-readable output
 jarn -p "refactor" --max-turns 3 --permission-mode auto-edit
+jarn -p "" --resume-session last          # continue the most recent session (no new prompt)
+jarn -p "follow up" --resume-session abc  # send a new message on thread abc
 ```
 
 `--json` prints one JSON object on stdout:
@@ -564,6 +575,11 @@ auto-approved. Use `--permission-mode auto-edit` or `yolo` only when you accept
 unattended side effects; danger-guard still blocks catastrophic actions.
 
 ## Pricing overrides
+
+By default J.A.R.N. may fetch the OpenRouter model catalog in the background for
+long-tail pricing. Set `pricing.network: false` in config or export
+`JARN_NO_NETWORK_PRICING=1` to skip network fetches (bundled prices + your overrides
+still apply).
 
 The cost estimate uses a built-in table (current as of June 2026). Override or extend
 it with `~/.jarn/pricing.yaml`:

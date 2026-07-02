@@ -58,7 +58,7 @@ SETTINGS: tuple[Setting, ...] = (
     _s("permission_mode", "enum", "Safety", "Permission mode",
        "How much to confirm before edits / shell / network.",
        ("plan", "ask", "auto-edit", "yolo")),
-    _s("policy.profile", "enum", "Safety", "Preset (deprecated)",
+    _s("policy.profile", "enum", "Safety", "Preset (deprecated, removed in v0.6.0)",
        "Deprecated launch-time preset that sets mode + sandbox at once; "
        "prefer setting those directly. Use /preset or --preset.",
        ("", "trusted-repo", "review-only", "sandbox-required", "ci", "offline")),

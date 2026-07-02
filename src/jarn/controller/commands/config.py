@@ -88,7 +88,7 @@ def cmd_profile(ctrl: Controller, args: str) -> CommandResult:
     """Deprecated alias of /preset (kept working for back-compat)."""
     result = cmd_preset(ctrl, args)
     return CommandResult(
-        f"(/profile is deprecated — use /preset.) {result.text}",
+        f"(/profile is deprecated and will be removed in v0.6.0 — use /preset.) {result.text}",
         rebuilt=result.rebuilt,
     )
 

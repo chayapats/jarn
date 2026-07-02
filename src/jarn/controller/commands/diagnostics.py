@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from rich.markup import escape as _escape_markup
 
 from jarn.controller.core import CommandResult
+from jarn.extensibility.mcp import load_mcp_tools
 from jarn.tui import palette
 
 if TYPE_CHECKING:
@@ -66,13 +67,22 @@ def cmd_permissions(ctrl, args: str) -> CommandResult:
 def cmd_mcp(ctrl, args: str) -> CommandResult:
     """Show configured MCP servers with per-server health + last error.
 
-    Usage: ``/mcp`` or ``/mcp status``. Reads the live health/error maps
-    populated by :meth:`ensure_runtime` (falling back to each server's
-    ``health`` field) so the user can see at a glance which stdio/HTTP MCP
-    servers came up and which failed (with the reason)."""
-    sub = args.strip().lower()
-    if sub and sub != "status":
-        return CommandResult("Usage: /mcp [status]")
+    Usage: ``/mcp``, ``/mcp status``, ``/mcp refresh``, or ``/mcp status --refresh``
+    to re-probe servers and refresh health maps."""
+    import asyncio
+
+    parts = args.strip().split()
+    sub = parts[0].lower() if parts else ""
+    if sub and sub not in ("status", "refresh"):
+        return CommandResult("Usage: /mcp [status] [--refresh|refresh]")
+    refresh = sub == "refresh" or "--refresh" in parts
+    if refresh:
+        mcp = asyncio.run(load_mcp_tools(ctrl.config.mcp_servers))
+        ctrl.mcp_health = dict(mcp.health)
+        ctrl.mcp_errors = dict(mcp.errors)
+        for server in ctrl.config.mcp_servers:
+            if server.name in ctrl.mcp_health:
+                server.health = ctrl.mcp_health[server.name]
     servers = ctrl.config.mcp_servers
     if not servers:
         return CommandResult("No MCP servers configured.")
@@ -95,6 +105,30 @@ def cmd_mcp(ctrl, args: str) -> CommandResult:
         lines.append(
             f"[{palette.C_DIM}]Health is populated after the first turn "
             f"loads the servers.[/{palette.C_DIM}]"
+        )
+    return CommandResult("\n".join(lines))
+
+def cmd_telemetry(ctrl, args: str) -> CommandResult:
+    """Show telemetry opt-in status and local sink stats."""
+    sub = args.strip().lower()
+    if sub and sub != "status":
+        return CommandResult("Usage: /telemetry status")
+    summary = ctrl.telemetry.status_summary()
+    enabled = "enabled" if summary["enabled"] else "disabled"
+    install = "present" if summary["install_id_present"] else "absent"
+    size_kb = summary["size_bytes"] / 1024
+    lines = [
+        "[b]Telemetry[/b]",
+        f"  status: {enabled}",
+        f"  file: {_escape_markup(summary['path']) or '(none)'}",
+        f"  size: {size_kb:.1f} KB ({summary['size_bytes']:,} bytes)",
+        f"  events on disk: {summary['event_count']:,}",
+        f"  install id: {install}",
+    ]
+    if not summary["enabled"]:
+        lines.append(
+            f"[{palette.C_DIM}]Opt in with observability.telemetry: true "
+            f"in config.[/{palette.C_DIM}]"
         )
     return CommandResult("\n".join(lines))
 

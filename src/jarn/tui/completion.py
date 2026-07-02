@@ -29,6 +29,9 @@ from pathlib import Path
 from typing import Protocol
 
 from jarn.agent.repomap import build_symbol_index
+from jarn.config.profiles import PROFILES
+
+_MODE_CHOICES = ("plan", "ask", "auto-edit", "yolo")
 
 # How long (seconds) a cached directory listing stays valid for. Short enough
 # that fresh files show up almost immediately, long enough that a burst of
@@ -82,6 +85,10 @@ class CompletionProvider:
     command_catalog: dict[str, str]  # name → short description
     project_root: Path | None = None
     max_files: int = 12
+    model_refs: list[str] | None = None
+    preset_names: list[str] | None = None
+    session_titles: list[str] | None = None
+    mcp_servers: list[str] | None = None
     _dir_cache: dict[Path, _DirCacheEntry] = field(default_factory=dict, repr=False)
 
     @property
@@ -91,9 +98,11 @@ class CompletionProvider:
 
     def complete(self, text: str) -> list[Completion]:
         """Return candidates for the current single-line input ``text``."""
-        # Command completion: the whole line is "/prefix" with no space yet.
-        if text.startswith("/") and " " not in text:
-            return self._commands(text[1:])
+        if text.startswith("/"):
+            if " " not in text:
+                return self._commands(text[1:])
+            cmd, _, arg_frag = text.partition(" ")
+            return self._command_args(cmd[1:], arg_frag, f"{cmd} ")
 
         # Mention completion: the last whitespace-token starts with "@".
         token = text.rsplit(" ", 1)[-1] if " " in text else text
@@ -134,6 +143,44 @@ class CompletionProvider:
                         description=self.command_catalog.get(name, ""),
                     )
                 )
+        return out
+
+    def _command_args(self, cmd: str, frag: str, prefix: str) -> list[Completion]:
+        """Complete the argument fragment after ``/cmd ``."""
+        choices: list[str] | None
+        match cmd.lower():
+            case "model":
+                choices = self.model_refs
+            case "mode":
+                choices = list(_MODE_CHOICES)
+            case "preset":
+                choices = (
+                    self.preset_names
+                    if self.preset_names is not None
+                    else sorted(PROFILES)
+                )
+            case "resume" | "sessions":
+                choices = self.session_titles
+            case "mcp":
+                choices = self.mcp_servers
+            case _:
+                return []
+
+        if not choices:
+            return []
+
+        frag_cf = frag.casefold()
+        out: list[Completion] = []
+        for choice in sorted(choices, key=str.casefold):
+            if not choice.casefold().startswith(frag_cf):
+                continue
+            out.append(
+                Completion(
+                    choice,
+                    f"{prefix}{choice}",
+                    "argument",
+                )
+            )
         return out
 
     def _listing(self, search_dir: Path) -> tuple[Path, ...] | None:

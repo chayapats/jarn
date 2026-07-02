@@ -36,7 +36,8 @@ def _warn_policy_profile_deprecated(cfg: Any) -> None:
 
     eff = PROFILES.get(cfg.policy.profile, {})
     print(
-        f"warning: policy.profile is deprecated; '{cfg.policy.profile}' sets "
+        f"warning: policy.profile is deprecated and will be removed in v0.6.0; "
+        f"'{cfg.policy.profile}' sets "
         f"mode={eff.get('permission_mode', '?')}, sandbox={eff.get('local_sandbox', '?')}. "
         "Set those directly or use --preset.",
         file=sys.stderr,
@@ -125,6 +126,16 @@ def main(argv: list[str] | None = None) -> int:
         metavar="PATH",
         help="Working directory for this headless run.",
     )
+    parser.add_argument(
+        "--resume-session",
+        dest="headless_resume_session",
+        metavar="THREAD",
+        help=(
+            "With -p: resume a prior headless thread. Pass 'last' for the most "
+            "recent session or a thread id from /sessions. An empty prompt "
+            "continues without a new user message."
+        ),
+    )
 
     parser.epilog = (
         "Headless exit codes (jarn -p): 0 success, 1 generic error, "
@@ -184,7 +195,8 @@ def main(argv: list[str] | None = None) -> int:
     preset_override = args.preset or args.legacy_profile
     if args.legacy_profile:
         print(
-            "warning: --profile is deprecated; use --preset (same names).",
+            "warning: --profile is deprecated and will be removed in v0.6.0; "
+            "use --preset (same names).",
             file=sys.stderr,
         )
 
@@ -198,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
             max_turns=args.headless_max_turns,
             cwd_override=args.headless_cwd,
             profile_override=preset_override,
+            resume_session=args.headless_resume_session,
         )
 
     # Fix the macOS Caps Lock language-switch stray-character bug before any TUI
@@ -238,6 +251,7 @@ def _cmd_headless(
     max_turns: int = 1,
     cwd_override: str | None = None,
     profile_override: str | None = None,
+    resume_session: str | None = None,
 ) -> int:
     """Run a single non-interactive agent turn and print the result.
 
@@ -260,14 +274,14 @@ def _cmd_headless(
         prompt = prompt_arg
 
     prompt = prompt.strip()
-    if not prompt:
+    if not prompt and not resume_session:
         print("error: prompt is empty", file=sys.stderr)
         return 1
 
     from jarn.config import paths
     from jarn.config.loader import ConfigError, load_config
     from jarn.config.schema import PermissionMode
-    from jarn.observability import configure_langsmith, setup_logging
+    from jarn.observability import configure_tracing, setup_logging
 
     if not paths.global_config_path().is_file():
         print(
@@ -288,7 +302,7 @@ def _cmd_headless(
     )
     _warn_policy_profile_deprecated(cfg)
     setup_logging(cfg.observability.log_level)
-    configure_langsmith(cfg.observability.langsmith)
+    configure_tracing(cfg.observability)
 
     # Apply CLI overrides.
     if model_override:
@@ -334,6 +348,7 @@ def _cmd_headless(
         project_trusted=trusted,
         as_json=as_json,
         max_turns=max_turns,
+        resume_session=resume_session,
     )
 
 
@@ -482,7 +497,7 @@ def _trust_list(store: Any, *, as_json: bool) -> int:
 def _cmd_launch(*, resume: bool = False, profile_override: str | None = None) -> int:
     from jarn.config import paths
     from jarn.config.loader import ConfigError, load_config
-    from jarn.observability import configure_langsmith, setup_logging
+    from jarn.observability import configure_tracing, setup_logging
 
     if not paths.global_config_path().is_file():
         print("No configuration found. Running first-time setup...\n")
@@ -509,7 +524,7 @@ def _cmd_launch(*, resume: bool = False, profile_override: str | None = None) ->
     )
     _warn_policy_profile_deprecated(cfg)
     setup_logging(cfg.observability.log_level)
-    configure_langsmith(cfg.observability.langsmith)
+    configure_tracing(cfg.observability)
 
     # Apply the effective policy profile (CLI > config) and clamp untrusted.
     from jarn.config.profiles import resolve_effective_profile

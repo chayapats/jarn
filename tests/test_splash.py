@@ -32,13 +32,13 @@ def test_shortcut_hint_contains_help():
 
 
 def test_splash_full_contains_wordmark():
-    out = splash("1.2.3", "openrouter/m", "ask")
+    out = splash("1.2.3")
     assert "██" in out          # box-drawing block in ASCII art
     assert "1.2.3" in out
 
 
 def test_splash_compact_contains_version_and_hint():
-    out = splash_compact("2.0.0", "openrouter/m", "ask")
+    out = splash_compact("2.0.0")
     assert "2.0.0" in out
     assert "/help" in out
     assert "JARN" in out
@@ -47,8 +47,8 @@ def test_splash_compact_contains_version_and_hint():
 
 
 def test_splash_compact_is_shorter_than_full():
-    full = splash("1.0", None, "ask")
-    compact = splash_compact("1.0", None, "ask")
+    full = splash("1.0")
+    compact = splash_compact("1.0")
     assert len(compact) < len(full)
 
 
@@ -123,11 +123,11 @@ def _render_splash(
     if is_first_run:
         first_run_marker.parent.mkdir(parents=True, exist_ok=True)
         first_run_marker.touch()
-        console.print(splash(version, None, "ask"))
+        console.print(splash(version))
     elif splash_value == "full":
-        console.print(splash(version, None, "ask"))
+        console.print(splash(version))
     elif splash_value == "compact":
-        console.print(splash_compact(version, None, "ask"))
+        console.print(splash_compact(version))
     else:  # off
         console.print(SHORTCUT_HINT)
 

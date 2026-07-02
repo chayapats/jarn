@@ -20,7 +20,7 @@ npm/dist/
 node_modules/
 *.tgz
 
-# Textual snapshot diffs (keep baselines in tests/__snapshots__)
+# Textual snapshot diffs (retired — dep removed in v0.4.x cleanup)
 snapshot_report.html
 
 # J.A.R.N. runtime state (never commit)

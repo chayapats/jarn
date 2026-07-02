@@ -136,18 +136,6 @@ ALL_PROVIDERS = (
     "ollama", "lmstudio",
 )
 
-# Hard danger-guard patterns that always require explicit confirmation,
-# even in YOLO mode. Authoritative copy lives in jarn.permissions.guard;
-# duplicated here only for the generated config's documentation block.
-DANGEROUS_COMMAND_HINTS = [
-    "rm -rf",
-    "git push --force",
-    "git push -f",
-    "dd if=",
-    "mkfs",
-    ":(){ :|:& };:",
-]
-
 
 def global_config_template(profile: str = "openrouter") -> str:
     """Return a commented YAML template for ``~/.jarn/config.yaml``."""
@@ -226,10 +214,20 @@ permissions:
   deny: []              # always blocked
 
 observability:
-  langsmith: false      # opt-in LangSmith tracing
+  langsmith: false      # opt-in LangSmith tracing (when tracing.backend is langsmith)
+  # tracing:
+  #   backend: langsmith   # langsmith | otel (otel needs pip install jarn[otel])
   telemetry: false      # opt-in usage analytics (default OFF)
   log_level: info
   transcript: true      # append JSONL session transcripts to .jarn/sessions/
+
+# Post-edit verification gate: off | suggest (default) | auto
+# verify:
+#   gate: suggest       # suggest emits detected test command; auto runs it
+
+# OpenRouter catalog network fetch (bundled prices still apply when off)
+# pricing:
+#   network: true       # set false or JARN_NO_NETWORK_PRICING=1 to skip fetch
 
 ui:
   theme: dark           # dark | light | high-contrast

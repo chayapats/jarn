@@ -84,19 +84,6 @@ def _skill_dirs_ordered(
     return low_dirs + high_dirs
 
 
-def skill_dirs(
-    project_root: Path | None = None,
-    *,
-    read_claude_dir: bool = True,
-) -> list[Path]:
-    """Return the ordered list of skill directories to scan.
-
-    Delegates to the same order as :func:`load_skills` (``.jarn`` beats
-    ``.claude`` on a name conflict).
-    """
-    return _skill_dirs_ordered(project_root, read_claude_dir=read_claude_dir)
-
-
 def load_skills(
     project_root: Path | None = None,
     *,
