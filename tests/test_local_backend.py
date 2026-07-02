@@ -21,7 +21,7 @@ def test_execute_runs_and_reports_output(tmp_path):
 def test_execute_reports_nonzero_exit(tmp_path):
     backend = CancellableLocalShellBackend(root_dir=str(tmp_path), virtual_mode=True)
     if sys.platform == "win32":
-        res = backend.execute('python -c "import sys; sys.exit(3)"')
+        res = backend.execute(f'"{sys.executable}" -c "import sys; sys.exit(3)"')
     else:
         res = backend.execute("sh -c 'exit 3'")
     assert res.exit_code == 3
