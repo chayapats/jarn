@@ -63,6 +63,24 @@ def test_preset_arg(tmp_path):
     assert cands[0].replacement == "/preset review-only"
 
 
+def test_completer_wires_controller_refs(tmp_path, base_config):
+    """REPL CompletionProvider receives model/session/MCP lists from the controller."""
+    from jarn.config.schema import MCPServer
+    from jarn.repl.app import InlineApp
+
+    base_config.mcp_servers = [
+        MCPServer(name="fs", transport="stdio", command="echo"),
+    ]
+    app = InlineApp(base_config, tmp_path)
+    app.controller.sessions.touch("thread-abc123", "my session", when=1.0)
+    provider = app._completer()
+
+    assert any("openrouter" in ref for ref in (provider.model_refs or []))
+    assert "thread-abc123" in (provider.session_titles or [])
+    assert "fs" in (provider.mcp_servers or [])
+    app.controller.close()
+
+
 def test_file_completion(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "main.py").write_text("x", encoding="utf-8")

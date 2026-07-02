@@ -534,6 +534,11 @@ def test_budget_stop_exit_code(tmp_path, monkeypatch, base_config, capsys):
 
     assert run_headless("x", base_config, tmp_path) == EXIT_REFUSED
 
+    code = run_headless("x", base_config, tmp_path, as_json=True)
+    assert code == EXIT_REFUSED
+    data = json.loads(capsys.readouterr().out)
+    assert data["error"]["kind"] == "budget"
+
 
 # ---------------------------------------------------------------------------
 # Existing subcommands still dispatch correctly (smoke test)

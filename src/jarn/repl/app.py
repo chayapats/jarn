@@ -539,10 +539,48 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
 
     def _completer(self) -> CompletionProvider:
         custom = self.controller.runtime.commands if self.controller.runtime else None
+        model_refs = [ref for ref, _ in self.controller.model_choices()]
+        for ref, _ in self.controller.discover_models():
+            if ref not in model_refs:
+                model_refs.append(ref)
+        sessions = self.controller.sessions.list()
+        session_titles = [s.thread_id for s in sessions]
+        mcp_servers = [
+            s.name for s in self.config.mcp_servers if s.enabled
+        ]
         return CompletionProvider(
             command_catalog=completion_catalog(custom),
             project_root=self.controller.project_root,
+            model_refs=model_refs or None,
+            session_titles=session_titles or None,
+            mcp_servers=mcp_servers or None,
         )
+
+    def _paste_clipboard_image(self) -> None:
+        """Ctrl+V: grab a clipboard image and insert it as an ``@path`` reference."""
+        async def _job() -> None:
+            from jarn.tui.clipboard import grab_error_message, save_clipboard_image
+
+            root = self.controller.project_root or Path(".")
+            path = await asyncio.to_thread(save_clipboard_image, root)
+            if path is None:
+                hint = grab_error_message() or (
+                    "no image on the clipboard — copy a screenshot, or save it and use @path"
+                )
+                self._set_stream(hint)
+            else:
+                try:
+                    rel = path.relative_to(root)
+                except ValueError:
+                    rel = path
+                self.input.insert_text(f"@{rel} ")
+                self.console.print(
+                    f"[{palette.C_NOTICE}]📎 attached {_rich_escape(str(rel))}[/{palette.C_NOTICE}]"
+                )
+            if self.app is not None:
+                self.app.invalidate()
+
+        asyncio.create_task(_job())
 
     def _drain_queue(self) -> None:
         """Start the next queued line as a new turn (mirrors the submit path)."""

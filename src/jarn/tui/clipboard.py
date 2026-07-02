@@ -24,6 +24,16 @@ import sys
 from pathlib import Path
 
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB
+_MAX_IMAGE_MB = _MAX_IMAGE_BYTES // (1024 * 1024)
+
+#: Set on the last failed :func:`grab_clipboard_image` / :func:`save_clipboard_image`
+#: attempt when a user-facing reason is known (e.g. size cap).
+_last_grab_error: str | None = None
+
+
+def grab_error_message() -> str | None:
+    """User-facing reason for the last clipboard grab failure, if any."""
+    return _last_grab_error
 
 #: AppleScript templates — ``{path}`` is substituted with the destination path.
 _OSASCRIPT_PNG = (
@@ -73,10 +83,14 @@ def _ok(dest: Path) -> bool:
 
 def _within_size_limit(dest: Path) -> bool:
     """Return True when ``dest`` exists, is non-empty, and within the size cap."""
+    global _last_grab_error
     if not _ok(dest):
         return False
     if dest.stat().st_size > _MAX_IMAGE_BYTES:
         dest.unlink(missing_ok=True)
+        _last_grab_error = (
+            f"clipboard image exceeds {_MAX_IMAGE_MB} MB — save the file and use @path"
+        )
         return False
     return True
 
@@ -183,7 +197,10 @@ def grab_clipboard_image(dest: Path) -> bool:
 
     Returns ``False`` when the platform is unsupported, no image is on the
     clipboard, no helper is available, or the image exceeds the size cap.
+    On failure, :func:`grab_error_message` may carry a user-facing reason.
     """
+    global _last_grab_error
+    _last_grab_error = None
     if sys.platform == "darwin":
         return _grab_darwin(dest)
     if sys.platform == "win32":
