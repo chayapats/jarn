@@ -573,9 +573,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                     rel = path.relative_to(root)
                 except ValueError:
                     rel = path
-                self.input.insert_text(f"@{rel} ")
+                at_ref = rel.as_posix() if hasattr(rel, "as_posix") else str(rel).replace("\\", "/")
+                self.input.insert_text(f"@{at_ref} ")
                 self.console.print(
-                    f"[{palette.C_NOTICE}]📎 attached {_rich_escape(str(rel))}[/{palette.C_NOTICE}]"
+                    f"[{palette.C_NOTICE}]📎 attached {_rich_escape(at_ref)}[/{palette.C_NOTICE}]"
                 )
             if self.app is not None:
                 self.app.invalidate()
