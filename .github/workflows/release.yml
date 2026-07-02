@@ -76,7 +76,10 @@ jobs:
       - name: Smoke-test binary
         run: |
           ./dist/jarn --version
-          ./dist/jarn doctor --json
+          # Fresh CI runners have no ~/.jarn/config.yaml — doctor reports ok:false
+          # (exit 1) but must still emit valid JSON without crashing.
+          json=$(./dist/jarn doctor --json || true)
+          echo "$json" | python -c "import json,sys; d=json.load(sys.stdin); assert 'ok' in d"
       - name: Upload binary artifact (for the npm job)
         uses: actions/upload-artifact@v4
         with:
