@@ -126,6 +126,7 @@ def test_size_cap(monkeypatch, tmp_path):
     monkeypatch.setattr(clipboard.subprocess, "run", fake_run)
     assert grab_clipboard_image(dest) is False
     assert not dest.exists()
+    assert "10 MB" in (clipboard.grab_error_message() or "")
 
 
 # -- pngpaste helper ---------------------------------------------------------

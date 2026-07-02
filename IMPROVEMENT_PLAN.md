@@ -831,8 +831,8 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 4. Cap image size (e.g. 10MB) with a user message.
 5. Document supported platforms in README.
 **DoD:**
-- [ ] Each platform path is tested (mocked subprocess/PowerShell); fallback formats covered.
-- [ ] Oversized image is rejected with a message.
+- [x] Each platform path is tested (mocked subprocess/PowerShell); fallback formats covered.
+- [x] Oversized image is rejected with a message.
 **Tests:** `test_image_paste.test_linux_wl_paste`, `test_image_paste.test_windows_powershell`, `test_image_paste.test_macos_jpeg_fallback`, `test_image_paste.test_size_cap`.
 **Risk:** low
 **Effort:** M
@@ -844,7 +844,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 1. Per-command arg completers for `/model` (model IDs), `/mode` (modes), `/preset` (preset names), `/resume`/`/sessions` (session titles), `/mcp` (server names).
 2. Keep the no-space fallback for commands without an arg completer.
 **DoD:**
-- [ ] `/model <tab>` lists model IDs; `/preset <tab>` lists presets; tests cover each.
+- [x] `/model <tab>` lists model IDs; `/preset <tab>` lists presets; tests cover each.
 **Tests:** `test_completion.test_model_arg`, `test_completion.test_preset_arg`.
 **Risk:** low
 **Effort:** S
@@ -855,7 +855,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 **Action:**
 1. Re-inject the current local date as a system message at the start of each turn (or when the date rolls over).
 **DoD:**
-- [ ] Test: a simulated multi-day session has the correct date in each turn's context.
+- [x] Test: a simulated multi-day session has the correct date in each turn's context.
 **Tests:** `test_harness_prompt_ab.test_date_per_turn`.
 **Risk:** low
 **Effort:** S
@@ -868,7 +868,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 2. `suggest`: after edits, emit a NOTICE with the detected test command and ask the user.
 3. `auto`: run the detected command in the sandbox/backend and include pass/fail in the turn result (respecting permissions + danger-guard).
 **DoD:**
-- [ ] `suggest` mode surfaces the command; `auto` mode runs it and reports results; both tested with mocked commands.
+- [x] `suggest` mode surfaces the command; `auto` mode runs it and reports results; both tested with mocked commands.
 **Tests:** `test_verify.test_gate_suggest`, `test_verify.test_gate_auto_runs_detected_command`.
 **Risk:** `auto` could run unexpected commands; keep it gated by permissions + guard + an explicit config opt-in.
 **Deps:** T-2-11
@@ -881,7 +881,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 1. `MCPServer.timeout_secs` config; honored at `get_tools`.
 2. `/mcp status` adds a `--refresh` (or `!`) that re-runs health checks.
 **DoD:**
-- [ ] Test: a slow server times out; `/mcp status --refresh` re-probes.
+- [x] Test: a slow server times out; `/mcp status --refresh` re-probes.
 **Tests:** `test_extensibility.test_mcp_timeout`, `test_extensibility.test_mcp_status_refresh`.
 **Risk:** low
 **Effort:** S
@@ -892,7 +892,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 **Action:**
 1. `/telemetry status` shows enabled/disabled, file path, size, event count, install-id presence.
 **DoD:**
-- [ ] Command output includes all of the above; tested.
+- [x] Command output includes all of the above; tested.
 **Tests:** `test_telemetry.test_status_command`.
 **Risk:** low
 **Effort:** S
@@ -904,7 +904,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 1. `pricing.network: false` config (and `JARN_NO_NETWORK_PRICING=1` env) skips the fetch; falls back to bundled prices + user overrides.
 2. Surface a one-line notice when network pricing is disabled.
 **DoD:**
-- [ ] Test: with the flag set, no outbound request is attempted; prices still resolve from bundled/override data.
+- [x] Test: with the flag set, no outbound request is attempted; prices still resolve from bundled/override data.
 **Tests:** `test_cost.test_pricing_network_opt_out`.
 **Risk:** low
 **Effort:** S
@@ -919,9 +919,9 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 4. Start `CHANGELOG [Unreleased]` with the post-0.4.4 changes.
 5. Fix `swebench_modal.py` hardcoded 0.3.0 wheel (parameterize from `pyproject.toml` version).
 **DoD:**
-- [ ] T-2-16 doc-sync test passes.
-- [ ] ROADMAP has no internal contradictions (reviewer checklist).
-- [ ] SECURITY.md table current; CHANGELOG `[Unreleased]` populated.
+- [x] T-2-16 doc-sync test passes.
+- [x] ROADMAP has no internal contradictions (reviewer checklist).
+- [x] SECURITY.md table current; CHANGELOG `[Unreleased]` populated.
 **Tests:** T-2-16.
 **Risk:** low
 **Effort:** S
@@ -933,7 +933,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 1. Add an optional OTel exporter (via `opentelemetry-sdk`) behind `observability.tracing.backend: "langsmith" | "otel"` (default langsmith for back-compat).
 2. Document redaction/sampling knobs.
 **DoD:**
-- [ ] OTel backend configurable; spans export to a configurable endpoint; tested with an in-memory exporter.
+- [x] OTel backend configurable; spans export to a configurable endpoint; tested with an in-memory exporter.
 **Tests:** `test_observability.test_otel_backend`.
 **Risk:** new optional dep; keep it in an `otel` extra.
 **Effort:** M
@@ -946,7 +946,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 **Action:**
 1. Remove the dep; `uv lock`; remove the stale `.gitignore` comment referencing `tests/__snapshots__`.
 **DoD:**
-- [ ] `uv sync --extra dev` succeeds; no test references the dep; lock updated.
+- [x] `uv sync --extra dev` succeeds; no test references the dep; lock updated.
 **Tests:** none
 **Risk:** low
 **Effort:** S
@@ -957,7 +957,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 **Action:**
 1. Remove each dead item; for `DANGEROUS_COMMAND_HINTS` either import from `guard.py` or generate from the rules list; for `JarnRuntime.warnings` either wire it (sandbox degrade, repomap failure) or remove.
 **DoD:**
-- [ ] Grep confirms no remaining references; tests pass.
+- [x] Grep confirms no remaining references; tests pass.
 **Tests:** existing.
 **Risk:** low
 **Effort:** S
@@ -969,7 +969,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 1. Delete `skill_dirs()` (or make it a thin delegating alias) â€” completes T-2-10.
 2. Either wire `ProviderEmbedder` from `memory.embedder` config (provider + model) **or** move it to an `experimental/` module and fix the docstring.
 **DoD:**
-- [ ] No contradictory duplicate; `ProviderEmbedder` either works via config or is clearly marked experimental/unwired.
+- [x] No contradictory duplicate; `ProviderEmbedder` either works via config or is clearly marked experimental/unwired.
 **Tests:** `test_vector.test_provider_embedder_wired` (if wired) or a docstring assertion.
 **Risk:** low
 **Effort:** S
@@ -981,7 +981,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 1. **If maintained:** pin `modal` in a `bench` extra, parameterize the wheel version, add a minimal smoke test.
 2. **If not:** move to `contrib/` with a README, or delete.
 **DoD:**
-- [ ] Decision recorded; script either has declared deps + test, or is moved/removed.
+- [x] Decision recorded; script either has declared deps + test, or is moved/removed.
 **Tests:** smoke if kept.
 **Risk:** low
 **Effort:** S
@@ -993,7 +993,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 1. Announce a removal version (e.g. 0.6.0) in the deprecation warning + CHANGELOG + docs.
 2. Keep working until then.
 **DoD:**
-- [ ] Deprecation warning names the removal version; docs + CHANGELOG updated.
+- [x] Deprecation warning names the removal version; docs + CHANGELOG updated.
 **Tests:** existing `test_preset_unify` / `test_profiles`.
 **Risk:** low
 **Effort:** S
@@ -1004,7 +1004,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 **Action:**
 1. Delete the listed local artifacts to clean the working tree.
 **DoD:**
-- [ ] `ls` confirms removal; `git status` unaffected (they were untracked).
+- [x] `ls` confirms removal; `git status` unaffected (they were untracked).
 **Tests:** none
 **Risk:** none (gitignored)
 **Effort:** S
@@ -1015,7 +1015,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 **Action:**
 1. Archive completed sections; keep only open "Road to 1.0.0" items.
 **DoD:**
-- [ ] `todo.md` reflects only open work.
+- [x] `todo.md` reflects only open work.
 **Tests:** none
 **Risk:** none
 **Effort:** S
@@ -1026,7 +1026,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 - [x] Arg-aware completion, per-turn date, verify gate, MCP timeout/refresh, `/telemetry status`, pricing opt-out, OTel path all shipped and tested.
 - [x] All doc drift fixed; doc-sync test green; ROADMAP internally consistent.
 - [x] Dead deps/code removed; `swebench_modal.py` decision recorded; deprecation timeline set; local artifacts cleaned; `todo.md` trimmed.
-- [x] Full `pytest -q`, `ruff`, `mypy` green (1343 tests collected).
+- [x] Full `pytest -q`, `ruff`, `mypy` green (1347 tests collected).
 
 ---
 

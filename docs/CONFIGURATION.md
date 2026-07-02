@@ -358,6 +358,9 @@ observability:
   langsmith: false         # opt-in tracing (needs LANGSMITH_API_KEY)
   tracing:
     backend: langsmith     # langsmith | otel — otel needs `pip install jarn[otel]`
+                           # OTel: set OTEL_EXPORTER_OTLP_ENDPOINT (default localhost:4318).
+                           # LangSmith: needs LANGSMITH_API_KEY. Neither path logs prompts
+                           # or file contents by default — traces are tool/model metadata.
   telemetry: false         # opt-in local usage analytics, default OFF (see ROADMAP)
   log_level: info          # debug | info | warning | error
   transcript: true         # append-only JSONL session transcript under .jarn/sessions/
