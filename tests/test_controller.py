@@ -427,7 +427,7 @@ def _stub_runtime_build(monkeypatch, mcp_result):
 
     Returns the list of extra_tools build_runtime was handed (mutated in place).
     """
-    import jarn.tui.controller as controller_mod
+    import jarn.controller.core as controller_mod
     from jarn.extensibility.mcp import MCPLoadResult
 
     seen = {}
@@ -517,7 +517,7 @@ async def test_ensure_runtime_errors_on_ambient_key_leak(
     tmp_path, monkeypatch, base_config
 ):
     """Ambient key leak to a non-local async subagent fails closed at build time."""
-    import jarn.tui.controller as controller_mod
+    import jarn.controller.core as controller_mod
     from jarn.agent.builder import AmbientKeyLeakError
     from jarn.extensibility.mcp import MCPLoadResult
 
