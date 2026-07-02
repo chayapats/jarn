@@ -236,7 +236,10 @@ def test_hook_env_allowlist_hides_api_key(tmp_path, monkeypatch):
     """By default a hook subprocess does NOT see ``*_API_KEY`` env vars; only the
     minimal allowlist + declared ``extra_env`` (or ``inherit_env`` opt-in) reach it."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "secret-xyz")
-    cmd = "echo ${OPENROUTER_API_KEY:-MISSING}"
+    cmd = (
+        'python -c "import os; print(os.environ.get('
+        "'OPENROUTER_API_KEY', 'MISSING'))\""
+    )
     runner = HookRunner(
         hooks=[HookSpec(event="post_edit", command=cmd)], cwd=tmp_path
     )

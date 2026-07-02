@@ -46,6 +46,10 @@ def _doc_counts(path: Path) -> list[int]:
 
 
 @pytest.mark.parametrize("doc_path", CURRENT_COUNT_DOCS, ids=lambda p: p.name)
+@pytest.mark.skipif(
+    __import__("sys").platform == "win32",
+    reason="collection count differs when POSIX-only tests are skipped on Windows",
+)
 def test_doc_test_count_matches_collection(doc_path: Path) -> None:
     expected = _pytest_collection_count()
     found = _doc_counts(doc_path)

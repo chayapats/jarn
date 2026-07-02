@@ -805,6 +805,12 @@ def _repo_with_commit(tmp_path: Path) -> Path:
     (root / "README.txt").write_text("init\n", encoding="utf-8")
     _git(["add", "README.txt"], cwd=root)
     _git(["commit", "-m", "init"], cwd=root)
+    (root / ".gitignore").write_text(
+        ".jarn/state.sqlite\n.jarn/state.sqlite-*\n",
+        encoding="utf-8",
+    )
+    _git(["add", ".gitignore"], cwd=root)
+    _git(["commit", "-m", "gitignore runtime state"], cwd=root)
     return root
 
 
