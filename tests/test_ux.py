@@ -242,12 +242,12 @@ def test_derive_routing_models_openai_compatible():
     assert routing["summarizer"] == main
 
 
-def test_apply_ui_theme_switches_palette():
+def test_configure_ui_switches_palette():
     from jarn.tui import palette
 
-    palette.apply_ui_theme("light")
+    palette.configure_ui(theme="light")
     assert palette.C_USER == "#0e7490"
-    palette.apply_ui_theme("dark")
+    palette.configure_ui(theme="dark")
     assert palette.C_USER == "#38e1ff"
 
 
