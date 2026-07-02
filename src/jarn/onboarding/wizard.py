@@ -2,8 +2,8 @@
 
 Runs in the plain terminal (before the TUI launches) using Rich prompts. Asks
 for the default provider, how to store its API key (env var reference or the OS
-keychain — never inlined), the default model, permission mode, and theme; then
-writes ``~/.jarn/config.yaml`` and optionally validates the key with a tiny call.
+keychain — never inlined), the default model, and theme; then writes
+``~/.jarn/config.yaml`` and optionally validates the key with a tiny call.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from jarn.config.defaults import (
     PROVIDER_ENV_VARS,
 )
 from jarn.config.secrets import file_fallback_notice, store_secret
+from jarn.onboarding.providers import provider_hint
 from jarn.providers import strip_profile
 from jarn.tui.logo import TAGLINE, WORDMARK
 
@@ -36,15 +37,6 @@ console = Console()
 
 _CLOUD = CLOUD_PROVIDERS
 _PROFILES = ALL_PROVIDERS
-
-
-def _provider_hint(name: str) -> str:
-    """Return the provider class label: cloud, local, or custom."""
-    if name == CUSTOM_OPENAI_PROFILE:
-        return "custom"
-    if name in CLOUD_PROVIDERS:
-        return "cloud"
-    return "local"
 
 
 def _detect_env_key() -> tuple[str, str] | None:
@@ -177,7 +169,7 @@ def run_wizard(*, force: bool = False) -> Path | None:
     # Build the provider list with hints and recommendation tag
     provider_choices_display: list[str] = []
     for p in _PROFILES:
-        hint = _provider_hint(p)
+        hint = provider_hint(p)
         tag = " [yellow]★ recommended[/yellow]" if p == recommended else ""
         extra = (
             "  aggregator; needs a free openrouter.ai account"
