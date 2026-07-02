@@ -294,7 +294,7 @@ async def test_repl_edit_then_save_uses_edited_body(tmp_path, monkeypatch, base_
     async def _edit(_req):  # presence of an editor enables the edit option
         return None
 
-    with patch.object(repl, "_edit_text_in_editor", return_value="edited body"):
+    with patch.object(repl.turn, "_edit_text_in_editor", return_value="edited body"):
         reply = await repl._approve(
             console, ctrl, _request(),
             pick=_pick_returning(repl._EDIT_MEMORY), edit=_edit,
@@ -314,7 +314,7 @@ async def test_repl_edit_aborted_writes_nothing(tmp_path, monkeypatch, base_conf
     async def _edit(_req):
         return None
 
-    with patch.object(repl, "_edit_text_in_editor", return_value=None):
+    with patch.object(repl.turn, "_edit_text_in_editor", return_value=None):
         reply = await repl._approve(
             console, ctrl, _request(),
             pick=_pick_returning(repl._EDIT_MEMORY), edit=_edit,
