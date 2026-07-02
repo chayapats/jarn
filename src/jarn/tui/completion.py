@@ -212,10 +212,10 @@ def _walk_entries(
             continue
         if not entry.name.lower().startswith(name_prefix.lower()):
             continue
-        rel = entry.relative_to(root)
+        rel_str = entry.relative_to(root).as_posix()
         suffix = "/" if entry.is_dir() else ""
-        replacement = f"{prefix_text}@{rel}{suffix}"
-        out.append(Completion(f"@{rel}{suffix}", replacement, kind))
+        replacement = f"{prefix_text}@{rel_str}{suffix}"
+        out.append(Completion(f"@{rel_str}{suffix}", replacement, kind))
         if len(out) >= provider.max_files:
             break
     return out

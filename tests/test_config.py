@@ -232,6 +232,23 @@ def test_unknown_top_level_key_raises(tmp_path):
         load_config(global_path=gp, project_path=None)
 
 
+def test_nested_unknown_rejected(tmp_path):
+    """Unknown keys inside nested sections are rejected (Pydantic extra=forbid)."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"context": {"bogus_nested": 123}})
+    with pytest.raises(ConfigError, match="bogus_nested"):
+        load_config(global_path=gp, project_path=None)
+
+
+def test_migration_from_prev_version(tmp_path):
+    """Version-0 configs without config_version migrate via the v0→v1 shim."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"log_level": "debug", "default_profile": "openrouter"})
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.observability.log_level == "debug"
+    assert cfg.default_profile == "openrouter"
+
+
 # -- FIX 7: enum-like field validation --------------------------------------
 
 

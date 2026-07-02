@@ -8,142 +8,27 @@ which are concatenated so a project can extend (not just replace) global rules.
 
 from __future__ import annotations
 
-import re
 import warnings
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import yaml
+from pydantic import ValidationError
 
 from jarn.config import paths
-from jarn.config.schema import (
-    AsyncSubagentSpec,
-    BudgetConfig,
-    CompatConfig,
-    Config,
-    ContextConfig,
-    ExecutionConfig,
-    GitConfig,
-    HookSpec,
-    MCPServer,
-    ObservabilityConfig,
-    PermissionMode,
-    PermissionRules,
-    PlanConfig,
-    PolicyConfig,
-    ProviderConfig,
-    ProviderType,
-    RoutingConfig,
-    UIConfig,
-    WikiConfig,
+from jarn.config.pydantic_schema import (
+    ConfigValidationError,
+    config_to_dataclass,
+    parse_config_model,
 )
+from jarn.config.schema import Config, ProviderConfig
 
 _LIST_EXTEND_KEYS = {"hooks", "mcp_servers", "async_subagents"}
-
-#: Safe ``extra`` kwargs forwarded to ``init_chat_model`` per provider. Unknown
-#: keys are rejected at load so mistyped YAML can't inject arbitrary constructor
-#: kwargs (headers, URLs, …). Use the typed ``headers`` field for HTTP auth.
-_PROVIDER_EXTRA_KEYS = frozenset({
-    "max_retries",
-    "timeout",
-    "temperature",
-    "top_p",
-    "max_tokens",
-    "streaming",
-    "model_kwargs",
-    "extra_body",
-    "frequency_penalty",
-    "presence_penalty",
-    "stop",
-    "n",
-    "seed",
-    "keep_alive",
-})
-
-_VALID_MCP_TRANSPORTS = frozenset({"stdio", "http", "sse", "streamable_http"})
-# Shell metacharacters — MCP stdio spawns without shell=True, so reject these.
-_STDIO_CMD_META = re.compile(r"[;|&`$<>(){}]")
-
-#: The authoritative set of recognised top-level config keys. Anything else is a
-#: typo or an unsupported feature and is rejected loudly rather than ignored.
-_KNOWN_TOP_LEVEL_KEYS = {
-    "default_profile",
-    "default_model",
-    "permission_mode",
-    "strict_secrets",
-    "hook_inherit_env",
-    "hook_global_require_trust",
-    "providers",
-    "routing",
-    "budget",
-    "context",
-    "execution",
-    "policy",
-    "permissions",
-    "hooks",
-    "mcp_servers",
-    "async_subagents",
-    "observability",
-    "ui",
-    "compat",
-    "git",
-    "wiki",
-    "plan",
-}
-
-_TRUE_STRINGS = {"true", "yes", "on", "1"}
-_FALSE_STRINGS = {"false", "no", "off", "0", ""}
 
 
 class ConfigError(ValueError):
     """Raised on malformed configuration."""
-
-
-def _normalize_bool(value: Any, path: str) -> bool:
-    """Coerce a YAML scalar to a strict bool, rejecting ambiguous values.
-
-    Real ``bool`` passes through. Strings (stripped/lowercased) map via the
-    well-known truthy/falsey words; ints ``0``/``1`` map to ``False``/``True``.
-    Anything else raises :class:`ConfigError` naming ``path`` so the user sees
-    which key was wrong instead of a silent surprising coercion.
-    """
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        token = value.strip().lower()
-        if token in _TRUE_STRINGS:
-            return True
-        if token in _FALSE_STRINGS:
-            return False
-        raise ConfigError(
-            f"{path} must be a boolean (got {value!r})."
-        )
-    if isinstance(value, int):  # note: bool already handled above
-        if value in (0, 1):
-            return bool(value)
-        raise ConfigError(f"{path} must be a boolean (got {value!r}).")
-    raise ConfigError(f"{path} must be a boolean (got {value!r}).")
-
-
-def _coerce_int(value: Any, path: str) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError) as exc:
-        raise ConfigError(f"{path} must be an integer (got {value!r}).") from exc
-
-
-def _coerce_float(value: Any, path: str) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError) as exc:
-        raise ConfigError(f"{path} must be a number (got {value!r}).") from exc
-
-
-def _check_pct(value: int, path: str) -> int:
-    if not 0 <= value <= 100:
-        raise ConfigError(f"{path} must be between 0 and 100 (got {value}).")
-    return value
 
 
 def _parse_yaml_text(text: str, source: Path | None) -> dict[str, Any]:
@@ -190,279 +75,40 @@ def _merge_permissions(base: dict[str, Any], overlay: dict[str, Any]) -> dict[st
     return merged
 
 
-def _build_config(raw: dict[str, Any]) -> Config:
-    cfg = Config()
-
-    unknown = set(raw) - _KNOWN_TOP_LEVEL_KEYS
-    if unknown:
-        key = sorted(unknown)[0]
-        raise ConfigError(
-            f"Unknown top-level config key {key!r}; "
-            f"expected one of {sorted(_KNOWN_TOP_LEVEL_KEYS)}"
-        )
-
-    if "default_profile" in raw:
-        cfg.default_profile = str(raw["default_profile"])
-    if "default_model" in raw:
-        cfg.default_model = raw["default_model"]
-    if "permission_mode" in raw:
-        try:
-            cfg.permission_mode = PermissionMode(str(raw["permission_mode"]))
-        except ValueError as exc:
-            raise ConfigError(
-                f"Unknown permission_mode {raw['permission_mode']!r}; "
-                f"expected one of {[m.value for m in PermissionMode]}"
-            ) from exc
-    if "strict_secrets" in raw:
-        cfg.strict_secrets = _normalize_bool(raw["strict_secrets"], "strict_secrets")
-    if "hook_inherit_env" in raw:
-        cfg.hook_inherit_env = _normalize_bool(
-            raw["hook_inherit_env"], "hook_inherit_env"
-        )
-    if "hook_global_require_trust" in raw:
-        cfg.hook_global_require_trust = _normalize_bool(
-            raw["hook_global_require_trust"], "hook_global_require_trust"
-        )
-
-    cfg.providers = _build_providers(raw.get("providers", {}))
-    _validate_inline_api_keys(cfg.providers, cfg.strict_secrets)
-
-    routing = raw.get("routing", {}) or {}
-    from jarn.config.schema import _VALID_PROMPT_CACHE
-
-    # YAML 1.1 parses a bare ``off``/``on`` as a boolean, so ``prompt_cache: off``
-    # arrives as ``False`` — map it back to the intended string rather than
-    # rejecting a perfectly natural spelling.
-    prompt_cache_val = routing.get("prompt_cache", "auto")
-    if isinstance(prompt_cache_val, bool):
-        prompt_cache_val = "off" if prompt_cache_val is False else "auto"
-    prompt_cache_raw = str(prompt_cache_val)
-    if prompt_cache_raw not in _VALID_PROMPT_CACHE:
-        raise ConfigError(
-            f"routing.prompt_cache must be one of "
-            f"{sorted(_VALID_PROMPT_CACHE)} (got {prompt_cache_raw!r})."
-        )
-    keep_alive_raw = _coerce_int(routing.get("keep_alive", 1800), "routing.keep_alive")
-    if keep_alive_raw < 0:
-        raise ConfigError(
-            f"routing.keep_alive must be >= 0 (got {keep_alive_raw})."
-        )
-    cfg.routing = RoutingConfig(
-        main=routing.get("main"),
-        subagent=routing.get("subagent"),
-        summarizer=routing.get("summarizer"),
-        fallback=list(routing.get("fallback", []) or []),
-        prompt_cache=prompt_cache_raw,
-        keep_alive=keep_alive_raw,
-    )
-
-    budget = raw.get("budget", {}) or {}
-    per_session = budget.get("per_session_usd")
-    if per_session is not None:
-        per_session = _coerce_float(per_session, "budget.per_session_usd")
-        if per_session < 0:
-            raise ConfigError(
-                f"budget.per_session_usd must be >= 0 (got {per_session})."
+def _validation_error_to_config_error(exc: ValidationError | ConfigValidationError) -> ConfigError:
+    if isinstance(exc, ConfigValidationError):
+        return ConfigError(str(exc))
+    errors = exc.errors()
+    if not errors:
+        return ConfigError(str(exc))
+    first = errors[0]
+    loc_parts = [str(part) for part in first.get("loc", ())]
+    loc = ".".join(loc_parts)
+    msg = first.get("msg", str(exc))
+    if "extra_forbidden" in msg or "Extra inputs are not permitted" in msg:
+        key = loc_parts[-1] if loc_parts else "unknown"
+        if len(loc_parts) == 1:
+            return ConfigError(
+                f"Unknown top-level config key {key!r}; "
+                "see docs/CONFIGURATION.md for recognised keys."
             )
-    cfg.budget = BudgetConfig(
-        per_session_usd=per_session,
-        hard_stop=_normalize_bool(budget.get("hard_stop", True), "budget.hard_stop"),
-        warn_at_pct=_check_pct(
-            _coerce_int(budget.get("warn_at_pct", 80), "budget.warn_at_pct"),
-            "budget.warn_at_pct",
-        ),
-    )
+        return ConfigError(f"Unknown config key {key!r} at {loc}")
+    if loc:
+        return ConfigError(f"{loc}: {msg}")
+    return ConfigError(msg)
 
-    ctx = raw.get("context", {}) or {}
-    repo_map_raw = str(ctx.get("repo_map", "tool"))
-    from jarn.config.schema import _VALID_REPO_MAP_MODES
 
-    if repo_map_raw not in _VALID_REPO_MAP_MODES:
-        raise ConfigError(
-            f"context.repo_map must be one of "
-            f"{sorted(_VALID_REPO_MAP_MODES)} (got {repo_map_raw!r})."
-        )
-    repo_map_tokens_raw = _coerce_int(ctx.get("repo_map_tokens", 1024), "context.repo_map_tokens")
-    if repo_map_tokens_raw <= 0:
-        raise ConfigError(
-            f"context.repo_map_tokens must be > 0 (got {repo_map_tokens_raw})."
-        )
-    memory_tokens_raw = _coerce_int(ctx.get("memory_tokens", 4096), "context.memory_tokens")
-    if memory_tokens_raw <= 0:
-        raise ConfigError(
-            f"context.memory_tokens must be > 0 (got {memory_tokens_raw})."
-        )
-    wiki_index_tokens_raw = _coerce_int(
-        ctx.get("wiki_index_tokens", 1024), "context.wiki_index_tokens"
-    )
-    if wiki_index_tokens_raw <= 0:
-        raise ConfigError(
-            f"context.wiki_index_tokens must be > 0 (got {wiki_index_tokens_raw})."
-        )
-    project_context_tokens_raw = _coerce_int(
-        ctx.get("project_context_tokens", 8192), "context.project_context_tokens"
-    )
-    if project_context_tokens_raw <= 0:
-        raise ConfigError(
-            f"context.project_context_tokens must be > 0 (got {project_context_tokens_raw})."
-        )
-    cfg.context = ContextConfig(
-        auto_compact=_normalize_bool(
-            ctx.get("auto_compact", True), "context.auto_compact"
-        ),
-        compact_at_pct=_check_pct(
-            _coerce_int(ctx.get("compact_at_pct", 85), "context.compact_at_pct"),
-            "context.compact_at_pct",
-        ),
-        repo_map=repo_map_raw,
-        repo_map_tokens=repo_map_tokens_raw,
-        memory_tokens=memory_tokens_raw,
-        wiki_index_tokens=wiki_index_tokens_raw,
-        project_context_tokens=project_context_tokens_raw,
-    )
-
-    ex = raw.get("execution", {}) or {}
-    _valid_local_sandbox = {"off", "auto", "require"}
-    local_sandbox_raw = str(ex.get("local_sandbox", "off"))
-    if local_sandbox_raw not in _valid_local_sandbox:
-        raise ConfigError(
-            f"execution.local_sandbox must be one of "
-            f"{sorted(_valid_local_sandbox)} (got {local_sandbox_raw!r})."
-        )
-    _valid_backends = {"local", "sandbox", "docker"}
-    backend_raw = str(ex.get("backend", "local"))
-    if backend_raw not in _valid_backends:
-        raise ConfigError(
-            f"execution.backend must be one of "
-            f"{sorted(_valid_backends)} (got {backend_raw!r})."
-        )
-    sandbox_writable_raw = ex.get("sandbox_writable", []) or []
-    if not isinstance(sandbox_writable_raw, list):
-        raise ConfigError(
-            f"execution.sandbox_writable must be a list "
-            f"(got {sandbox_writable_raw!r})."
-        )
-    docker_memory_raw = ex.get("docker_memory", "")
-    if not isinstance(docker_memory_raw, str):
-        raise ConfigError(
-            f"execution.docker_memory must be a string (got {docker_memory_raw!r})."
-        )
-    docker_pids_raw = ex.get("docker_pids", 0)
-    if not isinstance(docker_pids_raw, int) or isinstance(docker_pids_raw, bool):
-        raise ConfigError(
-            f"execution.docker_pids must be an integer (got {docker_pids_raw!r})."
-        )
-    docker_cpus_raw = ex.get("docker_cpus", "")
-    if not isinstance(docker_cpus_raw, str):
-        raise ConfigError(
-            f"execution.docker_cpus must be a string (got {docker_cpus_raw!r})."
-        )
-    docker_user_raw = ex.get("docker_user", "")
-    if not isinstance(docker_user_raw, str):
-        raise ConfigError(
-            f"execution.docker_user must be a string (got {docker_user_raw!r})."
-        )
-    cfg.execution = ExecutionConfig(
-        backend=backend_raw,
-        background=_normalize_bool(ex.get("background", True), "execution.background"),
-        background_max_concurrent=ex.get("background_max_concurrent"),
-        background_max_lifetime_secs=ex.get("background_max_lifetime_secs"),
-        sandbox_provider=str(ex.get("sandbox_provider", "langsmith")),
-        docker_image=str(ex.get("docker_image", "python:3.12")),
-        multimodal=_normalize_bool(ex.get("multimodal", True), "execution.multimodal"),
-        allow_local_fallback=_normalize_bool(
-            ex.get("allow_local_fallback", False), "execution.allow_local_fallback"
-        ),
-        local_sandbox=local_sandbox_raw,
-        sandbox_allow_network=_normalize_bool(
-            ex.get("sandbox_allow_network", True), "execution.sandbox_allow_network"
-        ),
-        sandbox_writable=[str(p) for p in sandbox_writable_raw],
-        docker_memory=docker_memory_raw,
-        docker_pids=docker_pids_raw,
-        docker_cpus=docker_cpus_raw,
-        docker_user=docker_user_raw,
-    )
-
-    cfg.policy = _build_policy_config(raw.get("policy", {}) or {})
-
-    perms = raw.get("permissions", {}) or {}
-    cfg.permissions = PermissionRules(
-        allow=list(perms.get("allow", []) or []),
-        deny=list(perms.get("deny", []) or []),
-    )
-
-    cfg.hooks = [_build_hook(h) for h in raw.get("hooks", []) or []]
-    cfg.mcp_servers = [_build_mcp(m) for m in raw.get("mcp_servers", []) or []]
-    cfg.async_subagents = [
-        _build_async_subagent(a) for a in raw.get("async_subagents", []) or []
-    ]
-
-    obs = raw.get("observability", {}) or {}
-    _valid_log_levels = {"debug", "info", "warning", "error"}
-    log_level_raw = str(obs.get("log_level", "info"))
-    if log_level_raw not in _valid_log_levels:
-        raise ConfigError(
-            f"observability.log_level must be one of "
-            f"{sorted(_valid_log_levels)} (got {log_level_raw!r})."
-        )
-    cfg.observability = ObservabilityConfig(
-        langsmith=_normalize_bool(
-            obs.get("langsmith", False), "observability.langsmith"
-        ),
-        telemetry=_normalize_bool(
-            obs.get("telemetry", False), "observability.telemetry"
-        ),
-        log_level=log_level_raw,
-        transcript=_normalize_bool(
-            obs.get("transcript", True), "observability.transcript"
-        ),
-    )
-
-    ui = raw.get("ui", {}) or {}
-    from jarn.config.schema import _VALID_SPLASH_VALUES
-    splash_raw = str(ui.get("splash", "compact"))
-    if splash_raw not in _VALID_SPLASH_VALUES:
-        raise ConfigError(
-            f"ui.splash must be one of {sorted(_VALID_SPLASH_VALUES)} "
-            f"(got {splash_raw!r})."
-        )
-    cfg.ui = UIConfig(
-        theme=str(ui.get("theme", "dark")),
-        accent=str(ui.get("accent", "cyan")),
-        splash=splash_raw,
-        approval_diff_lines=int(ui.get("approval_diff_lines", 40)),
-    )
-
-    compat = raw.get("compat", {}) or {}
-    cfg.compat = _build_compat(compat)
-
-    git = raw.get("git", {}) or {}
-    cfg.git = _build_git_config(git)
-
-    wiki = raw.get("wiki", {}) or {}
-    cfg.wiki = _build_wiki_config(wiki)
-
-    plan = raw.get("plan", {}) or {}
-    from jarn.config.schema import _VALID_EXIT_MODES
-
-    exit_mode_raw = str(plan.get("exit_mode", "auto-edit"))
-    if exit_mode_raw not in _VALID_EXIT_MODES:
-        raise ConfigError(
-            f"plan.exit_mode must be one of "
-            f"{sorted(_VALID_EXIT_MODES)} (got {exit_mode_raw!r})."
-        )
-    cfg.plan = PlanConfig(exit_mode=exit_mode_raw)
-
+def _build_config(raw: dict[str, Any]) -> Config:
+    try:
+        model = parse_config_model(raw)
+    except (ValidationError, ConfigValidationError) as exc:
+        raise _validation_error_to_config_error(exc) from exc
+    cfg = config_to_dataclass(model)
+    _validate_inline_api_keys(cfg.providers, cfg.strict_secrets)
+    for mcp in cfg.mcp_servers:
+        if mcp.url and mcp.transport in ("http", "sse", "streamable_http"):
+            _warn_mcp_url_ssrf(mcp.url, name=mcp.name)
     return cfg
-
-
-def _validate_absolute_http_url(url: str, *, context: str) -> None:
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise ConfigError(
-            f"{context} must be an absolute http(s) URL (got {url!r})."
-        )
 
 
 def _warn_mcp_url_ssrf(url: str, *, name: str) -> None:
@@ -478,67 +124,6 @@ def _warn_mcp_url_ssrf(url: str, *, name: str) -> None:
             "ensure you trust this config.",
             stacklevel=3,
         )
-
-
-def _validate_stdio_command(command: str, *, context: str) -> None:
-    if _STDIO_CMD_META.search(command):
-        raise ConfigError(
-            f"{context} must not contain shell metacharacters "
-            f"(got {command!r}). MCP stdio servers are spawned without a shell."
-        )
-
-
-def _validate_string_headers(headers: object, *, context: str) -> dict[str, str]:
-    if headers is None:
-        return {}
-    if not isinstance(headers, dict):
-        raise ConfigError(f"{context} must be a mapping (got {headers!r}).")
-    out: dict[str, str] = {}
-    for key, val in headers.items():
-        if not isinstance(key, str) or not isinstance(val, str):
-            raise ConfigError(
-                f"{context} keys and values must be strings (got {key!r}: {val!r})."
-            )
-        out[key] = val
-    return out
-
-
-def _build_providers(raw: dict[str, Any]) -> dict[str, ProviderConfig]:
-    providers: dict[str, ProviderConfig] = {}
-    for name, spec in (raw or {}).items():
-        spec = spec or {}
-        if not isinstance(spec, dict):
-            raise ConfigError(
-                f"Provider {name!r} must be a mapping (got {spec!r})."
-            )
-        type_str = spec.get("type", name)
-        try:
-            ptype = ProviderType(str(type_str))
-        except ValueError as exc:
-            raise ConfigError(
-                f"Provider {name!r} has unknown type {type_str!r}; "
-                f"expected one of {[p.value for p in ProviderType]}"
-            ) from exc
-        known = {"type", "api_key", "base_url", "headers"}
-        extra = {k: v for k, v in spec.items() if k not in known}
-        bad_extra = set(extra) - _PROVIDER_EXTRA_KEYS
-        if bad_extra:
-            raise ConfigError(
-                f"Provider {name!r} ({ptype.value}) has unknown extra key(s) "
-                f"{sorted(bad_extra)}. Allowed: {sorted(_PROVIDER_EXTRA_KEYS)}. "
-                "Use the top-level 'headers' field for HTTP auth headers."
-            )
-        headers = _validate_string_headers(
-            spec.get("headers"), context=f"Provider {name!r} 'headers'"
-        )
-        providers[name] = ProviderConfig(
-            type=ptype,
-            api_key=spec.get("api_key"),
-            base_url=spec.get("base_url"),
-            headers=headers,
-            extra=extra,
-        )
-    return providers
 
 
 class InlineSecretWarning(UserWarning):
@@ -583,160 +168,6 @@ def _validate_inline_api_keys(
             "strict_secrets is on. Move each to a reference (keychain:..., "
             "file:..., or ${ENV_VAR})."
         )
-
-
-def _build_hook(raw: dict[str, Any]) -> HookSpec:
-    if "event" not in raw or "command" not in raw:
-        raise ConfigError(f"Hook entry must have 'event' and 'command': {raw!r}")
-    if not isinstance(raw["event"], str):
-        raise ConfigError(f"Hook 'event' must be a string (got {raw['event']!r}).")
-    if not isinstance(raw["command"], str):
-        raise ConfigError(
-            f"Hook 'command' must be a string (got {raw['command']!r})."
-        )
-    # Validate the event name against the allowed enum so a typo (e.g.
-    # ``sesion_start``) fails loudly at load instead of silently never matching.
-    from jarn.extensibility.hooks import HookEvent
-
-    valid_events = {e.value for e in HookEvent}
-    if raw["event"] not in valid_events:
-        raise ConfigError(
-            f"Hook 'event' must be one of {sorted(valid_events)} "
-            f"(got {raw['event']!r})."
-        )
-    return HookSpec(
-        event=raw["event"],
-        command=raw["command"],
-        name=raw.get("name"),
-        matcher=raw.get("matcher"),
-        blocking=_normalize_bool(raw.get("blocking", False), "hook.blocking"),
-    )
-
-
-def _build_async_subagent(raw: dict[str, Any]) -> AsyncSubagentSpec:
-    for key in ("name", "description", "graph_id"):
-        if key not in raw:
-            raise ConfigError(f"async_subagent entry needs '{key}': {raw!r}")
-        if not isinstance(raw[key], str):
-            raise ConfigError(
-                f"async_subagent '{key}' must be a string (got {raw[key]!r})."
-            )
-    headers = _validate_string_headers(
-        raw.get("headers"), context="async_subagent 'headers'"
-    )
-    url = raw.get("url")
-    if url is not None:
-        if not isinstance(url, str):
-            raise ConfigError(
-                f"async_subagent 'url' must be a string (got {url!r})."
-            )
-        _validate_absolute_http_url(url, context="async_subagent 'url'")
-    return AsyncSubagentSpec(
-        name=raw["name"],
-        description=raw["description"],
-        graph_id=raw["graph_id"],
-        url=url,
-        headers=headers,
-    )
-
-
-def _build_mcp(raw: dict[str, Any]) -> MCPServer:
-    if "name" not in raw:
-        raise ConfigError(f"MCP server entry must have a 'name': {raw!r}")
-    name = str(raw["name"])
-    transport = str(raw.get("transport", "stdio"))
-    if transport not in _VALID_MCP_TRANSPORTS:
-        raise ConfigError(
-            f"MCP server {name!r} transport must be one of "
-            f"{sorted(_VALID_MCP_TRANSPORTS)} (got {transport!r})."
-        )
-    args = raw.get("args", []) or []
-    if not isinstance(args, list):
-        raise ConfigError(f"MCP server 'args' must be a list (got {args!r}).")
-    env = raw.get("env", {}) or {}
-    if not isinstance(env, dict):
-        raise ConfigError(f"MCP server 'env' must be a mapping (got {env!r}).")
-    command = raw.get("command")
-    if transport == "stdio":
-        if not command or not isinstance(command, str):
-            raise ConfigError(
-                f"MCP server {name!r} with transport 'stdio' needs a 'command' string."
-            )
-        _validate_stdio_command(command, context=f"MCP server {name!r} command")
-    url = raw.get("url")
-    if transport in ("http", "sse", "streamable_http"):
-        if not url or not isinstance(url, str):
-            raise ConfigError(
-                f"MCP server {name!r} with transport {transport!r} needs a 'url' string."
-            )
-        _validate_absolute_http_url(url, context=f"MCP server {name!r} url")
-        _warn_mcp_url_ssrf(url, name=name)
-    headers = _validate_string_headers(
-        raw.get("headers"), context=f"MCP server {name!r} 'headers'"
-    )
-    return MCPServer(
-        name=name,
-        transport=transport,
-        command=command if isinstance(command, str) else None,
-        args=list(args),
-        url=url if isinstance(url, str) else None,
-        headers=headers,
-        env=dict(env),
-        enabled=_normalize_bool(raw.get("enabled", True), "mcp_server.enabled"),
-    )
-
-
-def _build_git_config(raw: dict[str, Any]) -> GitConfig:
-    _valid_modes = {"shadow", "commit"}
-    mode = str(raw.get("checkpoint_mode", "shadow"))
-    if mode not in _valid_modes:
-        raise ConfigError(
-            f"git.checkpoint_mode must be one of "
-            f"{sorted(_valid_modes)} (got {mode!r})."
-        )
-    return GitConfig(
-        autocheckpoint=_normalize_bool(
-            raw.get("autocheckpoint", False), "git.autocheckpoint"
-        ),
-        checkpoint_mode=mode,
-    )
-
-
-def _build_policy_config(raw: dict[str, Any]) -> PolicyConfig:
-    from jarn.config.profiles import PROFILE_NAMES
-
-    profile = str(raw.get("profile", ""))
-    if profile and profile not in PROFILE_NAMES:
-        raise ConfigError(
-            f"policy.profile must be one of "
-            f"{sorted(PROFILE_NAMES)} or empty (got {profile!r})."
-        )
-    return PolicyConfig(
-        profile=profile,
-        web_tools=_normalize_bool(raw.get("web_tools", True), "policy.web_tools"),
-    )
-
-
-def _build_wiki_config(raw: dict[str, Any]) -> WikiConfig:
-    return WikiConfig(
-        enabled=_normalize_bool(raw.get("enabled", False), "wiki.enabled"),
-    )
-
-
-def _build_compat(raw: dict[str, Any]) -> CompatConfig:
-    context_files_raw = raw.get("context_files")
-    if context_files_raw is not None:
-        if not isinstance(context_files_raw, list):
-            raise ConfigError(
-                f"compat.context_files must be a list (got {context_files_raw!r})."
-            )
-        context_files = [str(f) for f in context_files_raw]
-    else:
-        context_files = ["JARN.md", "AGENTS.md", "CLAUDE.md"]
-    read_claude_dir = _normalize_bool(
-        raw.get("read_claude_dir", True), "compat.read_claude_dir"
-    )
-    return CompatConfig(context_files=context_files, read_claude_dir=read_claude_dir)
 
 
 def load_config(

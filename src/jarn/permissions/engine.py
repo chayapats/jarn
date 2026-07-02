@@ -18,8 +18,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from jarn.config._yaml_store import ConfigCorruptError
 from jarn.config.schema import PermissionMode, PermissionRules
+from jarn.config.yaml_store import ConfigCorruptError
 from jarn.permissions.guard import GuardLevel, inspect_command, inspect_path_write
 
 _log = logging.getLogger("jarn")

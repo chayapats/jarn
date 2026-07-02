@@ -126,7 +126,7 @@ def _capture_tools(cfg, tmp_path, *, patch_backend=False):
         patch("deepagents.create_deep_agent", side_effect=fake_cda),
     ]
     if patch_backend:
-        patches.append(patch("jarn.agent.builder._make_backend", return_value=object()))
+        patches.append(patch("jarn.agent.runtime._make_backend", return_value=object()))
     import contextlib
 
     with contextlib.ExitStack() as stack:

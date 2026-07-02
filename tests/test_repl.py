@@ -1047,7 +1047,7 @@ def test_edit_text_in_editor_returns_saved_content(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setenv("EDITOR", "fake-editor")
-    monkeypatch.setattr(repl.subprocess, "run", _fake_editor)
+    monkeypatch.setattr(repl.turn.subprocess, "run", _fake_editor)
     out = repl._edit_text_in_editor("original\n")
     assert out == "original\n+appended\n"
 
@@ -1060,7 +1060,7 @@ def test_edit_text_in_editor_abort_returns_none(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(argv, 1)  # aborted
 
     monkeypatch.setenv("EDITOR", "fake-editor")
-    monkeypatch.setattr(repl.subprocess, "run", _fake_editor)
+    monkeypatch.setattr(repl.turn.subprocess, "run", _fake_editor)
     assert repl._edit_text_in_editor("original\n") is None
 
 
@@ -1092,7 +1092,7 @@ def _stub_editor(monkeypatch, result):
         return func()
 
     monkeypatch.setattr(pta, "run_in_terminal", _run_in_terminal)
-    monkeypatch.setattr(repl, "_edit_text_in_editor", lambda text, **k: result)
+    monkeypatch.setattr(repl.turn, "_edit_text_in_editor", lambda text, **k: result)
 
 
 @pytest.mark.asyncio
@@ -2321,7 +2321,7 @@ async def test_turn_failure_points_at_log_traceback(tmp_path, monkeypatch):
     async def _boom(*a, **k):
         raise RuntimeError("langgraph boom")
 
-    monkeypatch.setattr(repl, "_run_turn", _boom)
+    monkeypatch.setattr(repl.turn, "_run_turn", _boom)
     await app._handle("please do something")
     out = app.console.file.getvalue()
     log_path = str(paths.global_logs_dir() / "jarn.log")
@@ -2421,3 +2421,24 @@ def test_gen_stat_thinking_proxies_context_when_prompt_unknown(tmp_path, monkeyp
     app.controller.tracker.context_tokens = 5000
     assert "prompt ~5000 tok" in app._gen_stat()
     app.controller.close()
+
+
+def test_help_generated_from_registry():
+    """`/help` body is generated from the unified command registry."""
+    from jarn.commands.registry import COMMAND_SPECS, grouped_specs, help_group_order
+    from jarn.extensibility.commands import format_help
+
+    body = format_help()
+    for spec in COMMAND_SPECS:
+        assert f"/{spec.name}" in body
+        assert spec.description in body
+
+    grouped = grouped_specs()
+    for group_name in help_group_order():
+        specs = grouped.get(group_name, [])
+        if not specs:
+            continue
+        assert f"[b]{group_name}[/b]" in body
+        group_pos = body.index(f"[b]{group_name}[/b]")
+        for spec in specs:
+            assert body.index(f"/{spec.name}") > group_pos

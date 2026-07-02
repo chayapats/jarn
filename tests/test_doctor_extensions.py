@@ -105,6 +105,65 @@ def test_doctor_json_includes_extensions(isolated_home, tmp_path, monkeypatch, c
     assert data["extensions"]["counts"]["skills"] >= 1
 
 
+def test_cli_and_command_parity(tmp_path, monkeypatch, base_config):
+    """``jarn doctor`` and ``/doctor`` render identical Rich markup."""
+    from io import StringIO
+    from unittest.mock import patch
+
+    from rich.console import Console
+
+    from jarn.config import paths
+    from jarn.doctor.collect import collect_doctor
+    from jarn.doctor.render import doctor_lines
+    from jarn.tui.controller import Controller
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("JARN_HOME", str(home))
+    gp = home / "config.yaml"
+    gp.write_text(
+        "providers:\n  openrouter:\n    type: openrouter\n    api_key: sk-test\n"
+        "    base_url: http://localhost:9999/v1\n"
+        "routing:\n  main: openrouter/anthropic/claude-opus-4-8\n",
+        encoding="utf-8",
+    )
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: root)
+
+    with (
+        patch("jarn.config.loader.load_config", return_value=base_config),
+        patch("jarn.providers.ModelFactory.build_main", return_value=object()),
+    ):
+        diag_cli: dict = {}
+        collect_doctor(diag_cli)
+        cli_lines = doctor_lines(diag_cli)
+
+        diag_cmd: dict = {}
+        ctrl = Controller(base_config, root)
+        collect_doctor(
+            diag_cmd,
+            config=ctrl.config,
+            project_root=ctrl.project_root,
+            project_trusted=ctrl.project_trusted,
+        )
+        cmd_lines = doctor_lines(diag_cmd)
+        result = ctrl.handle_command("doctor", "")
+        ctrl.close()
+
+    assert cli_lines == cmd_lines
+    assert result.text == "\n".join(cli_lines)
+
+    buf = StringIO()
+    console = Console(file=buf, force_terminal=True, width=120)
+    console.print(result.text)
+    rendered = buf.getvalue()
+    assert "Providers" in rendered
+    assert "Extensions" in rendered
+
+
 def test_skill_shadow_matches_runtime(monkeypatch, tmp_path):
     """Doctor and runtime agree when .claude and .jarn define the same skill."""
     from jarn.config.loader import load_config

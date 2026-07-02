@@ -16,6 +16,18 @@ from typing import Literal
 
 ThemeName = Literal["dark", "light", "high-contrast"]
 
+
+@dataclass(frozen=True, slots=True)
+class _TextualColors:
+    """Tokens for :mod:`jarn.tui.theme` — generated from the same palette row."""
+
+    background: str
+    surface: str
+    panel: str
+    primary: str
+    secondary: str
+    dark: bool
+
 _ACCENT_COLORS: dict[str, str] = {
     "cyan": "#22d3ee",
     "blue": "#5a9bf0",
@@ -50,6 +62,7 @@ class _Palette:
     ctx_ok: str
     ctx_warn: str
     ctx_exceeded: str
+    textual: _TextualColors
 
 
 _PALETTES: dict[ThemeName, _Palette] = {
@@ -73,6 +86,14 @@ _PALETTES: dict[ThemeName, _Palette] = {
         ctx_ok="#9fb3b8",
         ctx_warn="#ffb454",
         ctx_exceeded="#ff6b6b",
+        textual=_TextualColors(
+            background="#0b1416",
+            surface="#10201f",
+            panel="#1c3336",
+            primary="#16b8a6",
+            secondary="#0891b2",
+            dark=True,
+        ),
     ),
     "light": _Palette(
         mode_color={"plan": "#2563eb", "ask": "#0891b2", "auto-edit": "#d97706", "yolo": "#dc2626"},
@@ -94,6 +115,14 @@ _PALETTES: dict[ThemeName, _Palette] = {
         ctx_ok="#475569",
         ctx_warn="#d97706",
         ctx_exceeded="#dc2626",
+        textual=_TextualColors(
+            background="#f6fafa",
+            surface="#ffffff",
+            panel="#e6f2f1",
+            primary="#0d9488",
+            secondary="#0e7490",
+            dark=False,
+        ),
     ),
     "high-contrast": _Palette(
         mode_color={"plan": "#00e5ff", "ask": "#00ffe1", "auto-edit": "#ffb454", "yolo": "#ff6b6b"},
@@ -115,6 +144,14 @@ _PALETTES: dict[ThemeName, _Palette] = {
         ctx_ok="#cccccc",
         ctx_warn="#ffb454",
         ctx_exceeded="#ff6b6b",
+        textual=_TextualColors(
+            background="#000000",
+            surface="#0a0a0a",
+            panel="#141414",
+            primary="#00ffe1",
+            secondary="#00e5ff",
+            dark=True,
+        ),
     ),
 }
 
@@ -205,11 +242,6 @@ def styled_fg(color: str, text: str, *, bold: bool = False) -> str:
     return f'<style fg="{color}">{b_open}{text}{b_close}</style>'
 
 
-def apply_ui_theme(theme: str) -> None:
-    """Switch module-level color constants to match ``config.ui.theme``."""
-    configure_ui(theme=theme)
-
-
 def configure_ui(*, theme: str = "dark", accent: str = "cyan") -> None:
     """Apply theme and optional brand accent from config."""
     global _active, MODE_COLOR, C_USER, C_TOOL, C_NOTICE, C_ERROR, C_WARN
@@ -239,6 +271,7 @@ def configure_ui(*, theme: str = "dark", accent: str = "cyan") -> None:
         ctx_ok=base.ctx_ok,
         ctx_warn=base.ctx_warn,
         ctx_exceeded=base.ctx_exceeded,
+        textual=base.textual,
     )
     MODE_COLOR = _active.mode_color
     C_USER = _active.c_user

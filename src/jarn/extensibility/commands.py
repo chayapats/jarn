@@ -21,11 +21,17 @@ from typing import Any, Literal
 
 from rich.markup import escape as _escape_rich
 
+from jarn.commands.registry import (
+    COMMAND_SPECS,
+    CommandRoute,
+    HelpGroup,
+    grouped_specs,
+    help_group_order,
+    route_for_spec,
+    spec_by_name,
+)
 from jarn.config import paths
 from jarn.extensibility.frontmatter import discover, parse
-
-CommandRoute = Literal["controller", "repl", "agent_template"]
-HelpGroup = Literal["Daily", "Setup", "Session"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,158 +43,20 @@ class BuiltinCommand:
     group: HelpGroup = "Daily"
 
 
-BUILTINS: tuple[BuiltinCommand, ...] = (
-    BuiltinCommand("help", "Show available commands and shortcuts.", "controller", group="Daily"),
-    BuiltinCommand(
-        "model",
-        "Show or switch the active model; /model refresh re-queries local endpoints.",
-        "repl",
-        usage="[/ref|refresh]",
-        group="Daily",
-    ),
-    BuiltinCommand(
-        "mode",
-        "Show or switch the permission mode (plan/ask/auto-edit/yolo).",
-        "repl",
-        usage="[plan|ask|auto-edit|yolo]",
-        group="Daily",
-    ),
-    BuiltinCommand("cost", "Show session token usage and cost.", "controller", group="Daily"),
-    BuiltinCommand("undo", "Revert the last agent turn's file changes.", "controller", group="Daily"),
-    BuiltinCommand("redo", "Re-apply the last undone agent turn's file changes.", "controller", group="Daily"),
-    BuiltinCommand("abort", "Cancel the running turn and roll back its file changes.", "repl", group="Daily"),
-    BuiltinCommand(
-        "commit",
-        "Draft a commit message from the current diff and commit (with approval).",
-        "repl",
-        group="Daily",
-    ),
-    BuiltinCommand(
-        "review",
-        "Review the current working-tree diff for bugs and quality (read-only).",
-        "repl",
-        group="Daily",
-    ),
-    BuiltinCommand(
-        "compact",
-        "Summarize and compact the conversation context.",
-        "repl",
-        group="Daily",
-    ),
-    BuiltinCommand(
-        "expand",
-        "Open the last turn's full tool output in the pager (same as Ctrl+O).",
-        "repl",
-        group="Daily",
-    ),
-    BuiltinCommand(
-        "memory",
-        "List, search, show, add, update, delete, or dump long-term memory.",
-        "controller",
-        usage="[search|show|add|update|delete|dump] ...",
-        group="Daily",
-    ),
-    BuiltinCommand("clear", "Clear the conversation and start a fresh thread.", "controller", group="Daily"),
-    BuiltinCommand(
-        "config",
-        "View or edit settings: /config, /config get <key>, /config set <key> <value> (persists).",
-        "controller",
-        group="Setup",
-    ),
-    BuiltinCommand(
-        "preset",
-        "Show or apply a preset — a shortcut that sets mode + sandbox at once.",
-        "controller",
-        usage="[<preset-name>]",
-        group="Setup",
-    ),
-    BuiltinCommand(
-        "profile",
-        "Deprecated alias of /preset (kept working).",
-        "controller",
-        usage="[<preset-name>]",
-        group="Setup",
-    ),
-    BuiltinCommand(
-        "sandbox",
-        "Show or toggle the execution backend (local/sandbox).",
-        "controller",
-        usage="[on|off]",
-        group="Setup",
-    ),
-    BuiltinCommand(
-        "trust",
-        "Trust this project root and lift the untrusted review-only floor.",
-        "controller",
-        group="Setup",
-    ),
-    BuiltinCommand(
-        "mcp",
-        "Show configured MCP servers with per-server health and last error.",
-        "controller",
-        usage="[status]",
-        group="Setup",
-    ),
-    BuiltinCommand("skills", "List available skills.", "controller", group="Setup"),
-    BuiltinCommand("init", "Create a JARN.md project context file.", "controller", group="Setup"),
-    BuiltinCommand("permissions", "Show current permission rules and allowlist.", "controller", group="Setup"),
-    BuiltinCommand(
-        "key",
-        "Set or replace the API key for the current provider (stored in the keychain).",
-        "repl",
-        usage="[<key>]",
-        group="Setup",
-    ),
-    BuiltinCommand(
-        "doctor",
-        "Diagnose configuration, providers, and keys.",
-        "controller",
-        group="Setup",
-    ),
-    BuiltinCommand("resume", "Pick a previous session to resume.", "repl", group="Session"),
-    BuiltinCommand(
-        "rewind",
-        "Rewind the conversation to an earlier turn and continue (forks a new thread).",
-        "repl",
-        group="Session",
-    ),
-    BuiltinCommand("sessions", "List and resume previous sessions.", "controller", group="Session"),
-    BuiltinCommand("checkpoints", "List recent auto-checkpoints.", "controller", group="Session"),
-    BuiltinCommand(
-        "ps",
-        "List or kill background processes (from run_in_background).",
-        "controller",
-        usage="[kill <id>]",
-        group="Session",
-    ),
-    BuiltinCommand(
-        "queue",
-        "Show or manage queued input lines (while a turn is running).",
-        "repl",
-        usage="[clear|cancel <n>|move <from> <to>]",
-        group="Session",
-    ),
-    BuiltinCommand(
-        "map",
-        "Show the ranked repo map (codebase overview).",
-        "controller",
-        usage="[focus] [--refresh]",
-        group="Session",
-    ),
-    BuiltinCommand(
-        "wiki",
-        "Search or list wiki knowledge-base pages.",
-        "controller",
-        usage="[search <q>|list]",
-        group="Session",
-    ),
-    BuiltinCommand("quit", "Exit J.A.R.N.", "controller", group="Session"),
-)
+def _spec_to_builtin(spec) -> BuiltinCommand:
+    return BuiltinCommand(
+        spec.name,
+        spec.description,
+        route_for_spec(spec),
+        usage=spec.usage,
+        group=spec.group,
+    )
+
+
+BUILTINS: tuple[BuiltinCommand, ...] = tuple(_spec_to_builtin(spec) for spec in COMMAND_SPECS)
 
 # Backward-compatible name → description map.
 BUILTIN_COMMANDS: dict[str, str] = {cmd.name: cmd.description for cmd in BUILTINS}
-
-_BUILTIN_BY_NAME: dict[str, BuiltinCommand] = {cmd.name: cmd for cmd in BUILTINS}
 
 HELP_SHORTCUTS = (
     "Tab complete · ↑/↓ history · Shift+Tab mode · "
@@ -204,7 +72,10 @@ def builtin_names() -> list[str]:
 
 
 def builtin_command(name: str) -> BuiltinCommand | None:
-    return _BUILTIN_BY_NAME.get(name)
+    spec = spec_by_name(name)
+    if spec is None:
+        return None
+    return _spec_to_builtin(spec)
 
 
 def route_for(name: str) -> CommandRoute | Literal["custom", "unknown"]:
@@ -228,8 +99,6 @@ def completion_catalog(custom: dict[str, Any] | None = None) -> dict[str, str]:
     return catalog
 
 
-_HELP_GROUP_ORDER: tuple[HelpGroup, ...] = ("Daily", "Setup", "Session")
-
 HELP_GLYPH_LEGEND = (
     "◇ plan · ◆ ask · ⚡ auto-edit · ⚠ yolo · "
     "● key ok · ✗ key fail · queue N = lines waiting while a turn runs"
@@ -244,20 +113,16 @@ def format_help(
     """Build ``/help`` body (Rich markup), grouped by section."""
     lines: list[str] = []
 
-    # Group builtins by their group field, preserving BUILTINS declaration order.
-    grouped: dict[str, list[BuiltinCommand]] = {}
-    for cmd in BUILTINS:
-        grouped.setdefault(cmd.group, []).append(cmd)
-
-    for group_name in _HELP_GROUP_ORDER:
-        cmds = grouped.get(group_name, [])
-        if not cmds:
+    grouped = grouped_specs()
+    for group_name in help_group_order():
+        specs = grouped.get(group_name, [])
+        if not specs:
             continue
         lines.append(f"[b]{group_name}[/b]")
-        for cmd in cmds:
-            suffix = f" {_escape_rich(cmd.usage)}" if cmd.usage else ""
+        for spec in specs:
+            suffix = f" {_escape_rich(spec.usage)}" if spec.usage else ""
             lines.append(
-                f"  [cyan]/{cmd.name}{suffix}[/cyan] — {_escape_rich(cmd.description)}"
+                f"  [cyan]/{spec.name}{suffix}[/cyan] — {_escape_rich(spec.description)}"
             )
 
     if custom:
