@@ -164,7 +164,7 @@ Reply ของ assistant render เป็น **Markdown** (heading, list, code 
 | `/skills` | รายการ skill ที่ใช้ได้ |
 | `/memory [search\|show\|add\|update\|delete\|dump] ...` | จัดการ long-term memory: list, search, show, add, update, delete, dump |
 | `/permissions` | ดู permission rule และ allowlist ปัจจุบัน |
-| `/mcp [status]` | ดู MCP server ที่ตั้งไว้ พร้อม health และ error ล่าสุดราย server |
+| `/mcp [status] [--refresh]` | ดู MCP server ที่ตั้งไว้ พร้อม health และ error ล่าสุดราย server |
 | `/trust` | trust project root นี้ เพื่อยกเลิก review-only floor ของ repo ที่ยังไม่ trust |
 | `/queue [clear\|cancel <n>\|move <from> <to>]` | ดูหรือจัดการ input ที่ queue ไว้ (ขณะ turn รันอยู่) |
 | `/undo` | ย้อนกลับ file change ของ agent turn ล่าสุด |
@@ -178,6 +178,7 @@ Reply ของ assistant render เป็น **Markdown** (heading, list, code 
 | `/map [focus] [--refresh]` | แสดง repo map ที่ rank แล้ว (ภาพรวม codebase) |
 | `/wiki [search <q>\|list]` | ค้นหาหรือแสดงรายการหน้า wiki knowledge base |
 | `/doctor` | ตรวจสอบ configuration, provider, และ key |
+| `/telemetry status` | ดูสถานะ telemetry opt-in และสถิติไฟล์ local sink |
 
 ## Permission modes (โหมดการอนุญาต)
 

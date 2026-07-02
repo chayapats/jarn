@@ -218,7 +218,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/skills` | List available skills. |
 | `/memory [search\|show\|add\|update\|delete\|dump] ...` | List, search, show, add, update, delete, or dump long-term memory. |
 | `/permissions` | Show current permission rules and allowlist. |
-| `/mcp [status]` | Show configured MCP servers with per-server health and last error. |
+| `/mcp [status] [--refresh]` | Show configured MCP servers with per-server health and last error. |
 | `/trust` | Trust this project root and lift the untrusted review-only floor. |
 | `/queue [clear\|cancel <n>\|move <from> <to>]` | Show or manage queued input lines (while a turn is running). |
 | `/undo` | Revert the last agent turn's file changes. |
@@ -232,6 +232,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/map [focus] [--refresh]` | Show the ranked repo map (codebase overview). |
 | `/wiki [search <q>\|list]` | Search or list wiki knowledge-base pages. |
 | `/doctor` | Diagnose configuration, providers, and keys. |
+| `/telemetry status` | Show telemetry opt-in status and local sink stats. |
 
 ## Permission modes
 
