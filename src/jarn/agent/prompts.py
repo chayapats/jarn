@@ -63,8 +63,9 @@ def date_context(now: datetime | None = None) -> str:
     """A context block stating the current local date/time.
 
     The model's training has a cutoff and otherwise has no idea what "today" is,
-    which makes time-sensitive requests ("find today's news") unreliable. Computed
-    at session build, so it reflects the day the session started."""
+    which makes time-sensitive requests ("find today's news") unreliable. Also
+    re-injected at the start of each agent turn (and when the local date rolls
+    over mid-session) via :class:`jarn.agent.session.SessionDriver`."""
     dt = now or datetime.now().astimezone()
     stamp = f"{dt:%A, %Y-%m-%d %H:%M}".rstrip()
     tz = f"{dt:%Z}".strip()

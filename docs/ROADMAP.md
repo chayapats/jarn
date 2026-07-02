@@ -57,7 +57,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-06-18** (v0.4.4 released
 - [x] `jarn` / `setup` / `init` / `doctor` (`--json`) CLI
 - [x] Strict config validation (typed bools, numeric ranges, unknown top-level keys rejected)
 - [x] Local rotating logs, opt-in LangSmith tracing
-- [x] `uv`/PyPI packaging, 1166 tests (+ packaging gate), clean lint + `mypy` CI
+- [x] `uv`/PyPI packaging, 1343 tests (+ packaging gate), clean lint + `mypy` CI
 - [x] `jarn doctor` extension diagnostics — skills, commands, subagents, hooks, MCP
   (shadowing, builtin renames, untrusted skips); `uv.lock` tracked for team installs
 
@@ -131,7 +131,7 @@ multi-agent review. See the design spec under `docs/superpowers/specs/`.
   (validation spinner + timeout + skippable), and token usage tracked for
   OpenAI-compatible streaming (LM Studio / vLLM).
 
-## v0.3.0 — prepared (Alpha, unreleased)
+## v0.3.0 — released (Alpha, 2026-06-09)
 
 - [x] **Real isolation (M1)** — Docker container execution backend
   (`execution.backend: docker`, hardened) + OS sandbox recommended for untrusted repos
@@ -180,18 +180,21 @@ multi-agent review. See the design spec under `docs/superpowers/specs/`.
   agent core is UI-agnostic so a FastAPI/WebSocket server reuses `SessionDriver`
 - [ ] **Open-core** — hosted sandbox, cloud sync, team features
   ([OPEN_CORE.md](OPEN_CORE.md)); no commercial code in this repo
-- [ ] **Sandbox runtimes** beyond the LangSmith provider (Docker / e2b)
+- [ ] **Sandbox runtimes** beyond Docker and the LangSmith remote provider (e.g. e2b)
 - [ ] **Remote telemetry sink** (separately opt-in) on top of the local recorder
 
 ## Known limitations
 
 - Live model calls require your own API key; CI tests cover mocked paths only.
-- `LocalShellBackend` runs on the host — safety is via the permission engine /
-  danger-guard, not isolation (see [PERMISSIONS.md](PERMISSIONS.md)). The sandbox
-  backend toggle is wired but needs an external sandbox runtime to function.
-- The pricing table is best-effort (override via `~/.jarn/pricing.yaml`).
-- `LocalEmbedder` recall is lexical/subword (no neural embeddings) unless a provider
-  embedder is configured.
+- **Host execution is the default** — `execution.backend: local` runs tools on your
+  machine with your user privileges. Safety is via the permission engine and
+  danger-guard, not kernel isolation. **Docker** (`execution.backend: docker`) and
+  **OS sandbox** (`execution.local_sandbox: auto|require`) are shipped opt-in
+  isolation paths; see [PERMISSIONS.md](PERMISSIONS.md).
+- The pricing table is best-effort (override via `~/.jarn/pricing.yaml`; set
+  `pricing.network: false` to skip live OpenRouter catalog fetch).
+- `LocalEmbedder` recall is lexical/subword (no neural embeddings) unless a
+  provider embedder is configured (`ProviderEmbedder` is experimental/unwired).
 
 ---
 

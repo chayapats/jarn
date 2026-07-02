@@ -4,7 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.x   | Yes (alpha — security fixes; no SLA) |
+| 0.4.x   | Yes (alpha — security fixes; no SLA) |
+| 0.1.x   | Best-effort only |
 
 ## Reporting a vulnerability
 
@@ -49,7 +50,7 @@ in your project directory when you approve them (or automatically in permissive 
 - **Network:** `web_fetch` / `web_search` and MCP tools are gated through the permission
   engine. `web_fetch` blocks private/loopback/metadata addresses by default.
 
-### What we do not guarantee in v0.1 alpha
+### What we do not guarantee in v0.4 alpha
 
 - Complete protection against a malicious **trusted** project (you approved its config)
 - Sandbox isolation without an external sandbox provider

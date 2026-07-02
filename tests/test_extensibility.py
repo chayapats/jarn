@@ -394,3 +394,62 @@ async def test_invalid_connection_marked_error(monkeypatch):
     assert result.health["nocmd"] == "error"
     assert "nocmd" in result.errors
     assert result.health["ok"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_mcp_timeout(monkeypatch):
+    """A slow MCP server is marked error when get_tools exceeds timeout_secs."""
+    import asyncio
+
+    class _SlowClient:
+        def __init__(self, connections, fail=None):
+            self.connections = connections
+
+        async def get_tools(self, *, server_name=None):
+            await asyncio.sleep(5)
+            return [f"{server_name}_tool"]
+
+    import langchain_mcp_adapters.client as client_mod
+
+    monkeypatch.setattr(
+        client_mod,
+        "MultiServerMCPClient",
+        lambda connections: _SlowClient(connections),
+    )
+    server = MCPServer(
+        name="slow", transport="stdio", command="run-slow", timeout_secs=0.05,
+    )
+    result = await load_mcp_tools([server])
+
+    assert result.tools == []
+    assert result.health["slow"] == "error"
+    assert "timed out" in result.errors["slow"]
+
+
+def test_mcp_status_refresh(tmp_path, monkeypatch, base_config):
+    """``/mcp refresh`` re-runs load_mcp_tools and updates health maps."""
+    from jarn.controller.commands.diagnostics import cmd_mcp
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    base_config.mcp_servers = [_stdio("a")]
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    from jarn.controller.core import Controller
+
+    ctrl = Controller(base_config, tmp_path / "proj")
+    calls: list[int] = []
+
+    async def _fake_load(servers):
+        calls.append(1)
+        return MCPLoadResult(
+            tools=["a_tool"], health={"a": "ok"}, errors={},
+        )
+
+    import jarn.controller.commands.diagnostics as diag_mod
+
+    monkeypatch.setattr(diag_mod, "load_mcp_tools", _fake_load)
+    out = cmd_mcp(ctrl, "refresh").text
+    assert calls == [1]
+    assert ctrl.mcp_health == {"a": "ok"}
+    assert ctrl.mcp_errors == {}
+    assert "a" in out and "ok" in out
+    ctrl.close()

@@ -59,7 +59,7 @@ def _stub_controller(
     import jarn.headless as headless_mod
 
     async def _fake_ensure_runtime(self):
-        return SimpleNamespace(agent=object(), main_model_ref="m", warnings=())
+        return SimpleNamespace(agent=object(), main_model_ref="m")
 
     async def _fake_aclose(self):
         pass
@@ -445,6 +445,94 @@ def test_exit_codes(tmp_path, monkeypatch, base_config, capsys):
 
     fake_driver.run_turn = _timeout
     assert run_headless("x", base_config, tmp_path) == EXIT_TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# Session resume (--resume-session)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resume_last(tmp_path, monkeypatch, base_config):
+    """--resume-session last picks the most recent session and resumes its thread."""
+    from jarn.agent.session import Event
+    from jarn.memory.sessions import SessionInfo
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+
+    resumed: list[str] = []
+    run_calls: list[tuple[str, bool]] = []
+
+    async def _resume_run_turn(prompt, *, resume: bool = False):
+        run_calls.append((prompt, resume))
+        yield Event(kind=EventKind.TEXT, text="continued")
+        yield Event(kind=EventKind.DONE)
+
+    fake_driver = MagicMock()
+    fake_driver.run_turn = _resume_run_turn
+
+    import jarn.headless as headless_mod
+
+    async def _fake_ensure_runtime(self):
+        self.sessions.list = lambda limit=30: [
+            SessionInfo("thread-abc", "prior work", 1.0),
+        ]
+
+    async def _fake_aclose(self):
+        pass
+
+    def _resume_thread(self, thread_id: str) -> None:
+        resumed.append(thread_id)
+
+    monkeypatch.setattr(headless_mod.Controller, "ensure_runtime", _fake_ensure_runtime)
+    monkeypatch.setattr(headless_mod.Controller, "resume_thread", _resume_thread)
+    monkeypatch.setattr(headless_mod.Controller, "make_driver", lambda self, a: fake_driver)
+    monkeypatch.setattr(headless_mod.Controller, "validate", lambda self: (True, "ready"))
+    monkeypatch.setattr(headless_mod.Controller, "enrich_turn_input", lambda self, t: t)
+    monkeypatch.setattr(headless_mod.Controller, "aclose", _fake_aclose)
+
+    result = await _run_headless(
+        "",
+        base_config,
+        tmp_path,
+        resume_session="last",
+    )
+
+    assert resumed == ["thread-abc"]
+    assert run_calls == [("", True)]
+    assert result.result == "continued"
+
+
+def test_budget_stop_exit_code(tmp_path, monkeypatch, base_config, capsys):
+    """Budget hard-stop surfaces exit code 2 (alias for the budget branch in test_exit_codes)."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    import jarn.headless as headless_mod
+    from jarn.agent.session import Event
+    from jarn.cost import BudgetExceeded
+
+    async def _fake_ensure_runtime(self):
+        pass
+
+    async def _fake_aclose(self):
+        pass
+
+    monkeypatch.setattr(headless_mod.Controller, "ensure_runtime", _fake_ensure_runtime)
+    monkeypatch.setattr(headless_mod.Controller, "aclose", _fake_aclose)
+    monkeypatch.setattr(headless_mod.Controller, "validate", lambda self: (True, "ready"))
+    monkeypatch.setattr(headless_mod.Controller, "enrich_turn_input", lambda self, t: t)
+
+    async def _budget_stop(prompt, *, resume: bool = False):
+        yield Event(
+            kind=EventKind.ERROR,
+            text=str(BudgetExceeded(spent=1.5, limit=1.0)),
+            data={"budget": True},
+        )
+
+    fake_driver = MagicMock()
+    fake_driver.run_turn = _budget_stop
+    monkeypatch.setattr(headless_mod.Controller, "make_driver", lambda self, a: fake_driver)
+
+    assert run_headless("x", base_config, tmp_path) == EXIT_REFUSED
 
 
 # ---------------------------------------------------------------------------

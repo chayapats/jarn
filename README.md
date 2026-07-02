@@ -176,8 +176,10 @@ preview appear inline.
 - **Shift+Tab** cycles the permission mode (plan → ask → auto-edit → yolo); the new
   mode flashes on the input border and stays in the status bar.
 - **Ctrl+O** (or **`/expand`**) opens the last turn's full tool output in the pager.
-- **Ctrl+V** (macOS) pastes an image/screenshot from the clipboard — it's saved under
+- **Ctrl+V** pastes an image/screenshot from the clipboard — it's saved under
   `.jarn/pastes/` and inserted as an `@path` the agent reads on send.
+  Supported on **macOS** (PNG/TIFF/JPEG), **Linux** (Wayland `wl-paste` or X11
+  `xclip`), and **Windows** (PowerShell); images over 10 MB are rejected.
 - **Esc** cancels the running turn. **Ctrl+C** cancels a turn / clears the input,
   and **twice in a row** exits (Claude Code-style). **Ctrl+Q** also quits.
 - **Copy text:** the terminal owns selection — just **drag to select and ⌘C**
@@ -216,7 +218,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/skills` | List available skills. |
 | `/memory [search\|show\|add\|update\|delete\|dump] ...` | List, search, show, add, update, delete, or dump long-term memory. |
 | `/permissions` | Show current permission rules and allowlist. |
-| `/mcp [status]` | Show configured MCP servers with per-server health and last error. |
+| `/mcp [status] [--refresh]` | Show configured MCP servers with per-server health and last error. |
 | `/trust` | Trust this project root and lift the untrusted review-only floor. |
 | `/queue [clear\|cancel <n>\|move <from> <to>]` | Show or manage queued input lines (while a turn is running). |
 | `/undo` | Revert the last agent turn's file changes. |
@@ -230,6 +232,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/map [focus] [--refresh]` | Show the ranked repo map (codebase overview). |
 | `/wiki [search <q>\|list]` | Search or list wiki knowledge-base pages. |
 | `/doctor` | Diagnose configuration, providers, and keys. |
+| `/telemetry status` | Show telemetry opt-in status and local sink stats. |
 
 ## Permission modes
 
@@ -313,7 +316,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1326 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1343 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

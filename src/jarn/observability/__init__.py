@@ -2,6 +2,6 @@
 
 from jarn.observability.logging import setup_logging
 from jarn.observability.telemetry import Telemetry
-from jarn.observability.tracing import configure_langsmith
+from jarn.observability.tracing import configure_langsmith, configure_tracing
 
-__all__ = ["Telemetry", "configure_langsmith", "setup_logging"]
+__all__ = ["Telemetry", "configure_langsmith", "configure_tracing", "setup_logging"]

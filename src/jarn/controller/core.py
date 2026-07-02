@@ -171,11 +171,6 @@ class Controller:
                     extra_tools=tools,
                     system_prompt_override=self.system_prompt_override,
                 )
-            if self.runtime.warnings:
-                if self.health not in ("error", "degraded"):
-                    self.health = "degraded"
-                if self.last_error is None:
-                    self.last_error = self.runtime.warnings[0]
         if not self._session_started:
             self._fire_lifecycle("session_start")
             self._session_started = True
@@ -429,6 +424,11 @@ class Controller:
             hooks=self._hook_runner(),
             transcript=transcript,
             checkpoint=self.checkpoint_manager,
+            verify_gate=self.config.verify.gate,
+            project_root=self.project_root,
+            verify_executor=getattr(
+                getattr(self.runtime, "backend", None), "execute", None
+            ),
         )
 
     def close(self) -> None:

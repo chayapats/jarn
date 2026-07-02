@@ -42,6 +42,7 @@ _HANDLERS: dict[str, CommandHandler] = {
     "cost": diagnostics.cmd_cost,
     "permissions": diagnostics.cmd_permissions,
     "mcp": diagnostics.cmd_mcp,
+    "telemetry": diagnostics.cmd_telemetry,
     "ps": diagnostics.cmd_ps,
     "checkpoints": diagnostics.cmd_checkpoints,
 }

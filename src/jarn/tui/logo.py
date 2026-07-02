@@ -22,8 +22,8 @@ SHORTCUT_HINT = (
 )
 
 
-def splash(version: str, model: str | None, mode: str) -> str:
-    """Big ASCII wordmark welcome. Model/mode live in the status bar."""
+def splash(version: str) -> str:
+    """Big ASCII wordmark welcome."""
     return (
         f"[b {palette.ACCENT}]{WORDMARK}[/b {palette.ACCENT}]\n"
         f"[dim]{TAGLINE} · v{version}[/dim]\n\n"
@@ -31,7 +31,7 @@ def splash(version: str, model: str | None, mode: str) -> str:
     )
 
 
-def splash_compact(version: str, model: str | None, mode: str) -> str:
+def splash_compact(version: str) -> str:
     """Single-line wordmark + version + shortcut hint."""
     return (
         f"[b {palette.ACCENT}]JARN[/b {palette.ACCENT}] "

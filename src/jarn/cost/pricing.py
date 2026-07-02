@@ -201,9 +201,15 @@ def _catalog() -> dict[str, dict]:
     return {}
 
 
-def warm_catalog(force: bool = False) -> None:
+def warm_catalog(force: bool = False, *, network: bool = True) -> None:
     """Refresh the OpenRouter catalog cache (network). Safe to call in a daemon
-    thread at startup; network/IO failures are swallowed so it never blocks."""
+    thread at startup; network/IO failures are swallowed so it never blocks.
+
+    Skips the fetch when ``network`` is ``False`` or env
+    ``JARN_NO_NETWORK_PRICING=1`` is set.
+    """
+    if not network_fetch_enabled(config_network=network):
+        return
     global _MEM_CATALOG
     if not force and _disk_cache_fresh():
         if _MEM_CATALOG is None:
@@ -219,6 +225,16 @@ def warm_catalog(force: bool = False) -> None:
     except OSError:
         pass
     _MEM_CATALOG = data
+
+
+def network_fetch_enabled(*, config_network: bool = True) -> bool:
+    """Whether OpenRouter catalog network fetch is allowed."""
+    import os
+
+    token = os.environ.get("JARN_NO_NETWORK_PRICING", "").strip().lower()
+    if token in ("1", "true", "yes", "on"):
+        return False
+    return config_network
 
 
 # Dedicated-provider profiles whose name differs from the OpenRouter vendor

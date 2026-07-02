@@ -137,8 +137,6 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
 
     async def run(self) -> None:
         c = self.console
-        _model = self.config.resolved_main_model()
-        _mode = self.config.permission_mode.value
         _splash_cfg = self.config.ui.splash
         from jarn.config.paths import global_home
         _first_run_marker = global_home() / "state" / "first_run_done"
@@ -149,11 +147,11 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             with contextlib.suppress(OSError):
                 _first_run_marker.parent.mkdir(parents=True, exist_ok=True)
                 _first_run_marker.touch()
-            c.print(splash(__version__, _model, _mode))
+            c.print(splash(__version__))
         elif _splash_cfg == "full":
-            c.print(splash(__version__, _model, _mode))
+            c.print(splash(__version__))
         elif _splash_cfg == "compact":
-            c.print(splash_compact(__version__, _model, _mode))
+            c.print(splash_compact(__version__))
         else:  # off
             c.print(SHORTCUT_HINT)
         c.print(f"[{palette.C_DIM}]terminal mode · Enter send · Shift+Enter newline · "
@@ -220,14 +218,25 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         (only when an OpenRouter provider is configured). Network-safe and
         non-blocking — the gauge/cost just use the prior cache until it lands."""
         from jarn.config.schema import ProviderType
+        from jarn.cost.pricing import network_fetch_enabled
 
         if not any(p.type is ProviderType.OPENROUTER for p in self.config.providers.values()):
+            return
+        if not network_fetch_enabled(config_network=self.config.pricing.network):
+            self.console.print(
+                f"[{palette.C_DIM}]Network pricing catalog disabled "
+                f"— using bundled/override prices.[/{palette.C_DIM}]"
+            )
             return
         import threading
 
         from jarn.cost import pricing
 
-        threading.Thread(target=pricing.warm_catalog, daemon=True).start()
+        threading.Thread(
+            target=pricing.warm_catalog,
+            kwargs={"network": self.config.pricing.network},
+            daemon=True,
+        ).start()
     def _build_app(self) -> Application:
         # dont_extend_height so each window sizes to its CONTENT (not the screen):
         # otherwise the windows expand to their max and the input floats up the

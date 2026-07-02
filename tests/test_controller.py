@@ -447,7 +447,7 @@ def _stub_runtime_build(monkeypatch, mcp_result):
         seen["project_trusted"] = project_trusted
         from types import SimpleNamespace
 
-        return SimpleNamespace(agent=object(), main_model_ref="m", warnings=())
+        return SimpleNamespace(agent=object(), main_model_ref="m")
 
     monkeypatch.setattr(controller_mod, "load_mcp_tools", _fake_loader)
     monkeypatch.setattr(controller_mod, "create_async_checkpointer", _fake_checkpointer)
