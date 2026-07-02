@@ -16,7 +16,7 @@ MCP), and a `prompt_toolkit`-based terminal UI. Install with `pip install jarn`
 | [PERMISSIONS.md](PERMISSIONS.md) | Users · Contributors | How every file write and shell command is authorized — modes, rules, danger-guard, OS sandbox, project trust boundary |
 | [EXTENDING.md](EXTENDING.md) | Users · Contributors | Five extension surfaces (skills, slash commands, subagents, hooks, MCP) with a working quick-start |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Contributors | System diagram, subsystem table, turn lifecycle, design rationale, and key source files |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Contributors | Dev setup, CI gates (ruff · mypy · 1343 tests), testing layers, and how-to guides for common changes |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contributors | Dev setup, CI gates (ruff · mypy · 1347 tests), testing layers, and how-to guides for common changes |
 | [ROADMAP.md](ROADMAP.md) | Everyone | What is shipped (v0.4.4), what is planned, and known limitations |
 | [OPEN_CORE.md](OPEN_CORE.md) | Everyone | Licensing (Apache-2.0) and the intended open-core business model — plans only, nothing commercial is shipped |
 | [WEB_UI.md](WEB_UI.md) | Contributors | Design notes for a future Web UI — **not built yet**; included so the core stays Web-UI-ready |

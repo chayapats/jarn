@@ -22,7 +22,7 @@ plan → act → verify, with a strict permission system in front of every mutat
   `memory`, `extensibility`, `agent`, `repl`, `repl_renderer`, `tui`, `observability`,
   `onboarding`, `cli`, `agent/os_sandbox`, `agent/checkpoint`, `agent/repomap`,
   `agent/docker_backend`, `config/profiles`, `config/settings`, `memory/wiki`, `headless`
-- Tests: `tests/` (**1343** pytest cases) + `npm/` Node tests (launcher + assembly); docs: `docs/` + `README.md`; design: `SPEC.md`
+- Tests: `tests/` (**1347** pytest cases) + `npm/` Node tests (launcher + assembly); docs: `docs/` + `README.md`; design: `SPEC.md`
 - Distribution: PyPI (`jarn`) + npm (`jarn-cli`, standalone binary); `npm/` holds the launcher + per-platform packaging, published by the release workflow's `npm` job
 
 ## Conventions
@@ -36,7 +36,7 @@ plan → act → verify, with a strict permission system in front of every mutat
 
 ```bash
 uv sync --extra dev
-uv run pytest                    # full suite (1343 tests)
+uv run pytest                    # full suite (1347 tests)
 uv run ruff check src tests      # lint
 uv run mypy src/                 # type-check (CI-gated)
 uv run jarn                      # launch the terminal REPL
