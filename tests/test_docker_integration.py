@@ -13,6 +13,7 @@ clean "docker daemon not available" reason rather than erroring.
 from __future__ import annotations
 
 import socket
+import sys
 from pathlib import Path
 
 import pytest
@@ -23,10 +24,16 @@ from jarn.agent.docker_backend import CancellableDockerSandbox, docker_available
 # Module-level skip guard — whole file skips cleanly when daemon is absent.
 # ---------------------------------------------------------------------------
 
-pytestmark = pytest.mark.skipif(
-    not docker_available(),
-    reason="docker daemon not available",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        not docker_available(),
+        reason="docker daemon not available",
+    ),
+    pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="docker integration tests run on Linux/macOS CI only",
+    ),
+]
 
 # ---------------------------------------------------------------------------
 # Images

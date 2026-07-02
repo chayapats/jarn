@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import sys
 
 import pytest
@@ -11,7 +12,7 @@ if sys.platform == "win32":
 
 import textual.drivers.linux_driver as ld
 
-from jarn.tui.keyfix import apply_kitty_keyfix
+from jarn.tui.keyfix import apply_kitty_keyfix, apply_repl_keyfix
 
 
 def test_keyfix_drops_report_all_keys(monkeypatch):
@@ -34,3 +35,15 @@ def test_keyfix_drops_report_all_keys(monkeypatch):
 def test_keyfix_opt_out(monkeypatch):
     monkeypatch.setenv("JARN_KEEP_KITTY_ALL_KEYS", "1")
     assert apply_kitty_keyfix() is False
+
+
+def test_repl_keyfix_pops_kitty_stack(monkeypatch):
+    buf = io.StringIO()
+    monkeypatch.setattr("sys.stderr", buf)
+    assert apply_repl_keyfix() is True
+    assert buf.getvalue() == "\x1b[<u"
+
+
+def test_repl_keyfix_opt_out(monkeypatch):
+    monkeypatch.setenv("JARN_KEEP_KITTY_ALL_KEYS", "1")
+    assert apply_repl_keyfix() is False

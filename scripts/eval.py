@@ -162,6 +162,8 @@ def run_checker(checker: str, cwd: Path, timeout_s: int) -> bool:
     except CheckerRejected as exc:
         print(f"checker rejected: {exc}", file=sys.stderr)
         return False
+    if argv and Path(argv[0]).name in {"python", "python3"}:
+        argv = [sys.executable, *argv[1:]]
     try:
         proc = subprocess.run(  # noqa: S603
             argv,

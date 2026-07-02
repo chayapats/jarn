@@ -23,16 +23,15 @@ from jarn.tui.toolbar import render_toolbar
 
 
 def test_builtin_registry_routes_are_handled():
-    from jarn.tui.controller import Controller
+    from jarn.commands.registry import COMMAND_SPECS, ui_command_names
+    from jarn.controller.commands import REGISTRY
 
-    for cmd in BUILTINS:
-        if cmd.route == "controller":
-            assert hasattr(Controller, f"_cmd_{cmd.name.replace('-', '_')}")
-        elif cmd.route == "repl":
-            assert cmd.name in {
-                "compact", "expand", "resume", "model", "mode", "queue", "abort",
-                "commit", "review", "key", "rewind",
-            }
+    ui_names = ui_command_names()
+    for spec in COMMAND_SPECS:
+        if spec.layer in ("core", "both"):
+            assert spec.name in REGISTRY, f"/{spec.name} missing from controller REGISTRY"
+        if spec.layer in ("ui", "both"):
+            assert spec.name in ui_names, f"/{spec.name} missing from UI command set"
 
 
 def test_help_and_completion_use_registry():

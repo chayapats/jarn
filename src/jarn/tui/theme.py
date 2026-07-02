@@ -1,67 +1,58 @@
-"""Textual themes for J.A.R.N. — calm cyan/teal "reliable" accent.
+"""Textual themes for J.A.R.N. — generated from :mod:`jarn.tui.palette`.
 
 Three variants: dark (default), light, and high-contrast. Returned as Textual
-``Theme`` objects registered on the app.
+``Theme`` objects registered on the app. Rich / prompt_toolkit colours come from
+the same ``_PALETTES`` rows via :func:`~jarn.tui.palette.configure_ui`.
 """
 
 from __future__ import annotations
 
 from textual.theme import Theme
 
-JARN_DARK = Theme(
-    name="jarn-dark",
-    primary="#16b8a6",      # teal
-    secondary="#0891b2",    # cyan
-    accent="#22d3ee",
-    foreground="#e8f0f0",
-    background="#0b1416",
-    surface="#10201f",
-    panel="#1c3336",
-    success="#22c55e",
-    warning="#ffb454",
-    error="#ff6b6b",
-    dark=True,
-)
+from jarn.tui.palette import _PALETTES, ThemeName
 
-JARN_LIGHT = Theme(
-    name="jarn-light",
-    primary="#0d9488",
-    secondary="#0e7490",
-    accent="#0891b2",
-    foreground="#0b1416",
-    background="#f6fafa",
-    surface="#ffffff",
-    panel="#e6f2f1",
-    success="#15803d",
-    warning="#ffb454",
-    error="#ff6b6b",
-    dark=False,
-)
+_CONFIG_THEME_MAP: dict[str, ThemeName] = {
+    "dark": "dark",
+    "light": "light",
+    "high-contrast": "high-contrast",
+}
 
-JARN_HIGH_CONTRAST = Theme(
-    name="jarn-high-contrast",
-    primary="#00ffe1",
-    secondary="#00e5ff",
-    accent="#ffffff",
-    foreground="#ffffff",
-    background="#000000",
-    surface="#0a0a0a",
-    panel="#141414",
-    success="#00ff66",
-    warning="#ffb454",
-    error="#ff6b6b",
-    dark=True,
-)
-
-ALL_THEMES = {t.name: t for t in (JARN_DARK, JARN_LIGHT, JARN_HIGH_CONTRAST)}
-
-#: Map the short config value to a registered theme name.
-CONFIG_THEME_MAP = {
+_THEME_NAMES: dict[ThemeName, str] = {
     "dark": "jarn-dark",
     "light": "jarn-light",
     "high-contrast": "jarn-high-contrast",
 }
 
 
+def _build_theme(key: ThemeName) -> Theme:
+    p = _PALETTES[key]
+    t = p.textual
+    return Theme(
+        name=_THEME_NAMES[key],
+        primary=t.primary,
+        secondary=t.secondary,
+        accent=p.accent,
+        foreground=p.toolbar_fg,
+        background=t.background,
+        surface=t.surface,
+        panel=t.panel,
+        success=p.c_success,
+        warning=p.c_warn,
+        error=p.c_error,
+        dark=t.dark,
+    )
+
+
+JARN_DARK = _build_theme("dark")
+JARN_LIGHT = _build_theme("light")
+JARN_HIGH_CONTRAST = _build_theme("high-contrast")
+
+ALL_THEMES = {t.name: t for t in (JARN_DARK, JARN_LIGHT, JARN_HIGH_CONTRAST)}
+
+#: Map the short config value to a registered theme name.
+CONFIG_THEME_MAP = {k: _THEME_NAMES[v] for k, v in _CONFIG_THEME_MAP.items()}
+
+
 def theme_name_for(config_value: str) -> str:
-    return CONFIG_THEME_MAP.get(config_value, "jarn-dark")
+    key = _CONFIG_THEME_MAP.get(config_value, "dark")
+    return _THEME_NAMES[key]

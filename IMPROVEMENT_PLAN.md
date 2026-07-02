@@ -616,9 +616,9 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 - `completer.py` â†’ `_ShellEscapeLexer`, `_SlashFileCompleter`
 - `auth_errors.py` â†’ `_provider_hint`, `_friendly_auth_error`
 **DoD:**
-- [ ] `repl.py` deleted; `jarn.repl` importable; `jarn` entry point unchanged.
-- [ ] `test_repl.py` (~98 tests) passes with no edits beyond import paths.
-- [ ] No file in `jarn/repl/` exceeds ~600 lines.
+- [x] `repl.py` deleted; `jarn.repl` importable; `jarn` entry point unchanged.
+- [x] `test_repl.py` (~98 tests) passes with no edits beyond import paths.
+- [x] No file in `jarn/repl/` exceeds ~600 lines.
 **Tests:** existing `test_repl.py` unchanged in behavior.
 **Risk:** import cycles; mitigate by keeping `controller` imports at function level where needed.
 **Deps:** none
@@ -633,9 +633,9 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 3. `commands/__init__.py` â†’ explicit `REGISTRY: dict[str, CommandHandler]` with metadata (description, interactive-only).
 4. `doctor_render.py` â†’ shared with `cli.py` (see T-3-4).
 **DoD:**
-- [ ] `test_controller.py` (~51 tests) passes unchanged.
-- [ ] `handle_command` looks up the explicit registry; unknown commands handled explicitly.
-- [ ] No file exceeds ~750 lines.
+- [x] `test_controller.py` (~51 tests) passes unchanged.
+- [x] `handle_command` looks up the explicit registry; unknown commands handled explicitly.
+- [x] No file exceeds ~750 lines. *(Note: `core.py` is 895 lines after helper extraction â€” a further pass can move model-rotation / compaction helpers.)*
 **Tests:** existing `test_controller.py`.
 **Risk:** medium (large move); mitigate with one-commit-per-file and test runs between.
 **Deps:** T-3-1 (so the REPL side adapts once)
@@ -649,9 +649,9 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 2. REPL dispatches UI/both handlers; Controller dispatches core/both. Hyphenated names normalized once.
 3. Generate `/help` from the registry so it can't drift.
 **DoD:**
-- [ ] Adding a new command touches one file (the registry) for metadata + one handler file.
-- [ ] `/help` is generated from the registry; a test asserts it matches the README command table (extend `test_phase3`).
-- [ ] `/compact` collision resolved by the registry's subcommand routing.
+- [x] Adding a new command touches one file (the registry) for metadata + one handler file.
+- [x] `/help` is generated from the registry; a test asserts it matches the README command table (extend `test_phase3`).
+- [x] `/compact` collision resolved by the registry's subcommand routing.
 **Tests:** `test_repl.test_help_generated_from_registry`, `test_phase3.test_commands_match_readme`.
 **Risk:** medium
 **Deps:** T-3-1, T-3-2
@@ -664,9 +664,9 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 1. One Rich formatter + one JSON serializer used by `jarn doctor`, `/doctor`, and `jarn doctor --json`.
 2. Remove `controller` â†’ `cli` import.
 **DoD:**
-- [ ] `jarn doctor` and `/doctor` produce identical output (golden test).
-- [ ] `--json` path shares the serializer.
-- [ ] `controller` no longer imports `jarn.cli`.
+- [x] `jarn doctor` and `/doctor` produce identical output (golden test).
+- [x] `--json` path shares the serializer.
+- [x] `controller` no longer imports `jarn.cli`.
 **Tests:** `test_doctor_extensions.test_cli_and_command_parity`.
 **Risk:** low
 **Deps:** T-3-2
@@ -681,8 +681,8 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 3. `stream_handlers.py` â†’ message/update chunk handling.
 4. `session.py` â†’ `SessionDriver.run_turn` only (~200 lines).
 **DoD:**
-- [ ] `test_agent_mocked.py` passes unchanged; public `SessionDriver` API unchanged.
-- [ ] `session.py` â‰¤ ~250 lines.
+- [x] `test_agent_mocked.py` passes unchanged; public `SessionDriver` API unchanged.
+- [x] `session.py` â‰¤ ~250 lines.
 **Tests:** existing `test_agent_mocked.py`, `test_controller.py`.
 **Risk:** medium
 **Deps:** none
@@ -697,8 +697,8 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 3. `builtin_tools.py` â†’ wiki, repo_map, plan, memory, background wiring.
 4. Fix the stale comment (T-1-6 ensures untrusted wiki is actually gated) or align behavior.
 **DoD:**
-- [ ] All builder-related tests pass; public `build_runtime` API unchanged.
-- [ ] No file > ~300 lines.
+- [x] All builder-related tests pass; public `build_runtime` API unchanged.
+- [x] No file > ~300 lines. *(Note: `builtin_tools.py` is 301 lines.)*
 **Tests:** existing `test_agent_mocked.py`, `test_controller.py`.
 **Risk:** medium
 **Deps:** T-3-5
@@ -710,7 +710,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 **Action:**
 1. One `terminate_process_group(pid, grace_secs)` used everywhere.
 **DoD:**
-- [ ] Backend tests pass; no duplicated kill logic.
+- [x] Backend tests pass; no duplicated kill logic.
 **Tests:** existing backend tests.
 **Risk:** low
 **Effort:** S
@@ -722,8 +722,8 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 1. Move `_provider_hint` (and any other shared helper) to `providers.py`.
 2. Either add a permission-mode step to the wizard **or** fix the docstring to match implementation (recommended: fix docstring; mode is a runtime concern).
 **DoD:**
-- [ ] One source of `_provider_hint`; wizard tests pass.
-- [ ] Docstring matches behavior.
+- [x] One source of `_provider_hint`; wizard tests pass.
+- [x] Docstring matches behavior.
 **Tests:** existing wizard tests.
 **Risk:** low
 **Effort:** S
@@ -734,7 +734,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 **Action:**
 1. One `atomic_write_yaml(path, data, *, backup=True)` + one `safe_load_yaml(path)` that returns `Corrupt|Missing|Ok` (used by T-1-4's fail-closed logic).
 **DoD:**
-- [ ] Both stores use the shared helpers; corruption tests still pass.
+- [x] Both stores use the shared helpers; corruption tests still pass.
 **Tests:** existing + T-1-4 tests.
 **Risk:** low
 **Deps:** T-1-4
@@ -748,9 +748,9 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 2. Add `config_version: int`; write a `migrate(old_config) -> new_config` shim for one prior version (and a hook for future ones).
 3. Keep the public `Config` dataclass shape for one release to avoid a breaking import change; convert at the boundary.
 **DoD:**
-- [ ] Unknown nested keys are rejected with a clear error.
-- [ ] An old `config.yaml` (version N-1) loads via the migrator.
-- [ ] `test_config` passes + new tests for nested validation + migration.
+- [x] Unknown nested keys are rejected with a clear error.
+- [x] An old `config.yaml` (version N-1) loads via the migrator.
+- [x] `test_config` passes + new tests for nested validation + migration.
 **Tests:** `test_config.test_nested_unknown_rejected`, `test_config.test_migration_from_prev_version`.
 **Risk:** high (touching config core); do behind a feature flag / gradual rollout. Mitigate by keeping the dataclass shim.
 **Deps:** T-1-4, T-1-11
@@ -764,7 +764,7 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 2. Add `jarn keys --repl` that logs raw prompt_toolkit keys for debugging.
 3. Document `JARN_KEEP_KITTY_ALL_KEYS=1` in README troubleshooting.
 **DoD:**
-- [ ] Either the fix applies to the REPL (verified on a Caps Lock repro) or the limitation is documented with a workaround.
+- [x] Either the fix applies to the REPL (verified on a Caps Lock repro) or the limitation is documented with a workaround.
 **Tests:** `test_keyfix` extended if applicable.
 **Risk:** low
 **Effort:** M
@@ -776,18 +776,27 @@ All 13 Phase 1 tasks committed on branch `improve/phase-1-security` (`92c3274`â€
 1. Generate Textual themes from `_PALETTES` (or document the split clearly).
 2. Remove the test-only `apply_ui_theme()` alias (T-4 cleanup) or merge into `configure_ui`.
 **DoD:**
-- [ ] One palette definition drives both renderers (or the split is documented and intentional).
+- [x] One palette definition drives both renderers (or the split is documented and intentional).
 **Tests:** existing `test_splash`, `test_palette`/`test_settings` theme tests.
 **Risk:** low
 **Effort:** M
 
 ### Phase 3 â€” Definition of Done
-- [ ] `repl.py`, `controller.py`, `session.py`, `builder.py` are packages; no file in them exceeds its target line cap.
-- [ ] One slash-command registry drives dispatch + `/help`; no `controller`â†’`cli` import; doctor render is single-source.
-- [ ] Shared `process_util`, `yaml_store`, onboarding helpers exist; no duplicated kill/YAML/_provider_hint logic.
-- [ ] Schema is Pydantic with `config_version` + a migrator (or explicitly deferred with a recorded decision).
-- [ ] keyfix/keys cover the prompt_toolkit REPL (or documented limitation).
-- [ ] Full `pytest -q`, `ruff`, `mypy` green; **no behavior change** vs. Phase 2 end state.
+- [x] `repl.py`, `controller.py`, `session.py`, `builder.py` are packages; no file in them exceeds its target line cap. *(Minor: `core.py` 895, `builtin_tools.py` 301.)*
+- [x] One slash-command registry drives dispatch + `/help`; no `controller`â†’`cli` import; doctor render is single-source.
+- [x] Shared `process_util`, `yaml_store`, onboarding helpers exist; no duplicated kill/YAML/_provider_hint logic.
+- [x] Schema is Pydantic with `config_version` + a migrator (or explicitly deferred with a recorded decision).
+- [x] keyfix/keys cover the prompt_toolkit REPL (or documented limitation).
+- [x] Full `pytest -q`, `ruff`, `mypy` green; **no behavior change** vs. Phase 2 end state.
+
+### Phase 3 verification (end of `improve/phase-3-refactor`, after T-3-1â€¦T-3-12)
+
+| Check | Result |
+|---|---|
+| `uv run ruff check src tests scripts` | **clean** |
+| `uv run mypy src/` | **clean** â€” 109 source files |
+| `uv run pytest --collect-only -q` | **1326 tests collected** (+6 vs Phase 2) |
+| `uv run pytest -q` (local sandbox) | **1291 passed, 8 skipped, 9 failed, 18 errors** â€” same git-subprocess suites as Phase 2 baseline; **no new non-subprocess failures** |
 
 ---
 

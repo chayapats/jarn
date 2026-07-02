@@ -17,13 +17,14 @@ from __future__ import annotations
 import atexit
 import logging
 import os
-import signal
 import subprocess
 import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from jarn.agent.process_util import terminate_process_group
 
 _log = logging.getLogger("jarn.background")
 
@@ -58,20 +59,7 @@ def _terminate(popen: subprocess.Popen) -> None:
     """Best-effort terminate the whole process group (SIGTERM, then SIGKILL)."""
     if popen.poll() is not None:
         return
-    try:
-        if os.name == "posix":
-            os.killpg(os.getpgid(popen.pid), signal.SIGTERM)
-        else:  # pragma: no cover - non-posix fallback
-            popen.terminate()
-        try:
-            popen.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            if os.name == "posix":
-                os.killpg(os.getpgid(popen.pid), signal.SIGKILL)
-            else:  # pragma: no cover
-                popen.kill()
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
+    terminate_process_group(popen.pid, grace_secs=3)
 
 
 def _open_fd_count() -> int | None:

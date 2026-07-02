@@ -11,14 +11,25 @@ Shift+Enter, Ctrl+I/Tab, etc. still disambiguate). We patch the driver module's
 flag globals before the driver starts; the driver reads them at call time, so
 setting them to 0 yields ``flag = DISAMBIGUATE`` only.
 
+The main REPL uses **prompt_toolkit**, which does not enable the kitty keyboard
+protocol itself, so it is not susceptible to the bug under normal circumstances.
+:func:`apply_repl_keyfix` still pops any kitty flags a prior Textual session (or
+other tool) may have left on the terminal stack — a safe no-op when the stack is
+empty.
+
 Opt out with ``JARN_KEEP_KITTY_ALL_KEYS=1`` if you rely on full key reporting.
 """
 
 from __future__ import annotations
 
 import os
+import sys
 
 _DROP_FLAGS = ("KITTY_REPORT_ALL_KEYS", "KITTY_REPORT_ASSOCIATED_TEXT")
+
+# Pop one kitty-keyboard-protocol flags entry from the stack (Textual uses the
+# same sequence on teardown). No-op when the stack is already empty.
+_KITTY_POP = "\x1b[<u"
 
 
 def apply_kitty_keyfix() -> bool:
@@ -39,3 +50,20 @@ def apply_kitty_keyfix() -> bool:
             setattr(linux_driver, name, 0)
             patched = True
     return patched
+
+
+def apply_repl_keyfix() -> bool:
+    """Reset kitty keyboard flags before the prompt_toolkit REPL starts.
+
+    prompt_toolkit never enables kitty ``REPORT_ALL_KEYS`` itself; this only
+    clears flags another TUI may have left active. Returns False when opted out
+    via ``JARN_KEEP_KITTY_ALL_KEYS``.
+    """
+    if os.environ.get("JARN_KEEP_KITTY_ALL_KEYS"):
+        return False
+    try:
+        sys.stderr.write(_KITTY_POP)
+        sys.stderr.flush()
+        return True
+    except Exception:  # noqa: BLE001 - not a TTY / write failed: nothing to do
+        return False

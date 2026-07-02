@@ -35,7 +35,6 @@ import logging
 import os
 import shlex
 import shutil
-import signal
 import subprocess
 import threading
 import uuid
@@ -47,6 +46,8 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
 )
 from deepagents.backends.sandbox import BaseSandbox
+
+from jarn.agent.process_util import terminate_process_group
 
 logger = logging.getLogger("jarn.agent.docker_backend")
 
@@ -511,13 +512,7 @@ class CancellableDockerSandbox(BaseSandbox):
     def _kill(self, proc: subprocess.Popen) -> None:
         if proc.poll() is not None:
             return
-        try:
-            if os.name == "posix":
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            else:  # pragma: no cover - non-posix fallback
-                proc.kill()
-        except (ProcessLookupError, OSError):
-            pass
+        terminate_process_group(proc.pid)
 
     def _kill_in_container(self, exec_id: str) -> None:
         """Kill the in-container shell(s) carrying *exec_id* in their argv.

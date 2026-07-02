@@ -29,6 +29,7 @@ from jarn.config.defaults import (
     PROVIDER_ENV_VARS,
 )
 from jarn.config.secrets import SecretResolutionError, file_fallback_notice, resolve, store_secret
+from jarn.onboarding.providers import provider_hint
 from jarn.onboarding.wizard import (
     _CONFIG_HEADER,
     _build_config_dict,
@@ -55,15 +56,7 @@ _STORAGE = [
 ]
 
 
-def _provider_hint(name: str) -> str:
-    if name == CUSTOM_OPENAI_PROFILE:
-        return "custom"
-    if name in CLOUD_PROVIDERS:
-        return "cloud"
-    return "local"
-
-
-_PROVIDER_HINTS = {p: _provider_hint(p) for p in ALL_PROVIDERS}
+_PROVIDER_HINTS = {p: provider_hint(p) for p in ALL_PROVIDERS}
 
 
 def _curated_cloud_models(provider: str) -> list[str]:

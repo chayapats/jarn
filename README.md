@@ -293,11 +293,27 @@ See [docs/EXTENDING.md](docs/EXTENDING.md) ([quick start](docs/EXTENDING.md#quic
 - [Open-core](docs/OPEN_CORE.md) — licensing & business model
 - [SPEC.md](SPEC.md) — the original design specification
 
+## Troubleshooting
+
+### Caps Lock inserts a stray `a` (macOS)
+
+On macOS, when Caps Lock is set to switch input source, some terminal apps that
+enable the Kitty keyboard protocol's **report-all-keys** mode can leak a stray `a`
+into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
+`jarn keys`) and resets any leftover kitty flags before the main REPL starts
+(prompt_toolkit does not enable report-all-keys itself).
+
+- Run `jarn keys` (Textual) or `jarn keys --repl` (prompt_toolkit) to see exactly
+  what your terminal sends for each key — share a line with a maintainer if you
+  hit an unfiltered quirk.
+- Set `JARN_KEEP_KITTY_ALL_KEYS=1` to opt out of the fix if you rely on full
+  kitty key reporting (e.g. for a custom key-binding workflow).
+
 ## Development
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1320 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1326 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

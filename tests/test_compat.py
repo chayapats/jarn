@@ -374,8 +374,8 @@ def test_build_runtime_forwards_read_claude_dir_false(
     fake = GenericFakeChatModel(messages=iter([]))
     with (
         patch.object(ModelFactory, "build", return_value=fake),
-        patch("jarn.agent.builder.load_skills", side_effect=_spy_skills),
-        patch("jarn.agent.builder.load_commands", side_effect=_spy_commands),
+        patch("jarn.agent.runtime.load_skills", side_effect=_spy_skills),
+        patch("jarn.agent.runtime.load_commands", side_effect=_spy_commands),
         patch("deepagents.create_deep_agent", return_value=object()),
     ):
         build_runtime(cfg, project_root=root, project_trusted=True)
@@ -450,7 +450,7 @@ def test_build_runtime_forwards_context_files(
     fake = GenericFakeChatModel(messages=iter([]))
     with (
         patch.object(ModelFactory, "build", return_value=fake),
-        patch("jarn.agent.builder.assemble_system_context", side_effect=_spy_assemble),
+        patch("jarn.agent.runtime.assemble_system_context", side_effect=_spy_assemble),
         patch("deepagents.create_deep_agent", return_value=object()),
     ):
         build_runtime(cfg, project_root=root, project_trusted=True)

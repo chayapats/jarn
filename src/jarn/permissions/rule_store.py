@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jarn.config._yaml_store import atomic_write_yaml, load_yaml_doc
+from jarn.config.yaml_store import atomic_write_yaml, load_yaml_doc
 
 
 class PermissionRuleStore:

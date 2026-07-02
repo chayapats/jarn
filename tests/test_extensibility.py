@@ -122,16 +122,14 @@ def test_load_subagents(monkeypatch, tmp_path, project_dir):
 def test_every_builtin_command_is_dispatchable():
     """Every advertised built-in must have a handler — guards against orphans
     like the old /mouse entry that printed 'Unknown command'."""
-    from jarn.extensibility.commands import BUILTINS
-    from jarn.tui.controller import Controller
+    from jarn.commands.registry import COMMAND_SPECS, ui_command_names
+    from jarn.controller.commands import REGISTRY
 
-    repl_handled = {"compact", "expand", "resume", "model", "mode", "queue"}
-    for cmd in BUILTINS:
-        name = cmd.name
-        has_handler = hasattr(Controller, f"_cmd_{name.replace('-', '_')}")
-        assert (
-            has_handler or name in repl_handled or cmd.route == "repl"
-        ), f"/{name} advertised but unhandled"
+    ui_names = ui_command_names()
+    for spec in COMMAND_SPECS:
+        has_core = spec.name in REGISTRY
+        has_ui = spec.name in ui_names
+        assert has_core or has_ui, f"/{spec.name} advertised but unhandled"
 
 
 class _FakeTool:
@@ -238,7 +236,10 @@ def test_hook_env_allowlist_hides_api_key(tmp_path, monkeypatch):
     """By default a hook subprocess does NOT see ``*_API_KEY`` env vars; only the
     minimal allowlist + declared ``extra_env`` (or ``inherit_env`` opt-in) reach it."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "secret-xyz")
-    cmd = "echo ${OPENROUTER_API_KEY:-MISSING}"
+    cmd = (
+        'python -c "import os; print(os.environ.get('
+        "'OPENROUTER_API_KEY', 'MISSING'))\""
+    )
     runner = HookRunner(
         hooks=[HookSpec(event="post_edit", command=cmd)], cwd=tmp_path
     )

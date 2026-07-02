@@ -145,7 +145,14 @@ def main(argv: list[str] | None = None) -> int:
     p_doctor.add_argument(
         "--json", action="store_true", help="Emit diagnostics as JSON"
     )
-    sub.add_parser("keys", help="Key inspector — see what your terminal sends for each key")
+    p_keys = sub.add_parser(
+        "keys", help="Key inspector — see what your terminal sends for each key"
+    )
+    p_keys.add_argument(
+        "--repl",
+        action="store_true",
+        help="Use the prompt_toolkit REPL key path (default: Textual inspector)",
+    )
 
     p_trust = sub.add_parser(
         "trust", help="List, trust, or untrust project roots (capability gate)"
@@ -206,9 +213,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "doctor":
         return _cmd_doctor(as_json=args.json)
     if args.command == "keys":
-        from jarn.tui.keys import run_key_inspector
+        if args.repl:
+            from jarn.repl.key_inspector import run_repl_key_inspector
 
-        run_key_inspector()
+            run_repl_key_inspector()
+        else:
+            from jarn.tui.keys import run_key_inspector
+
+            run_key_inspector()
         return 0
     if args.command == "trust":
         return _cmd_trust(path=args.path, remove=args.remove, as_json=args.json)
@@ -354,335 +366,32 @@ def _collect_doctor(
     project_root: Any = None,
     project_trusted: bool | None = None,
 ) -> int:
-    """Populate ``diag`` with doctor diagnostics and return the exit code.
+    """Backward-compatible alias for :func:`jarn.doctor.collect.collect_doctor`."""
+    from jarn.doctor.collect import collect_doctor
 
-    Pure data collection — no rendering — so the same diagnostics back both the
-    Rich and the ``--json`` output paths.
-
-    When ``config`` is provided (e.g. from the REPL controller), the function
-    uses it directly instead of loading from disk.  ``project_root`` and
-    ``project_trusted`` are also accepted so the caller can pass its live
-    session state.
-    """
-    from jarn.config import paths
-    from jarn.config.secrets import SecretResolutionError, resolve
-    from jarn.providers import ModelFactory, ModelResolutionError
-
-    gpath = paths.global_config_path()
-    home = paths.global_home()
-    diag["jarn_home"] = str(home)
-    overridden = paths.jarn_home_overridden()
-    diag["jarn_home_overridden"] = overridden
-    if overridden:
-        diag["jarn_home_warning"] = (
-            f"JARN_HOME is overridden ({home}) — secrets and the trust store "
-            "live here; only set JARN_HOME in environments you trust."
-        )
-    diag["global_config"] = str(gpath)
-    diag["global_config_present"] = gpath.is_file()
-
-    if config is None:
-        # CLI path: auto-discover root from the filesystem.
-        from jarn.config.loader import load_config
-
-        root = paths.find_project_root() if project_root is None else project_root
-        diag["project_root"] = str(root) if root else None
-
-        if not gpath.is_file():
-            diag["ok"] = False
-            return 1
-
-        from jarn.config.trust import is_project_trusted
-
-        if project_trusted is None:
-            project_trusted = is_project_trusted(root) if root is not None else True
-        diag["project_trusted"] = project_trusted
-        cfg = load_config(project_root=root, project_trusted=project_trusted)
-    else:
-        # REPL path: use the live config that was already loaded at session start.
-        # The session is running, so the config was already loaded successfully;
-        # mark it present regardless of the on-disk state to show all diagnostics.
-        cfg = config
-        root = project_root
-        diag["project_root"] = str(root) if root else None
-        diag["global_config_present"] = True
-        if project_trusted is None:
-            project_trusted = True
-        diag["project_trusted"] = project_trusted
-
-    diag["default_profile"] = cfg.default_profile
-    diag["main_model"] = cfg.resolved_main_model()
-    diag["permission_mode"] = cfg.permission_mode.value
-    diag["policy_profile"] = cfg.policy.profile or "none"
-    diag["web_tools"] = cfg.policy.web_tools
-    # Effective mode after the trust clamp: an untrusted project is pinned to
-    # plan regardless of the configured mode/preset, so surface that here.
-    from jarn.config.profiles import UNTRUSTED_FLOOR_PROFILE
-    from jarn.config.schema import PermissionMode
-
-    diag["effective_mode"] = (
-        PermissionMode.PLAN.value if not project_trusted else cfg.permission_mode.value
+    return collect_doctor(
+        diag,
+        config=config,
+        project_root=project_root,
+        project_trusted=project_trusted,
     )
-    diag["effective_profile"] = (
-        UNTRUSTED_FLOOR_PROFILE if not project_trusted else (cfg.policy.profile or "none")
-    )
-
-    # Transparency: name the project-tier keys an untrusted load dropped so the
-    # user knows what `jarn trust` would enable. Empty when trusted or no project.
-    stripped: list[str] = []
-    if not project_trusted and root is not None:
-        from jarn.config.paths import project_config_path
-        from jarn.config.trust import stripped_project_keys
-
-        ppath = project_config_path(root)
-        if ppath is not None and ppath.is_file():
-            from jarn.config.loader import _read_yaml
-
-            stripped = stripped_project_keys(_read_yaml(ppath) or {})
-    diag["project_stripped_keys"] = stripped
-
-    factory = ModelFactory(cfg)
-    ok = True
-    providers: list[dict] = []
-    for name, prov in cfg.providers.items():
-        entry: dict[str, Any] = {"name": name, "type": prov.type.value}
-        try:
-            resolve(prov.api_key)
-            entry["key_state"] = "key ok"
-            entry["key_ok"] = True
-        except SecretResolutionError as exc:
-            entry["key_state"] = str(exc)
-            entry["key_ok"] = False
-            if name == cfg.default_profile:
-                ok = False
-        providers.append(entry)
-    diag["providers"] = providers
-
-    try:
-        factory.build_main()
-        diag["main_model_builds"] = True
-        diag["main_model_error"] = None
-    except ModelResolutionError as exc:
-        diag["main_model_builds"] = False
-        diag["main_model_error"] = str(exc)
-        ok = False
-
-    from jarn.agent.docker_backend import docker_available as _docker_available
-    from jarn.agent.os_sandbox import available as _sbx_available
-    from jarn.agent.os_sandbox import backend_name as _sbx_name
-
-    diag["sandbox"] = {
-        "backend": _sbx_name(),
-        "available": _sbx_available(),
-        "mode": cfg.execution.local_sandbox,
-    }
-    diag["execution"] = {
-        "backend": cfg.execution.backend,
-        "docker_image": cfg.execution.docker_image,
-        "docker_available": _docker_available(),
-    }
-
-    # Surface newer feature flags so operators can see them in doctor output.
-    diag["git"] = {
-        "autocheckpoint": cfg.git.autocheckpoint,
-    }
-    diag["wiki"] = {
-        "enabled": cfg.wiki.enabled,
-    }
-    diag["observability"] = {
-        "transcript": cfg.observability.transcript,
-    }
-    diag["context"] = {
-        "repo_map": cfg.context.repo_map,
-        "repo_map_tokens": cfg.context.repo_map_tokens,
-        "memory_tokens": cfg.context.memory_tokens,
-        "wiki_index_tokens": cfg.context.wiki_index_tokens,
-        "project_context_tokens": cfg.context.project_context_tokens,
-    }
-
-    from jarn.doctor_extensions import collect_extensions
-
-    diag["extensions"] = collect_extensions(
-        root, project_trusted=project_trusted, config=cfg
-    )
-
-    diag["ok"] = ok
-    return 0 if ok else 1
 
 
 def _cmd_doctor(*, as_json: bool = False) -> int:
-    diag: dict = {}
-    code = _collect_doctor(diag)
-
-    if as_json:
-        import json
-
-        print(json.dumps(diag))
-        return code
-
     from rich.console import Console
 
-    console = Console()
-    console.rule("[b]jarn doctor[/b]")
+    from jarn.doctor.collect import collect_doctor
+    from jarn.doctor.render import doctor_to_json, render_doctor_console
 
-    gpath = diag["global_config"]
-    present = diag["global_config_present"]
-    console.print(f"global config: {gpath} {'[green]✔[/green]' if present else '[red]missing[/red]'}")
-    if diag.get("jarn_home_warning"):
-        console.print(f"[yellow]{diag['jarn_home_warning']}[/yellow]")
-    console.print(f"project root: {diag['project_root'] or '[dim]none[/dim]'}")
-    if diag.get("project_trusted") is False and diag.get("project_stripped_keys"):
-        keys = ", ".join(diag["project_stripped_keys"])
-        console.print(
-            f"[yellow]project untrusted — stripped keys: {keys}[/yellow]"
-            " [dim](run `jarn trust <root>` to enable)[/dim]"
-        )
+    diag: dict = {}
+    code = collect_doctor(diag)
 
-    if not present:
-        console.print("\n[yellow]No config — run [b]jarn setup[/b].[/yellow]")
+    if as_json:
+        print(doctor_to_json(diag))
         return code
 
-    console.print(f"default profile: {diag['default_profile']}")
-    console.print(f"main model: {diag['main_model']}")
-    _mode = diag["permission_mode"]
-    _eff_mode = diag.get("effective_mode", _mode)
-    _mode_str = _mode if _eff_mode == _mode else f"{_mode} · effective: {_eff_mode} (after trust clamp)"
-    console.print(f"mode: {_mode_str}")
-    console.print(
-        f"preset (deprecated): {diag.get('policy_profile', 'none')}"
-        f" · web tools: {'on' if diag.get('web_tools', True) else 'off'}"
-    )
-
-    sbx = diag.get("sandbox") or {}
-    sbx_backend = sbx.get("backend") or "none"
-    sbx_avail = sbx.get("available", False)
-    sbx_mode = sbx.get("mode", "off")
-    if sbx_avail:
-        sbx_status = f"[green]{sbx_backend} available[/green]"
-    else:
-        sbx_status = "[dim]unavailable[/dim]"
-    console.print(f"sandbox: {sbx_status} · mode {sbx_mode}")
-
-    ex = diag.get("execution") or {}
-    ex_backend = ex.get("backend", "local")
-    if ex_backend == "docker" or ex.get("docker_image"):
-        docker_ok = ex.get("docker_available", False)
-        docker_status = (
-            "[green]available[/green]" if docker_ok else "[dim]unavailable[/dim]"
-        )
-        console.print(
-            f"execution backend: {ex_backend} · docker: {docker_status}"
-            f" · image {ex.get('docker_image')}"
-        )
-    else:
-        console.print(f"execution backend: {ex_backend}")
-
-    git_diag = diag.get("git") or {}
-    autockpt = "on" if git_diag.get("autocheckpoint") else "off"
-    console.print(f"git.autocheckpoint: {autockpt}")
-
-    wiki_diag = diag.get("wiki") or {}
-    wiki_enabled = "on" if wiki_diag.get("enabled") else "off"
-    console.print(f"wiki.enabled: {wiki_enabled}")
-
-    obs_diag = diag.get("observability") or {}
-    transcript = "on" if obs_diag.get("transcript", True) else "off"
-    console.print(f"observability.transcript: {transcript}")
-
-    ctx_diag = diag.get("context") or {}
-    repo_map_mode = ctx_diag.get("repo_map", "tool")
-    repo_map_tokens = ctx_diag.get("repo_map_tokens", 1024)
-    console.print(f"context.repo_map: {repo_map_mode} · token_budget {repo_map_tokens}")
-
-    console.print("\n[b]Providers[/b]")
-    for entry in diag["providers"]:
-        if entry["key_ok"]:
-            key_state = "[green]key ok[/green]"
-        else:
-            key_state = f"[yellow]{entry['key_state']}[/yellow]"
-        console.print(f"  {entry['name']} ({entry['type']}): {key_state}")
-
-    console.print("\n[b]Main model build[/b]")
-    if diag["main_model_builds"]:
-        console.print("  [green]✔ model constructs[/green]")
-    else:
-        console.print(f"  [red]✗ {diag['main_model_error']}[/red]")
-
-    _print_extensions(console, diag.get("extensions") or {})
-
-    ok = diag["ok"]
-    console.print(f"\n{'[green]All good.[/green]' if ok else '[yellow]Issues found above.[/yellow]'}")
+    render_doctor_console(Console(), diag)
     return code
-
-
-def _print_extensions(console: Any, ext: dict) -> None:
-    counts = ext.get("counts") or {}
-    console.print("\n[b]Extensions[/b]")
-    if ext.get("project_trusted") is False:
-        console.print("  [yellow]project untrusted — project-tier files/config skipped[/yellow]")
-    console.print(
-        "  "
-        f"skills {counts.get('skills', 0)} · "
-        f"commands {counts.get('commands', 0)} · "
-        f"subagents {counts.get('subagents', 0)} · "
-        f"hooks {counts.get('hooks', 0)} · "
-        f"mcp {counts.get('mcp_servers', 0)} · "
-        f"async {counts.get('async_subagents', 0)}"
-    )
-
-    for warning in ext.get("warnings") or []:
-        console.print(f"  [yellow]⚠ {warning}[/yellow]")
-
-    for kind, label in (
-        ("skills", "Skills"),
-        ("commands", "Commands"),
-        ("subagents", "Subagents"),
-    ):
-        rows = ext.get(kind) or []
-        active = [r for r in rows if r.get("status") in ("active", "renamed_builtin")]
-        if not active:
-            continue
-        console.print(f"\n  [b]{label}[/b]")
-        for row in active:
-            scope = row.get("scope", "")
-            name = row.get("name", "")
-            detail = row.get("detail", "")
-            suffix = f" — {detail}" if detail else ""
-            console.print(f"    [green]✔[/green] {name} ({scope}){suffix}")
-
-    hooks = [h for h in ext.get("hooks") or [] if h.get("status") == "active"]
-    if hooks:
-        console.print("\n  [b]Hooks[/b]")
-        for hook in hooks:
-            blocking = "blocking" if hook.get("blocking") else "non-blocking"
-            console.print(
-                f"    [green]✔[/green] {hook.get('event')} ({blocking}): "
-                f"{hook.get('command')}"
-            )
-
-    servers = [s for s in ext.get("mcp_servers") or [] if s.get("status") == "active"]
-    if servers:
-        console.print("\n  [b]MCP servers[/b]")
-        for server in servers:
-            health = server.get("health") or "unknown"
-            console.print(
-                f"    [green]✔[/green] {server.get('name')} "
-                f"({server.get('transport')}, health={health})"
-            )
-
-    shadowed = [
-        r
-        for kind in ("skills", "commands", "subagents")
-        for r in (ext.get(kind) or [])
-        if r.get("status") == "shadowed"
-    ]
-    if shadowed:
-        console.print("\n  [dim]Shadowed (not loaded):[/dim]")
-        for row in shadowed:
-            console.print(
-                f"    [dim]{row.get('name')} ({row.get('scope')}) — "
-                f"{row.get('detail', '')}[/dim]"
-            )
 
 
 def _cmd_trust(*, path: str | None, remove: bool, as_json: bool = False) -> int:

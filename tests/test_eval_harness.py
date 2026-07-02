@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -74,10 +73,7 @@ def _run_checker_in(checker: str, src: Path, tmp: Path, timeout_s: int) -> bool:
     """
     work = tmp / "work"
     shutil.copytree(src, work, ignore=eval_mod._COPY_IGNORE)
-    proc = subprocess.run(
-        checker, shell=True, cwd=str(work), timeout=timeout_s, capture_output=True
-    )
-    return proc.returncode == 0
+    return eval_mod.run_checker(checker, work, timeout_s)
 
 
 @pytest.mark.parametrize("fixture", eval_mod.discover_fixtures(), ids=lambda f: f.name)

@@ -28,6 +28,11 @@ from jarn.agent.os_sandbox import (
     wrap,
 )
 
+_POSIX_SANDBOX_POLICY = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="sandbox policy tests use POSIX path strings (use WSL on Windows)",
+)
+
 # ---------------------------------------------------------------------------
 # backend_name() / available() — detection
 # ---------------------------------------------------------------------------
@@ -74,6 +79,7 @@ class TestBackendName:
 # ---------------------------------------------------------------------------
 
 
+@_POSIX_SANDBOX_POLICY
 class TestMacOSProfile:
     """_macos_profile() generates valid SBPL strings."""
 
@@ -139,6 +145,7 @@ class TestMacOSProfile:
         assert "(allow default)" in profile
 
 
+@_POSIX_SANDBOX_POLICY
 class TestMacOSArgv:
     """_macos_argv() / wrap() on macOS produce the right argv list."""
 
@@ -187,6 +194,7 @@ class TestMacOSArgv:
 # ---------------------------------------------------------------------------
 
 
+@_POSIX_SANDBOX_POLICY
 class TestLinuxArgv:
     """_linux_argv() / wrap() on Linux produce the right argv list."""
 
@@ -368,6 +376,7 @@ class TestBackendSandboxRequireUnavailable:
         assert not popen_called, "Popen should not be called when failing closed"
 
 
+@_POSIX_SANDBOX_POLICY
 class TestBackendSandboxAutoAvailable:
     """With sandbox_mode='auto' and a backend available, Popen uses shell=False + argv."""
 
@@ -673,6 +682,7 @@ def test_sandbox_denies_write_outside_project(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@_POSIX_SANDBOX_POLICY
 class TestSafeSandboxPath:
     """_safe_sandbox_path raises ValueError on injection characters; passes clean paths."""
 
@@ -742,6 +752,7 @@ class TestSafeSandboxPath:
 # ---------------------------------------------------------------------------
 
 
+@_POSIX_SANDBOX_POLICY
 class TestMacOSPolicyCoverage:
     """Verify that _macos_profile generates a policy that really enforces our claims.
 
@@ -836,6 +847,7 @@ class TestMacOSPolicyCoverage:
         assert "(deny network*)" in profile
 
 
+@_POSIX_SANDBOX_POLICY
 class TestLinuxPolicyCoverage:
     """Verify that _linux_argv generates an argv that enforces our claims.
 
@@ -912,6 +924,7 @@ class TestLinuxPolicyCoverage:
         assert "--unshare-net" in argv
 
 
+@_POSIX_SANDBOX_POLICY
 class TestSymlinkCanonicalization:
     """Regression: profile/argv paths must be resolved (symlink-safe).
 

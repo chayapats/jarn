@@ -491,6 +491,13 @@ def _async(value):
 
 # -- lifecycle hooks --------------------------------------------------------
 
+def _hook_fail(code: int = 1, *, msg: str = "nope") -> str:
+    """Cross-platform hook command that writes to stderr and exits with *code*."""
+    return (
+        f'python -c "import sys; sys.stderr.write({msg!r} + chr(10)); sys.exit({code})"'
+    )
+
+
 @pytest.mark.asyncio
 async def test_blocking_pre_tool_hook_rejects_call(tmp_path):
     """A failing blocking pre_tool hook rejects the tool before it runs, and the
@@ -500,7 +507,7 @@ async def test_blocking_pre_tool_hook_rejects_call(tmp_path):
 
     agent = FakeAgent(command="ls -la")  # safe → would auto-allow in YOLO
     runner = HookRunner(
-        hooks=[HookSpec(event="pre_tool", command="echo nope >&2; exit 3", blocking=True)],
+        hooks=[HookSpec(event="pre_tool", command=_hook_fail(3), blocking=True)],
         cwd=tmp_path,
     )
     called = {"n": 0}
@@ -529,7 +536,7 @@ async def test_non_blocking_pre_tool_hook_does_not_reject(tmp_path):
 
     agent = FakeAgent(command="ls -la")
     runner = HookRunner(
-        hooks=[HookSpec(event="pre_tool", command="exit 1", blocking=False)],
+        hooks=[HookSpec(event="pre_tool", command=_hook_fail(1), blocking=False)],
         cwd=tmp_path,
     )
     driver = SessionDriver(
@@ -552,7 +559,7 @@ async def test_hook_failure_surfaced(tmp_path, caplog):
 
     agent = FakeAgent(command="git commit -m wip")  # safe shell → auto-allow in YOLO
     runner = HookRunner(
-        hooks=[HookSpec(event="pre_commit", command="echo nope >&2; exit 1")],
+        hooks=[HookSpec(event="pre_commit", command=_hook_fail(1))],
         cwd=tmp_path,
     )
     driver = SessionDriver(
@@ -675,7 +682,7 @@ async def test_post_edit_hook_emits_notice_on_failure(tmp_path):
     from jarn.extensibility.hooks import HookRunner
 
     runner = HookRunner(
-        hooks=[HookSpec(event="post_edit", command="echo lint failed >&2; exit 1")],
+        hooks=[HookSpec(event="post_edit", command=_hook_fail(1, msg="lint failed"))],
         cwd=tmp_path,
     )
     driver = SessionDriver(
@@ -694,7 +701,7 @@ async def test_post_edit_hook_matcher_scopes_by_file_path(tmp_path):
     from jarn.extensibility.hooks import HookRunner
 
     runner = HookRunner(
-        hooks=[HookSpec(event="post_edit", command="exit 1", matcher="*.py")],
+        hooks=[HookSpec(event="post_edit", command=_hook_fail(1), matcher="*.py")],
         cwd=tmp_path,
     )
     driver = SessionDriver(
