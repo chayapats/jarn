@@ -1,6 +1,6 @@
 [project]
 name = "jarn"
-version = "0.4.4"
+version = "0.5.0"
 description = "J.A.R.N. — Just A Reliable Nerd. A TUI-first coding agent harness built on DeepAgents."
 readme = "README.md"
 requires-python = ">=3.12"
