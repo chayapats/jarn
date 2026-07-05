@@ -281,17 +281,40 @@ async def test_compact_no_usage_metadata_records_nothing(tmp_path, monkeypatch, 
 
 
 def test_compact_status(tmp_path, monkeypatch, base_config):
-    """`/compact status` reports the in-graph auto-summarization settings."""
+    """`/compact status` reports the RESOLVED trigger when jarn knows the main
+    model's window: pct% of that window as an absolute token count."""
     base_config.context.auto_compact = True
-    base_config.context.compact_at_pct = 85
+    base_config.context.compact_at_pct = 50
+    # main = openrouter/anthropic/claude-opus-4-8 → jarn's window table knows 200k.
     ctrl = _controller(tmp_path, monkeypatch, base_config)
 
     result = ctrl.handle_command("compact", "status")
+    low = result.text.lower()
 
     assert result.clear_screen is False
-    assert "auto-compaction is on" in result.text.lower()
-    assert "85%" in result.text
-    assert "summariz" in result.text.lower()   # names the in-conversation summarization
+    assert "auto-compaction is on" in low
+    assert "50%" in result.text
+    assert "100,000" in result.text  # 50% of the 200k opus window, resolved
+    assert "window" in low
+    assert "summariz" in low   # names the in-conversation summarization
+    ctrl.close()
+
+
+def test_compact_status_unknown_window(tmp_path, monkeypatch, base_config):
+    """When jarn can't resolve the main window, `/compact status` is honest that
+    compact_at_pct is inert and the deepagents 170k default applies."""
+    base_config.context.auto_compact = True
+    base_config.context.compact_at_pct = 50
+    base_config.routing.main = "openrouter/some/unknown-model-xyz"
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    result = ctrl.handle_command("compact", "status")
+    low = result.text.lower()
+
+    assert "auto-compaction is on" in low
+    assert "deepagents default" in low
+    assert "170k" in low
+    assert "no effect" in low  # honest that compact_at_pct doesn't bite here
     ctrl.close()
 
 

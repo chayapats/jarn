@@ -256,10 +256,16 @@ context:
                            #   (run /compact by hand). Either way, deepagents' own
                            #   built-in summarizer (main model, fixed 85%) is disabled
                            #   so there is exactly one summarization path.
-  compact_at_pct: 85       # % of the context window that triggers the in-graph
-                           #   summarization (0-100). Applies to models that expose a
-                           #   context window; local endpoints without a known window
-                           #   fall back to a token-count trigger.
+  compact_at_pct: 85       # % of the MAIN model's context window that triggers the
+                           #   in-graph summarization (0-100), resolved to an absolute
+                           #   token count from JARN's own window table (the same
+                           #   source as the ctx% gauge) — so overflow risk is measured
+                           #   against the model you actually run, not the summarizer.
+                           #   Known window → e.g. 85% of 200k = ~170k tokens. UNKNOWN
+                           #   window (a model JARN can't size, incl. some local
+                           #   endpoints) → this % has NO effect and deepagents' 170k
+                           #   token default applies instead; `/compact status` reports
+                           #   which case you're in.
   repo_map: tool            # off | tool | auto
                             # off  — repo map disabled entirely.
                             # tool — (default) a read-only `repo_map` tool is

@@ -44,10 +44,25 @@ def cmd_compact(ctrl: Controller, args: str) -> CommandResult:
             or ctrl.config.resolved_main_model()
             or "the main model"
         )
-        auto = (
-            f"Auto-compaction is on: in-conversation summarization at "
-            f"{ctx.compact_at_pct}% of the context window (summarizer: {summarizer})."
-        )
+        main_model = ctrl.config.resolved_main_model() or "the main model"
+        # Report the RESOLVED trigger, not the raw percentage: compact_at_pct only
+        # bites when jarn knows the main model's window (else deepagents' 170k
+        # token default applies and the percentage is inert).
+        from jarn.agent.builder import resolved_auto_summarize_tokens
+
+        tokens = resolved_auto_summarize_tokens(ctrl.config)
+        if tokens is not None:
+            trigger = (
+                f"auto-summarize at ~{tokens:,} tokens "
+                f"({ctx.compact_at_pct}% of the {main_model} window)"
+            )
+        else:
+            trigger = (
+                "auto-summarize at deepagents default (170k tokens) — "
+                f"{main_model} window unknown, so context.compact_at_pct has no "
+                "effect until the window is known"
+            )
+        auto = f"Auto-compaction is on: {trigger} (summarizer: {summarizer})."
     else:
         auto = "Auto-compaction is off."
     return CommandResult(
