@@ -256,6 +256,9 @@ async def test_snapshot_failure_notice_once() -> None:
     handler = _Capture(level=logging.ERROR)
 
     class BoomCheckpoint:
+        snapshot_notice_pending: bool = False
+        snapshot_notice_shown: bool = False
+
         def snapshot(self, label, *, now=None):
             raise RuntimeError("git exploded")
 
@@ -317,6 +320,9 @@ async def test_snapshot_failure_notice_deferred_to_next_turn() -> None:
     of the next turn, still exactly once."""
 
     class BoomCheckpoint:
+        snapshot_notice_pending: bool = False
+        snapshot_notice_shown: bool = False
+
         def snapshot(self, label, *, now=None):
             raise RuntimeError("git exploded")
 
@@ -361,6 +367,9 @@ async def test_snapshot_task_not_leaked_on_cancelled_turn(caplog) -> None:
     started = threading.Event()
 
     class SlowCheckpoint:
+        snapshot_notice_pending: bool = False
+        snapshot_notice_shown: bool = False
+
         def snapshot(self, label, *, now=None):
             started.set()
             time.sleep(0.2)  # still running when the turn is cancelled
@@ -430,6 +439,9 @@ async def test_settle_snapshot_swallows_failure() -> None:
     a failed snapshot is best-effort (this turn simply has no checkpoint), matching
     the old sync behaviour — so a UI-driven undo/redo/abort is never aborted by it."""
     class BoomCheckpoint:
+        snapshot_notice_pending: bool = False
+        snapshot_notice_shown: bool = False
+
         def snapshot(self, label, *, now=None):
             raise RuntimeError("git exploded")
 
@@ -444,3 +456,134 @@ async def test_settle_snapshot_swallows_failure() -> None:
     assert driver._snapshot_task is not None
     await driver.settle_snapshot()  # swallows the failure; never raises
     assert driver._snapshot_task is None
+
+
+# -- T-1-4 fix round 2: session-lifetime snapshot-failure state ---------------
+
+
+@pytest.mark.asyncio
+async def test_snapshot_failure_notice_once_across_drivers() -> None:
+    """Simulates the real REPL: a fresh SessionDriver is built per turn while the
+    CheckpointManager lives for the whole session.  A persistently-failing snapshot
+    must surface the NOTICE exactly ONCE across ALL drivers that share the same
+    checkpoint manager.
+
+    RED before fix: the dedupe flag lived on the driver, so each new driver reset it
+    and emitted a fresh NOTICE — two NOTICEs across two turns.
+    GREEN after fix: both flags live on the CheckpointManager (session-lifetime).
+    """
+    from jarn.agent.session import ApprovalReply
+
+    class _BoomCp:
+        """Fake checkpoint manager with the session-lifetime notice state fields."""
+        snapshot_notice_pending: bool = False
+        snapshot_notice_shown: bool = False
+
+        def snapshot(self, label, *, now=None) -> None:
+            raise RuntimeError("git exploded")
+
+    class _WriteEachTurn:
+        """Alternates: interrupt on odd astream call, reply on even — reaches the
+        mutation gate every turn so the failure fires at the gate, not cleanup."""
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def astream(self, payload, config, stream_mode=None, **kwargs):
+            self.calls += 1
+            if self.calls % 2 == 1:
+                yield ("updates", {"__interrupt__": (
+                    _Interrupt({"action_requests": [
+                        {"action": "write_file",
+                         "args": {"file_path": "a.txt", "content": "x"}}
+                    ]}),
+                )})
+            else:
+                yield ("messages", (_AIChunk("done."),))
+
+    async def _approve(_req):
+        return ApprovalReply(approved=True)
+
+    cp = _BoomCp()
+    agent = _WriteEachTurn()
+
+    # Turn 1: driver A
+    driver_a = SessionDriver(
+        agent=agent,
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="t",
+        approver=_approve,
+        checkpoint=cp,
+    )
+    turn1 = [ev async for ev in driver_a.run_turn("first")]
+
+    # Turn 2: FRESH driver B — same checkpoint manager, new driver object.
+    driver_b = SessionDriver(
+        agent=agent,
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="t",
+        approver=_approve,
+        checkpoint=cp,
+    )
+    turn2 = [ev async for ev in driver_b.run_turn("second")]
+
+    # Exactly one NOTICE in turn 1; zero in turn 2 (deduped at session level).
+    assert len(_snapshot_notices(turn1)) == 1, turn1
+    assert _snapshot_notices(turn2) == [], f"NOTICE fired again on fresh driver: {turn2}"
+    assert any(e.kind is EventKind.DONE for e in turn1)
+    assert any(e.kind is EventKind.DONE for e in turn2)
+
+
+@pytest.mark.asyncio
+async def test_deferred_snapshot_failure_surfaces_on_fresh_driver() -> None:
+    """A snapshot failure discovered in turn-end cleanup (after the last yield, on a
+    no-mutation turn) arms the ``snapshot_notice_pending`` flag.  In the real REPL the
+    next turn runs on a FRESH driver — the NOTICE must still surface there.
+
+    RED before fix: the pending flag lived on the old driver, so the fresh driver
+    never saw it and the NOTICE was silently lost.
+    GREEN after fix: the flag lives on the shared CheckpointManager.
+    """
+    class _BoomCp:
+        snapshot_notice_pending: bool = False
+        snapshot_notice_shown: bool = False
+
+        def snapshot(self, label, *, now=None) -> None:
+            raise RuntimeError("git exploded")
+
+    class _ReplyOnly:
+        async def astream(self, payload, config, stream_mode=None, **kwargs):
+            yield ("messages", (_AIChunk("hi"),))
+
+    cp = _BoomCp()
+    agent = _ReplyOnly()
+
+    # Turn 1 on driver A: no mutation → failure found in cleanup, past last yield.
+    driver_a = SessionDriver(
+        agent=agent,
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="t",
+        checkpoint=cp,
+    )
+    turn1 = [ev async for ev in driver_a.run_turn("first")]
+
+    # Turn 2 on FRESH driver B sharing the same checkpoint manager.
+    driver_b = SessionDriver(
+        agent=agent,
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="t",
+        checkpoint=cp,
+    )
+    turn2 = [ev async for ev in driver_b.run_turn("second")]
+
+    # Turn 1: no mutation gate → failure in cleanup → no NOTICE can be yielded there.
+    assert _snapshot_notices(turn1) == []
+    # Turn 2 on the fresh driver: NOTICE surfaces at turn start, exactly once.
+    assert len(_snapshot_notices(turn2)) == 1, f"no deferred NOTICE on fresh driver: {turn2}"
+    assert turn2[0].kind is EventKind.NOTICE
+    assert turn2[0].text == _SNAPSHOT_FAIL_TEXT
+    assert any(e.kind is EventKind.DONE for e in turn1)
+    assert any(e.kind is EventKind.DONE for e in turn2)
