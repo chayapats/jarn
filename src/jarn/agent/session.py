@@ -116,6 +116,10 @@ class SessionDriver:
     project_root: Any = None
     #: Optional shell executor for ``verify.gate: auto`` (mock-friendly).
     verify_executor: Any = None
+    #: Set to True when at least one write_file/edit_file TOOL_END occurs this turn.
+    #: Cleared at turn start; triggers one deferred verify call when the turn
+    #: completes without pending interrupts (see debounce logic in run_turn).
+    _verify_dirty: bool = False
     #: Last cumulative usage seen per (thread, model) — streaming providers resend totals.
     _last_usage_totals: dict[tuple[str, str], tuple[int, int, int, int]] = field(
         default_factory=dict, repr=False
@@ -156,6 +160,7 @@ class SessionDriver:
         if self.transcript is not None and not resume:
             self.transcript.write_user(user_input, ts=_time.time())
         self._turn_text = ""
+        self._verify_dirty = False
         if not resume:
             # Clear ALL entries at turn start, not just the current thread's.
             # The cumulative-stream dedup uses this dict to baseline provider totals
@@ -209,12 +214,11 @@ class SessionDriver:
                             if ev.kind is EventKind.TOOL_END and self.hooks is not None:
                                 async for note in self._run_post_hooks(ev.text):
                                     yield note
-                            if ev.kind is EventKind.TOOL_END:
-                                from jarn.agent.verify import verify_after_edit
-
-                                notice = await verify_after_edit(self, ev.text)
-                                if notice is not None:
-                                    yield notice
+                            if ev.kind is EventKind.TOOL_END and ev.text in (
+                                "write_file",
+                                "edit_file",
+                            ):
+                                self._verify_dirty = True
                         # Mid-turn budget enforcement: usage was just recorded for
                         # this message, so re-check the hard-stop the same way it is
                         # checked before the turn and abort cleanly if exceeded.
@@ -255,6 +259,16 @@ class SessionDriver:
                 return
 
             if not interrupts:
+                # Deferred verify: run exactly once after all edits in the turn,
+                # only when the turn completes normally (not on cancel/abort — those
+                # raise CancelledError which propagates past this branch).
+                if self._verify_dirty:
+                    from jarn.agent.verify import verify_after_edit
+
+                    notice = await verify_after_edit(self, "write_file")
+                    if notice is not None:
+                        yield notice
+                    self._verify_dirty = False
                 # Flush the accumulated assistant reply as a single transcript line.
                 if self.transcript is not None and self._turn_text:
                     self.transcript.write_assistant(self._turn_text, ts=_time.time())
