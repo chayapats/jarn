@@ -206,14 +206,9 @@ async def _run_turn(
         renderer.finish()
 
     controller.record_turn(when=time.time())
-    if controller.should_auto_compact():
-        console.print(f"[{palette.C_DIM}]context full — auto-compacting…[/{palette.C_DIM}]")
-        try:
-            summary = await controller.compact()
-            if summary:
-                console.print(f"[{palette.C_NOTICE}]Auto-compacted; continuing in a fresh thread.[/{palette.C_NOTICE}]")
-        except Exception as exc:  # noqa: BLE001
-            console.print(f"[{palette.C_ERROR}]auto-compact failed: {exc}[/{palette.C_ERROR}]")
+    # Auto-compaction is handled in-graph by the summarization middleware wired in
+    # build_runtime (summarizer model, context.compact_at_pct) — no controller-side
+    # thread-forking trigger here. Manual /compact still forks the thread on demand.
     return renderer.tool_outputs
 
 

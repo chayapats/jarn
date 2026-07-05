@@ -46,7 +46,9 @@ def _controller(tmp_path, monkeypatch, messages):
 
 
 @pytest.mark.asyncio
-async def test_compact_summarizes_and_starts_new_thread(tmp_path, monkeypatch):
+async def test_manual_compact_still_forks_thread(tmp_path, monkeypatch):
+    """Manual compaction (summarize + continue in a fresh thread) is unchanged by
+    the move of *auto* compaction into the in-graph summarization middleware."""
     messages = [HumanMessage(content="fix the bug"), AIMessage(content="fixed it")]
     ctrl = _controller(tmp_path, monkeypatch, messages)
     old_thread = ctrl.thread_id
@@ -107,3 +109,133 @@ async def test_compact_apply_seeds_fresh_thread(tmp_path, monkeypatch):
     assert isinstance(seeded, HumanMessage)
     assert "MY SUMMARY" in seeded.content
     ctrl.close()
+
+
+# -- T-1-1: single in-graph summarization path -------------------------------
+#
+# deepagents adds a SummarizationMiddleware unconditionally on the MAIN model at a
+# fixed 85% trigger. T-1-1 replaces it with ONE jarn-configured instance on the
+# SUMMARIZER model triggered at context.compact_at_pct: build_runtime registers a
+# HarnessProfile that excludes the built-in and injects our own via middleware=.
+
+from unittest.mock import patch  # noqa: E402
+
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel  # noqa: E402
+
+from jarn.config.schema import (  # noqa: E402
+    Config,
+    ProviderConfig,
+    ProviderType,
+    RoutingConfig,
+)
+
+
+def _summ_cfg(*, auto_compact: bool = True, compact_at_pct: int = 85) -> Config:
+    """Config with a summarizer distinct from the main model."""
+    cfg = Config(
+        default_profile="p",
+        providers={
+            "p": ProviderConfig(
+                type=ProviderType.OPENROUTER, api_key="x",
+                base_url="http://localhost:9999/v1",
+            )
+        },
+        routing=RoutingConfig(main="p/main-model", summarizer="p/summ-model"),
+    )
+    cfg.context.auto_compact = auto_compact
+    cfg.context.compact_at_pct = compact_at_pct
+    return cfg
+
+
+def _fake_models():
+    """Distinct fakes so the injected middleware's model can be identified."""
+    return GenericFakeChatModel(messages=iter([])), GenericFakeChatModel(messages=iter([]))
+
+
+def _summarization_mws(middleware):
+    from deepagents.middleware.summarization import SummarizationMiddleware
+
+    return [m for m in middleware if isinstance(m, SummarizationMiddleware)]
+
+
+def test_build_passes_single_summarization_middleware(tmp_path):
+    """build_runtime passes exactly one SummarizationMiddleware via middleware=,
+    built on the resolved *summarizer* model (not the main model)."""
+    from jarn.agent import builder
+
+    main_fake, summ_fake = _fake_models()
+
+    def _build(self, ref):
+        return summ_fake if "summ" in ref else main_fake
+
+    captured: dict = {}
+
+    def _spy(*a, **kw):
+        captured.update(kw)
+        return object()  # build_runtime only stores the agent; never calls it
+
+    with patch("jarn.providers.models.ModelFactory.build", _build), \
+         patch("deepagents.create_deep_agent", _spy):
+        builder.build_runtime(_summ_cfg(), project_root=tmp_path)
+
+    mws = _summarization_mws(captured.get("middleware", ()))
+    assert len(mws) == 1
+    assert mws[0].model is summ_fake
+
+
+def test_build_runtime_injects_single_summarization_middleware(tmp_path):
+    """Real build (create_deep_agent NOT mocked): the built-in summarization is
+    excluded and jarn's single instance survives in the fully assembled stack,
+    on the summarizer model. Also a regression guard for the duplicate-middleware
+    crash (create_agent rejects two middleware with the same .name)."""
+    import deepagents.graph as g
+
+    from jarn.agent import builder
+
+    main_fake, summ_fake = _fake_models()
+
+    def _build(self, ref):
+        return summ_fake if "summ" in ref else main_fake
+
+    captured: dict = {}
+    real_create_agent = g.create_agent
+
+    def _spy(*a, **kw):
+        captured["middleware"] = kw.get("middleware", ())
+        return real_create_agent(*a, **kw)
+
+    with patch("jarn.providers.models.ModelFactory.build", _build), \
+         patch.object(g, "create_agent", _spy):
+        rt = builder.build_runtime(_summ_cfg(), project_root=tmp_path)
+
+    assert type(rt.agent).__name__ == "CompiledStateGraph"
+    mws = _summarization_mws(captured["middleware"])
+    assert len(mws) == 1  # exactly one — built-in excluded, ours kept
+    assert mws[0].model is summ_fake  # and it runs on the summarizer model
+
+
+def test_build_no_summarization_when_auto_compact_off(tmp_path):
+    """With context.auto_compact off, no summarization middleware is injected and
+    the built-in stays excluded — the assembled stack has zero auto-summarization."""
+    import deepagents.graph as g
+
+    from jarn.agent import builder
+
+    main_fake, summ_fake = _fake_models()
+
+    def _build(self, ref):
+        return summ_fake if "summ" in ref else main_fake
+
+    captured: dict = {}
+    real_create_agent = g.create_agent
+
+    def _spy(*a, **kw):
+        captured["middleware"] = kw.get("middleware", ())
+        return real_create_agent(*a, **kw)
+
+    with patch("jarn.providers.models.ModelFactory.build", _build), \
+         patch.object(g, "create_agent", _spy):
+        rt = builder.build_runtime(_summ_cfg(auto_compact=False), project_root=tmp_path)
+
+    assert type(rt.agent).__name__ == "CompiledStateGraph"
+    assert _summarization_mws(captured["middleware"]) == []

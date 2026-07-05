@@ -37,11 +37,22 @@ def cmd_compact(ctrl: Controller, args: str) -> CommandResult:
         return CommandResult(
             f"Unknown /compact subcommand: {sub!r}. Try /compact status."
         )
+    ctx = ctrl.config.context
+    if ctx.auto_compact:
+        summarizer = (
+            ctrl.config.resolved_summarizer_model()
+            or ctrl.config.resolved_main_model()
+            or "the main model"
+        )
+        auto = (
+            f"Auto-compaction is on: in-conversation summarization at "
+            f"{ctx.compact_at_pct}% of the context window (summarizer: {summarizer})."
+        )
+    else:
+        auto = "Auto-compaction is off."
     return CommandResult(
-        "Context auto-compaction is "
-        + ("on" if ctrl.config.context.auto_compact else "off")
-        + f" (at {ctrl.config.context.compact_at_pct}% full). "
-        "Use /clear to start a fresh thread."
+        auto + " Run /compact to summarize now and continue in a fresh thread, "
+        "or /clear to start fresh without a summary."
     )
 
 

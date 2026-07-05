@@ -231,8 +231,9 @@ class OverlayMixin:
         """Manual ``/compact``: generate the summary, render it for review, then
         ask before replacing the thread. ``y`` applies, ``edit`` opens the
         summary in ``$EDITOR`` first, anything else declines and keeps the
-        original context fully intact. (Auto-compact stays non-interactive — it
-        calls ``controller.compact()`` directly.)"""
+        original context fully intact. (Automatic compaction is separate and
+        non-interactive — the in-graph summarization middleware handles it; see
+        ``build_runtime``.)"""
         c = self.console
         c.print(f"[{palette.C_DIM}]compacting…[/{palette.C_DIM}]")
         try:
