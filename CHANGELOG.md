@@ -19,9 +19,24 @@ All notable changes to J.A.R.N. are documented here. Format follows
   with `dict.clear()` so the dict is bounded to the keys added within the current turn.
   The cumulative-stream dedup is unaffected: it baselines from the first chunk of each
   new turn (no prior entry → delta = cumulative), which is correct for a fresh API call.
+- **Silent auto-checkpoint failures now surface once per session** — a snapshot that
+  raised was previously swallowed by `contextlib.suppress(Exception)` in
+  `SessionDriver.run_turn()`, silently disabling `/undo` with no signal. A snapshot
+  exception is now logged with a full traceback and surfaced as a single NOTICE —
+  `checkpoint failed — /undo unavailable this turn (see ~/.jarn/logs/jarn.log)` — exactly
+  once per session (a failure found during turn cleanup, e.g. on a no-mutation turn, is
+  deferred to the start of the next turn). The turn is never aborted.
 
 ### Changed
 
+- **Auto-checkpoint snapshots no longer block turn start** — `SessionDriver.run_turn()`
+  previously ran `checkpoint.snapshot()` (git `add -A` → write-tree, O(repo)) synchronously
+  before the model was even called. The snapshot now starts in a worker thread
+  (`asyncio.to_thread`) concurrently with the model call and is awaited only at the first
+  mutation gate — where an approved/auto-approved `write_file`/`edit_file`/`execute` (or a
+  `run_in_background` start) is about to execute — so no mutating tool ever runs against an
+  uncaptured tree while turn start stays responsive. The task is reaped at turn end and
+  detached to finish fire-and-forget (never leaked, never blocking) on a cancelled turn.
 - **`verify.gate` now runs once per turn, not once per file edit** — previously
   `verify_after_edit` was invoked on every `write_file`/`edit_file` `TOOL_END`,
   running the detected test suite once per file in a multi-edit turn. It is now
