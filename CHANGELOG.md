@@ -14,11 +14,14 @@ All notable changes to J.A.R.N. are documented here. Format follows
   contains `policy.profile`; the key is dropped and the session continues.  Use
   `jarn --preset NAME` / `/preset NAME` instead (same preset names).  `jarn --profile X`
   now fails fast with an error naming `--preset`.  Config version bumped to 2 (T-1-9).
+- **`jarn doctor --json` no longer emits `policy_profile` / `effective_profile` keys** —
+  these machine-readable fields were removed alongside the profile system (T-1-9).
+  Consumers of the JSON output should use the `preset` key instead.
 
 ### Fixed
 
 - **npm packages now ship `LICENSE`** — `npm/build-packages.mjs` now copies the repo
-  `LICENSE` file into all five assembled packages (`jarn-cli` + three platform binaries).
+  `LICENSE` file into all four assembled packages (`jarn-cli` + three platform binaries).
   `jarn-cli/package.json` template updated to list `LICENSE` in `files` (T-1-9).
 - **RELEASE.md post-release note now references "the latest CHANGELOG section"** rather
   than a hardcoded `§0.4.4` version anchor, so the checklist stays accurate after each
