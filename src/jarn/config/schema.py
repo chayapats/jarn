@@ -149,6 +149,10 @@ class ExecutionConfig:
     # on the host. OFF by default: silently downgrading isolation is a footgun, so
     # we fail closed unless the user explicitly opts in.
     allow_local_fallback: bool = False
+    # When True (default), output from ``! <cmd>`` shell-escape commands is
+    # captured and fed into the next agent turn's context so the agent sees what
+    # the user ran.  Set to False to disable the injection.
+    shell_escape_context: bool = True
 
     # OS-level kernel-enforced sandbox for the local shell backend.
     # ``off``     — no OS sandbox (default; current behaviour preserved exactly).

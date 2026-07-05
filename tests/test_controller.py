@@ -1244,3 +1244,57 @@ async def test_fork_mechanism_preserves_original_thread_real_saver():
 
     assert a_contents == ["first", "ans1", "second", "ans2"]  # original untouched
     assert b_contents == ["first", "ans1"]  # the branch keeps only the prefix
+
+
+# ---------------------------------------------------------------------------
+# T-2-7: shell-escape context injection
+# ---------------------------------------------------------------------------
+
+
+def test_shell_context_appended_and_cleared(tmp_path, monkeypatch, base_config):
+    """After adding a ShellNote, enrich_turn_input injects the fenced block."""
+    from jarn.controller.core import ShellNote
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    ctrl.pending_shell_context.append(ShellNote(cmd="git status", exit_code=0, tail="On branch main"))
+    result = ctrl.enrich_turn_input("fix it")
+    assert "<shell-escape context" in result
+    assert "$ git status  (exit 0)" in result
+    assert "On branch main" in result
+    assert "</shell-escape>" in result
+    ctrl.close()
+
+
+def test_shell_context_clears_after_one_use(tmp_path, monkeypatch, base_config):
+    """The shell context list is cleared after the first enrich_turn_input call."""
+    from jarn.controller.core import ShellNote
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    ctrl.pending_shell_context.append(ShellNote(cmd="ls", exit_code=0, tail="file.txt"))
+    ctrl.enrich_turn_input("ok")
+    assert ctrl.pending_shell_context == []
+    second = ctrl.enrich_turn_input("ok again")
+    assert "<shell-escape context" not in second
+    ctrl.close()
+
+
+def test_shell_context_two_commands_oldest_first(tmp_path, monkeypatch, base_config):
+    """Two shell notes appear oldest-first in the fenced block."""
+    from jarn.controller.core import ShellNote
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    ctrl.pending_shell_context.append(ShellNote(cmd="pwd", exit_code=0, tail="/home"))
+    ctrl.pending_shell_context.append(ShellNote(cmd="whoami", exit_code=0, tail="alice"))
+    result = ctrl.enrich_turn_input("hi")
+    pwd_pos = result.index("$ pwd")
+    whoami_pos = result.index("$ whoami")
+    assert pwd_pos < whoami_pos
+    ctrl.close()
+
+
+def test_shell_context_disabled_by_config(tmp_path, monkeypatch, base_config):
+    """When execution.shell_escape_context is False, nothing is appended."""
+    from jarn.controller.core import ShellNote
+    base_config.execution.shell_escape_context = False
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    ctrl.pending_shell_context.append(ShellNote(cmd="ls", exit_code=0, tail="x"))
+    result = ctrl.enrich_turn_input("hello")
+    assert "<shell-escape context" not in result
+    ctrl.close()

@@ -3303,3 +3303,108 @@ async def test_double_esc_no_double_picker(tmp_path, monkeypatch):
         "second invocation must not replace _menu_future (same object identity)"
 
     app.controller.close()
+
+
+# ---------------------------------------------------------------------------
+# T-2-7: shell-escape context injection
+# ---------------------------------------------------------------------------
+
+
+def _make_bang_app(tmp_path, monkeypatch):
+    """InlineApp with a StringIO console for `!` shell-escape capture tests."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    app.console = Console(file=StringIO(), width=80)
+    return app
+
+
+@pytest.mark.asyncio
+async def test_bang_captures_tail(tmp_path, monkeypatch):
+    """!cmd stores a ShellNote on the controller for the next enrich_turn_input."""
+    app = _make_bang_app(tmp_path, monkeypatch)
+    await app._shell_escape("echo hello_context_test")
+    notes = app.controller.pending_shell_context
+    assert len(notes) == 1
+    assert notes[0].cmd == "echo hello_context_test"
+    assert "hello_context_test" in notes[0].tail
+    assert notes[0].exit_code == 0
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_bang_redacts_secrets_in_tail(tmp_path, monkeypatch):
+    """Secret-shaped output is redacted before being stored in ShellNote."""
+    from deepagents.backends.protocol import ExecuteResponse
+
+    from jarn.agent.local_backend import CancellableLocalShellBackend
+
+    app = _make_bang_app(tmp_path, monkeypatch)
+    # Patch the backend to return secret-shaped output.
+    fake_secret = "sk-ant-api03-ABCDEFGH1234567890abcdefgh"
+    monkeypatch.setattr(
+        CancellableLocalShellBackend,
+        "execute",
+        lambda self, cmd, **kw: ExecuteResponse(output=f"API_KEY={fake_secret}", exit_code=0),
+    )
+    await app._shell_escape("env")
+    notes = app.controller.pending_shell_context
+    assert len(notes) == 1
+    assert fake_secret not in notes[0].tail
+    assert "[REDACTED]" in notes[0].tail or "sk-…" in notes[0].tail
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_bang_capture_disabled_by_config(tmp_path, monkeypatch):
+    """execution.shell_escape_context=False → nothing is stored by `!`."""
+    app = _make_bang_app(tmp_path, monkeypatch)
+    app.controller.config.execution.shell_escape_context = False
+    await app._shell_escape("echo not_captured")
+    assert app.controller.pending_shell_context == []
+    # Output still prints to scrollback as before.
+    assert "not_captured" in app.console.file.getvalue()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_bang_tail_cap_lines_and_chars(tmp_path, monkeypatch):
+    """The stored tail is capped at 50 lines AND 2,000 chars (whichever smaller)."""
+    from deepagents.backends.protocol import ExecuteResponse
+
+    from jarn.agent.local_backend import CancellableLocalShellBackend
+
+    app = _make_bang_app(tmp_path, monkeypatch)
+
+    # 200 short lines → line cap binds: exactly the LAST 50 lines survive.
+    many_lines = "\n".join(f"line-{i}" for i in range(200))
+    monkeypatch.setattr(
+        CancellableLocalShellBackend,
+        "execute",
+        lambda self, cmd, **kw: ExecuteResponse(output=many_lines, exit_code=0),
+    )
+    await app._shell_escape("seq 200")
+    tail = app.controller.pending_shell_context[-1].tail
+    assert tail.count("\n") == 49  # 50 lines
+    assert tail.startswith("line-150") and tail.endswith("line-199")
+
+    # 10 very long lines → char cap binds: at most 2,000 chars, tail end kept.
+    long_lines = "\n".join(("x" * 500) + f"<{i}>" for i in range(10))
+    monkeypatch.setattr(
+        CancellableLocalShellBackend,
+        "execute",
+        lambda self, cmd, **kw: ExecuteResponse(output=long_lines, exit_code=0),
+    )
+    await app._shell_escape("cat big")
+    tail = app.controller.pending_shell_context[-1].tail
+    assert len(tail) <= 2000
+    assert tail.endswith("<9>")
+    app.controller.close()

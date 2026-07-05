@@ -283,6 +283,7 @@ class ExecutionConfigModel(_StrictModel):
     docker_image: str = "python:3.12"
     multimodal: bool = True
     allow_local_fallback: bool = False
+    shell_escape_context: bool = True
     local_sandbox: str = "off"
     sandbox_allow_network: bool = True
     sandbox_writable: list[str] = Field(default_factory=list)
@@ -314,7 +315,8 @@ class ExecutionConfigModel(_StrictModel):
         return raw
 
     @field_validator(
-        "background", "multimodal", "allow_local_fallback", "sandbox_allow_network",
+        "background", "multimodal", "allow_local_fallback", "shell_escape_context",
+        "sandbox_allow_network",
         mode="before",
     )
     @classmethod
@@ -888,6 +890,7 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             docker_image=model.execution.docker_image,
             multimodal=model.execution.multimodal,
             allow_local_fallback=model.execution.allow_local_fallback,
+            shell_escape_context=model.execution.shell_escape_context,
             local_sandbox=model.execution.local_sandbox,
             sandbox_allow_network=model.execution.sandbox_allow_network,
             sandbox_writable=list(model.execution.sandbox_writable),

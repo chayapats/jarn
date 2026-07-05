@@ -27,7 +27,7 @@ doing anything risky, and never claims success on a guess.
 It runs entirely in your terminal (a Web UI is on the roadmap, post-launch). Notable
 capabilities: **AGENTS.md / CLAUDE.md interop** (works out-of-the-box beside other
 agents), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcripts**,
-**`!` shell escape**, **OS-level execution sandbox** (macOS `sandbox-exec` / Linux
+**`!` shell escape** (output fed into the next agent turn as context), **OS-level execution sandbox** (macOS `sandbox-exec` / Linux
 `bwrap`) and **Docker container backend** (`execution.backend: docker`), **presets**
 (`/preset`, `jarn --preset`) that set mode + sandbox at once, with an untrusted floor,
 **auto-checkpoint + `/undo` / `/redo`**, **repo map** (`/map`), a **wiki knowledge
@@ -359,7 +359,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1445 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1453 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

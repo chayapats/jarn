@@ -323,6 +323,9 @@ execution:
   allow_local_fallback: false   # if `backend: docker|sandbox` can't start, run on the
                                 # host anyway? OFF = fail closed (recommended).
                                 # When on, the status bar shows "host (no sandbox)".
+  shell_escape_context: true    # feed `! <cmd>` shell-escape output into the next agent
+                                # turn as a fenced <shell-escape context> block so the
+                                # agent sees what you ran. Set false to disable injection.
 
   # OS-level kernel-enforced sandbox for the LOCAL shell backend.
   # Adds a second layer of isolation beneath the danger-guard using sandbox-exec

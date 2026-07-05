@@ -555,6 +555,11 @@ class CommandMixin:
         is printed to the scrollback console.  Reuses
         :class:`~jarn.agent.local_backend.CancellableLocalShellBackend` so
         truncation and Esc/cancel behaviour match the agent's Bash tool.
+
+        When ``execution.shell_escape_context`` is on (default), the tail of the
+        output (last 50 lines / 2,000 chars, whichever is smaller) is also
+        secret-redacted and stored on the controller so the next agent turn sees
+        what the user ran (see :meth:`Controller.enrich_turn_input`).
         """
         c = self.console
         if not command:
@@ -575,3 +580,12 @@ class CommandMixin:
         # (Esc can still fire while the command runs).
         response = await asyncio.to_thread(backend.execute, command)
         c.print(response.output)
+        if self.controller.config.execution.shell_escape_context:
+            raw = response.output or ""
+            lines = raw.splitlines()[-50:]
+            tail = "\n".join(lines)[-2000:]
+            from jarn.config.secrets import redact_secrets
+            from jarn.controller.core import ShellNote
+            self.controller.pending_shell_context.append(
+                ShellNote(cmd=command, exit_code=response.exit_code, tail=redact_secrets(tail))
+            )

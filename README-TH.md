@@ -21,7 +21,7 @@ TUI-first coding agent harness ที่สร้างบน [DeepAgents](https
 
 J.A.R.N. คือ terminal coding agent ที่ออกแบบในแนวทางเดียวกับ Claude Code และ Codex CLI แต่สร้างขึ้นเป็น harness ของตัวเองบน DeepAgents library จุดเด่นที่แตกต่างคือ **ความน่าเชื่อถือ (reliability)**: agent จะวางแผนก่อนลงมือ, ตรวจสอบผลลัพธ์ของตัวเอง, ขอ permission ก่อนทำทุกอย่างที่มีความเสี่ยง และไม่อ้างว่าทำสำเร็จแบบเดา
 
-รันทั้งหมดใน terminal ของคุณ (Web UI อยู่ใน roadmap หลัง launch) ความสามารถเด่นได้แก่: **AGENTS.md / CLAUDE.md interop** (ทำงานร่วมกับ agent อื่นได้ทันที), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcript**, **`!` shell escape**, **OS-level execution sandbox** (macOS `sandbox-exec` / Linux `bwrap`) และ **Docker container backend** (`execution.backend: docker`), **presets** (`/preset`, `jarn --preset`) ที่ตั้ง mode + sandbox พร้อมกันในคำสั่งเดียวพร้อม untrusted floor, **auto-checkpoint + `/undo` / `/redo`**, **repo map** (`/map`), **wiki knowledge base** (`/wiki`), **`/config` settings panel** (UI แบบ tab โต้ตอบได้ เซฟลง `~/.jarn/config.yaml`), และ **MCP health** ราย server (`/mcp status`)
+รันทั้งหมดใน terminal ของคุณ (Web UI อยู่ใน roadmap หลัง launch) ความสามารถเด่นได้แก่: **AGENTS.md / CLAUDE.md interop** (ทำงานร่วมกับ agent อื่นได้ทันที), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcript**, **`!` shell escape** (output ถูกส่งเข้า context ของ agent turn ถัดไปโดยอัตโนมัติ), **OS-level execution sandbox** (macOS `sandbox-exec` / Linux `bwrap`) และ **Docker container backend** (`execution.backend: docker`), **presets** (`/preset`, `jarn --preset`) ที่ตั้ง mode + sandbox พร้อมกันในคำสั่งเดียวพร้อม untrusted floor, **auto-checkpoint + `/undo` / `/redo`**, **repo map** (`/map`), **wiki knowledge base** (`/wiki`), **`/config` settings panel** (UI แบบ tab โต้ตอบได้ เซฟลง `~/.jarn/config.yaml`), และ **MCP health** ราย server (`/mcp status`)
 
 > **สถานะ:** v0.5.0 (Alpha) — อยู่บน PyPI (`pip install jarn`) และ npm (`npm install -g jarn-cli` — binary สำเร็จรูป ไม่ต้องมี Python) รอบปรับปรุงใหญ่: hardening ด้านความปลอดภัย, แก้บั๊กสำคัญ, refactor โครงสร้างโค้ด, ฟีเจอร์ใหม่ (headless multi-turn, วางรูปข้ามแพลตฟอร์ม, OTel, verify gate) และ CI/release gates ที่แข็งแรงขึ้น ดู [CHANGELOG.md](CHANGELOG.md) และ [SECURITY.md](SECURITY.md)
 
@@ -243,7 +243,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1445 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1453 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)
