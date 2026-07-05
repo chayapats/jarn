@@ -3277,3 +3277,29 @@ async def test_double_esc_busy_no_rewind(tmp_path, monkeypatch):
     assert not rewind_called, "Esc while busy must cancel turn, not open rewind"
     assert turn_task.cancelled() or turn_task.done()
     app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_double_esc_no_double_picker(tmp_path, monkeypatch):
+    """Double Esc during the async gap before the rewind picker opens should
+    not spawn a second picker. The guard at the start of _rewind_picker
+    prevents concurrent invocations from overwriting _menu_future."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    # Set up a pending _menu_future to simulate a picker in flight
+    app._menu_future = asyncio.get_event_loop().create_future()
+    first_future = app._menu_future
+    assert not first_future.done()
+
+    # Call _rewind_picker twice while the future is pending
+    # The first call will return early due to the guard
+    await app._rewind_picker()
+    assert app._menu_future is first_future, \
+        "first invocation should not replace _menu_future"
+
+    # The second call should also return early (same guard)
+    await app._rewind_picker()
+    assert app._menu_future is first_future, \
+        "second invocation must not replace _menu_future (same object identity)"
+
+    app.controller.close()

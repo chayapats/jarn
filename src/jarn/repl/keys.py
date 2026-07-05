@@ -105,28 +105,27 @@ class KeysMixin:
                         f"[/{palette.C_DIM}]"
                     )
                 return
-            if stripped:
-                # Echo the submitted line into the scrollback transcript (the
-                # input buffer is cleared, so without this the message vanishes).
-                send = self._expand_pastes(stripped)
-                self._pastes.clear()
-                if stripped.startswith("!"):
-                    # Host shell escape — echo in red with a clear marker so it's
-                    # obvious this ran outside the agent (no approval).
-                    cmd = _rich_escape(stripped[1:].strip())
-                    self.console.print(
-                        f"[{palette.C_ERROR}]![/{palette.C_ERROR}] "
-                        f"[{palette.C_ERROR}]{cmd}[/{palette.C_ERROR}] "
-                        f"[{palette.C_DIM}](host shell)[/{palette.C_DIM}]"
-                    )
-                else:
-                    self.console.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(stripped)}")
-                self._turn_start = time.monotonic()
-                self._turn_stream_chars = 0
-                self._turn_base_output = self.controller.tracker.total.output_tokens
-                self._turn_base_input = self.controller.tracker.total.input_tokens
-                self._first_token_at = None
-                self._turn_task = asyncio.create_task(self._handle(send))
+            # Echo the submitted line into the scrollback transcript (the
+            # input buffer is cleared, so without this the message vanishes).
+            send = self._expand_pastes(stripped)
+            self._pastes.clear()
+            if stripped.startswith("!"):
+                # Host shell escape — echo in red with a clear marker so it's
+                # obvious this ran outside the agent (no approval).
+                cmd = _rich_escape(stripped[1:].strip())
+                self.console.print(
+                    f"[{palette.C_ERROR}]![/{palette.C_ERROR}] "
+                    f"[{palette.C_ERROR}]{cmd}[/{palette.C_ERROR}] "
+                    f"[{palette.C_DIM}](host shell)[/{palette.C_DIM}]"
+                )
+            else:
+                self.console.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(stripped)}")
+            self._turn_start = time.monotonic()
+            self._turn_stream_chars = 0
+            self._turn_base_output = self.controller.tracker.total.output_tokens
+            self._turn_base_input = self.controller.tracker.total.input_tokens
+            self._first_token_at = None
+            self._turn_task = asyncio.create_task(self._handle(send))
 
         @kb.add("c-j", filter=live)
         def _newline(event) -> None:  # Shift+Enter usually arrives as Ctrl+J
