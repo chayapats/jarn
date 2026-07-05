@@ -135,9 +135,9 @@ class ExecutionConfig:
     #: Local backend only — under docker/sandbox the tools are not registered (a
     #: host process would escape the container). Default on.
     background: bool = True
-    #: Max concurrent background processes before a one-time warning (``None`` = unlimited).
+    #: Max concurrent background processes (enforced — N+1th start is refused; ``None`` = unlimited).
     background_max_concurrent: int | None = None
-    #: Warn when a background process exceeds this lifetime in seconds (``None`` = unlimited).
+    #: Kill a background process that exceeds this lifetime in seconds (``None`` = unlimited).
     background_max_lifetime_secs: float | None = None
     sandbox_provider: str = "langsmith"  # langsmith (remote); docker is its own backend
     # Container image for ``backend: docker``. Must ship python3 + /bin/sh
