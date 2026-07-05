@@ -323,8 +323,6 @@ class OverlayMixin:
 
     def _update_history_filter(self) -> None:
         """Recompute visible picker options from the current filter string."""
-        from typing import cast
-
         filt = self._menu_filter.lower() if self._menu_filter else ""
         total = len(self._history_all_options)
         visible: list[tuple[str, str]] = [
@@ -376,8 +374,6 @@ class OverlayMixin:
         total = len(all_entries)
 
         # Initialise picker state.
-        from typing import cast
-
         self._menu_filter = ""    # "" = filter mode active, no chars typed
         self._menu_options = cast(list[tuple[str, object]], list(self._history_all_options))
         self._menu_index = 0

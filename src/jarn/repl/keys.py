@@ -50,9 +50,14 @@ class KeysMixin:
                 if not self._menu_options:
                     return
                 label, value = self._menu_options[self._menu_index]
-                self.console.print(
-                    f"[{palette.C_DIM}]› {_rich_escape(label)}[/{palette.C_DIM}]"
-                )
+                # Suppress the scrollback echo for the history picker — it would
+                # print the truncated label instead of the full text and pollute
+                # the transcript.  The history picker is identified by
+                # _menu_filter being not None (it is "" when no chars typed yet).
+                if self._menu_filter is None:
+                    self.console.print(
+                        f"[{palette.C_DIM}]› {_rich_escape(label)}[/{palette.C_DIM}]"
+                    )
                 self._menu_future.set_result(value)
                 return
             text = self.input.text
@@ -142,6 +147,8 @@ class KeysMixin:
         @kb.add("up", filter=live)
         def _up(event) -> None:
             if self._menu_future is not None and not self._menu_future.done():
+                if not self._menu_options:
+                    return
                 n = len(self._menu_options)
                 self._menu_index = (self._menu_index - 1) % n
                 if self.app is not None:
@@ -153,6 +160,8 @@ class KeysMixin:
         @kb.add("down", filter=live)
         def _down(event) -> None:
             if self._menu_future is not None and not self._menu_future.done():
+                if not self._menu_options:
+                    return
                 n = len(self._menu_options)
                 self._menu_index = (self._menu_index + 1) % n
                 if self.app is not None:
