@@ -2488,3 +2488,11 @@ def test_commit_width_tracks_resize(monkeypatch):
     r3.on_text("cap test text")
     r3.finish()
     assert console3.width == 100, f"expected 100 cap at 250 cols, got {console3.width}"
+
+    # Phase 4: floor guard test — terminal reports 0 cols → width floored to 1.
+    from jarn.repl_renderer import _current_width
+    monkeypatch.setattr(
+        _shutil, "get_terminal_size",
+        lambda *_a, **_k: os.terminal_size((0, 24)),
+    )
+    assert _current_width() == 1, f"expected 1 (floor guard for 0 cols), got {_current_width()}"
