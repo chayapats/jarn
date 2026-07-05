@@ -7,6 +7,18 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **Esc-Esc rewind chord + empty-Enter hint (T-2-6)** — two discoverability
+  improvements to the inline REPL:
+  - **Esc-Esc rewind chord:** press Esc twice within 500 ms while idle with an
+    empty input buffer to open the `/rewind` picker (Claude Code muscle memory).
+    The first Esc still clears non-empty input; a second Esc on an already-empty
+    buffer fires the picker. Esc while busy or while a picker/overlay is open keeps
+    its existing cancel semantics — the chord never fires in those states.
+  - **Empty-Enter hint:** the first time you press Enter on an empty idle prompt,
+    jarn prints a one-line discovery hint:
+    `type a message · / commands · @ files · Esc Esc rewind`.
+    Subsequent empty Enters are silent (hint shown once per session).
+
 - **Fuzzy completion tier (T-2-5)** — the completion engine now uses a two-tier
   pipeline for `/command` names, `@file`/`@folder:`/`@symbol:` mentions, and
   command-argument values (e.g. `/model` refs).  Tier 1 is the existing

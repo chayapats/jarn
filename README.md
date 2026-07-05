@@ -191,6 +191,9 @@ preview appear inline.
   `.jarn/pastes/` and inserted as an `@path` the agent reads on send.
   Supported on **macOS** (PNG/TIFF/JPEG), **Linux** (Wayland `wl-paste` or X11
   `xclip`), and **Windows** (PowerShell); images over 10 MB are rejected.
+- **Esc Esc** (two Esc presses within 500 ms, idle, empty input) opens the **`/rewind`
+  picker** — same chord as Claude Code. The first Esc still clears non-empty input;
+  only the second Esc on an already-empty buffer fires the picker.
 - **Esc** cancels the running turn. **Ctrl+C** cancels a turn / clears the input,
   and **twice in a row** exits (Claude Code-style). **Ctrl+Q** also quits.
 - **Copy text:** the terminal owns selection — just **drag to select and ⌘C**
@@ -319,6 +322,18 @@ See [docs/EXTENDING.md](docs/EXTENDING.md) ([quick start](docs/EXTENDING.md#quic
 
 ## Troubleshooting
 
+### Esc Esc rewind feels slow or doesn't register
+
+Terminals encode many keys as ESC-prefixed byte sequences (e.g. arrow keys start
+with `\x1b[`). To tell a lone Esc from the start of a sequence, prompt_toolkit
+waits a short time (~100 ms) after seeing `\x1b` before delivering it as a bare
+Esc keystroke. This is inherent to how terminals work — not a jarn bug — and means
+the Esc-Esc chord has a slight delay on the first press. The 500 ms window is
+generous enough that a normal double-tap still registers.
+
+If the chord never fires, check that neither the **terminal** nor **tmux/screen** is
+eating the second `\x1b` (some multiplexers bind Esc for their own prefix key).
+
 ### Terminal ignores OSC 2 title updates
 
 Some terminal emulators do not support OSC 2 (`\x1b]2;…\x07`) or suppress it by default.
@@ -344,7 +359,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1439 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1444 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

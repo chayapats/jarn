@@ -95,6 +95,16 @@ class KeysMixin:
                 return
             self.input.append_to_history()
             self.input.reset()
+            if not stripped:
+                # Idle empty Enter: print the one-time discovery hint.
+                if not self._hinted:
+                    self._hinted = True
+                    self.console.print(
+                        f"[{palette.C_DIM}]type a message"
+                        f" · / commands · @ files · Esc Esc rewind"
+                        f"[/{palette.C_DIM}]"
+                    )
+                return
             if stripped:
                 # Echo the submitted line into the scrollback transcript (the
                 # input buffer is cleared, so without this the message vanishes).
@@ -357,16 +367,35 @@ class KeysMixin:
                 else:
                     self._close_config()
                 event.app.invalidate()
+                self._last_esc_ts = None  # not an idle Esc; reset chord
                 return
             if self._menu_future is not None and not self._menu_future.done():
                 self._menu_future.set_result(self._menu_cancel)
+                self._last_esc_ts = None  # picker cancel, not idle; reset chord
                 return
             if self._expanded:
                 self._collapse()
-            elif self._busy():
+                self._last_esc_ts = None
+                return
+            if self._busy():
                 self._cancel_turn(note_edits=True)
-            elif self.input.text:
+                self._last_esc_ts = None  # busy cancel, not idle; reset chord
+                return
+            # Idle path: arm or fire the Esc-Esc rewind chord.
+            now = time.monotonic()
+            if (
+                not self.input.text
+                and self._last_esc_ts is not None
+                and (now - self._last_esc_ts) <= 0.5
+            ):
+                # Second Esc within 500 ms, idle, empty buffer → open rewind picker.
+                self._last_esc_ts = None
+                asyncio.create_task(self._rewind_picker())
+                return
+            # Arm the chord; clear non-empty input as before.
+            if self.input.text:
                 self.input.reset()
+            self._last_esc_ts = now
 
         @kb.add("c-c")
         def _interrupt(event) -> None:
