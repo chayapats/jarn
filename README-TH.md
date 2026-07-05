@@ -153,7 +153,6 @@ Reply ของ assistant render เป็น **Markdown** (heading, list, code 
 | `/sandbox [on\|off]` | ดูหรือ toggle execution backend (local/sandbox) |
 | `/key [<key>]` | ตั้งหรือเปลี่ยน API key ของ provider ปัจจุบัน (เก็บใน keychain) |
 | `/preset [<preset-name>]` | ดูหรือ apply preset — shortcut ที่ตั้ง mode + sandbox พร้อมกัน |
-| `/profile [<preset-name>]` | alias เก่าของ /preset (ยังใช้ได้) |
 | `/cost` | ดู token usage และ cost ของ session |
 | `/compact` | สรุปและบีบอัด conversation context |
 | `/expand` | เปิด tool output เต็มของ turn ล่าสุดใน pager (เหมือน Ctrl+O) |
@@ -235,8 +234,8 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1359 tests: logic + mocked-agent + packaging gate
-uv run ruff check src tests   # lint
+uv run pytest                 # 1408 tests: logic + mocked-agent + packaging gate
+uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)
 ```

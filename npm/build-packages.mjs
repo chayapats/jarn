@@ -55,7 +55,7 @@ export function platformPackageJson(target, version) {
     author: 'Chayapat',
     os: [spec.os],
     cpu: [spec.cpu],
-    files: ['bin/jarn'],
+    files: ['bin/jarn', 'LICENSE'],
   }
 }
 
@@ -117,6 +117,7 @@ function main() {
     mkdirSync(join(dir, 'bin'), { recursive: true })
     copyFileSync(binSrc, join(dir, 'bin', 'jarn'))
     chmodSync(join(dir, 'bin', 'jarn'), 0o755)
+    copyFileSync(join(HERE, '..', 'LICENSE'), join(dir, 'LICENSE'))
     published.push(dir)
     console.log(`✓ ${target} → ${dir}`)
   }
@@ -129,6 +130,7 @@ function main() {
   if (existsSync(join(MAIN_SRC, 'README.md'))) {
     copyFileSync(join(MAIN_SRC, 'README.md'), join(mainDir, 'README.md'))
   }
+  copyFileSync(join(HERE, '..', 'LICENSE'), join(mainDir, 'LICENSE'))
   published.push(mainDir)
   console.log(`✓ jarn-cli → ${mainDir}`)
 

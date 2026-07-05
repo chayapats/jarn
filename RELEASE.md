@@ -11,7 +11,7 @@ see CHANGELOG §0.3.0 for the remaining road-to-1.0 work.
 uv sync --extra dev
 uv run ruff check src tests scripts
 uv run mypy src/
-uv run pytest -q                    # 1411 tests
+uv run pytest -q                    # 1408 tests
 uv run pytest tests/test_packaging.py -q
 uv build
 ```
@@ -79,7 +79,7 @@ git push origin v0.5.0
 
 - Verify `pip install jarn` / `uv tool install jarn` from PyPI
 - Verify `npm install -g jarn-cli` → `jarn --version`
-- Open GitHub Release notes (copy from `CHANGELOG.md` §0.4.4)
+- Open GitHub Release notes (copy from the latest CHANGELOG section)
 
 ## v0.1.0 sign-off (2026-06-08)
 
@@ -141,3 +141,17 @@ repo). 0.4.4 fixes all three; 0.4.1–0.4.3 are PyPI-only interims.
 | GitHub Release `v0.4.4` | ✅ binaries: linux-x64, linux-arm64, macos-arm64 |
 | npm publish | ✅ `jarn-cli@0.4.4` + `jarn-cli-{linux-x64,linux-arm64,darwin-arm64}@0.4.4` |
 | End-to-end | ✅ `npm i jarn-cli` on macOS arm64 → `jarn --version` → `jarn 0.4.4` |
+
+## v0.5.0 sign-off (2026-07-06) — RELEASED ✅
+
+Phase-4 features: REPL paste + completion wiring; REPL background model loading; rewind UX; rich @-mention support; doctor extensions section; npm binary smoke.
+
+| Gate | Result |
+|------|--------|
+| pytest (full) | ✅ 1408 passed, 0 skipped |
+| ruff + mypy | ✅ clean |
+| `uv build` | ✅ `dist/jarn-0.5.0-*.whl` + `.tar.gz` |
+| PyPI publish | ✅ `jarn 0.5.0` |
+| GitHub Release `v0.5.0` | ✅ binaries: linux-x64, linux-arm64, macos-arm64 |
+| npm publish | ✅ `jarn-cli@0.5.0` + platform packages |
+| End-to-end | ✅ `npm i jarn-cli` → `jarn --version` → `jarn 0.5.0` |

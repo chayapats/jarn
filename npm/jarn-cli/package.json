@@ -24,7 +24,8 @@
     "jarn-cli": "bin/jarn.js"
   },
   "files": [
-    "bin/jarn.js"
+    "bin/jarn.js",
+    "LICENSE"
   ],
   "scripts": {
     "test": "node --test"

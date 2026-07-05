@@ -99,3 +99,37 @@ def test_wheel_install_smoke(built_artifacts, tmp_path):
     assert data["global_config_present"] is True
     assert "extensions" in data
     assert data["extensions"]["counts"]["skills"] >= 0
+
+
+def test_npm_launcher_includes_license(tmp_path):
+    """npm/build-packages.mjs must copy LICENSE into all assembled packages."""
+    import json
+    import os
+    import subprocess
+
+    repo = Path(__file__).resolve().parents[1]
+    out = tmp_path / "npm-out"
+    bins = tmp_path / "bins"
+    bins.mkdir()
+    for target in ("linux-x64", "linux-arm64", "darwin-arm64"):
+        tdir = bins / f"binary-{target}"
+        tdir.mkdir()
+        fake = tdir / "jarn"
+        fake.write_bytes(b"#!/bin/sh\necho fake\n")
+        os.chmod(fake, 0o755)
+    result = subprocess.run(
+        ["node", "npm/build-packages.mjs",
+         "--version", "0.0.0-test",
+         "--binaries", str(bins),
+         "--out", str(out),
+         "--allow-missing"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    main_license = out / "jarn-cli" / "LICENSE"
+    assert main_license.is_file(), "jarn-cli/LICENSE must exist in the assembled launcher package"
+    for target in ("linux-x64", "linux-arm64", "darwin-arm64"):
+        plat_license = out / f"jarn-cli-{target}" / "LICENSE"
+        assert plat_license.is_file(), f"jarn-cli-{target}/LICENSE must exist"
+    pkg = json.loads((out / "jarn-cli" / "package.json").read_text())
+    assert "LICENSE" in pkg.get("files", []), "LICENSE must be in main package's files"

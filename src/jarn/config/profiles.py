@@ -1,17 +1,19 @@
-"""Policy profiles — named bundles of trust-relevant settings.
+"""Policy presets — named bundles of trust-relevant settings.
 
-A *profile* is a single name the user can select (``--profile``, ``policy.profile``
-in YAML, or ``/profile`` in the REPL) that overlays a coherent set of
-trust-relevant knobs at once: the coarse :class:`PermissionMode`, the OS-level
-``local_sandbox`` mode, whether the sandbox may reach the network, and whether
-the in-process web tools are registered.
+A *preset* is a single name the user can select (``--preset`` CLI flag or
+``/preset`` in the REPL) that overlays a coherent set of trust-relevant knobs
+at once: the coarse :class:`PermissionMode`, the OS-level ``local_sandbox``
+mode, whether the sandbox may reach the network, and whether the in-process web
+tools are registered.
 
-Profiles are applied at the *launch boundary* (where ``project_trusted`` is
+Presets are applied at the *launch boundary* (where ``project_trusted`` is
 known), never inside :func:`jarn.config.loader.load_config` — that keeps config
 loading pure and lets the untrusted-floor clamp run last.
 
 The untrusted floor is a one-way clamp: an untrusted project can never be
 loosened below :data:`UNTRUSTED_FLOOR_PROFILE`.
+
+Note: ``policy.profile`` / ``--profile`` / ``/profile`` were removed in v0.6.0.
 """
 
 from __future__ import annotations
@@ -115,15 +117,13 @@ def resolve_effective_profile(
 ) -> str | None:
     """Expand the effective preset onto ``config`` and return its name (or None).
 
-    Precedence: ``cli_profile`` > ``config.policy.profile`` > nothing. The chosen
-    preset (if any) is expanded first; THEN, when the project is untrusted, the
-    untrusted floor is forced as a direct clamp — an untrusted session can never
-    be loosened below it, regardless of what the CLI or config asked for.
-
-    (``profile`` is the legacy name for ``preset``: a launch-time shortcut that
-    expands to a mode + sandbox posture. It is not a persistent parallel axis.)
+    Precedence: ``cli_profile`` > nothing (config-level preset was removed in
+    v0.6.0).  The chosen preset (if any) is expanded first; THEN, when the
+    project is untrusted, the untrusted floor is forced as a direct clamp — an
+    untrusted session can never be loosened below it, regardless of what the
+    CLI asked for.
     """
-    chosen = cli_profile or config.policy.profile or None
+    chosen = cli_profile or None
     if chosen:
         apply_profile(config, chosen)
     if not project_trusted:

@@ -55,10 +55,7 @@ def doctor_lines(diag: dict) -> list[str]:
     )
     lines.append(f"mode: {_esc(_mode_str)}")
     web_tools_str = "on" if diag.get("web_tools", True) else "off"
-    lines.append(
-        f"preset (deprecated): {_esc(diag.get('policy_profile', 'none'))}"
-        f" · web tools: {web_tools_str}"
-    )
+    lines.append(f"web tools: {web_tools_str}")
 
     sbx = diag.get("sandbox") or {}
     sbx_backend = sbx.get("backend") or "none"
