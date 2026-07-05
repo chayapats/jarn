@@ -407,6 +407,18 @@ ui:
   theme: dark              # dark | light | high-contrast
   accent: cyan             # brand accent for splash + toolbar (cyan|blue|teal|…)
   # Set NO_COLOR=1 in the environment for plain/unstyled toolbar labels.
+  notify: bell             # off | bell | desktop | both
+                           #   off     — silent, no bell or desktop notification
+                           #   bell    — (default) emit \a terminal bell
+                           #   desktop — native OS notification (macOS osascript /
+                           #             Linux notify-send); skipped silently when
+                           #             the required binary is absent
+                           #   both    — bell + desktop
+                           # Privacy: desktop notification bodies are fixed strings
+                           # ("turn finished (42s)") — no prompt content is included.
+  notify_min_secs: 10      # minimum turn elapsed time (seconds) before a turn-end
+                           # notification fires. Approval notifications always fire
+                           # regardless of elapsed time. Set to 0 to always notify.
 
 # ── Git safety (auto-checkpoint + /undo /redo) ────────────────────────────────
 git:

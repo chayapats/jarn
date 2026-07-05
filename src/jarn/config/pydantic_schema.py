@@ -561,6 +561,8 @@ class UIConfigModel(_StrictModel):
     accent: str = "cyan"
     splash: str = "compact"
     approval_diff_lines: int = 40
+    notify: str = "bell"
+    notify_min_secs: int = 10
 
     @field_validator("splash", mode="before")
     @classmethod
@@ -571,6 +573,28 @@ class UIConfigModel(_StrictModel):
         if raw not in _VALID_SPLASH_VALUES:
             raise ConfigValidationError(
                 f"ui.splash must be one of {sorted(_VALID_SPLASH_VALUES)} (got {raw!r})."
+            )
+        return raw
+
+    @field_validator("notify", mode="before")
+    @classmethod
+    def _notify(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_NOTIFY_VALUES
+
+        raw = str(value)
+        if raw not in _VALID_NOTIFY_VALUES:
+            raise ConfigValidationError(
+                f"ui.notify must be one of {sorted(_VALID_NOTIFY_VALUES)} (got {raw!r})."
+            )
+        return raw
+
+    @field_validator("notify_min_secs", mode="before")
+    @classmethod
+    def _notify_min_secs(cls, value: Any) -> int:
+        raw = _coerce_int(value, "ui.notify_min_secs")
+        if raw < 0:
+            raise ConfigValidationError(
+                f"ui.notify_min_secs must be >= 0 (got {raw})."
             )
         return raw
 
@@ -920,6 +944,8 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             accent=model.ui.accent,
             splash=model.ui.splash,
             approval_diff_lines=model.ui.approval_diff_lines,
+            notify=model.ui.notify,
+            notify_min_secs=model.ui.notify_min_secs,
         ),
         compat=CompatConfig(
             context_files=list(model.compat.context_files),

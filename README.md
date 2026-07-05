@@ -185,6 +185,10 @@ preview appear inline.
 - **Copy text:** the terminal owns selection — just **drag to select and ⌘C**
   (or your terminal's copy), and scroll with your terminal's native scrollback,
   exactly like Claude Code.
+- **Notifications:** when a turn takes longer than `ui.notify_min_secs` (default 10 s),
+  jarn emits a terminal **bell** (`\a`). Set `ui.notify: desktop` for a native OS
+  notification (macOS / Linux), `both` for bell + desktop, or `off` to silence all
+  notifications. Approval prompts always ring regardless of elapsed time.
 
 Assistant replies render as **Markdown** (headings, lists, syntax-highlighted code).
 
@@ -315,7 +319,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1412 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1422 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

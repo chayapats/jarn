@@ -623,6 +623,20 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                     tool_sink=self._last_tool_outputs,
                     token_sink=self._count_stream_chars,
                 )
+                # Turn completed normally (not cancelled — CancelledError would
+                # have bypassed this line).  Fire the turn-end notification.
+                _elapsed = (
+                    time.monotonic() - self._turn_start
+                    if self._turn_start is not None
+                    else 0.0
+                )
+                from jarn.tui.notify import notify as _notify
+                _notify(
+                    "turn_done",
+                    self.config.ui,
+                    elapsed=_elapsed,
+                    write=self.console.file.write,
+                )
                 await self._render_todos()
                 self._maybe_autocheckpoint_hint()
         except asyncio.CancelledError:

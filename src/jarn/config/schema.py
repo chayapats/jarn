@@ -289,6 +289,8 @@ class ObservabilityConfig:
 
 _VALID_SPLASH_VALUES: frozenset[str] = frozenset({"full", "compact", "off"})
 
+_VALID_NOTIFY_VALUES: frozenset[str] = frozenset({"off", "bell", "desktop", "both"})
+
 
 @dataclass(slots=True)
 class UIConfig:
@@ -299,6 +301,15 @@ class UIConfig:
     #: rest collapses to a "… (+N more lines)" footer. Over-cap diffs offer a
     #: [v] view-full-diff option that opens the complete diff in the pager.
     approval_diff_lines: int = 40
+    #: Notification mode when a long turn finishes or an approval is needed.
+    #: ``off``     — silent (no bell, no desktop notification).
+    #: ``bell``    — (default) emit a terminal BEL character (\a).
+    #: ``desktop`` — fire a native OS notification (macOS osascript / Linux notify-send).
+    #: ``both``    — BEL + desktop notification.
+    notify: str = "bell"
+    #: Minimum elapsed seconds before a turn-end notification fires.
+    #: Approval notifications always fire regardless of elapsed time.
+    notify_min_secs: int = 10
 
 
 @dataclass(slots=True)
