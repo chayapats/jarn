@@ -11,12 +11,24 @@ All notable changes to J.A.R.N. are documented here. Format follows
   compacted at ~85%: deepagents' in-graph `SummarizationMiddleware` (main model, fixed
   trigger) and JARN's controller trigger (summarizer model, `context.compact_at_pct`,
   forked the thread). Now the built-in is excluded and replaced with a single in-graph
-  instance on the resolved `routing.summarizer` model, triggered at
-  `context.compact_at_pct`; the controller's auto-compact trigger is removed.
-  `routing.summarizer` now actually drives automatic summarization, `context.compact_at_pct`
-  drives the in-graph trigger, and `context.auto_compact: false` disables automatic
-  summarization entirely. Manual `/compact` (summarize + continue in a fresh thread) is
-  unchanged; `/compact status` now reports the summarizer-model path.
+  instance on the resolved `routing.summarizer` model; the controller's auto-compact
+  trigger is removed. `routing.summarizer` now actually drives automatic summarization,
+  and `context.auto_compact: false` disables automatic summarization entirely. Manual
+  `/compact` (summarize + continue in a fresh thread) is unchanged.
+- **`context.compact_at_pct` now actually bites** — the trigger is resolved to an
+  absolute token count from the **main** model's context window using JARN's own window
+  table (the ctx% gauge's source), instead of deepagents' fraction trigger (which it
+  resolved against the *summarizer* model and which silently degraded to a fixed 170k
+  tokens for models without a LangChain profile — e.g. JARN's OpenRouter defaults —
+  making the setting inert). When JARN can't size the main model, it falls back to the
+  170k default and `/compact status` says so, plainly stating the setting has no effect
+  until the window is known.
+- **General-purpose subagent keeps summarization** — the model-keyed exclusion of the
+  built-in middleware also stripped it from the auto-added `general-purpose` subagent
+  (same model), so long `task()` delegations could hard-fail on context overflow. JARN's
+  replacement is now injected through the harness profile's `extra_middleware`, which
+  covers the main agent, the GP subagent, and same-model declarative subagents alike —
+  restoring the `ContextOverflowError`→summarize recovery on delegated work.
 
 ## [0.5.0] - 2026-07-02
 
