@@ -27,7 +27,7 @@ def _current_width() -> int:
     Called at render time (not at startup) so that committed text and the live
     region both wrap to the *current* terminal width after a resize.
     """
-    return min(shutil.get_terminal_size((100, 24)).columns, 100)
+    return max(1, min(shutil.get_terminal_size((100, 24)).columns, 100))
 
 
 def esc(text: str) -> str:

@@ -379,9 +379,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         """Render a one-line dim footer to an ANSI string (palette colour may be a
         name or hex, so let Rich emit the escape rather than hand-building it).
         Width is refreshed at render time to match the current terminal."""
-        self.console.width = _current_width()
+        width = _current_width()
+        self.console.width = width
         buf = io.StringIO()
-        cap = Console(force_terminal=True, width=self.console.width, file=buf)
+        cap = Console(force_terminal=True, width=width, file=buf)
         cap.print(f"[{palette.C_DIM}]{_rich_escape(text)}[/{palette.C_DIM}]", end="")
         return buf.getvalue().rstrip("\n")
 
