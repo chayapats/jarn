@@ -17,6 +17,7 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -35,8 +36,10 @@ class BackgroundProc:
     command: str
     popen: subprocess.Popen
     log_path: Path
+    tmpdir: Path
     cwd: str
     started_at: float = field(default_factory=time.monotonic)
+    killed_reason: str | None = None
 
     def running(self) -> bool:
         return self.popen.poll() is None
@@ -86,11 +89,8 @@ class ProcessManager:
         self._procs: dict[str, BackgroundProc] = {}
         self._counter = 0
         self._lock = threading.Lock()
-        self._dir = Path(tempfile.mkdtemp(prefix="jarn-bg-"))
         self.max_concurrent: int | None = None
         self.max_lifetime_secs: float | None = None
-        self._warned_concurrent = False
-        self._warned_lifetime: set[str] = set()
 
     def configure(
         self,
@@ -103,43 +103,50 @@ class ProcessManager:
         self.max_lifetime_secs = max_lifetime_secs
 
     def _prune_exited(self) -> None:
-        """Drop registry entries whose processes have already exited."""
+        """Drop registry entries whose processes have already exited; clean up tmpdirs."""
         exited = [pid for pid, proc in self._procs.items() if proc.popen.poll() is not None]
         for pid in exited:
-            del self._procs[pid]
+            proc = self._procs.pop(pid)
+            shutil.rmtree(proc.tmpdir, ignore_errors=True)
 
     def _check_limits(self, proc: BackgroundProc) -> None:
+        """Kill *proc* if it has exceeded ``max_lifetime_secs``; set ``killed_reason``."""
         if (
             self.max_lifetime_secs is not None
-            and proc.id not in self._warned_lifetime
+            and proc.killed_reason is None
+            and proc.popen.poll() is None
             and time.monotonic() - proc.started_at > self.max_lifetime_secs
         ):
-            self._warned_lifetime.add(proc.id)
-            _log.warning(
-                "background process %s exceeded max_lifetime_secs (%.0fs)",
+            # Set reason before terminating so a concurrent sweep won't double-kill.
+            proc.killed_reason = "killed: exceeded max_lifetime_secs"
+            _log.info(
+                "background process %s exceeded max_lifetime_secs (%.0fs); terminating",
                 proc.id,
                 self.max_lifetime_secs,
             )
+            _terminate(proc.popen)
 
     def start(self, command: str, cwd: str) -> BackgroundProc:
+        # Sweep lifetime limits outside the lock (terminate_process_group may block 3 s).
+        with self._lock:
+            to_sweep = list(self._procs.values())
+        for p in to_sweep:
+            self._check_limits(p)
+
         with self._lock:
             self._prune_exited()
-            running = sum(1 for p in self._procs.values() if p.running())
-            if (
-                self.max_concurrent is not None
-                and running >= self.max_concurrent
-                and not self._warned_concurrent
-            ):
-                self._warned_concurrent = True
-                _log.warning(
-                    "background.max_concurrent (%d) reached; new starts are still allowed",
-                    self.max_concurrent,
+            alive = sum(1 for p in self._procs.values() if p.running())
+            if self.max_concurrent is not None and alive >= self.max_concurrent:
+                raise RuntimeError(
+                    f"background slots full ({alive}/{self.max_concurrent}) — "
+                    "check or kill existing jobs (`list_background`, `kill_background`)"
                 )
             self._counter += 1
             pid = f"bg{self._counter}"
-        log_path = self._dir / f"{pid}.log"
-        # Own process group so the whole tree is killable; merge stderr into the
-        # log; no stdin (a background process must never block on input).
+
+        # Create a per-process temp directory for the log file.
+        proc_dir = Path(tempfile.mkdtemp(prefix="jarn-bg-"))
+        log_path = proc_dir / f"{pid}.log"
         log_file = log_path.open("wb")
         try:
             popen = subprocess.Popen(  # noqa: S602 - LLM-controlled shell, gated upstream
@@ -151,10 +158,21 @@ class ProcessManager:
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
             )
-        finally:
-            # Parent no longer needs the FD — the child retains its copy.
+        except Exception:
             log_file.close()
-        proc = BackgroundProc(id=pid, command=command, popen=popen, log_path=log_path, cwd=cwd)
+            shutil.rmtree(proc_dir, ignore_errors=True)
+            raise
+        # Parent no longer needs the FD — the child retains its copy.
+        log_file.close()
+
+        proc = BackgroundProc(
+            id=pid,
+            command=command,
+            popen=popen,
+            log_path=log_path,
+            tmpdir=proc_dir,
+            cwd=cwd,
+        )
         with self._lock:
             self._procs[pid] = proc
         return proc
@@ -170,6 +188,7 @@ class ProcessManager:
             "running": proc.running(),
             "exit_code": proc.exit_code,
             "tail": _tail(proc.log_path, tail_lines),
+            "killed_reason": proc.killed_reason,
         }
 
     def kill(self, pid: str) -> bool:
@@ -186,7 +205,13 @@ class ProcessManager:
         for p in procs:
             self._check_limits(p)
         return [
-            {"id": p.id, "command": p.command, "running": p.running(), "exit_code": p.exit_code}
+            {
+                "id": p.id,
+                "command": p.command,
+                "running": p.running(),
+                "exit_code": p.exit_code,
+                "killed_reason": p.killed_reason,
+            }
             for p in procs
         ]
 
@@ -195,6 +220,7 @@ class ProcessManager:
             procs = list(self._procs.values())
         for p in procs:
             _terminate(p.popen)
+            shutil.rmtree(p.tmpdir, ignore_errors=True)
 
 
 _MANAGER: ProcessManager | None = None
@@ -222,17 +248,20 @@ def build_background_tools(
     *,
     max_concurrent: int | None = None,
     max_lifetime_secs: float | None = None,
+    _mgr: ProcessManager | None = None,
 ):
     """LangChain tools for starting / inspecting / killing background processes.
 
     ``run_in_background`` is gated like ``execute`` (it maps to a SHELL action, so
     the danger-guard inspects the command); the inspect/kill tools are read-only
     controls over processes the agent itself started.
+
+    ``_mgr`` is for testing only — callers should omit it.
     """
     from langchain_core.tools import tool
 
     root = str(project_root)
-    mgr = manager()
+    mgr = _mgr if _mgr is not None else manager()
     mgr.configure(
         max_concurrent=max_concurrent,
         max_lifetime_secs=max_lifetime_secs,
@@ -250,7 +279,10 @@ def build_background_tools(
         Args:
             command: The shell command to run in the background.
         """
-        proc = mgr.start(command, cwd=root)
+        try:
+            proc = mgr.start(command, cwd=root)
+        except RuntimeError as exc:
+            return str(exc)
         return (
             f"started {proc.id}: {command}\n"
             f"Use check_background('{proc.id}') to read its output, "
@@ -267,7 +299,12 @@ def build_background_tools(
         st = mgr.status(id)
         if st is None:
             return f"no background process {id!r} (use list_background)."
-        state = "running" if st["running"] else f"exited (code {st['exit_code']})"
+        if st["running"]:
+            state = "running"
+        elif st["killed_reason"]:
+            state = f"stopped — {st['killed_reason']}"
+        else:
+            state = f"exited (code {st['exit_code']})"
         tail = st["tail"] or "(no output yet)"
         return f"{id} [{state}]: {st['command']}\n--- recent output ---\n{tail}"
 
@@ -288,7 +325,12 @@ def build_background_tools(
             return "no background processes."
         lines = []
         for p in procs:
-            state = "running" if p["running"] else f"exited ({p['exit_code']})"
+            if p["running"]:
+                state = "running"
+            elif p["killed_reason"]:
+                state = f"stopped — {p['killed_reason']}"
+            else:
+                state = f"exited ({p['exit_code']})"
             lines.append(f"{p['id']} [{state}]: {p['command']}")
         return "\n".join(lines)
 

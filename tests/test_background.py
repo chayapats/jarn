@@ -172,3 +172,70 @@ def test_prune_exited(tmp_path):
     _wait(mgr, proc.id)
     assert mgr.list() == []
     assert mgr.status(proc.id) is None
+
+
+# -- enforcement (T-1-5) -----------------------------------------------------
+
+def test_start_refused_at_cap(tmp_path):
+    """run_in_background returns a refusal string when max_concurrent is reached; no spawn."""
+    mgr = ProcessManager()
+    tools = {t.name: t for t in build_background_tools(tmp_path, max_concurrent=1, _mgr=mgr)}
+
+    # Fill the one available slot
+    out1 = tools["run_in_background"].invoke({"command": "sleep 30"})
+    assert "started bg" in out1
+    pid = out1.split()[1].rstrip(":")
+    try:
+        # Second start must be refused — tool returns a string, no exception raised
+        out2 = tools["run_in_background"].invoke({"command": "sleep 30"})
+        assert "background slots full (1/1)" in out2
+        assert "list_background" in out2
+        assert "kill_background" in out2
+        # Must NOT have spawned: only one process in registry
+        listed = tools["list_background"].invoke({})
+        assert listed.count("bg") == 1
+    finally:
+        tools["kill_background"].invoke({"id": pid})
+
+
+def test_lifetime_kill_on_sweep(tmp_path):
+    """A process older than max_lifetime_secs is killed on the next list/check/start sweep."""
+    mgr = ProcessManager()
+    mgr.configure(max_lifetime_secs=0.1)
+
+    proc = mgr.start("sleep 30", cwd=str(tmp_path))
+    assert proc.popen.poll() is None  # running immediately after start
+
+    time.sleep(0.2)  # let the lifetime expire
+
+    # Trigger sweep via list() — _check_limits should kill it
+    mgr.list()
+
+    # Wait for OS to deliver death (SIGTERM/SIGKILL already sent; just poll)
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and proc.popen.poll() is None:
+        time.sleep(0.05)
+
+    assert proc.popen.poll() is not None, "expired process must be dead after sweep"
+    assert proc.killed_reason == "killed: exceeded max_lifetime_secs"
+
+    # status must expose the reason while still in registry (not yet pruned)
+    st = mgr.status(proc.id)
+    assert st is not None
+    assert st["killed_reason"] == "killed: exceeded max_lifetime_secs"
+    assert st["running"] is False
+
+
+def test_tmpdir_removed_on_prune(tmp_path):
+    """Pruning a finished process removes its per-process temp log directory."""
+    mgr = ProcessManager()
+    proc = mgr.start("echo prune-tmpdir", cwd=str(tmp_path))
+    proc_dir = proc.tmpdir
+    assert proc_dir.exists()
+
+    _wait(mgr, proc.id)  # wait for exit
+    assert proc_dir.exists()  # dir still present before prune
+
+    mgr.list()  # triggers _prune_exited()
+
+    assert not proc_dir.exists(), "tmpdir must be removed after prune"

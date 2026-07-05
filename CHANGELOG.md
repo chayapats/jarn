@@ -7,6 +7,26 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Fixed
 
+- **`background_max_concurrent` now enforces the cap instead of warning** — previously,
+  reaching the configured concurrent-process limit logged a one-time warning but still
+  allowed new starts. `run_in_background` now returns a tool-level refusal string
+  `"background slots full (N/N) — check or kill existing jobs (list_background, kill_background)"`
+  and does **not** spawn the process, letting the model react gracefully. Slot count is
+  measured after exited processes are swept, so naturally finished jobs free capacity
+  automatically (T-1-5).
+- **`background_max_lifetime_secs` now kills over-age processes instead of warning** —
+  previously, exceeding the configured lifetime logged a one-time warning. Processes that
+  outlive `background_max_lifetime_secs` are now terminated (SIGTERM → SIGKILL escalation
+  via the shared `terminate_process_group` helper) on the next
+  `run_in_background` / `check_background` / `list_background` call. Killed processes
+  appear in `check_background` and `list_background` output with the distinguishing note
+  `"killed: exceeded max_lifetime_secs"` (T-1-5).
+- **Per-process background log directories are now removed on prune and shutdown** —
+  previously, `mkdtemp`-created log directories under `jarn-bg-*` were leaked for the
+  lifetime of the host process. Each background process now owns its own temp directory,
+  which is removed via `shutil.rmtree` when the process is pruned (exited entry swept
+  from the registry) or when the session shuts down via the existing atexit hook (T-1-5).
+
 - **ctx% gauge now tracks the latest main-model prompt, not the lifetime max** —
   `CostTracker.record()` previously used `max(context_tokens, input_tokens)`, so the
   gauge never dropped after summarization (T-1-1) shrunk the prompt. It now assigns

@@ -282,6 +282,25 @@ execution:
                            #   can run a dev server / watcher / long build without blocking
                            #   the turn. Local backend only (a host process would escape a
                            #   container); /ps lists them. Gated like shell.
+  # Background-process limits (both default to null = unlimited):
+  background_max_concurrent: null   # integer — hard cap on concurrently running
+                                    #   background processes. When the cap is reached,
+                                    #   run_in_background returns a refusal string
+                                    #   ("background slots full (N/N) — …") so the model
+                                    #   knows to check/kill before retrying. No process
+                                    #   is spawned. Slots are counted after exited
+                                    #   processes are swept, so naturally finished jobs
+                                    #   free up capacity automatically.
+  background_max_lifetime_secs: null # float — processes running longer than this
+                                     #   number of seconds are killed (SIGTERM then
+                                     #   SIGKILL) on the next sweep, which happens on
+                                     #   every run_in_background / check_background /
+                                     #   list_background call. Killed processes appear
+                                     #   in check_background / list_background with
+                                     #   the note "killed: exceeded max_lifetime_secs"
+                                     #   so the model can distinguish them from normal
+                                     #   exits. Per-process temp log dirs are also
+                                     #   removed when a process is swept.
   backend: local           # local | docker | sandbox  (toggle at runtime with /sandbox)
                            # local  — run on the host (permission engine is the only
                            #          authorizer; NO isolation)
