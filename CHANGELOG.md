@@ -82,6 +82,19 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Changed
 
+- **Error classification is now type/status-code-first with heuristic fallback** —
+  `classify_error(exc)` (new public function in `jarn.agent.stream_handlers`) replaces
+  the two separate `_is_retryable_error` / `_is_auth_error` heuristic checks at the
+  error-emission call site in `SessionDriver`. The new function walks `exc.__cause__` /
+  `__context__` up to depth 5; for each exception it checks (a) `status_code` /
+  `response.status_code` attributes (covers any SDK that exposes them), then (b) known
+  typed exceptions (`httpx.TimeoutException`, `httpx.HTTPStatusError`,
+  `asyncio.TimeoutError`, `ConnectionError`, `anthropic` / `openai` SDK classes —
+  all import-guarded), and only falls through to the existing substring heuristic table
+  when the chain is exhausted. A `classified_by: "type" | "heuristic"` key is attached
+  to every `ERROR` event's `data` dict for observability. `_is_retryable_error` and
+  `_is_auth_error` are kept as thin delegating wrappers for backward compatibility (T-1-8).
+
 - **Auto-checkpoint snapshots no longer block turn start** — `SessionDriver.run_turn()`
   previously ran `checkpoint.snapshot()` (git `add -A` → write-tree, O(repo)) synchronously
   before the model was even called. The snapshot now starts in a worker thread

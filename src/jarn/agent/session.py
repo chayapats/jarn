@@ -46,6 +46,7 @@ from jarn.agent.stream_handlers import (
     _provider_of_ref,
     _tool_summary,
     _unpack_stream_item,
+    classify_error,
     handle_message_chunk,
     handle_update_chunk,
     record_usage,
@@ -73,6 +74,7 @@ __all__ = [
     "_resume_payload",
     "_tool_summary",
     "_unpack_stream_item",
+    "classify_error",
 ]
 
 _log = logging.getLogger("jarn")
@@ -303,9 +305,8 @@ class SessionDriver:
                 # Auth/401 failures are *not* retryable (rotating models won't fix a
                 # rejected key); tag them so the front-end can show a friendly,
                 # actionable message naming the provider instead of the raw SDK JSON.
-                data: dict[str, Any] = {"retryable": _is_retryable_error(exc)}
-                if _is_auth_error(exc):
-                    data["auth"] = True
+                data: dict[str, Any] = classify_error(exc)
+                if data.get("auth"):
                     data["provider"] = _provider_of_ref(self.main_model_ref)
                 yield Event(EventKind.ERROR, text=str(exc), data=data)
                 return
