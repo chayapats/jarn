@@ -49,6 +49,7 @@ from jarn.tui.completion import CompletionProvider
 from jarn.tui.controller import Controller
 from jarn.tui.input_queue import InputQueue
 from jarn.tui.logo import SHORTCUT_HINT, splash, splash_compact
+from jarn.tui.notify import notify
 from jarn.tui.toolbar import render_toolbar
 from jarn.version import __version__
 
@@ -630,8 +631,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                     if self._turn_start is not None
                     else 0.0
                 )
-                from jarn.tui.notify import notify as _notify
-                _notify(
+                notify(
                     "turn_done",
                     self.config.ui,
                     elapsed=_elapsed,

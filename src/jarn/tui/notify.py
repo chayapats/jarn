@@ -9,6 +9,7 @@ content is ever included.
 
 from __future__ import annotations
 
+import contextlib
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -70,6 +71,7 @@ def _desktop_notify(
 
     Both are ``shutil.which``-guarded so a missing binary is silently skipped.
     The Popen is never waited on — the event loop stays responsive.
+    Popen calls are wrapped in try/except to ensure failures never propagate.
     """
     import platform
 
@@ -85,19 +87,21 @@ def _desktop_notify(
     if system == "Darwin":
         if shutil.which("osascript"):
             _safe_escaped = body.replace('"', '\\"')
-            subprocess.Popen(  # noqa: S603
-                [
-                    "osascript",
-                    "-e",
-                    f'display notification "{_safe_escaped}" with title "{title}"',
-                ],
-                stdout=DEVNULL,
-                stderr=DEVNULL,
-            )
+            with contextlib.suppress(Exception):  # noqa: BLE001
+                subprocess.Popen(  # noqa: S603
+                    [
+                        "osascript",
+                        "-e",
+                        f'display notification "{_safe_escaped}" with title "{title}"',
+                    ],
+                    stdout=DEVNULL,
+                    stderr=DEVNULL,
+                )
     else:
         if shutil.which("notify-send"):
-            subprocess.Popen(  # noqa: S603
-                ["notify-send", title, body],
-                stdout=DEVNULL,
-                stderr=DEVNULL,
-            )
+            with contextlib.suppress(Exception):  # noqa: BLE001
+                subprocess.Popen(  # noqa: S603
+                    ["notify-send", "--expire-time", "2000", title, body],
+                    stdout=DEVNULL,
+                    stderr=DEVNULL,
+                )

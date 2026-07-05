@@ -2645,3 +2645,42 @@ def test_desktop_notify_no_subprocess_when_binary_missing(tmp_path, monkeypatch)
     # Should not raise, and must not have called Popen.
     notify("turn_done", settings, elapsed=20.0, write=lambda s: None)
     assert spawned == [], f"expected no Popen calls, got {spawned}"
+
+
+@pytest.mark.asyncio
+async def test_bell_on_plan_approval(tmp_path, monkeypatch):
+    """A plan-type approval prompt emits one BEL regardless of elapsed time."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    ctrl.config.ui.notify = "bell"
+    console = Console(file=StringIO(), width=80)
+
+    request = ApprovalRequest(
+        action=Action(ActionKind.SHELL, "npm test"),
+        result=PermissionResult(Decision.ASK, "ask mode"),
+        plan="Step 1: analyze\nStep 2: execute",
+    )
+    await repl._approve(console, ctrl, request, ask=_ask_returning("r"))
+
+    out = console.file.getvalue()
+    assert "\a" in out, "plan approval prompt must emit BEL"
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_notify_min_secs_zero_always_notifies(tmp_path, monkeypatch):
+    """With ui.notify_min_secs=0, a fast turn (elapsed ~0) still emits the turn-end BEL."""
+    import time
+
+    app = _make_notify_app(tmp_path, monkeypatch, notify="bell", notify_min_secs=0)
+    _stub_agent_turn(app, monkeypatch)
+
+    # Turn started just now — elapsed is ~0, but with notify_min_secs=0 it should still notify.
+    app._turn_start = time.monotonic()
+
+    await app._handle("fast question")
+
+    out = app.console.file.getvalue()
+    assert out.count("\a") == 1, f"expected exactly 1 BEL, got {out.count(chr(7))!r}"
+    app.controller.close()
