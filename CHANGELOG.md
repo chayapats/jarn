@@ -7,6 +7,21 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **Ghost autosuggest + Ctrl+R history picker (T-2-4)** — two fish/zsh-style history
+  features for the inline REPL:
+  - **Ghost autosuggest:** as you type, the most recent matching history entry appears
+    as dim ghost text after the cursor (`AppendAutoSuggestion`). Press **→ (Right arrow)**
+    or **Ctrl+E** at the end of the line to accept the full suggestion. Mid-line, Right
+    arrow still moves the cursor normally. When the completion dropdown is open it wins
+    over the ghost text (completion-menu-takes-precedence rule).
+  - **Ctrl+R history picker:** opens an arrow-key overlay over the 50 most recent unique
+    history entries (newest first, deduplicated by recency). Live type-to-filter with
+    case-insensitive substring matching; the header shows `(n/total)` as you filter.
+    Multiline entries display as first-line + `…` in the picker but prefill the **full**
+    text. **Enter** prefills the input buffer without submitting; **Esc** cancels with
+    input unchanged. Works while a turn is running (only edits the pending input, never
+    interferes with an in-flight approval prompt).
+
 - **Live in-place todo checklist (T-2-3)** — the `⏺ Todos` plan checklist now renders
   LIVE above the input and re-renders in place as the agent flips items (✔ done / ◐ in
   progress / ☐ pending), instead of appearing only after each turn finishes (Claude

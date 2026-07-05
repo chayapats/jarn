@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from prompt_toolkit.application import Application
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import ANSI, HTML
@@ -28,7 +29,7 @@ from prompt_toolkit.layout.containers import (
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
-from prompt_toolkit.layout.processors import BeforeInput
+from prompt_toolkit.layout.processors import AppendAutoSuggestion, BeforeInput
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from rich.console import Console
@@ -91,6 +92,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             completer=_SlashFileCompleter(self._completer),
             complete_while_typing=True,
             history=FileHistory(str(hist)),
+            auto_suggest=AutoSuggestFromHistory(),
         )
         self._kb = self._build_keys()
         self._armed = False                       # ctrl+c double-press to exit
@@ -111,6 +113,13 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         # char (e.g. "y"/"a" → allow, "n"/"d" → deny) to the option value it
         # resolves to. None for every other picker, so letter keys type normally.
         self._menu_fastkeys: dict[str, object] | None = None
+        # History picker filter: non-None while the Ctrl+R picker is open.
+        # Empty string = filter active but no chars typed yet.  Set by
+        # _history_picker; updated by _history_type_filter / _history_backspace_filter.
+        self._menu_filter: str | None = None
+        # Full unfiltered list of (display-label, full-text) for the history
+        # picker, held here so the key handler can recompute matches on every char.
+        self._history_all_options: list[tuple[str, str]] = []
         self._stream_text = ""                    # in-progress region above input
         # Cache for the live markdown->ANSI render: _stream_control runs on every
         # prompt_toolkit redraw (refresh_interval + invalidate per delta), so cache
@@ -268,7 +277,13 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         prompt = Window(
             BufferControl(
                 self.input,
-                input_processors=[BeforeInput("› ", style="bold")],
+                input_processors=[
+                    BeforeInput("› ", style="bold"),
+                    # Ghost autosuggest: renders the upcoming suggestion suffix in
+                    # a dim colour after the cursor.  The completion dropdown (if
+                    # open) always wins visually; this only shows when no menu is up.
+                    AppendAutoSuggestion(style=f"fg:{palette.C_DIM}"),
+                ],
                 lexer=_ShellEscapeLexer(),
             ),
             height=Dimension(min=1, max=10), wrap_lines=True, dont_extend_height=True,
@@ -559,9 +574,21 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 )
             else:
                 lines.append(f'<style fg="{palette.C_DIM}">  {_esc(label)}</style>')
-        lines.append(
-            f'<style fg="{palette.C_DIM}">↑/↓ select · Enter confirm</style>'
-        )
+        # Footer: when history filter is active show filter-specific hints;
+        # otherwise show the standard approval-menu nav hint.
+        if self._menu_filter is not None:
+            if not self._menu_options:
+                lines.append(
+                    f'<style fg="{palette.C_DIM}">(no matches) · Backspace to clear</style>'
+                )
+            else:
+                lines.append(
+                    f'<style fg="{palette.C_DIM}">↑/↓ · Enter prefill · Backspace · Esc cancel</style>'
+                )
+        else:
+            lines.append(
+                f'<style fg="{palette.C_DIM}">↑/↓ select · Enter confirm</style>'
+            )
         return HTML("\n".join(lines))
 
     def _gen_stat(self) -> str:
