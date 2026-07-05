@@ -350,6 +350,8 @@ class CommandMixin:
         typed while a turn is running is queued and only runs once that turn
         (and any HITL interrupt) has settled — no fork of a hanging thread.
         """
+        if self._menu_future is not None and not self._menu_future.done():
+            return
         c = self.console
         try:
             turns = await self.controller.human_turns()
