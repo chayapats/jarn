@@ -49,7 +49,7 @@ from jarn.tui.completion import CompletionProvider
 from jarn.tui.controller import Controller
 from jarn.tui.input_queue import InputQueue
 from jarn.tui.logo import SHORTCUT_HINT, splash, splash_compact
-from jarn.tui.notify import notify
+from jarn.tui.notify import notify, set_title
 from jarn.tui.toolbar import render_toolbar
 from jarn.version import __version__
 
@@ -70,6 +70,8 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self.controller = Controller(
             config, project_root, project_trusted=project_trusted
         )
+        # Derive project name once (used in OSC 2 title strings).
+        self._proj_name: str = project_root.name if project_root is not None else "jarn"
         # force_terminal so Rich still emits colour through prompt_toolkit's
         # patch_stdout proxy (which isn't a real TTY). Cap the width to a readable
         # measure (~100 cols) so prose/markdown wrap nicely on wide terminals
@@ -190,6 +192,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self._warm_pricing_catalog()
         await self._ensure_extensions()
         self.app = self._build_app()
+        self._title_hook("idle")   # Set idle title on app start
         try:
             # patch_stdout routes all printed output above the pinned input, into
             # the terminal's native scrollback — the Claude-Code layout.
@@ -202,6 +205,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 await self.app.run_async()
         finally:
             await self.controller.aclose()
+            self._title_hook("quit")   # Reset terminal title to plain "jarn" on exit
 
     async def _ensure_extensions(self) -> None:
         """Load skills/commands/MCP before the first turn so /skills and custom
@@ -311,6 +315,29 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             refresh_interval=0.2,  # animate the thinking spinner / elapsed timer
             output=output,
         )
+
+    def _title_isatty(self) -> bool:
+        """Whether the app's output stream is a TTY — monkeypatchable in tests."""
+        f = self.console.file
+        return bool(getattr(f, "isatty", lambda: False)())
+
+    def _title_hook(self, state: str) -> None:
+        """Emit an OSC 2 terminal title for the given lifecycle state.
+
+        States: ``"working"`` (✳), ``"approval"`` (⏸), ``"idle"``, ``"quit"``.
+        Respects ``ui.terminal_title`` and the TTY guard in :func:`set_title`.
+        """
+        if state == "working":
+            text = f"✳ jarn — {self._proj_name}"
+        elif state == "approval":
+            text = f"⏸ jarn — {self._proj_name}"
+        elif state == "idle":
+            text = f"jarn — {self._proj_name}"
+        elif state == "quit":
+            text = "jarn"
+        else:
+            text = state  # passthrough for callers that build their own text
+        set_title(text, settings=self.config.ui, write=self.console.file.write, isatty=self._title_isatty)
 
     def _busy(self) -> bool:
         return self._turn_task is not None and not self._turn_task.done()
@@ -616,6 +643,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 # Reset + pass the list as a sink so tool outputs accumulate LIVE
                 # — Ctrl+O works mid-turn, not only after the answer completes.
                 self._last_tool_outputs = []
+                self._title_hook("working")   # Set working title when agent turn starts
                 await repl_turn._run_turn(
                     self.console, self.controller, text, self._ask,
                     pick=self._pick_approval, view=self._view_full_diff,
@@ -623,6 +651,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                     live_sink=self._set_stream, spinner=False,
                     tool_sink=self._last_tool_outputs,
                     token_sink=self._count_stream_chars,
+                    title_hook=self._title_hook,
                 )
                 # Turn completed normally (not cancelled — CancelledError would
                 # have bypassed this line).  Fire the turn-end notification.
@@ -662,6 +691,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         finally:
             self._turn_task = None
             self._turn_start = None
+            self._title_hook("idle")   # Restore idle title for all exit paths (success / cancel / error)
             self._set_stream("")
             if self.app is not None:
                 self.app.invalidate()

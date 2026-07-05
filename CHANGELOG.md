@@ -7,6 +7,13 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **Terminal-title state via OSC 2 (T-2-2)** — jarn now updates the terminal tab title to
+  reflect the current state: `jarn — <project>` (idle), `✳ jarn — <project>` (agent working),
+  `⏸ jarn — <project>` (waiting for approval), and plain `jarn` on exit.  Titles are emitted
+  via the standard `\x1b]2;…\x07` OSC 2 sequence and are silently suppressed when stdout is
+  not a TTY or when `ui.terminal_title: false`.  New config key: `ui.terminal_title` (bool,
+  default `true`), exposed in `/config` under the **Appearance** tab.
+
 - **Turn-end + approval notifications (T-2-1)** — jarn now emits a terminal BEL (`\a`)
   when a long agent turn finishes (elapsed ≥ `ui.notify_min_secs`, default 10 s) or when
   an approval prompt is about to render.  New config keys in the `ui` section:
