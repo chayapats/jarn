@@ -406,3 +406,41 @@ async def test_snapshot_task_not_leaked_on_cancelled_turn(caplog) -> None:
     assert task not in _DETACHED_SNAPSHOTS
     leaked = [r for r in caplog.records if "was destroyed but it is pending" in r.getMessage()]
     assert not leaked, [r.getMessage() for r in caplog.records]
+
+
+@pytest.mark.asyncio
+async def test_settle_snapshot_noop_when_nothing_pending() -> None:
+    """settle_snapshot with no in-flight snapshot (nothing started, nothing detached)
+    returns immediately without awaiting or raising — the fast path for /undo, /redo,
+    and /abort when the driver is idle."""
+    driver = SessionDriver(
+        agent=None,
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="t",
+    )
+    assert driver._snapshot_task is None
+    await driver.settle_snapshot()
+    assert driver._snapshot_task is None
+
+
+@pytest.mark.asyncio
+async def test_settle_snapshot_swallows_failure() -> None:
+    """settle_snapshot awaits a snapshot that RAISES and returns WITHOUT propagating:
+    a failed snapshot is best-effort (this turn simply has no checkpoint), matching
+    the old sync behaviour — so a UI-driven undo/redo/abort is never aborted by it."""
+    class BoomCheckpoint:
+        def snapshot(self, label, *, now=None):
+            raise RuntimeError("git exploded")
+
+    driver = SessionDriver(
+        agent=None,
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="t",
+        checkpoint=BoomCheckpoint(),
+    )
+    driver._start_snapshot("x", 1.0)  # kicks off to_thread(snapshot) → will raise
+    assert driver._snapshot_task is not None
+    await driver.settle_snapshot()  # swallows the failure; never raises
+    assert driver._snapshot_task is None

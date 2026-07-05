@@ -104,6 +104,11 @@ class Controller:
         self._candidates = ([main] if main else []) + list(config.routing.fallback)
         self._candidate_idx = 0
         self.runtime: JarnRuntime | None = None
+        # The most recently created SessionDriver (one per turn). Retained so a
+        # UI-driven checkpoint mutation (/undo, /redo, /abort rollback) can await
+        # its in-flight turn-start snapshot before touching the stack — see
+        # ``settle_snapshot``. A stale (completed/cancelled) driver settles instantly.
+        self._active_driver: SessionDriver | None = None
         # Lifecycle hooks (built lazily from config); session_start fires once
         # the runtime is first ready, session_end on close.
         self._hooks_runner = None
@@ -413,7 +418,7 @@ class Controller:
             transcript = make_transcript_writer(
                 self.thread_id, project_root=self.project_root
             )
-        return SessionDriver(
+        driver = SessionDriver(
             agent=self.runtime.agent,
             engine=self.engine,
             tracker=self.tracker,
@@ -430,6 +435,21 @@ class Controller:
                 getattr(self.runtime, "backend", None), "execute", None
             ),
         )
+        # Retain for settle_snapshot: the /undo, /redo, and /abort paths await this
+        # driver's pending turn-start snapshot before mutating the checkpoint stack.
+        self._active_driver = driver
+        return driver
+
+    async def settle_snapshot(self) -> None:
+        """Await any in-flight checkpoint snapshot before a UI-driven ``/undo``,
+        ``/redo``, or ``/abort`` rollback mutates the checkpoint stack, so the
+        mutation never races a snapshot that is still building its tree and reverts
+        an extra turn back (over-revert). Delegates to the active
+        :class:`SessionDriver` (see :meth:`SessionDriver.settle_snapshot`); a no-op
+        when no turn has run this session. Never raises."""
+        driver = self._active_driver
+        if driver is not None:
+            await driver.settle_snapshot()
 
     def close(self) -> None:
         import contextlib

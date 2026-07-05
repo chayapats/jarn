@@ -75,6 +75,15 @@ class CommandMixin:
                 )
                 return
             self._cancel_turn()
+            # Settle any in-flight turn-start snapshot BEFORE rolling back. The
+            # cancelled turn detaches its snapshot fire-and-forget (session.py
+            # _detach_pending_snapshot), and on a large repo it may still be
+            # building its tree OFF the checkpoint lock. Without this await,
+            # abort_rollback's undo() would take the lock first and pop the PREVIOUS
+            # turn's checkpoint (this turn's isn't pushed yet) — an extra-turn-back
+            # over-revert. Awaiting guarantees this turn's checkpoint is on the
+            # stack, so the rollback reverts exactly this turn.
+            await self.controller.settle_snapshot()
             # abort_rollback runs a blocking git restore; offload it so the event
             # loop stays responsive.
             c.print(await asyncio.to_thread(self.controller.abort_rollback))
@@ -96,6 +105,12 @@ class CommandMixin:
         ):
             c.print(f"[{palette.C_DIM}]yolo cancelled — mode unchanged.[/{palette.C_DIM}]")
             return
+        if name in ("undo", "redo"):
+            # A snapshot detached by an Esc-cancelled turn may still be building its
+            # tree off the checkpoint lock; settle it so undo()/redo() mutate a
+            # consistent stack and don't revert an extra turn back (same race the
+            # /abort path guards above). Cheap no-op when nothing is pending.
+            await self.controller.settle_snapshot()
         result = self.controller.handle_command(name, args)
         if result.clear_screen:
             self._clear_scrollback()
