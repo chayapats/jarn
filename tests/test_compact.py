@@ -207,17 +207,26 @@ def _trigger(mw):
     return mw._lc_helper.trigger
 
 
+def _trim_limit(mw):
+    """The trim_tokens_to_summarize setting of a (Jarn)SummarizationMiddleware."""
+    return mw._lc_helper.trim_tokens_to_summarize
+
+
 def test_build_runtime_injects_single_summarization_middleware(tmp_path):
     """Real build (create_deep_agent NOT mocked): the built-in summarization is
     excluded and jarn's single instance survives in the fully assembled stack,
     on the summarizer model. Also a regression guard for the duplicate-middleware
-    crash (create_agent rejects two middleware with the same .name)."""
+    crash (create_agent rejects two middleware with the same .name).
+
+    trim_tokens_to_summarize must be None (not the 4000-token default) so the
+    summarizer sees the FULL evicted history — mirroring create_summarization_middleware."""
     rt, main_mw, _main_fake, summ_fake = _real_build(_summ_cfg(), tmp_path)
 
     assert type(rt.agent).__name__ == "CompiledStateGraph"
     mws = _summarization_mws(main_mw)
     assert len(mws) == 1  # exactly one — built-in excluded, ours kept
     assert mws[0].model is summ_fake  # and it runs on the summarizer model
+    assert _trim_limit(mws[0]) is None  # T-1-1 fix: full history, not 4k default
 
 
 def test_build_no_summarization_when_auto_compact_off(tmp_path):
