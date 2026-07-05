@@ -42,7 +42,7 @@ from jarn.repl.commands import CommandMixin
 from jarn.repl.completer import _ShellEscapeLexer, _SlashFileCompleter
 from jarn.repl.keys import KeysMixin
 from jarn.repl.overlays import OverlayMixin
-from jarn.repl_renderer import REASONING_STREAM_PREFIX
+from jarn.repl_renderer import REASONING_STREAM_PREFIX, _current_width
 from jarn.repl_renderer import esc as _esc
 from jarn.tui import palette
 from jarn.tui.completion import CompletionProvider
@@ -108,7 +108,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         # Cache for the live markdown->ANSI render: _stream_control runs on every
         # prompt_toolkit redraw (refresh_interval + invalidate per delta), so cache
         # (source, rendered_ansi) and only re-render when the buffer actually grew.
-        self._stream_md_cache: tuple[str, str] | None = None
+        self._stream_md_cache: tuple[str, str, int] | None = None
         # True while the live region holds a reasoning block (render it plain dim,
         # not markdown — see _set_stream / _stream_control).
         self._stream_is_reasoning = False
@@ -358,25 +358,28 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         Uses a force_terminal capture Console at the SAME width as ``self.console``
         (the scrollback console) so the live block wraps identically to the
         committed block — no reflow jump when the run finally commits. Cached on
-        the source string: _stream_control runs on every redraw, so we only re-run
-        the Rich render when the buffer actually changed (O(buffer) per change, not
-        per frame)."""
-        if self._stream_md_cache is not None and self._stream_md_cache[0] == source:
+        (source, width): _stream_control runs on every redraw, so we only re-run
+        the Rich render when the buffer or the terminal width actually changed
+        (O(buffer) per change, not per frame). Width is refreshed at render time
+        so live and committed renders stay in lockstep across a terminal resize."""
+        width = _current_width()
+        self.console.width = width
+        if (self._stream_md_cache is not None
+                and self._stream_md_cache[0] == source
+                and self._stream_md_cache[2] == width):
             return self._stream_md_cache[1]
-        # Same width as the scrollback console so the live block wraps identically
-        # to the committed block (no reflow jump on commit, and they stay matched
-        # across a terminal resize).
-        width = self.console.width
         buf = io.StringIO()
         cap = Console(force_terminal=True, width=width, file=buf)
         cap.print(Markdown(source.strip(), code_theme=palette.CODE_THEME), end="")
         rendered = buf.getvalue().rstrip("\n")
-        self._stream_md_cache = (source, rendered)
+        self._stream_md_cache = (source, rendered, width)
         return rendered
 
     def _render_dim_ansi(self, text: str) -> str:
         """Render a one-line dim footer to an ANSI string (palette colour may be a
-        name or hex, so let Rich emit the escape rather than hand-building it)."""
+        name or hex, so let Rich emit the escape rather than hand-building it).
+        Width is refreshed at render time to match the current terminal."""
+        self.console.width = _current_width()
         buf = io.StringIO()
         cap = Console(force_terminal=True, width=self.console.width, file=buf)
         cap.print(f"[{palette.C_DIM}]{_rich_escape(text)}[/{palette.C_DIM}]", end="")
