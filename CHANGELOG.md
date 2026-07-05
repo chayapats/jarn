@@ -5,6 +5,19 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Turn-end + approval notifications (T-2-1)** — jarn now emits a terminal BEL (`\a`)
+  when a long agent turn finishes (elapsed ≥ `ui.notify_min_secs`, default 10 s) or when
+  an approval prompt is about to render.  New config keys in the `ui` section:
+  - `ui.notify` — `off | bell | desktop | both` (default `bell`).  `desktop` fires a
+    native OS notification via `osascript` (macOS) or `notify-send` (Linux); silently
+    skipped when the binary is absent.  `both` emits bell + desktop.
+  - `ui.notify_min_secs` — minimum elapsed seconds before a turn-end notification fires
+    (default `10`; set to `0` to always notify; approval notifications always fire).
+  Both keys are surfaced in `/config` under the **Appearance** tab.  Desktop notification
+  bodies use fixed strings only — no user prompt content is ever included.
+
 ### Removed
 
 - **`policy.profile` config key, `--profile` CLI flag, and `/profile` slash command removed

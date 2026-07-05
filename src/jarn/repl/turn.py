@@ -290,6 +290,10 @@ async def _approve(
     view: Callable[[str], Awaitable[None]] | None = None,
     edit: Callable[[ApprovalRequest], Awaitable[ApprovalReply | None]] | None = None,
 ) -> ApprovalReply:
+    # Fire the approval notification before the prompt renders.  elapsed=0
+    # because the threshold check is skipped for "needs_approval" events.
+    from jarn.tui.notify import notify as _notify
+    _notify("needs_approval", controller.config.ui, elapsed=0.0, write=console.file.write)
     if request.plan is not None:
         return await _approve_plan(console, controller, request, ask=ask, pick=pick)
     if request.suggested_memory is not None:

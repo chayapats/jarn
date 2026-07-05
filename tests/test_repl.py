@@ -2496,3 +2496,152 @@ def test_commit_width_tracks_resize(monkeypatch):
         lambda *_a, **_k: os.terminal_size((0, 24)),
     )
     assert _current_width() == 1, f"expected 1 (floor guard for 0 cols), got {_current_width()}"
+
+
+# ── T-2-1: Turn-end + approval notifications (bell / desktop) ──────────────
+
+
+def _make_notify_app(tmp_path, monkeypatch, *, notify="bell", notify_min_secs=10):
+    """InlineApp with configurable ui.notify / ui.notify_min_secs for T-2-1 tests."""
+    from jarn import repl
+    from jarn.config.schema import Config, ProviderConfig, ProviderType, RoutingConfig, UIConfig
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+        ui=UIConfig(notify=notify, notify_min_secs=notify_min_secs),
+    )
+    app = repl.InlineApp(cfg, root)
+    app.console = Console(file=StringIO(), width=80)
+    return app
+
+
+def _stub_agent_turn(app, monkeypatch):
+    """Stub controller so _handle's agent-turn branch completes immediately."""
+
+    async def _noop_runtime():
+        return None
+
+    monkeypatch.setattr(app.controller, "ensure_runtime", _noop_runtime)
+    events = [Event(EventKind.TEXT, "done"), Event(EventKind.DONE)]
+    monkeypatch.setattr(app.controller, "make_driver", lambda approver: _FakeDriver(events))
+
+
+@pytest.mark.asyncio
+async def test_bell_on_long_turn(tmp_path, monkeypatch):
+    """A turn that exceeds notify_min_secs emits exactly one BEL to the console."""
+    import time
+
+    app = _make_notify_app(tmp_path, monkeypatch, notify="bell", notify_min_secs=10)
+    _stub_agent_turn(app, monkeypatch)
+
+    # Fake turn start 15 seconds in the past so elapsed > 10.
+    app._turn_start = time.monotonic() - 15.0
+
+    await app._handle("write me a test")
+
+    out = app.console.file.getvalue()
+    assert out.count("\a") == 1, f"expected exactly 1 BEL, got {out.count(chr(7))!r}"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_no_bell_fast_turn(tmp_path, monkeypatch):
+    """A turn that completes before notify_min_secs emits no BEL."""
+    import time
+
+    app = _make_notify_app(tmp_path, monkeypatch, notify="bell", notify_min_secs=10)
+    _stub_agent_turn(app, monkeypatch)
+
+    # Turn started only 2 seconds ago — under the 10-second threshold.
+    app._turn_start = time.monotonic() - 2.0
+
+    await app._handle("quick question")
+
+    out = app.console.file.getvalue()
+    assert "\a" not in out, "fast turn must not emit BEL"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_bell_on_approval(tmp_path, monkeypatch):
+    """An approval prompt emits one BEL regardless of elapsed time."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    ctrl.config.ui.notify = "bell"
+    console = Console(file=StringIO(), width=80)
+
+    request = ApprovalRequest(
+        action=Action(ActionKind.SHELL, "npm test"),
+        result=PermissionResult(Decision.ASK, "ask mode"),
+    )
+    await repl._approve(console, ctrl, request, ask=_ask_returning("r"))
+
+    out = console.file.getvalue()
+    assert "\a" in out, "approval prompt must emit BEL"
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_notify_off_silent(tmp_path, monkeypatch):
+    """With ui.notify: off, neither a long turn nor an approval emits BEL."""
+    import time
+
+    from jarn import repl
+    from jarn.config.schema import Config, ProviderConfig, ProviderType, RoutingConfig, UIConfig
+    from jarn.tui.controller import Controller
+
+    # Long-turn path (app._handle).
+    app = _make_notify_app(tmp_path, monkeypatch, notify="off", notify_min_secs=0)
+    _stub_agent_turn(app, monkeypatch)
+    app._turn_start = time.monotonic() - 20.0
+    await app._handle("test")
+    assert "\a" not in app.console.file.getvalue(), "notify:off must suppress turn BEL"
+    app.controller.close()
+
+    # Approval path (_approve) — use a separate project root to avoid directory conflict.
+    root2 = tmp_path / "proj2"
+    (root2 / ".jarn").mkdir(parents=True)
+    cfg2 = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+        ui=UIConfig(notify="off"),
+    )
+    ctrl2 = Controller(cfg2, root2)
+    console2 = Console(file=StringIO(), width=80)
+    request2 = ApprovalRequest(
+        action=Action(ActionKind.SHELL, "ls"),
+        result=PermissionResult(Decision.ASK, "ask mode"),
+    )
+    await repl._approve(console2, ctrl2, request2, ask=_ask_returning("r"))
+    assert "\a" not in console2.file.getvalue(), "notify:off must suppress approval BEL"
+    ctrl2.close()
+
+
+def test_desktop_notify_no_subprocess_when_binary_missing(tmp_path, monkeypatch):
+    """Desktop mode spawns no subprocess when the notification binary is absent."""
+    import subprocess
+
+    from jarn.config.schema import UIConfig
+    from jarn.tui.notify import notify
+
+    spawned: list = []
+
+    def _fake_popen(cmd, **kwargs):
+        spawned.append(cmd)
+
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+    # Patch shutil.which so every binary lookup returns None (nothing installed).
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    settings = UIConfig(notify="desktop", notify_min_secs=0)
+    # Should not raise, and must not have called Popen.
+    notify("turn_done", settings, elapsed=20.0, write=lambda s: None)
+    assert spawned == [], f"expected no Popen calls, got {spawned}"

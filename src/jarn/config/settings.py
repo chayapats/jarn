@@ -104,6 +104,11 @@ SETTINGS: tuple[Setting, ...] = (
        ("full", "compact", "off")),
     _s("ui.approval_diff_lines", "int", "Appearance", "Approval diff lines",
        "Max diff lines shown inline before a write approval offers 'View full diff'."),
+    _s("ui.notify", "enum", "Appearance", "Notifications",
+       "How to alert you when a long turn finishes or an approval is needed.",
+       ("off", "bell", "desktop", "both")),
+    _s("ui.notify_min_secs", "int", "Appearance", "Notify after (secs)",
+       "Minimum turn length before a turn-end notification fires (0 = always)."),
 )
 
 _BY_KEY: dict[str, Setting] = {s.key: s for s in SETTINGS}
