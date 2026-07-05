@@ -563,6 +563,7 @@ class UIConfigModel(_StrictModel):
     approval_diff_lines: int = 40
     notify: str = "bell"
     notify_min_secs: int = 10
+    terminal_title: bool = True
 
     @field_validator("splash", mode="before")
     @classmethod
@@ -597,6 +598,11 @@ class UIConfigModel(_StrictModel):
                 f"ui.notify_min_secs must be >= 0 (got {raw})."
             )
         return raw
+
+    @field_validator("terminal_title", mode="before")
+    @classmethod
+    def _terminal_title(cls, value: Any) -> bool:
+        return _normalize_bool(value, "ui.terminal_title")
 
 
 class CompatConfigModel(_StrictModel):
@@ -946,6 +952,7 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             approval_diff_lines=model.ui.approval_diff_lines,
             notify=model.ui.notify,
             notify_min_secs=model.ui.notify_min_secs,
+            terminal_title=model.ui.terminal_title,
         ),
         compat=CompatConfig(
             context_files=list(model.compat.context_files),

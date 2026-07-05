@@ -2684,3 +2684,128 @@ async def test_notify_min_secs_zero_always_notifies(tmp_path, monkeypatch):
     out = app.console.file.getvalue()
     assert out.count("\a") == 1, f"expected exactly 1 BEL, got {out.count(chr(7))!r}"
     app.controller.close()
+
+
+# ── T-2-2: Terminal-title state via OSC 2 ──────────────────────────────────
+
+
+def _extract_osc2(text: str) -> list[str]:
+    """Extract OSC 2 title contents from escape-sequence text."""
+    import re
+
+    return re.findall(r"\x1b\]2;(.*?)\x07", text)
+
+
+def _make_title_app(tmp_path, monkeypatch, *, terminal_title: bool = True):
+    """InlineApp with configurable ui.terminal_title for T-2-2 tests."""
+    from jarn import repl
+    from jarn.config.schema import Config, ProviderConfig, ProviderType, RoutingConfig, UIConfig
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+        ui=UIConfig(terminal_title=terminal_title),
+    )
+    app = repl.InlineApp(cfg, root)
+    app.console = Console(file=StringIO(), width=80)
+    return app
+
+
+@pytest.mark.asyncio
+async def test_title_sequences_over_turn_lifecycle(tmp_path, monkeypatch):
+    """OSC 2 title sequences follow the full turn lifecycle:
+    working on turn start, ⏸ on approval, working on approval resolve, idle on finish.
+    Quit emits plain 'jarn'. Disabled and non-tty variants emit nothing.
+    """
+    from jarn.agent.session import ApprovalReply
+    from jarn.permissions import Action, ActionKind, Decision, PermissionResult
+
+    app = _make_title_app(tmp_path, monkeypatch)
+    # Fake a TTY so set_title actually emits sequences.
+    monkeypatch.setattr(app, "_title_isatty", lambda: True)
+
+    proj = app.controller.project_root.name  # "proj"
+
+    async def _noop_runtime():
+        return None
+
+    monkeypatch.setattr(app.controller, "ensure_runtime", _noop_runtime)
+
+    # Fake driver: emits text, triggers one approval, then finishes.
+    _approval_req = ApprovalRequest(
+        action=Action(ActionKind.SHELL, "npm test"),
+        result=PermissionResult(Decision.ASK, "ask mode"),
+    )
+
+    def _make_driver(approver):
+        class _Driver:
+            async def run_turn(self, text, *, resume=False):
+                yield Event(EventKind.TEXT, "before approval")
+                await approver(_approval_req)
+                yield Event(EventKind.TEXT, "after approval")
+                yield Event(EventKind.DONE)
+
+        return _Driver()
+
+    monkeypatch.setattr(app.controller, "make_driver", _make_driver)
+
+    # Auto-approve so the approval prompt resolves immediately.
+    async def _auto_approve(options):
+        return next(v for _, v in options if isinstance(v, ApprovalReply) and v.approved)
+
+    monkeypatch.setattr(app, "_pick_approval", _auto_approve)
+
+    await app._handle("do something")
+
+    seqs = _extract_osc2(app.console.file.getvalue())
+    assert len(seqs) >= 4, f"expected ≥4 OSC 2 sequences, got: {seqs!r}"
+    assert seqs[0] == f"✳ jarn — {proj}", (
+        f"turn start must set working title, got {seqs[0]!r}"
+    )
+    assert seqs[1] == f"⏸ jarn — {proj}", (
+        f"approval must set pause title, got {seqs[1]!r}"
+    )
+    assert seqs[2] == f"✳ jarn — {proj}", (
+        f"after approval must restore working, got {seqs[2]!r}"
+    )
+    assert seqs[3] == f"jarn — {proj}", (
+        f"turn finish must set idle title, got {seqs[3]!r}"
+    )
+
+    # Quit resets to plain "jarn" (no project suffix).
+    app.console = Console(file=StringIO(), width=80)
+    app._title_hook("quit")
+    quit_seqs = _extract_osc2(app.console.file.getvalue())
+    assert quit_seqs == ["jarn"], f"quit must emit plain 'jarn', got {quit_seqs!r}"
+
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_title_disabled_emits_nothing(tmp_path, monkeypatch):
+    """With ui.terminal_title: false no OSC 2 sequences are emitted."""
+    app = _make_title_app(tmp_path, monkeypatch, terminal_title=False)
+    monkeypatch.setattr(app, "_title_isatty", lambda: True)
+    _stub_agent_turn(app, monkeypatch)
+    await app._handle("hi")
+    assert "\x1b]2;" not in app.console.file.getvalue(), (
+        "terminal_title:false must suppress OSC 2 sequences"
+    )
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_title_non_tty_emits_nothing(tmp_path, monkeypatch):
+    """When isatty returns False no OSC 2 sequences are emitted (even when enabled)."""
+    app = _make_title_app(tmp_path, monkeypatch)
+    # _title_isatty NOT patched — StringIO.isatty() returns False
+    _stub_agent_turn(app, monkeypatch)
+    await app._handle("hi")
+    assert "\x1b]2;" not in app.console.file.getvalue(), (
+        "non-tty must suppress OSC 2 sequences"
+    )
+    app.controller.close()

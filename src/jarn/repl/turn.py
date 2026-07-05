@@ -62,6 +62,7 @@ async def _run_turn(
     spinner: bool = True,
     tool_sink: list[tuple[str, str]] | None = None,
     token_sink: Callable[[str], None] | None = None,
+    title_hook: Callable[[str], None] | None = None,
 ) -> list[tuple[str, str]]:
     """Stream a turn; return the turn's expandable ``(tool, full output)`` pairs.
 
@@ -101,7 +102,12 @@ async def _run_turn(
     turn_text = controller.enrich_turn_input(text)
 
     async def approver(req: ApprovalRequest) -> ApprovalReply:
-        return await _approve(console, controller, req, ask=ask, pick=pick, view=view, edit=edit)
+        if title_hook is not None:
+            title_hook("approval")
+        result = await _approve(console, controller, req, ask=ask, pick=pick, view=view, edit=edit)
+        if title_hook is not None:
+            title_hook("working")
+        return result
 
     renderer = TurnRenderer(
         console, lambda: controller.tracker.total.total_tokens,

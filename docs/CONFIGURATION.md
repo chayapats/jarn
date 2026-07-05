@@ -419,6 +419,14 @@ ui:
   notify_min_secs: 10      # minimum turn elapsed time (seconds) before a turn-end
                            # notification fires. Approval notifications always fire
                            # regardless of elapsed time. Set to 0 to always notify.
+  terminal_title: true     # update the terminal-tab title via OSC 2 (\x1b]2;…\x07):
+                           #   idle       → "jarn — <project>"
+                           #   working    → "✳ jarn — <project>"
+                           #   approval   → "⏸ jarn — <project>"
+                           #   on exit    → "jarn"
+                           # Silently suppressed when stdout is not a TTY. Set false
+                           # to disable entirely (e.g. if your terminal ignores OSC 2
+                           # and you see stray escape sequences).
 
 # ── Git safety (auto-checkpoint + /undo /redo) ────────────────────────────────
 git:

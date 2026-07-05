@@ -189,6 +189,9 @@ preview appear inline.
   jarn emits a terminal **bell** (`\a`). Set `ui.notify: desktop` for a native OS
   notification (macOS / Linux), `both` for bell + desktop, or `off` to silence all
   notifications. Approval prompts always ring regardless of elapsed time.
+- **Terminal tab title:** jarn sets the terminal-tab title via OSC 2 to show the current
+  state — `jarn — <project>` (idle), `✳ jarn — <project>` (working), `⏸ jarn — <project>`
+  (waiting for approval). Set `ui.terminal_title: false` to disable.
 
 Assistant replies render as **Markdown** (headings, lists, syntax-highlighted code).
 
@@ -301,6 +304,13 @@ See [docs/EXTENDING.md](docs/EXTENDING.md) ([quick start](docs/EXTENDING.md#quic
 
 ## Troubleshooting
 
+### Terminal ignores OSC 2 title updates
+
+Some terminal emulators do not support OSC 2 (`\x1b]2;…\x07`) or suppress it by default.
+jarn's tab-title feature is silently no-op in those environments — no visible side-effect
+occurs. If you see stray escape characters in your output, set `ui.terminal_title: false`
+in `~/.jarn/config.yaml` to disable the feature entirely.
+
 ### Caps Lock inserts a stray `a` (macOS)
 
 On macOS, when Caps Lock is set to switch input source, some terminal apps that
@@ -319,7 +329,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1424 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1427 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

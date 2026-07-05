@@ -310,6 +310,9 @@ class UIConfig:
     #: Minimum elapsed seconds before a turn-end notification fires.
     #: Approval notifications always fire regardless of elapsed time.
     notify_min_secs: int = 10
+    #: Update the terminal-tab title via OSC 2 to show idle / working / approval
+    #: states. Disabled when False or when stdout is not a tty.
+    terminal_title: bool = True
 
 
 @dataclass(slots=True)

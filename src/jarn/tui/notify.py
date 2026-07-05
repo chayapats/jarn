@@ -20,6 +20,38 @@ if TYPE_CHECKING:
     from jarn.config.schema import UIConfig
 
 
+def set_title(
+    text: str,
+    *,
+    settings: UIConfig,
+    write: Callable[[str], Any],
+    isatty: Callable[[], bool],
+) -> None:
+    """Emit an OSC 2 terminal-title sequence.
+
+    Writes ``\\x1b]2;{text}\\x07`` (XTerm title-set, BEL-terminated) when
+    ``settings.terminal_title`` is True **and** ``isatty()`` returns True.
+    Both guards make the call a no-op in headless / piped contexts.
+
+    Parameters
+    ----------
+    text:
+        The title string to show in the terminal tab.
+    settings:
+        The ``UIConfig`` object carrying the ``terminal_title`` toggle.
+    write:
+        Callable that writes a string to the active output stream (typically
+        ``console.file.write``).
+    isatty:
+        Callable returning whether the output stream is a real TTY.
+    """
+    if not settings.terminal_title:
+        return
+    if not isatty():
+        return
+    write(f"\x1b]2;{text}\x07")
+
+
 def notify(
     event: Literal["turn_done", "needs_approval"],
     settings: UIConfig,

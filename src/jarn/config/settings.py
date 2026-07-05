@@ -109,6 +109,8 @@ SETTINGS: tuple[Setting, ...] = (
        ("off", "bell", "desktop", "both")),
     _s("ui.notify_min_secs", "int", "Appearance", "Notify after (secs)",
        "Minimum turn length before a turn-end notification fires (0 = always)."),
+    _s("ui.terminal_title", "bool", "Appearance", "Terminal title",
+       "Update the terminal-tab title to show idle / working / approval states via OSC 2."),
 )
 
 _BY_KEY: dict[str, Setting] = {s.key: s for s in SETTINGS}
