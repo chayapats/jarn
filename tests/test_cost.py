@@ -515,3 +515,32 @@ def test_gauge_includes_cache_tokens(tracker: CostTracker) -> None:
         is_main=True,
     )
     assert tracker.context_tokens == 1_000 + 800 + 200
+
+
+# -- T-1-2 final-review: gauge must not be clobbered by zero-input chunks ----
+
+
+def test_gauge_not_clobbered_by_continuation_chunk(tracker: CostTracker) -> None:
+    """Continuation chunk with input=0 (cumulative input unchanged) must not reset the gauge.
+
+    Providers that stream cumulative totals resend the same input count on every
+    chunk; after dedup the delta has input=0, output>0.  The gauge must keep the
+    value set by the first (real-prompt) chunk.
+    """
+    tracker.record(model_id=_MAIN, input_tokens=5_000, output_tokens=0, is_main=True)
+    assert tracker.context_tokens == 5_000
+    # Continuation: only new output tokens in this delta
+    tracker.record(model_id=_MAIN, input_tokens=0, output_tokens=200, is_main=True)
+    assert tracker.context_tokens == 5_000  # must stay 5000, not drop to 0
+
+
+def test_gauge_not_clobbered_by_split_output_chunk(tracker: CostTracker) -> None:
+    """Anthropic-style split: message_start carries input=8000 output=0, final chunk
+    carries input=0 output=500 (non-monotonic new-call path).  The gauge must hold the
+    value from the message_start chunk.
+    """
+    tracker.record(model_id=_MAIN, input_tokens=8_000, output_tokens=0, is_main=True)
+    assert tracker.context_tokens == 8_000
+    # Output-only final chunk: non-monotonic path passes input=0 to record()
+    tracker.record(model_id=_MAIN, input_tokens=0, output_tokens=500, is_main=True)
+    assert tracker.context_tokens == 8_000  # must stay 8000, not drop to 0

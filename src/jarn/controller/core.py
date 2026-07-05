@@ -307,12 +307,15 @@ class Controller:
         )
 
     async def compact(self) -> str:
-        """Summarize the current thread and continue in a fresh thread seeded
-        with the summary (the richer ``/compact``). Generates *and* applies in
-        one step — used by the non-interactive auto-compact path. The manual
-        ``/compact`` command splits this into :meth:`compact_preview` +
-        :meth:`compact_apply` so the user can review before applying. Returns the
-        summary text."""
+        """One-shot summarize-and-fork primitive: generate a summary via
+        :meth:`compact_preview` then immediately apply it via
+        :meth:`compact_apply`, returning the summary text.
+
+        The interactive ``/compact`` command in the REPL uses the split
+        :meth:`compact_preview` + :meth:`compact_apply` pair so the user can
+        review the summary before it is applied.  This method is the single-call
+        variant exposed through the controller command registry for callers that
+        do not need the preview step."""
         summary = await self.compact_preview()
         if not summary:
             return ""

@@ -166,9 +166,12 @@ class CostTracker:
                 u.unpriced_calls += 1
         # Update the ctx% gauge only for main-model calls (assignment so the gauge
         # drops correctly after summarization shrinks the prompt; subagent traffic
-        # must not inflate it).
-        if is_main:
-            self.context_tokens = input_tokens + cache_read_tokens + cache_creation_tokens
+        # must not inflate it).  Guard: only update when the prompt is non-zero —
+        # continuation chunks (cumulative input unchanged → delta input = 0) and
+        # Anthropic-style split chunks (output-only final chunk, input = 0 on the
+        # non-monotonic new-call path) must not clobber a previously recorded value.
+        if is_main and (p := input_tokens + cache_read_tokens + cache_creation_tokens) > 0:
+            self.context_tokens = p
 
     def _record_tool_share(
         self,
