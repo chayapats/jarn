@@ -35,7 +35,7 @@ uv run mypy src/                   # type-check (must report 0 errors)
 ```
 
 Before pushing, run all three gates locally — `ruff check src tests scripts`, `mypy src/`, and
-`pytest` (currently **1354** tests). CI runs exactly these on every push/PR
+`pytest` (currently **1359** tests). CI runs exactly these on every push/PR
 (lint → type-check → test) across Linux/macOS/Windows and Python 3.12/3.13, plus a `packaging`
 job and an `npm` job that runs the Node launcher + assembly tests (`node --test
 npm/jarn-cli/test/launcher.test.js` and `npm/test/build.test.mjs`). The live-LLM

@@ -5,9 +5,20 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 
+import pytest
+
 from jarn.config.schema import BudgetConfig
 from jarn.cost import BudgetStatus, CostTracker, Usage
 from jarn.cost.pricing import cost_of, lookup
+
+# T-1-2 test constants: a main-model ref and a subagent ref.
+_MAIN = "anthropic/claude-opus-4"
+_SUB = "openrouter/anthropic/claude-haiku-4-5"
+
+
+@pytest.fixture()
+def tracker() -> CostTracker:
+    return CostTracker()
 
 
 def test_pricing_known_model():
@@ -475,3 +486,32 @@ def test_pricing_network_opt_out(monkeypatch, tmp_path):
     assert fetched == []
 
     assert pricing.lookup("claude-opus-4-8") is not None
+
+
+# -- T-1-2: accurate context gauge (assignment not max; is_main flag) ---------
+
+
+def test_context_gauge_tracks_latest_prompt_not_max(tracker: CostTracker) -> None:
+    """After summarization the prompt shrinks; the gauge must drop to the latest value."""
+    tracker.record(model_id=_MAIN, input_tokens=10_000, output_tokens=1, is_main=True)
+    tracker.record(model_id=_MAIN, input_tokens=2_000, output_tokens=1, is_main=True)
+    assert tracker.context_tokens == 2_000  # latest wins, not max
+
+
+def test_subagent_calls_do_not_move_gauge(tracker: CostTracker) -> None:
+    """Subagent traffic (is_main=False) must not inflate the ctx% gauge."""
+    tracker.record(model_id=_SUB, input_tokens=50_000, output_tokens=1, is_main=False)
+    assert tracker.context_tokens == 0
+
+
+def test_gauge_includes_cache_tokens(tracker: CostTracker) -> None:
+    """prompt_tokens = input + cache_read + cache_creation; the gauge tracks that sum."""
+    tracker.record(
+        model_id=_MAIN,
+        input_tokens=1_000,
+        output_tokens=1,
+        cache_read_tokens=800,
+        cache_creation_tokens=200,
+        is_main=True,
+    )
+    assert tracker.context_tokens == 1_000 + 800 + 200

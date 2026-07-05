@@ -5,6 +5,21 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **ctx% gauge now tracks the latest main-model prompt, not the lifetime max** —
+  `CostTracker.record()` previously used `max(context_tokens, input_tokens)`, so the
+  gauge never dropped after summarization (T-1-1) shrunk the prompt. It now assigns
+  `prompt_tokens = input_tokens + cache_read_tokens + cache_creation_tokens` (assignment,
+  not max) and only updates the gauge for main-model calls (`is_main=True`). Subagent and
+  summarizer traffic no longer inflates the ctx% gauge.
+- **`_last_usage_totals` no longer leaks stale entries across thread churn** —
+  `SessionDriver.run_turn()` previously used an inverted filter that kept OTHER threads'
+  `(thread_id, model_ref)` keys forever after `/clear`, `/compact`, or `/rewind`. Replaced
+  with `dict.clear()` so the dict is bounded to the keys added within the current turn.
+  The cumulative-stream dedup is unaffected: it baselines from the first chunk of each
+  new turn (no prior entry → delta = cumulative), which is correct for a fresh API call.
+
 ### Changed
 
 - **Unified auto-compaction into one summarization path** — previously two systems
