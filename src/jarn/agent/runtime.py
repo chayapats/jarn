@@ -301,6 +301,7 @@ def _build_summarization_middleware(
         backend=backend,
         trigger=_summarization_trigger(model, main_window=main_window, pct=pct),
         keep=defaults["keep"],
+        trim_tokens_to_summarize=None,
         truncate_args_settings=defaults["truncate_args_settings"],
     )
 
