@@ -38,7 +38,7 @@ from rich.markup import escape as _rich_escape
 from jarn.config.schema import Config
 from jarn.extensibility.commands import completion_catalog, parse_input
 from jarn.repl import turn as repl_turn
-from jarn.repl.commands import CommandMixin
+from jarn.repl.commands import CommandMixin, format_todos
 from jarn.repl.completer import _ShellEscapeLexer, _SlashFileCompleter
 from jarn.repl.keys import KeysMixin
 from jarn.repl.overlays import OverlayMixin
@@ -55,6 +55,10 @@ from jarn.version import __version__
 
 if TYPE_CHECKING:
     from jarn.config.settings import ConfigPanel
+
+#: Max body lines of the LIVE plan checklist above the input, so a long plan can't
+#: push the input/toolbar off-screen (the committed end-of-turn render is uncapped).
+_LIVE_TODOS_CAP = 8
 
 
 class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
@@ -127,6 +131,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self._flash_until = 0.0
         self._expanded = False                     # pager overlay open?
         self._last_todos_sig: str | None = None    # de-dupe the todo checklist
+        # Live plan checklist shown above the input DURING a turn (updated in place
+        # on each write_todos; None = nothing to show). Cleared at turn end, where
+        # the committed _render_todos replaces it — see _on_todos_live.
+        self._live_todos: list[dict] | None = None
         self._pager_buffer = Buffer(read_only=True)
         self._pager_window: Window | None = None
         #: Resolved when the pager closes — lets an approval prompt block on the
@@ -423,11 +431,14 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         return Dimension(min=0, max=max(4, rows - 4))
 
     def _stream_control(self):
-        """Region above the input: in-progress text, an animated thinking
-        indicator while the model works, a transient flash (mode change, etc.),
-        else nothing."""
+        """Region above the input: the live plan checklist (when a turn has written
+        todos), in-progress text, an animated thinking indicator while the model
+        works, a transient flash (mode change, etc.), else nothing."""
         if self._menu_future is not None and self._menu_options:
             return self._menu_html()
+        # The live todos block is a turn-time thing: only composed while busy, and
+        # only above the prose/thinking body — never over a picker/_ask prompt.
+        todos = self._live_todos_ansi() if self._busy() else ""
         if self._stream_text:
             if self._busy():
                 # The streamed assistant prose renders LIVE as one growing
@@ -447,15 +458,67 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 )
                 # Drop the leading blank line when the buffer is still empty (pure
                 # newlines streamed before the first real prose) — show just the footer.
-                return ANSI(f"{rendered}\n{footer}" if rendered else footer)
+                body = f"{rendered}\n{footer}" if rendered else footer
+                # Checklist ABOVE the streaming prose, so prose keeps flowing below.
+                return ANSI(f"{todos}\n{body}" if todos else body)
             # Not busy: a picker / _ask prompt lives here as PLAIN text — never
             # markdown-rendered (it isn't markdown and must show verbatim).
             return self._stream_text
         if self._busy():
+            # No prose yet — show the checklist above the animated thinking line.
+            if todos:
+                return ANSI(f"{todos}\n{self._thinking_ansi()}")
             return self._thinking_line()
         if self._flash_html is not None and time.monotonic() < self._flash_until:
             return self._flash_html
         return ""
+
+    async def _on_todos_live(self) -> None:
+        """On a ``write_todos`` completion: pull the current plan checklist and show
+        it live above the input, re-rendering in place as items flip. A state read
+        must never kill the turn, so failures degrade to leaving the block as-is.
+        Cleared at turn end by _render_todos (the committed render replaces it)."""
+        try:
+            todos = await self.controller.todos()
+        except Exception:  # noqa: BLE001 — a live-region refresh must not break the turn
+            return
+        self._live_todos = todos or None
+        if self.app is not None:
+            self.app.invalidate()
+
+    def _live_todos_ansi(self) -> str:
+        """Render the live plan checklist (capped) to an ANSI string for the region,
+        or ``""`` when there is nothing to show. Width is refreshed at render time so
+        the block wraps to the CURRENT terminal (same discipline as the prose)."""
+        if not self._live_todos:
+            return ""
+        width = _current_width()
+        self.console.width = width
+        lines = format_todos(self._live_todos, width, cap=_LIVE_TODOS_CAP)
+        buf = io.StringIO()
+        cap = Console(force_terminal=True, width=width, file=buf)
+        cap.print("\n".join(lines), end="")
+        return buf.getvalue().rstrip("\n")
+
+    def _thinking_ansi(self) -> str:
+        """The animated thinking line rendered to ANSI, for composing BELOW the live
+        todos block (the plain-HTML _thinking_line can't be concatenated with the
+        ANSI checklist in a single control value)."""
+        start = self._turn_start or time.monotonic()
+        elapsed = int(time.monotonic() - start)
+        frame = palette.SPINNER_FRAMES[int(time.monotonic() * 5) % len(palette.SPINNER_FRAMES)]
+        word = self._thinking_word or "Working"
+        text = f"{word}… ({elapsed}s · {self._gen_stat()} · esc to interrupt)"
+        width = _current_width()
+        self.console.width = width
+        buf = io.StringIO()
+        cap = Console(force_terminal=True, width=width, file=buf)
+        cap.print(
+            f"[{palette.C_TOOL}]{frame}[/{palette.C_TOOL}] "
+            f"[{palette.C_DIM}]{_rich_escape(text)}[/{palette.C_DIM}]",
+            end="",
+        )
+        return buf.getvalue().rstrip("\n")
 
     def _flash(self, html: HTML, secs: float = 2.0) -> None:
         """Show a transient one-line message above the input (auto-clears) — used
@@ -472,6 +535,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self._stream_is_reasoning = False
         self._last_tool_outputs = []
         self._last_todos_sig = None
+        self._live_todos = None
         if self.app is not None:
             self.app.invalidate()
         f = self.console.file
@@ -651,6 +715,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                     live_sink=self._set_stream, spinner=False,
                     tool_sink=self._last_tool_outputs,
                     token_sink=self._count_stream_chars,
+                    todos_sink=self._on_todos_live,
                     title_hook=self._title_hook,
                 )
                 # Turn completed normally (not cancelled — CancelledError would
@@ -693,6 +758,9 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             self._turn_start = None
             self._title_hook("idle")   # Restore idle title for all exit paths (success / cancel / error)
             self._set_stream("")
+            # Drop the live checklist on EVERY exit (cancel/error included, where
+            # _render_todos never runs) so no stale block lingers above the input.
+            self._live_todos = None
             if self.app is not None:
                 self.app.invalidate()
             self._drain_queue()

@@ -192,6 +192,10 @@ preview appear inline.
 - **Terminal tab title:** jarn sets the terminal-tab title via OSC 2 to show the current
   state — `jarn — <project>` (idle), `✳ jarn — <project>` (working), `⏸ jarn — <project>`
   (waiting for approval). Set `ui.terminal_title: false` to disable.
+- **Live plan checklist:** when the agent plans, a `⏺ Todos` checklist appears above the
+  input and updates **in place** as items flip (✔ done / ◐ in progress / ☐ pending),
+  Claude Code-style, with the streaming reply below it. A long plan is capped (overflow
+  collapses to `… +N more`); the full list is committed to scrollback at turn end.
 
 Assistant replies render as **Markdown** (headings, lists, syntax-highlighted code).
 
@@ -329,7 +333,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1427 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1429 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)
