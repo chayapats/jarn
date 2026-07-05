@@ -3045,3 +3045,110 @@ async def test_ctrl_r_history_picker_filters_and_prefills(tmp_path, monkeypatch)
     )
     assert not app._busy(), "Ctrl+R prefill must not start a turn"
     app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_history_picker_zero_match_nav_no_crash(tmp_path, monkeypatch):
+    """Up/Down with zero filter matches must not raise ZeroDivisionError.
+
+    Repro path: Ctrl+R → type gibberish → zero matches → press ↑ or ↓ → crash.
+    Fix: guard added to both _up and _down picker branches."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.input.history.append_string("hello world")
+    app.input.history.append_string("goodbye world")
+
+    task = asyncio.create_task(app._history_picker())
+    await asyncio.sleep(0)
+
+    assert app._menu_future is not None and not app._menu_future.done()
+    assert len(app._menu_options) == 2
+
+    # Type gibberish to drive zero matches through the real filter handler.
+    any_handler = next(
+        b.handler for b in app._kb.bindings
+        if getattr(b.handler, "__name__", "") == "_menu_fastkey"
+    )
+    for ch in "zzz":
+        any_handler(_KeyEvent(ch))
+    assert len(app._menu_options) == 0, "expected zero matches after filtering"
+
+    # Find Up/Down handlers (the real keystroke path).
+    up_handler = next(
+        b.handler for b in app._kb.bindings
+        if getattr(b.handler, "__name__", "") == "_up"
+    )
+    down_handler = next(
+        b.handler for b in app._kb.bindings
+        if getattr(b.handler, "__name__", "") == "_down"
+    )
+
+    # These must NOT crash (ZeroDivisionError was: (index ± 1) % 0).
+    up_handler(_KeyEvent(""))    # was: ZeroDivisionError
+    down_handler(_KeyEvent(""))  # was: ZeroDivisionError
+    assert app._menu_index == 0  # index must stay sane
+
+    # Clear the filter via backspace — options should return.
+    backspace_handler = next(
+        b.handler for b in app._kb.bindings
+        if getattr(b.handler, "__name__", "") == "_backspace"
+    )
+    for _ in range(3):
+        backspace_handler(_KeyEvent(""))
+    assert len(app._menu_options) == 2, "options should return after clearing filter"
+
+    # Nav works again after options are restored.
+    up_handler(_KeyEvent(""))
+    assert app._menu_index == 1  # wrapped: (0 - 1) % 2 == 1
+
+    app._menu_future.set_result(None)
+    await task
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_history_picker_enter_prefills_without_echo(tmp_path, monkeypatch):
+    """History-picker Enter must prefill the input but NOT echo '› label' to console.
+
+    The echo is intentional for approval-style pickers; this test asserts the gate
+    suppresses it for the history picker (identified by _menu_filter being not None)
+    while leaving approval-picker echo intact."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.input.history.append_string("git status")
+
+    task = asyncio.create_task(app._history_picker())
+    await asyncio.sleep(0)
+    assert app._menu_future is not None and not app._menu_future.done()
+    assert len(app._menu_options) == 1
+
+    # Find and invoke the real _submit key handler (not a direct future resolution).
+    submit_handler = next(
+        b.handler for b in app._kb.bindings
+        if getattr(b.handler, "__name__", "") == "_submit"
+    )
+    submit_handler(_KeyEvent(""))
+    await task
+
+    # Buffer must be prefilled with the full text.
+    assert app.input.text == "git status", f"got {app.input.text!r}"
+
+    # Console must NOT contain the › echo for the history entry.
+    output = app.console.file.getvalue()
+    assert "› git status" not in output, (
+        f"history picker must not echo label; console: {output!r}"
+    )
+
+    # --- Approval-style picker MUST still echo (gate must not silence it) ---
+    app.console = Console(file=StringIO(), width=80)  # fresh console
+    options: list[tuple[str, object]] = [("Allow once", "allow"), ("Deny", "deny")]
+    pick_task = asyncio.create_task(app._pick_menu(options, header="Test"))
+    await asyncio.sleep(0)
+
+    submit_handler(_KeyEvent(""))  # Enter → selects first option "Allow once"
+    result = await pick_task
+
+    assert result == "allow"
+    approval_output = app.console.file.getvalue()
+    assert "›" in approval_output, (
+        f"approval picker must still echo label; console: {approval_output!r}"
+    )
+    app.controller.close()

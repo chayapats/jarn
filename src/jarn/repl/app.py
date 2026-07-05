@@ -29,7 +29,11 @@ from prompt_toolkit.layout.containers import (
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
-from prompt_toolkit.layout.processors import AppendAutoSuggestion, BeforeInput
+from prompt_toolkit.layout.processors import (
+    AppendAutoSuggestion,
+    BeforeInput,
+    Transformation,
+)
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from rich.console import Console
@@ -60,6 +64,20 @@ if TYPE_CHECKING:
 #: Max body lines of the LIVE plan checklist above the input, so a long plan can't
 #: push the input/toolbar off-screen (the committed end-of-turn render is uncapped).
 _LIVE_TODOS_CAP = 8
+
+
+class _GhostAutoSuggestion(AppendAutoSuggestion):
+    """AppendAutoSuggestion that hides ghost text when the completion dropdown is open.
+
+    prompt_toolkit renders the CompletionsMenu float and the AppendAutoSuggestion
+    processor independently; without this override both would appear simultaneously.
+    Subclassing and returning an empty Transformation when complete_state is set
+    keeps the accept-key rule (dropdown wins) consistent with the visual state."""
+
+    def apply_transformation(self, ti):  # type: ignore[override]
+        if ti.buffer_control.buffer.complete_state is not None:
+            return Transformation(ti.fragments)
+        return super().apply_transformation(ti)
 
 
 class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
@@ -280,9 +298,9 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 input_processors=[
                     BeforeInput("› ", style="bold"),
                     # Ghost autosuggest: renders the upcoming suggestion suffix in
-                    # a dim colour after the cursor.  The completion dropdown (if
-                    # open) always wins visually; this only shows when no menu is up.
-                    AppendAutoSuggestion(style=f"fg:{palette.C_DIM}"),
+                    # a dim colour after the cursor.  Hidden when the completion
+                    # dropdown is open so both UI layers never appear together.
+                    _GhostAutoSuggestion(style=f"fg:{palette.C_DIM}"),
                 ],
                 lexer=_ShellEscapeLexer(),
             ),

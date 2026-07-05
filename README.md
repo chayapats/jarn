@@ -175,9 +175,8 @@ preview appear inline.
 - **Tab** accepts the highlighted completion (`/command` or `@file`).
 - **Ghost autosuggest:** as you type, the most recent matching history entry appears
   as dim ghost text after the cursor (fish/zsh-style). Press **→ (Right arrow)** or
-  **Ctrl+E** at the end of the line to accept the full suggestion. When the completion
-  dropdown is open, the dropdown takes precedence; Right arrow navigates normally
-  mid-line.
+  **Ctrl+E** at the end of the line to accept the full suggestion. The ghost is hidden
+  while the completion dropdown is open; Right arrow navigates normally mid-line.
 - **Ctrl+R** opens a **reverse-history picker**: an arrow-key overlay over the 50 most
   recent unique history entries with live type-to-filter. Press **↑/↓** to navigate,
   **Enter** to prefill the input (does not submit), **Esc** to cancel. Works even
@@ -342,7 +341,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1431 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1433 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)
