@@ -145,6 +145,34 @@ class TestTimeouts:
 
 
 # ---------------------------------------------------------------------------
+# test_boundary_os_errors — FileNotFoundError, PermissionError (not retryable)
+# ---------------------------------------------------------------------------
+
+class TestBoundaryOSErrors:
+    def test_file_not_found_not_retryable(self) -> None:
+        r = classify_error(FileNotFoundError("no such file: /tmp/x"))
+        assert r["retryable"] is False
+        assert r["auth"] is False
+
+    def test_permission_error_not_retryable(self) -> None:
+        r = classify_error(PermissionError("denied"))
+        assert r["retryable"] is False
+        assert r["auth"] is False
+
+    def test_connection_error_still_retryable(self) -> None:
+        r = classify_error(ConnectionError("connection reset"))
+        assert r["retryable"] is True
+        assert r["classified_by"] == "type"
+
+    def test_retryable_outer_beats_auth_cause(self) -> None:
+        auth_inner = RuntimeError("401 unauthorized")
+        retryable_outer = _wrapped(_http_exc(429), auth_inner)
+        r = classify_error(retryable_outer)
+        assert r["retryable"] is True
+        assert r["auth"] is False
+
+
+# ---------------------------------------------------------------------------
 # test_cause_chain — __cause__ walk finds the typed exception
 # ---------------------------------------------------------------------------
 
@@ -200,8 +228,8 @@ class TestCauseChain:
         exc: BaseException = typed
         for _ in range(6):
             exc = _wrapped(ValueError("wrap"), exc)
-        # depth 5 from the outer: outer(1) → wrap(2) → wrap(3) → wrap(4) →
-        # wrap(5) → ... the typed exc is 7 levels down, past depth limit
+        # 0-indexed depth 6 (7th exception), past the depth-5 limit:
+        # outer(0) → wrap(1) → wrap(2) → wrap(3) → wrap(4) → wrap(5) → typed(6)
         r = classify_error(exc)
         # Should NOT find the typed cause; falls to heuristic
         assert r["classified_by"] == "heuristic"
@@ -288,6 +316,7 @@ class TestAuthVsRetryablePrecedence:
         """Heuristic auth classification implies retryable=False."""
         r = classify_error(Exception("401 Unauthorized"))
         assert r["auth"] is True
+        assert r["retryable"] is False
         assert r["classified_by"] == "heuristic"
 
 

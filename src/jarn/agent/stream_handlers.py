@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -328,12 +329,11 @@ def _classify_single_typed(exc: BaseException) -> tuple[bool, bool] | None:
         pass
 
     # Built-in / asyncio timeouts
-    import asyncio  # noqa: PLC0415
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return (True, False)
 
     # Network-ish OS errors
-    if isinstance(exc, (ConnectionError, OSError)):
+    if isinstance(exc, ConnectionError):
         return (True, False)
 
     # anthropic SDK — optional; feature-detect by class hierarchy
