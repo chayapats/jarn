@@ -7,6 +7,15 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **Live in-place todo checklist (T-2-3)** — the `⏺ Todos` plan checklist now renders
+  LIVE above the input and re-renders in place as the agent flips items (✔ done / ◐ in
+  progress / ☐ pending), instead of appearing only after each turn finishes (Claude
+  Code-style).  It refreshes the instant a `write_todos` tool call lands, streams the
+  assistant's prose/reasoning directly below it, and is capped to 8 lines (completed
+  items collapse to a `✔ N done` summary, overflow elides behind `… +N more`) so a long
+  plan can't push the input off-screen.  The full checklist is still committed once to
+  scrollback at turn end.
+
 - **Terminal-title state via OSC 2 (T-2-2)** — jarn now updates the terminal tab title to
   reflect the current state: `jarn — <project>` (idle), `✳ jarn — <project>` (agent working),
   `⏸ jarn — <project>` (waiting for approval), and plain `jarn` on exit.  Titles are emitted

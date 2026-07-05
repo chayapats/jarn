@@ -15,6 +15,71 @@ from jarn.repl import turn as repl_turn
 from jarn.repl.turn import _apply_mode_ref, _apply_model_ref
 from jarn.tui import palette
 
+#: Plan-checklist glyphs — the SINGLE source shared by the live in-turn region
+#: (``app._live_todos_ansi``) and the committed end-of-turn render
+#: (``_render_todos``) so the styling never drifts between the two.
+_TODO_GLYPHS = {
+    "completed": "[#3ee07a]✔[/#3ee07a]",
+    "in_progress": "[#22d3ee]◐[/#22d3ee]",
+    "pending": "[#7c8f94]☐[/#7c8f94]",
+}
+
+
+def _todo_item_line(todo: dict, truncate: int | None) -> str:
+    """One Rich-markup checklist line: ``  <glyph> <content>`` (completed dimmed).
+
+    ``truncate`` (the live region's terminal width) bounds the content to a single
+    line so a long todo can't wrap and blow the height budget; ``None`` (committed
+    render) leaves it to wrap freely, preserving the pre-existing behaviour."""
+    status = todo.get("status", "pending")
+    glyph = _TODO_GLYPHS.get(status, _TODO_GLYPHS["pending"])
+    content = str(todo.get("content", ""))
+    if truncate is not None:
+        limit = max(8, truncate - 4)  # 2-space indent + glyph + space
+        if len(content) > limit:
+            content = content[: limit - 1] + "…"
+    content = _rich_escape(content)
+    if status == "completed":
+        content = f"[{palette.C_DIM}]{content}[/{palette.C_DIM}]"
+    return f"  {glyph} {content}"
+
+
+def format_todos(todos: list[dict], width: int, *, cap: int | None = None) -> list[str]:
+    """Render a plan checklist to Rich-markup lines: ``["⏺ Todos", <item>, …]``.
+
+    Shared by BOTH the live in-turn region and the committed end-of-turn render so
+    glyphs and layout stay identical.
+
+    ``cap`` (live region only) bounds the body to ``cap`` lines so a long plan
+    can't push the input off-screen: completed items collapse to one ``✔ N done``
+    summary, the in-progress + upcoming items fill the remaining budget, and any
+    overflow is elided behind a ``… +N more`` line. ``cap is None`` (committed
+    render) shows every item, unwrapped, exactly as before.
+    """
+    header = f"[{palette.C_TOOL}]⏺[/{palette.C_TOOL}] [bold]Todos[/bold]"
+    lines = [header]
+    trunc = width if cap is not None else None
+    if cap is None or len(todos) <= cap:
+        lines.extend(_todo_item_line(t, trunc) for t in todos)
+        return lines
+    # Windowed live block: keep it focused on what is happening *now*.
+    done = [t for t in todos if t.get("status") == "completed"]
+    tail = [t for t in todos if t.get("status") != "completed"]  # in-progress + pending
+    budget = cap
+    if done:
+        lines.append(
+            f"  {_TODO_GLYPHS['completed']} [{palette.C_DIM}]{len(done)} done[/{palette.C_DIM}]"
+        )
+        budget -= 1
+    if len(tail) > budget:
+        show = max(1, budget - 1)  # reserve a line for the "… +N more" summary
+        lines.extend(_todo_item_line(t, trunc) for t in tail[:show])
+        hidden = len(tail) - show
+        lines.append(f"  [{palette.C_DIM}]… +{hidden} more[/{palette.C_DIM}]")
+    else:
+        lines.extend(_todo_item_line(t, trunc) for t in tail)
+    return lines
+
 
 class CommandMixin:
     """Slash-command dispatch and REPL-only command handlers."""
@@ -37,6 +102,7 @@ class CommandMixin:
                 live_sink=self._set_stream, spinner=False,
                 tool_sink=self._last_tool_outputs,
                 token_sink=self._count_stream_chars,
+                todos_sink=self._on_todos_live,
             )
             await self._render_todos()
             self._maybe_autocheckpoint_hint()
@@ -151,6 +217,7 @@ class CommandMixin:
             live_sink=self._set_stream, spinner=False,
             tool_sink=self._last_tool_outputs,
             token_sink=self._count_stream_chars,
+            todos_sink=self._on_todos_live,
         )
         await self._render_todos()
         self._maybe_autocheckpoint_hint()
@@ -355,6 +422,7 @@ class CommandMixin:
             live_sink=self._set_stream, spinner=False,
             tool_sink=self._last_tool_outputs,
             token_sink=self._count_stream_chars,
+            todos_sink=self._on_todos_live,
         )
         await self._render_todos()
         self._maybe_autocheckpoint_hint()
@@ -464,23 +532,18 @@ class CommandMixin:
 
     async def _render_todos(self) -> None:
         """Print the current plan checklist into scrollback after a turn, de-duped
-        so an unchanged list is never reprinted."""
+        so an unchanged list is never reprinted. This committed render REPLACES the
+        transient live block, so the live todos are cleared here (even when there is
+        nothing new to commit) — no duplicate lingering checklist."""
+        self._live_todos = None
         todos = await self.controller.todos()
         sig = repr([(t.get("content"), t.get("status")) for t in todos])
         if not todos or sig == self._last_todos_sig:
             return
         self._last_todos_sig = sig
-        glyphs = {"completed": "[#3ee07a]✔[/#3ee07a]",
-                  "in_progress": "[#22d3ee]◐[/#22d3ee]",
-                  "pending": "[#7c8f94]☐[/#7c8f94]"}
         self.console.print()
-        self.console.print(f"[{palette.C_TOOL}]⏺[/{palette.C_TOOL}] [bold]Todos[/bold]")
-        for t in todos:
-            status = t.get("status", "pending")
-            g = glyphs.get(status, glyphs["pending"])
-            content = _rich_escape(str(t.get("content", "")))
-            body = f"[{palette.C_DIM}]{content}[/{palette.C_DIM}]" if status == "completed" else content
-            self.console.print(f"  {g} {body}")
+        for line in format_todos(todos, self.console.width):
+            self.console.print(line)
 
     async def _shell_escape(self, command: str) -> None:
         """Run a ``! <cmd>`` shell escape directly — no agent round-trip, no tokens.

@@ -1384,6 +1384,136 @@ def test_stream_control_empty_buffer_has_no_leading_blank_line(tmp_path, monkeyp
     app.controller.close()
 
 
+def test_todos_capped_in_live_region(tmp_path, monkeypatch):
+    """A long plan (20 todos) is capped in the live region to a bounded block —
+    at most 8 body lines plus a "… +N more" summary — so it can't push the input
+    and toolbar off-screen.  The committed end-of-turn render still shows all 20."""
+    from jarn import repl
+    from jarn.repl.commands import format_todos
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+
+    todos = (
+        [{"content": f"done step {i}", "status": "completed"} for i in range(3)]
+        + [{"content": "active step", "status": "in_progress"}]
+        + [{"content": f"pending step {i}", "status": "pending"} for i in range(16)]
+    )  # 20 items total
+
+    # Pure formatter: the live cap bounds the body to <= 8 lines (+ header).
+    capped = format_todos(todos, 80, cap=8)
+    body = capped[1:]                                # drop the "⏺ Todos" header
+    assert len(body) <= 8
+    assert any("more" in line for line in body)      # elision summary present
+    assert any("active step" in line for line in capped)   # active item stays visible
+    # Not every pending item is shown — some are elided behind "… +N more".
+    assert not all(f"pending step {i}" in "".join(capped) for i in range(16))
+
+    # The committed render (no cap) still shows the whole list.
+    full = format_todos(todos, 80)
+    assert all(any(f"pending step {i}" in line for line in full) for i in range(16))
+
+    # And through the live region itself (busy + live todos stored).
+    monkeypatch.setattr(app, "_busy", lambda: True)
+    app._live_todos = todos
+    rendered = app._stream_control().value
+    assert "more" in rendered
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_todos_update_live(tmp_path, monkeypatch):
+    """A write_todos TOOL_END mid-turn shows the checklist LIVE above the input
+    (◐ on the in-progress item); a second write_todos updates it IN PLACE with no
+    scrollback commit between; the final checklist commits once at turn end and
+    clears the live block."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(app.controller, "ensure_runtime", _noop_runtime)
+
+    first = [
+        {"content": "parse input", "status": "in_progress"},
+        {"content": "write output", "status": "pending"},
+    ]
+    second = [
+        {"content": "parse input", "status": "completed"},
+        {"content": "write output", "status": "in_progress"},
+    ]
+    # Two sink calls (one per write_todos) + one end-of-turn commit read.
+    todos_queue = [first, second, second]
+
+    async def _fake_todos():
+        return todos_queue.pop(0)
+    monkeypatch.setattr(app.controller, "todos", _fake_todos)
+
+    # The live region only composes while a turn is in flight.
+    monkeypatch.setattr(app, "_busy", lambda: True)
+
+    # Snapshot the live region right after each write_todos update.
+    snaps: list[str] = []
+
+    async def _rec_sink():
+        await app._on_todos_live()
+        snaps.append(app._stream_control().value)
+
+    events = [
+        Event(EventKind.TOOL_START, "write_todos", {"args": {}}),
+        Event(EventKind.TOOL_END, "write_todos", {"summary": "2 todos"}),
+        Event(EventKind.TEXT, "working through the plan"),
+        Event(EventKind.TOOL_START, "read_file", {"args": {"path": "x"}}),
+        Event(EventKind.TOOL_END, "read_file", {"summary": "1 line"}),   # must NOT trigger the sink
+        Event(EventKind.TOOL_START, "write_todos", {"args": {}}),
+        Event(EventKind.TOOL_END, "write_todos", {"summary": "2 todos"}),
+        Event(EventKind.DONE),
+    ]
+    monkeypatch.setattr(app.controller, "make_driver", lambda approver: _FakeDriver(events))
+
+    console = Console(file=StringIO(), width=80)
+    app.console = console
+    await repl._run_turn(
+        console, app.controller, "hi", _ask_returning(""),
+        live_sink=app._set_stream, token_sink=app._count_stream_chars,
+        todos_sink=_rec_sink,
+    )
+
+    # Sink fired exactly twice — once per write_todos, never for read_file.
+    assert len(snaps) == 2
+    # First update: both items shown with ◐ on the in-progress "parse input".
+    assert "◐" in snaps[0] and "parse input" in snaps[0]
+    # Second update in place: "parse input" now ✔, ◐ moved to "write output".
+    assert "✔" in snaps[1] and "◐" in snaps[1] and "write output" in snaps[1]
+    # No committed "⏺ Todos" block landed in scrollback DURING the turn.
+    assert "Todos" not in console.file.getvalue()
+
+    # Prose streams BELOW the todos block in the live region.
+    app._live_todos = second
+    app._set_stream("here is some prose")
+    composed = app._stream_control().value
+    assert composed.index("write output") < composed.index("here is some prose")
+
+    # Turn end: the committed render lands once and clears the live block.
+    await app._render_todos()
+    committed = console.file.getvalue()
+    assert "Todos" in committed
+    assert app._live_todos is None
+    app.controller.close()
+
+
 @pytest.mark.asyncio
 async def test_pick_model_qualifies_vendor_prefixed_ref(tmp_path, monkeypatch):
     """A custom ref whose first segment isn't a configured provider profile is
