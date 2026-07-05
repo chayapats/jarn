@@ -450,6 +450,9 @@ async def test_mutation_waits_for_snapshot() -> None:
     order: list[str] = []
 
     class SlowCheckpoint:
+        snapshot_notice_pending: bool = False
+        snapshot_notice_shown: bool = False
+
         def snapshot(self, label: str, *, now: float | None = None) -> SnapshotResult:
             order.append("snap_start")
             _t.sleep(0.15)  # simulate O(repo) git add -A + write-tree

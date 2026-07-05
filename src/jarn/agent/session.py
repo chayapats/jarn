@@ -145,10 +145,6 @@ class SessionDriver:
     #: end for a no-mutation turn), reaped/detached in ``run_turn``'s cleanup.
     #: ``None`` when idle.
     _snapshot_task: asyncio.Task[Any] | None = field(default=None, repr=False)
-    #: A snapshot raised and its NOTICE has not been shown yet (armed at reap time).
-    _snapshot_notice_pending: bool = False
-    #: The once-per-session snapshot-failure NOTICE has already been emitted.
-    _snapshot_notice_shown: bool = False
 
     def _config(self) -> dict[str, Any]:
         return {"configurable": {"thread_id": self.thread_id}}
@@ -415,6 +411,14 @@ class SessionDriver:
                 raise
             except Exception:  # noqa: BLE001 - snapshot is best-effort; never abort
                 pass  # the failure is read back from the task below
+        # Guard against a race with _detach_pending_snapshot: if that method ran
+        # during the await above (e.g. the cancelled turn's finally fired while
+        # settle_snapshot was awaiting here), it already took ownership of the task
+        # and registered a done-callback that will call _collect_snapshot_result.
+        # Collecting here too would log the traceback a second time (the NOTICE is
+        # deduped by snapshot_notice_shown, but the log entry is not).
+        if self._snapshot_task is not task:
+            return
         self._snapshot_task = None
         self._collect_snapshot_result(task)
 
@@ -455,19 +459,26 @@ class SessionDriver:
 
     def _handle_snapshot_failure(self, exc: BaseException) -> None:
         """Log the snapshot failure with a full traceback and arm the once-per-
-        session NOTICE (deduped via ``_snapshot_notice_shown``)."""
+        session NOTICE (deduped via ``snapshot_notice_shown`` on the shared
+        CheckpointManager — session-lifetime, so it survives across per-turn
+        driver instances)."""
         _log.error(
             "checkpoint snapshot failed; /undo unavailable this turn", exc_info=exc
         )
-        if not self._snapshot_notice_shown:
-            self._snapshot_notice_pending = True
+        cp = self.checkpoint
+        if cp is not None and not cp.snapshot_notice_shown:
+            cp.snapshot_notice_pending = True
 
     def _pending_snapshot_notice(self) -> Event | None:
         """Return the once-per-session snapshot-failure NOTICE if one is armed and
-        not yet shown (marking it shown), else ``None``."""
-        if self._snapshot_notice_pending and not self._snapshot_notice_shown:
-            self._snapshot_notice_pending = False
-            self._snapshot_notice_shown = True
+        not yet shown (marking it shown), else ``None``.  Reads/writes state on the
+        CheckpointManager so the dedupe survives across fresh per-turn drivers."""
+        cp = self.checkpoint
+        if cp is None:
+            return None
+        if cp.snapshot_notice_pending and not cp.snapshot_notice_shown:
+            cp.snapshot_notice_pending = False
+            cp.snapshot_notice_shown = True
             return Event(EventKind.NOTICE, text=SNAPSHOT_FAIL_NOTICE)
         return None
 
