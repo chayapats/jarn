@@ -2438,3 +2438,53 @@ def test_help_generated_from_registry():
         group_pos = body.index(f"[b]{group_name}[/b]")
         for spec in specs:
             assert body.index(f"/{spec.name}") > group_pos
+
+
+def test_commit_width_tracks_resize(monkeypatch):
+    """console.width is refreshed at every commit — tracks the current terminal width.
+
+    TDD RED: before the fix, console.width stays at the startup value after a resize.
+    TDD GREEN: after the fix, console.width equals the current terminal width (capped
+    at 100) at each commit and live-render call.
+    """
+    import os
+    import shutil as _shutil
+
+    from jarn.repl_renderer import TurnRenderer
+
+    # Phase 1: terminal reports 120 cols → width capped to 100.
+    monkeypatch.setattr(
+        _shutil, "get_terminal_size",
+        lambda *_a, **_k: os.terminal_size((120, 24)),
+    )
+    console = Console(file=StringIO(), force_terminal=True, width=80)
+    r = TurnRenderer(console, live_sink=lambda _: None, spinner=False)
+
+    r.on_text("first commit text")
+    r.on_tool("tool_a", {})  # triggers _commit_text before the tool line
+
+    # After first commit, width should be refreshed to min(120, 100) = 100.
+    assert console.width == 100, f"expected 100 (120 cols capped at 100), got {console.width}"
+
+    # Phase 2: terminal shrinks to 60 cols.
+    monkeypatch.setattr(
+        _shutil, "get_terminal_size",
+        lambda *_a, **_k: os.terminal_size((60, 24)),
+    )
+
+    r.on_text("second commit text")
+    r.finish()  # triggers _commit_text
+
+    # After second commit, width should be refreshed to min(60, 100) = 60.
+    assert console.width == 60, f"expected 60 after resize, got {console.width}"
+
+    # Phase 3: wide terminal (250 cols) → width still capped at 100.
+    console3 = Console(file=StringIO(), force_terminal=True, width=80)
+    monkeypatch.setattr(
+        _shutil, "get_terminal_size",
+        lambda *_a, **_k: os.terminal_size((250, 24)),
+    )
+    r3 = TurnRenderer(console3, live_sink=lambda _: None, spinner=False)
+    r3.on_text("cap test text")
+    r3.finish()
+    assert console3.width == 100, f"expected 100 cap at 250 cols, got {console3.width}"

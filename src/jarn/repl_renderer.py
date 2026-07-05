@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -18,6 +19,15 @@ from jarn.tui import palette
 # tell a thinking block from assistant prose in the shared live sink and render it
 # as PLAIN dim text (markdown would collapse the "✻ thinking\n…" soft break).
 REASONING_STREAM_PREFIX = "✻ thinking\n"
+
+
+def _current_width() -> int:
+    """Return the current terminal width, capped at 100.
+
+    Called at render time (not at startup) so that committed text and the live
+    region both wrap to the *current* terminal width after a resize.
+    """
+    return min(shutil.get_terminal_size((100, 24)).columns, 100)
 
 
 def esc(text: str) -> str:
@@ -83,6 +93,16 @@ class TurnRenderer:
         self._tools: dict[str, ToolRenderState] = {}
         self.tool_outputs: list[tuple[str, str]] = tool_sink if tool_sink is not None else []
         self._spin()
+
+    def _refresh_width(self) -> None:
+        """Sync self.console.width to the current terminal width (capped at 100).
+
+        Called at the top of every commit and live-render entry point so that
+        both committed scrollback and the live region always wrap to the terminal
+        width that is current *at render time*, not the width captured at startup.
+        Rich Console.width is a settable property, so no reconstruction needed.
+        """
+        self.console.width = _current_width()
 
     def _spin(self) -> None:
         if not self._spinner_enabled:
@@ -160,6 +180,7 @@ class TurnRenderer:
 
     def _commit_reasoning(self) -> None:
         if self._rbuf.strip():
+            self._refresh_width()
             self._live_clear()
             self._unspin()
             self._sep("reasoning")
@@ -188,6 +209,7 @@ class TurnRenderer:
             return
         stable, self._buf = self._buf[:cut], self._buf[cut:]
         if stable.strip():
+            self._refresh_width()
             self._live_clear()
             self._sep("text")
             self.console.print(Markdown(stable.strip(), code_theme=palette.CODE_THEME))
@@ -195,6 +217,7 @@ class TurnRenderer:
     def _commit_text(self) -> None:
         self._flush_stable()
         if self._buf.strip():
+            self._refresh_width()
             self._live_clear()
             self._sep("text")
             self.console.print(Markdown(self._buf.strip(), code_theme=palette.CODE_THEME))
@@ -214,6 +237,7 @@ class TurnRenderer:
         self._commit_reasoning()
         self._commit_text()
         self._unspin()
+        self._refresh_width()
         self._sep("tool")
         line = f"[{palette.C_TOOL}]⏺[/{palette.C_TOOL}] [bold]{esc(name)}[/bold]"
         arg_s = fmt_args(args)
@@ -246,6 +270,7 @@ class TurnRenderer:
         if not summary:
             return
         self._unspin()
+        self._refresh_width()
         hint = f" [{palette.C_DIM}]· ctrl+o[/{palette.C_DIM}]" if full else ""
         dur = ""
         key, state = self._resolve_tool_state(name, tool_call_id)
@@ -264,6 +289,7 @@ class TurnRenderer:
         self._commit_reasoning()
         self._commit_text()
         self._unspin()
+        self._refresh_width()
         self._sep("notice")
         self.console.print(markup)
 
@@ -276,6 +302,7 @@ class TurnRenderer:
         self._commit_reasoning()
         self._commit_text()
         self._unspin()
+        self._refresh_width()
         self.console.print(f"\n[{palette.C_DIM}]cancelled[/{palette.C_DIM}]")
 
 

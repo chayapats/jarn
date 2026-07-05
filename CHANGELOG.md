@@ -7,6 +7,19 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Fixed
 
+- **REPL console width now tracks terminal resize** — the Rich `Console` width was
+  computed once at startup and capped at 100 columns; after a terminal resize,
+  committed scrollback (prose, tool lines, reasoning blocks) and the live markdown
+  preview continued wrapping to the stale startup width while prompt_toolkit's own
+  windows (toolbar, input) already recomputed per frame, causing visible disagreement.
+  A new `_current_width()` helper (`min(shutil.get_terminal_size().columns, 100)`) is
+  called at the top of every commit and live-render entry point
+  (`_commit_text`, `_commit_reasoning`, `_flush_stable`, `on_tool`, `on_tool_end`,
+  `on_notice`, `cancel` in `TurnRenderer`; `_render_stream_md` and `_render_dim_ansi`
+  in `InlineApp`), setting `console.width` at render time without reconstructing the
+  Console object. The live-region markdown cache key was updated to include the current
+  width so a resize at constant source content re-renders at the new width (T-1-7).
+
 - **`background_max_concurrent` now enforces the cap instead of warning** — previously,
   reaching the configured concurrent-process limit logged a one-time warning but still
   allowed new starts. `run_in_background` now returns a tool-level refusal string
