@@ -54,7 +54,7 @@ tracking, memory, the extensibility surfaces, and the terminal front-end (`jarn.
 | `jarn.agent.checkpoint` | Auto-checkpoint machinery: snapshot working tree before each turn, `/undo` / `/redo` / `/checkpoints` using private git refs |
 | `jarn.agent.repomap` | Ranked, token-budgeted repo map (stdlib `ast` + light regex for JS/TS/Go/Rust); `repo_map` tool + `/map` command |
 | `jarn.agent.docker_backend` | Docker container backend (`CancellableDockerSandbox`): every command + file op runs in an isolated container; project root bind-mounted; hardened with in-container cancel, resource limits (`--memory`/`--pids-limit`/`--cpus`), non-root `--user`, and anti-orphan reaper |
-| `jarn.config.profiles` | Named policy presets (`trusted-repo`/`review-only`/`sandbox-required`/`ci`/`offline`) via `policy.profile`, `jarn --profile`, or `/profile`; untrusted projects are clamped to a one-way `review-only` floor enforced in `Controller.apply_mode` |
+| `jarn.config.profiles` | Named policy presets (`trusted-repo`/`review-only`/`sandbox-required`/`ci`/`offline`) via `jarn --preset` or `/preset`; untrusted projects are clamped to a one-way `review-only` floor enforced in `Controller.apply_mode` |
 | `jarn.config.settings` | Curated scalar settings allowlist (`SETTINGS`), `ConfigStore` with ruamel round-trip persistence to `~/.jarn/config.yaml`, and `ConfigPanel` state model; exposed via `/config` interactive panel and `/config get\|set` scripting |
 | `jarn.memory.wiki` | Markdown wiki knowledge base (`wiki_search`, `wiki_read`, `wiki_write`, `wiki_append` tools + `/wiki` command) |
 | `jarn.headless` | Headless one-shot entry point (`jarn -p`); fail-closed tool gating, `--json` output, stdin support |
@@ -121,7 +121,7 @@ can force a confirmation even in YOLO mode.
   secrets until trusted: `config/trust.py` + `load_config(project_trusted=…)` strip
   capability keys (hooks/MCP/providers/…) until the launcher's trust prompt approves them.
   An untrusted launch also clamps the active policy to the `review-only` floor
-  (`jarn.config.profiles`); `/mode`, Shift+Tab, `/sandbox`, and `/profile` cannot loosen
+  (`jarn.config.profiles`); `/mode`, Shift+Tab, `/sandbox`, and `/preset` cannot loosen
   it until `jarn trust` (or `/trust`) is run.
 
 ## Key files
