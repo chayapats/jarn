@@ -172,7 +172,10 @@ preview appear inline.
 - **Type** a message and press **Enter** to send (**Shift+Enter** / **Ctrl+J** for a newline).
 - Start a line with **`/`** for a command (see below). **`@`** references a file path.
 - **↑ / ↓** navigate input history.
-- **Tab** accepts the highlighted completion (`/command` or `@file`).
+- **Tab** accepts the highlighted completion (`/command` or `@file`). Completion uses a
+  **two-tier fuzzy engine**: exact-prefix matches appear first (unchanged predictability),
+  followed by subsequence fuzzy matches — so `/cmit` finds `/commit` and `@pyprjct`
+  finds `pyproject.toml`.
 - **Ghost autosuggest:** as you type, the most recent matching history entry appears
   as dim ghost text after the cursor (fish/zsh-style). Press **→ (Right arrow)** or
   **Ctrl+E** at the end of the line to accept the full suggestion. The ghost is hidden
@@ -341,7 +344,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1433 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1439 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)
