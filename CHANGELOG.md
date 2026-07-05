@@ -26,6 +26,15 @@ All notable changes to J.A.R.N. are documented here. Format follows
   lifetime of the host process. Each background process now owns its own temp directory,
   which is removed via `shutil.rmtree` when the process is pruned (exited entry swept
   from the registry) or when the session shuts down via the existing atexit hook (T-1-5).
+- **Docker containers are now removed on interpreter exit, not just on `close()`** —
+  previously, a crash or uncaught exception that bypassed `close()` left the session
+  container running until the *next* session's anti-orphan reaper picked it up.
+  `CancellableDockerSandbox._start()` now registers an `atexit` callback
+  (`_atexit_cleanup`) immediately after the container starts; `close()` calls
+  `atexit.unregister()` so a normally-closed session removes the entry cleanly.  The
+  callback is idempotent and swallows all errors so it never aborts interpreter
+  shutdown.  `__del__` and the pid-file reaper are retained as additional backstops
+  (T-1-6).
 
 - **ctx% gauge now tracks the latest main-model prompt, not the lifetime max** —
   `CostTracker.record()` previously used `max(context_tokens, input_tokens)`, so the
