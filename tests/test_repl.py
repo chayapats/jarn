@@ -2939,3 +2939,109 @@ async def test_title_non_tty_emits_nothing(tmp_path, monkeypatch):
         "non-tty must suppress OSC 2 sequences"
     )
     app.controller.close()
+
+
+# ---------------------------------------------------------------------------
+# T-2-4 — ghost autosuggest + Ctrl+R history picker
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_autosuggest_ghost(tmp_path, monkeypatch):
+    """Buffer has AutoSuggestFromHistory; history 'fix the tests' → suggestion
+    ' the tests'; Right-arrow at end (with suggestion visible) accepts it.
+    (Async so complete_while_typing has a running loop to schedule on.)"""
+    from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+    from prompt_toolkit.document import Document
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    # The buffer must be configured with AutoSuggestFromHistory.
+    assert isinstance(app.input.auto_suggest, AutoSuggestFromHistory)
+
+    # Populate history with a known entry.
+    app.input.history.append_string("fix the tests")
+
+    # Set the buffer text directly (avoids needing a running event loop for
+    # insert_text which triggers the async autosuggest coroutine).
+    app.input.set_document(Document("fix", 3), bypass_readonly=False)
+    assert app.input.text == "fix" and app.input.cursor_position == 3
+
+    # AutoSuggest must propose " the tests".
+    suggestion = app.input.auto_suggest.get_suggestion(app.input, app.input.document)
+    assert suggestion is not None, "no suggestion — history population failed"
+    assert suggestion.text == " the tests"
+
+    # Simulate the suggestion being active on the buffer (as the app would set it).
+    app.input.suggestion = suggestion
+
+    # Find the Right-arrow handler and call it (cursor is at end of "fix").
+    right_handler = next(
+        (b.handler for b in app._kb.bindings
+         if getattr(b.handler, "__name__", "") == "_right"),
+        None,
+    )
+    assert right_handler is not None, "no _right key binding found"
+    right_handler(_KeyEvent(""))
+
+    assert app.input.text == "fix the tests", (
+        f"expected 'fix the tests' after accepting suggestion, got {app.input.text!r}"
+    )
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_ctrl_r_history_picker_filters_and_prefills(tmp_path, monkeypatch):
+    """Ctrl+R opens a deduped history picker (newest first); typing filters entries;
+    Enter prefills the input buffer with the full selected text (no submit)."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    # Populate history oldest-first; "run tests" appears twice → keep most recent.
+    for entry in ["fix the tests", "run tests", "run tests"]:
+        app.input.history.append_string(entry)
+
+    # Launch the history picker directly as a task (Ctrl+R binding does the same).
+    task = asyncio.create_task(app._history_picker())
+    await asyncio.sleep(0)  # let the picker install the future and state
+
+    # Picker must be open.
+    assert app._menu_future is not None and not app._menu_future.done()
+    assert app._menu_filter == ""  # filter mode active, no chars yet
+
+    # Deduped entries newest-first: "run tests" (most recent) then "fix the tests".
+    assert len(app._menu_options) == 2
+    labels = [label for label, _ in app._menu_options]
+    assert labels[0] == "run tests", f"expected newest first, got {labels}"
+    assert labels[1] == "fix the tests"
+
+    # Header must include total count.
+    assert "2" in app._menu_header, f"no count in header: {app._menu_header!r}"
+
+    # Typing "fix" routes through the fastkey/filter handler → filters entries.
+    any_handler = next(
+        (b.handler for b in app._kb.bindings
+         if getattr(b.handler, "__name__", "") == "_menu_fastkey"),
+        None,
+    )
+    assert any_handler is not None, "no _menu_fastkey binding found"
+    for ch in "fix":
+        any_handler(_KeyEvent(ch))
+
+    # Only "fix the tests" should remain.
+    assert len(app._menu_options) == 1, (
+        f"expected 1 filtered option, got {[lbl for lbl, _ in app._menu_options]}"
+    )
+    assert app._menu_options[0][0] == "fix the tests"
+    assert "1" in app._menu_header, f"count not updated in header: {app._menu_header!r}"
+
+    # Confirm selection: resolve the future with the selected value.
+    selected_value = app._menu_options[0][1]
+    app._menu_future.set_result(selected_value)
+    await task  # let _history_picker clean up and prefill the input
+
+    # Input buffer must be prefilled with the full selected text, not submitted.
+    assert app.input.text == "fix the tests", (
+        f"expected 'fix the tests' prefilled, got {app.input.text!r}"
+    )
+    assert not app._busy(), "Ctrl+R prefill must not start a turn"
+    app.controller.close()

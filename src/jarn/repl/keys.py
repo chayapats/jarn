@@ -45,6 +45,10 @@ class KeysMixin:
         def _submit(event) -> None:
             self._armed = False
             if self._menu_future is not None and not self._menu_future.done():
+                # When the history picker has filtered to zero results, Enter is
+                # a no-op (nothing to select, user must backspace or Esc).
+                if not self._menu_options:
+                    return
                 label, value = self._menu_options[self._menu_index]
                 self.console.print(
                     f"[{palette.C_DIM}]› {_rich_escape(label)}[/{palette.C_DIM}]"
@@ -157,33 +161,94 @@ class KeysMixin:
             buf = self.input
             buf.complete_next() if buf.complete_state else buf.auto_down()
 
+        @kb.add(Keys.Any, filter=live)
         def _menu_fastkey(event) -> None:
-            """Single-keypress accept/deny for the approval menu: a mapped char
-            (y/a/n/d) resolves the picker instantly. When no fast-key menu is up
-            — or the char isn't mapped — the key types normally into the input so
-            ordinary editing is never swallowed."""
+            """Printable-char router: fast-key approval, history filter, or input.
+
+            When the approval menu is open and the char is in the fast-key map
+            (y/a/n/d), resolve the menu immediately.  When the history picker
+            filter is active, route the char there instead of the input buffer.
+            Otherwise type normally — no editing key is ever swallowed."""
             char = event.data
-            keys = self._menu_fastkeys
+            if not (char and len(char) == 1 and char.isprintable()):
+                # Non-printable / multi-char ANSI sequences — let specific
+                # bindings (↑, ↓, Enter, Esc, …) handle them.
+                return
+            if self._menu_future is not None and not self._menu_future.done():
+                keys = self._menu_fastkeys
+                if keys is not None and char in keys:
+                    # Fast-path approval key (e.g. y/a/n/d).
+                    value = keys[char]
+                    label = next(
+                        (lbl for lbl, v in self._menu_options if v is value),
+                        char,
+                    )
+                    self.console.print(
+                        f"[{palette.C_DIM}]› {_rich_escape(label)}[/{palette.C_DIM}]"
+                    )
+                    self._menu_future.set_result(value)
+                    return
+                if self._menu_filter is not None:
+                    # History picker: route printable chars to the filter.
+                    self._history_type_filter(char)
+                    return
+            self.input.insert_text(char)
+
+        @kb.add("backspace", filter=live)
+        def _backspace(event) -> None:
+            """Backspace: delete filter char when history picker is open, else
+            delete the char before the cursor in the input buffer."""
             if (
                 self._menu_future is not None
                 and not self._menu_future.done()
-                and keys is not None
-                and char in keys
+                and self._menu_filter is not None
             ):
-                value = keys[char]
-                label = next(
-                    (lbl for lbl, v in self._menu_options if v is value),
-                    char,
-                )
-                self.console.print(
-                    f"[{palette.C_DIM}]› {_rich_escape(label)}[/{palette.C_DIM}]"
-                )
-                self._menu_future.set_result(value)
-                return
-            self.input.insert_text(char)
+                self._history_backspace_filter()
+            else:
+                self.input.delete_before_cursor()
 
-        for _fk in ("y", "a", "n", "d"):
-            kb.add(_fk, filter=live)(_menu_fastkey)
+        @kb.add("right", filter=live)
+        def _right(event) -> None:
+            """Right arrow: accept the ghost suggestion when visible and cursor is
+            at the end of the buffer; otherwise move cursor right normally.
+
+            The completion dropdown always wins: when the completion menu is open
+            the suggestion is not accepted (menu takes precedence)."""
+            buf = self.input
+            if (
+                buf.complete_state is None
+                and buf.suggestion is not None
+                and buf.cursor_position == len(buf.text)
+            ):
+                buf.insert_text(buf.suggestion.text)
+            else:
+                buf.cursor_right()
+
+        @kb.add("c-e", filter=live)
+        def _ctrl_e(event) -> None:
+            """Ctrl+E: accept the ghost suggestion when visible and cursor is at
+            the end of the buffer; otherwise move to end-of-line (emacs default).
+
+            Same precedence rule as Right: completion menu wins over ghost text."""
+            buf = self.input
+            if (
+                buf.complete_state is None
+                and buf.suggestion is not None
+                and buf.cursor_position == len(buf.text)
+            ):
+                buf.insert_text(buf.suggestion.text)
+            else:
+                # Emacs-style end-of-line: move cursor to end of current line.
+                buf.cursor_position += buf.document.get_end_of_line_position()
+
+        @kb.add("c-r", filter=live)
+        def _ctrl_r(event) -> None:
+            """Ctrl+R: open the arrow-key history picker.  Spawned as an async
+            task so it runs alongside a live turn without blocking it.
+            No-op if another overlay (e.g. an approval prompt) is already open."""
+            if self._menu_future is not None and not self._menu_future.done():
+                return  # don't overwrite an in-flight approval/picker future
+            asyncio.create_task(self._history_picker())
 
         @kb.add("s-tab", filter=live)
         def _cycle_mode(event) -> None:
