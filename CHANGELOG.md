@@ -12,7 +12,8 @@ All notable changes to J.A.R.N. are documented here. Format follows
   CLI flag (hidden alias of `--preset`), and the `/profile` command (deprecated alias of
   `/preset`) are gone.  A `UserWarning` is emitted on first load if a v1 config still
   contains `policy.profile`; the key is dropped and the session continues.  Use
-  `jarn --preset NAME` / `/preset NAME` instead.  Config version bumped to 2 (T-1-9).
+  `jarn --preset NAME` / `/preset NAME` instead (same preset names).  `jarn --profile X`
+  now fails fast with an error naming `--preset`.  Config version bumped to 2 (T-1-9).
 
 ### Fixed
 
@@ -21,12 +22,11 @@ All notable changes to J.A.R.N. are documented here. Format follows
   `jarn-cli/package.json` template updated to list `LICENSE` in `files` (T-1-9).
 - **RELEASE.md post-release note now references "the latest CHANGELOG section"** rather
   than a hardcoded `§0.4.4` version anchor, so the checklist stays accurate after each
-  release (T-1-9).
-- **README-TH.md synced**: test count updated (1408), lint command updated to include
+  release; added the missing v0.5.0 sign-off row to the QA table (T-1-9).
+- **README-TH.md synced and doc-sync-enforced**: the Thai README's test count had gone
+  stale twice this wave; `tests/test_doc_sync.py` now covers `README-TH.md` alongside
+  README/CONTRIBUTING/RELEASE. Count re-synced, lint command updated to include
   `scripts/`, `/profile` table row removed (T-1-9).
-
-### Fixed
-
 - **REPL console width now tracks terminal resize** — the Rich `Console` width was
   computed once at startup and capped at 100 columns; after a terminal resize,
   committed scrollback (prose, tool lines, reasoning blocks) and the live markdown

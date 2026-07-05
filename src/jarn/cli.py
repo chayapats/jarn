@@ -155,6 +155,16 @@ def main(argv: list[str] | None = None) -> int:
         "(enables `hook_global_require_trust: true`)",
     )
 
+    # --profile was removed in v0.6.0 (deprecated since v0.5.0). Without this
+    # guard argparse reports a confusing subcommand "invalid choice" error for
+    # `jarn --profile NAME`; fail fast and name the replacement instead.
+    raw_args = sys.argv[1:] if argv is None else argv
+    if any(a == "--profile" or a.startswith("--profile=") for a in raw_args):
+        parser.error(
+            "--profile was removed in v0.6.0; use --preset NAME "
+            "(same preset names). The policy.profile config key was removed too."
+        )
+
     args = parser.parse_args(argv)
 
     preset_override = args.preset

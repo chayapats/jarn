@@ -343,28 +343,31 @@ Mode and Sandbox. Select with `jarn --preset NAME` or `/preset` in the REPL. To
 persist a preset's effect, set Mode + Sandbox directly in config (a preset is just a
 shortcut for those). `jarn doctor` shows the stored and effective settings.
 
-**Precedence:** CLI `--preset` > the deprecated `policy.profile` config key > raw
-settings; the untrusted floor clamps last and always wins.
+**Precedence:** CLI `--preset` > raw settings; the untrusted floor clamps last and
+always wins.
 
 | Preset | Mode | OS sandbox | Network | Web tools | For |
 |---|---|---|---|---|---|
 | `trusted-repo` | ask | off | on | on | everyday work you trust |
 | `review-only` | plan (read-only) | off | on | on | reading/auditing unknown code |
 | `sandbox-required` | ask | require | off | on | running untrusted code, isolated |
-| `ci` | yolo (no prompts) | require | on | on | automation, isolated |
+| `ci` | yolo (no prompts) | off (Docker backend) | on | on | automation, container-isolated |
 | `offline` | ask | auto | off | **off** | no network at all (web tools disabled) |
 
+`ci` pins `execution.backend: docker` instead of the OS sandbox — YOLO runs inside a
+container and fails closed when Docker is unavailable (see CONFIGURATION.md).
 `offline` disables the **in-process** web tools (`web_search`/`web_fetch`) — they run
 in the agent process and would otherwise bypass the OS sandbox's network denial.
 
-### Deprecated aliases
+### Removed aliases (v0.6.0)
 
-`/profile`, `--profile` (CLI), and `policy.profile` (config key) are **deprecated
-aliases** for the preset concept (removal planned in **v0.6.0**). They still work
-but emit a deprecation notice at startup. The canonical names are `--preset` /
-`/preset`; `policy.profile` remains the (deprecated) config key — there is no
-`policy.preset`, since a preset is a launch-time shortcut, not a persistent axis. `--permission-mode` is kept as a hidden alias for
-`--mode`.
+`/profile`, `--profile` (CLI), and `policy.profile` (config key) — the deprecated
+aliases for the preset concept — were **removed in v0.6.0**. `jarn --profile NAME`
+now exits with an error pointing at `--preset`; `/profile` is an unknown command; a
+config that still contains `policy.profile` loads with a one-time `UserWarning` and
+the key is dropped (v1→v2 config migration). The names are `--preset` / `/preset` —
+there is no `policy.preset`, since a preset is a launch-time shortcut, not a
+persistent axis. `--permission-mode` is kept as a hidden alias for `--mode`.
 
 ---
 

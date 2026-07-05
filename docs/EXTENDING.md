@@ -151,7 +151,7 @@ a built-in, update `BUILTINS` and keep `README.md` in sync
 (`tests/test_phase3.py::test_readme_commands_match_registry`).
 
 Current built-ins: `/help`, `/init`, `/config`, `/model`, `/mode`, `/sandbox`,
-`/profile`, `/cost`, `/compact`, `/expand`, `/clear`, `/sessions`, `/resume`,
+`/preset`, `/cost`, `/compact`, `/expand`, `/clear`, `/sessions`, `/resume`,
 `/skills`, `/memory`, `/permissions`, `/mcp`, `/trust`, `/queue`, `/undo`, `/redo`,
 `/checkpoints`, `/map`, `/wiki`, `/quit`. The README command table is the
 authoritative list (kept in sync by the parity test). See
