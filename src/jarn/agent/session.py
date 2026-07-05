@@ -157,9 +157,19 @@ class SessionDriver:
             self.transcript.write_user(user_input, ts=_time.time())
         self._turn_text = ""
         if not resume:
-            self._last_usage_totals = {
-                k: v for k, v in self._last_usage_totals.items() if k[0] != self.thread_id
-            }
+            # Clear ALL entries at turn start, not just the current thread's.
+            # The cumulative-stream dedup uses this dict to baseline provider totals
+            # WITHIN a turn (a provider resends cumulative counts on each chunk; we
+            # delta them). Clearing at turn start is correct: deltas are only
+            # meaningful within a single turn, and a fresh turn always starts from
+            # zero. The old inverted filter (`if k[0] != self.thread_id`) kept OTHER
+            # threads' keys forever — after /clear, /compact, or /rewind those stale
+            # (thread_id, model_ref) pairs accumulated unboundedly. Clearing also
+            # cannot break mid-turn dedup: keys are re-populated by record_usage as
+            # each streaming chunk arrives, so the first chunk of a new turn gets
+            # treated as an absolute count (no prev → delta = cumulative) which is
+            # the correct baseline for a fresh API call.
+            self._last_usage_totals.clear()
 
         # Snapshot the working tree before the agent can edit files, so /undo can
         # revert this turn. Best-effort — a checkpoint failure must never abort

@@ -119,9 +119,16 @@ def record_usage(driver: SessionDriver, msg: Any) -> None:
         input_tokens, output_tokens, cache_read, cache_creation = cumulative
     driver._last_usage_totals[usage_key] = cumulative
 
+    # Attribute to main model: ctx% gauge only updates for the main model's prompt.
+    # NOTE: a subagent that shares the main model's id cannot be distinguished here
+    # (resolve_model_ref will return main_model_ref for both). That case is documented
+    # as a known limitation — the gauge may be inflated by same-model subagent prompts.
+    # Distinguishable case (different model id) is fully handled and tested.
+    is_main = model_ref == driver.main_model_ref
+
     tools = _tool_names(msg)
     driver.tracker.record(
-        resolve_model_ref(driver, msg),
+        model_ref,
         input_tokens,
         output_tokens,
         tools=tools if len(tools) > 1 else None,
@@ -129,6 +136,7 @@ def record_usage(driver: SessionDriver, msg: Any) -> None:
         cache_read_tokens=cache_read,
         cache_creation_tokens=cache_creation,
         increment_call=not is_continuation,
+        is_main=is_main,
     )
 
 
