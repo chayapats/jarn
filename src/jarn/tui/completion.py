@@ -39,6 +39,77 @@ _MODE_CHOICES = ("plan", "ask", "auto-edit", "yolo")
 # ``iterdir()`` per character.
 _DIR_CACHE_TTL = 1.0
 
+# Characters that mark the start of a new "word" inside a candidate string.
+# A query character matching right after one of these (or at position 0) earns
+# the word-boundary bonus in the fuzzy scorer.
+_WB: frozenset[str] = frozenset("-_./ ")
+
+# Maximum number of candidates returned by the two-tier pipeline (tier 1 prefix
+# matches + tier 2 fuzzy-only matches combined).
+_CAP: int = 10
+
+
+# ---------------------------------------------------------------------------
+# Fuzzy scoring helpers
+# ---------------------------------------------------------------------------
+
+
+def _fuzzy_score(query: str, candidate: str) -> float | None:
+    """Score ``query`` as a subsequence match inside ``candidate``.
+
+    Returns a float score when every character of ``query`` appears in
+    ``candidate`` in order (case-insensitive), or ``None`` when the match
+    fails.  Higher is better.
+
+    Scoring per matched character:
+      * +3  — word-boundary hit: position 0 or preceded by a char in ``_WB``
+      * +1  — adjacent-run continuation (matched at ``prev_ci + 1``)
+      * −0.1 × gap — otherwise, proportional to skipped candidate characters
+    """
+    q = query.lower()
+    c = candidate.lower()
+    score = 0.0
+    qi = 0
+    prev_ci: int | None = None
+
+    for ci, ch in enumerate(c):
+        if qi >= len(q):
+            break
+        if ch == q[qi]:
+            is_wb = ci == 0 or c[ci - 1] in _WB
+            if is_wb:
+                score += 3.0
+            elif prev_ci is not None and ci == prev_ci + 1:
+                score += 1.0  # adjacent run
+            else:
+                gap = ci - (prev_ci + 1 if prev_ci is not None else 0)
+                score -= 0.1 * gap
+            prev_ci = ci
+            qi += 1
+
+    return score if qi == len(q) else None
+
+
+def fuzzy_rank(query: str, candidates: list[str]) -> list[str]:
+    """Return the subset of ``candidates`` that match ``query`` as a subsequence.
+
+    Results are sorted best-first: highest score first, ties broken
+    alphabetically.  Pure and side-effect-free — safe to call on every
+    keystroke over the already-listed candidates (typically ≤ a few hundred).
+
+    ``query`` is matched case-insensitively.  An empty ``query`` returns all
+    candidates in their original order (no filtering, no reranking).
+    """
+    if not query:
+        return list(candidates)
+    scored: list[tuple[float, str, str]] = []
+    for cand in candidates:
+        s = _fuzzy_score(query, cand)
+        if s is not None:
+            scored.append((s, cand.lower(), cand))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    return [t[2] for t in scored]
+
 
 @dataclass(slots=True, frozen=True)
 class Completion:
@@ -131,18 +202,33 @@ class CompletionProvider:
         return _FILE_RESOLVER.resolve(self, prefix_text, frag, root)
 
     def _commands(self, prefix: str) -> list[Completion]:
-        prefix = prefix.lower()
-        out: list[Completion] = []
+        prefix_cf = prefix.lower()
+
+        # Tier 1 — prefix matches, sorted alphabetically (original behaviour).
+        tier1: list[str] = []
+        tier1_set: set[str] = set()
         for name in sorted(self.command_catalog):
-            if name.lower().startswith(prefix):
-                out.append(
-                    Completion(
-                        f"/{name}",
-                        f"/{name} ",
-                        "command",
-                        description=self.command_catalog.get(name, ""),
-                    )
+            if name.lower().startswith(prefix_cf):
+                tier1.append(name)
+                tier1_set.add(name)
+
+        # Tier 2 — fuzzy matches not already in tier 1, ranked by score.
+        remaining = [n for n in self.command_catalog if n not in tier1_set]
+        slots = max(0, _CAP - len(tier1))
+        tier2 = fuzzy_rank(prefix, remaining)[:slots]
+
+        out: list[Completion] = []
+        for name in tier1 + tier2:
+            if len(out) >= _CAP:
+                break
+            out.append(
+                Completion(
+                    f"/{name}",
+                    f"/{name} ",
+                    "command",
+                    description=self.command_catalog.get(name, ""),
                 )
+            )
         return out
 
     def _command_args(self, cmd: str, frag: str, prefix: str) -> list[Completion]:
@@ -170,17 +256,26 @@ class CompletionProvider:
             return []
 
         frag_cf = frag.casefold()
+        sorted_choices = sorted(choices, key=str.casefold)
+
+        # Tier 1 — case-insensitive prefix matches (original sorted order).
+        tier1: list[str] = []
+        tier1_set: set[str] = set()
+        for choice in sorted_choices:
+            if choice.casefold().startswith(frag_cf):
+                tier1.append(choice)
+                tier1_set.add(choice)
+
+        # Tier 2 — fuzzy matches not already in tier 1, ranked by score.
+        remaining = [c for c in sorted_choices if c not in tier1_set]
+        slots = max(0, _CAP - len(tier1))
+        tier2 = fuzzy_rank(frag, remaining)[:slots]
+
         out: list[Completion] = []
-        for choice in sorted(choices, key=str.casefold):
-            if not choice.casefold().startswith(frag_cf):
-                continue
-            out.append(
-                Completion(
-                    choice,
-                    f"{prefix}{choice}",
-                    "argument",
-                )
-            )
+        for choice in tier1 + tier2:
+            if len(out) >= _CAP:
+                break
+            out.append(Completion(choice, f"{prefix}{choice}", "argument"))
         return out
 
     def _listing(self, search_dir: Path) -> tuple[Path, ...] | None:
@@ -251,20 +346,43 @@ def _walk_entries(
     if entries is None:
         return []
 
-    out: list[Completion] = []
-    for entry in entries:
+    name_prefix_cf = name_prefix.lower()
+
+    def _is_visible(entry: Path) -> bool:
+        """Return True when the entry passes dotfile and dirs-only filters."""
         if dirs_only and not entry.is_dir():
+            return False
+        return not (entry.name.startswith(".") and not name_prefix.startswith("."))
+
+    # Tier 1 — prefix matches (same filter and order as the original code).
+    tier1: list[Path] = []
+    tier1_names: set[str] = set()
+    for entry in entries:
+        if not _is_visible(entry):
             continue
-        if entry.name.startswith(".") and not name_prefix.startswith("."):
-            continue
-        if not entry.name.lower().startswith(name_prefix.lower()):
-            continue
+        if entry.name.lower().startswith(name_prefix_cf):
+            tier1.append(entry)
+            tier1_names.add(entry.name)
+
+    # Tier 2 — fuzzy matches on the name segment, not already in tier 1.
+    # Only apply when the user typed a non-empty name fragment; an empty
+    # fragment (bare ``@``) already lists everything via tier 1.
+    tier2: list[Path] = []
+    if name_prefix:
+        pool = [e for e in entries if _is_visible(e) and e.name not in tier1_names]
+        ranked_names = fuzzy_rank(name_prefix, [e.name for e in pool])
+        name_to_entry = {e.name: e for e in pool}
+        tier2 = [name_to_entry[n] for n in ranked_names if n in name_to_entry]
+
+    cap = provider.max_files
+    out: list[Completion] = []
+    for entry in tier1 + tier2:
+        if len(out) >= cap:
+            break
         rel_str = entry.relative_to(root).as_posix()
         suffix = "/" if entry.is_dir() else ""
         replacement = f"{prefix_text}@{rel_str}{suffix}"
         out.append(Completion(f"@{rel_str}{suffix}", replacement, kind))
-        if len(out) >= provider.max_files:
-            break
     return out
 
 
@@ -318,16 +436,29 @@ class SymbolMentionResolver:
             # for at least one character (same as how unknown prefixes return []).
             return []
         frag_cf = frag.casefold()
-        matches = [
-            ref for ref in build_symbol_index(root)
-            if ref.name.casefold().startswith(frag_cf)
-        ]
-        # Sort deterministically (by name, then file, then container) BEFORE the
-        # cap — otherwise the max_files cut drops matches in arbitrary
-        # git-ls-files order, silently hiding symbols for a common prefix.
-        matches.sort(key=lambda r: (r.name.casefold(), r.rel, r.container))
+        all_refs = list(build_symbol_index(root))
+
+        # Tier 1 — case-insensitive prefix matches, sorted deterministically
+        # (by name, then file, then container) BEFORE the cap — otherwise the
+        # max_files cut drops matches in arbitrary git-ls-files order.
+        tier1 = sorted(
+            [r for r in all_refs if r.name.casefold().startswith(frag_cf)],
+            key=lambda r: (r.name.casefold(), r.rel, r.container),
+        )
+        tier1_names_cf = frozenset(r.name.casefold() for r in tier1)
+
+        # Tier 2 — fuzzy matches on symbol names not already covered by tier 1.
+        tier2_pool = [r for r in all_refs if r.name.casefold() not in tier1_names_cf]
+        unique_names = list(dict.fromkeys(r.name for r in tier2_pool))
+        ranked_names = fuzzy_rank(frag, unique_names)
+        rank_idx = {n.casefold(): i for i, n in enumerate(ranked_names)}
+        tier2 = sorted(
+            [r for r in tier2_pool if r.name.casefold() in rank_idx],
+            key=lambda r: (rank_idx[r.name.casefold()], r.name.casefold(), r.rel, r.container),
+        )
+
         out: list[Completion] = []
-        for ref in matches[: provider.max_files]:
+        for ref in (tier1 + tier2)[: provider.max_files]:
             qualified = f"{ref.container}.{ref.name}" if ref.container else ref.name
             label = f"@{ref.rel}:{qualified}"
             replacement = f"{prefix_text}@{ref.rel}:{ref.name}"

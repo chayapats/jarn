@@ -7,6 +7,16 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **Fuzzy completion tier (T-2-5)** — the completion engine now uses a two-tier
+  pipeline for `/command` names, `@file`/`@folder:`/`@symbol:` mentions, and
+  command-argument values (e.g. `/model` refs).  Tier 1 is the existing
+  prefix-match list (original order, behaviour unchanged).  Tier 2 appends
+  fuzzy-subsequence matches not already in tier 1, ranked by a word-boundary
+  (+3), adjacent-run (+1), gap-penalty (−0.1/char) scorer.  This means typos
+  and abbreviations now resolve: `/cmit` → `/commit`, `@pyprjct` →
+  `pyproject.toml`.  Stdlib-only; no new dependencies.  Public API:
+  `fuzzy_rank(query, candidates) -> list[str]` in `jarn.tui.completion`.
+
 - **Ghost autosuggest + Ctrl+R history picker (T-2-4)** — two fish/zsh-style history
   features for the inline REPL:
   - **Ghost autosuggest:** as you type, the most recent matching history entry appears
