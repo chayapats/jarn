@@ -5,6 +5,19 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Unified auto-compaction into one summarization path** — previously two systems
+  compacted at ~85%: deepagents' in-graph `SummarizationMiddleware` (main model, fixed
+  trigger) and JARN's controller trigger (summarizer model, `context.compact_at_pct`,
+  forked the thread). Now the built-in is excluded and replaced with a single in-graph
+  instance on the resolved `routing.summarizer` model, triggered at
+  `context.compact_at_pct`; the controller's auto-compact trigger is removed.
+  `routing.summarizer` now actually drives automatic summarization, `context.compact_at_pct`
+  drives the in-graph trigger, and `context.auto_compact: false` disables automatic
+  summarization entirely. Manual `/compact` (summarize + continue in a fresh thread) is
+  unchanged; `/compact status` now reports the summarizer-model path.
+
 ## [0.5.0] - 2026-07-02
 
 ### Added

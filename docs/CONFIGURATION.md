@@ -223,7 +223,10 @@ providers:
 routing:
   main: openrouter/anthropic/claude-opus-4-8        # main loop
   subagent: openrouter/anthropic/claude-haiku-4-5   # delegated subagents (cheaper)
-  summarizer: openrouter/anthropic/claude-haiku-4-5 # context summarization
+  summarizer: openrouter/anthropic/claude-haiku-4-5 # model for context summarization.
+                       #   Used by BOTH the automatic in-graph summarization (see
+                       #   context.auto_compact) and the manual /compact. Falls back to
+                       #   `subagent`, then the main model, when unset.
   fallback: []                                      # tried on primary failure
   prompt_cache: auto   # auto | off. Cloud caching is automatic — the agent engine
                        #   adds Anthropic cache-control, and other cloud providers
@@ -245,8 +248,18 @@ budget:
 
 # ── Context management ───────────────────────────────────────────────────
 context:
-  auto_compact: true
-  compact_at_pct: 85       # summarize when the context window is this % full (0-100)
+  auto_compact: true       # auto-summarize the conversation IN-GRAPH as it grows.
+                           #   On: one summarization pass runs on the `summarizer`
+                           #   model (routing.summarizer) once the context reaches
+                           #   compact_at_pct — evicted history is offloaded so the
+                           #   thread continues seamlessly. Off: nothing auto-compacts
+                           #   (run /compact by hand). Either way, deepagents' own
+                           #   built-in summarizer (main model, fixed 85%) is disabled
+                           #   so there is exactly one summarization path.
+  compact_at_pct: 85       # % of the context window that triggers the in-graph
+                           #   summarization (0-100). Applies to models that expose a
+                           #   context window; local endpoints without a known window
+                           #   fall back to a token-count trigger.
   repo_map: tool            # off | tool | auto
                             # off  — repo map disabled entirely.
                             # tool — (default) a read-only `repo_map` tool is

@@ -26,7 +26,7 @@ from jarn.extensibility.commands import CustomCommand, load_commands
 from jarn.extensibility.skills import Skill, auto_skill_catalog, load_skills
 from jarn.extensibility.subagents import CustomSubagent, load_subagents
 from jarn.memory.context import assemble_system_context
-from jarn.providers import ModelFactory
+from jarn.providers import ModelFactory, ModelResolutionError
 
 logger = logging.getLogger("jarn.agent")
 
@@ -136,6 +136,115 @@ def _async_subagent_specs(config: Config) -> list[Any]:
             spec["headers"] = a.headers
         specs.append(spec)
     return specs
+
+
+# ---------------------------------------------------------------------------
+# Auto-compaction: a single in-graph summarization pass.
+#
+# deepagents adds its own ``SummarizationMiddleware`` to every agent it builds,
+# unconditionally, on the **main** model at a fixed ``("fraction", 0.85)``
+# trigger. JARN instead wants ONE summarization pass on the configured
+# *summarizer* model, triggered at ``context.compact_at_pct``. So build_runtime
+# (a) registers a ``HarnessProfile`` for the main model's key that excludes the
+# built-in ``"SummarizationMiddleware"`` and (b) injects its own instance via
+# ``middleware=``. The exclusion matches by ``AgentMiddleware.name``; the
+# built-in reports the public name ``"SummarizationMiddleware"`` while our
+# subclass reports its own class name — so the filter drops only the built-in and
+# keeps ours (and ``create_agent``, which rejects two middleware sharing a
+# ``.name``, then sees exactly one). deepagents imports stay lazy so importing
+# this module doesn't drag the whole library into CLI startup.
+
+#: Resolved model keys we've already registered the exclusion for. deepagents'
+#: registration is process-global and additive; this guard keeps it idempotent
+#: (register once per key per process).
+_SUMMARIZATION_EXCLUDED_KEYS: set[str] = set()
+
+#: Cached ``SummarizationMiddleware`` subclass (built on first use). Caching keeps
+#: a single stable type across builds; subclassing gives it a distinct ``.name``.
+_JARN_SUMMARIZATION_CLS: Any = None
+
+
+def _jarn_summarization_cls() -> Any:
+    """The JARN ``SummarizationMiddleware`` subclass, built + cached on first use.
+
+    Subclassing deepagents' middleware flips ``.name`` from the built-in's public
+    ``"SummarizationMiddleware"`` alias to ``"JarnSummarizationMiddleware"``, so a
+    profile that excludes the built-in by that alias removes only deepagents'
+    instance while ours survives the filter and ``create_agent``'s name-uniqueness
+    check."""
+    global _JARN_SUMMARIZATION_CLS
+    if _JARN_SUMMARIZATION_CLS is None:
+        from deepagents.middleware.summarization import SummarizationMiddleware
+
+        class JarnSummarizationMiddleware(SummarizationMiddleware):  # type: ignore[valid-type,misc]
+            """deepagents ``SummarizationMiddleware`` under a distinct ``.name``."""
+
+        _JARN_SUMMARIZATION_CLS = JarnSummarizationMiddleware
+    return _JARN_SUMMARIZATION_CLS
+
+
+def _summarization_profile_key(model: Any) -> str | None:
+    """The harness-profile key deepagents will resolve for a pre-built ``model``.
+
+    Mirrors deepagents' own lookup: it tries ``provider:identifier`` first, then
+    the bare ``provider``. We register under the exact ``provider:identifier`` key
+    when both are known (narrowest — spares subagents on the same provider but a
+    different model) and fall back to the provider key. Returns ``None`` when
+    neither can be derived, in which case the caller keeps the built-in rather
+    than risk stripping or doubling summarization."""
+    from deepagents._models import get_model_identifier, get_model_provider
+
+    provider = get_model_provider(model)
+    identifier = get_model_identifier(model)
+    if provider and identifier and ":" not in identifier:
+        return f"{provider}:{identifier}"
+    if provider:
+        return provider
+    return None
+
+
+def _ensure_summarization_excluded(model: Any) -> str | None:
+    """Register (once per process) a ``HarnessProfile`` that excludes deepagents'
+    built-in ``SummarizationMiddleware`` for ``model``'s key. Returns the key, or
+    ``None`` when it can't be derived (then the caller leaves the built-in in
+    place)."""
+    key = _summarization_profile_key(model)
+    if key is None:
+        return None
+    if key not in _SUMMARIZATION_EXCLUDED_KEYS:
+        from deepagents import HarnessProfile, register_harness_profile
+
+        register_harness_profile(
+            key,
+            HarnessProfile(excluded_middleware=frozenset({"SummarizationMiddleware"})),
+        )
+        _SUMMARIZATION_EXCLUDED_KEYS.add(key)
+    return key
+
+
+def _build_summarization_middleware(model: Any, backend: Any, *, fraction: float) -> Any:
+    """Mirror deepagents' ``create_summarization_middleware`` (same keep window,
+    tool-arg truncation, and backend offload) but on ``model`` and with the
+    trigger set to ``("fraction", fraction)``.
+
+    The fraction override applies only when the model exposes a context window:
+    ``compute_summarization_defaults`` returns a fraction trigger for such models
+    and a ``("tokens", …)`` trigger otherwise — and a fraction trigger without a
+    known window raises at construction. So the token fallback is kept verbatim
+    for windowless models (e.g. local endpoints)."""
+    from deepagents.middleware.summarization import compute_summarization_defaults
+
+    defaults = compute_summarization_defaults(model)
+    trigger = defaults["trigger"]
+    if isinstance(trigger, tuple) and trigger and trigger[0] == "fraction":
+        trigger = ("fraction", fraction)
+    return _jarn_summarization_cls()(
+        model=model,
+        backend=backend,
+        trigger=trigger,
+        keep=defaults["keep"],
+        truncate_args_settings=defaults["truncate_args_settings"],
+    )
 
 
 def build_runtime(
@@ -251,12 +360,40 @@ def build_runtime(
     )
 
     backend = _make_backend(config, root)
-    # Prompt caching for Anthropic is handled by deepagents itself — it adds an
-    # AnthropicPromptCachingMiddleware unconditionally (a no-op for non-Anthropic
-    # models). Passing our own would be a *duplicate* and create_agent rejects
-    # that. JARN's caching contribution is the local keep-warm wired in the model
-    # factory (see ModelFactory._inject_keep_warm); cloud providers cache
-    # server-side. So no extra middleware is passed here.
+
+    # Unify auto-compaction into a single in-graph summarization pass. Always
+    # exclude deepagents' built-in SummarizationMiddleware (main model, fixed 85%
+    # trigger); when auto-compaction is enabled, inject one on the configured
+    # summarizer model triggered at context.compact_at_pct. The controller's old
+    # thread-forking auto-compact trigger is gone (see repl/turn.py), so this is
+    # the only automatic path now. When the model's key can't be derived we leave
+    # the built-in untouched rather than risk zero- or double-summarization.
+    #
+    # Prompt caching stays deepagents' job — it adds AnthropicPromptCachingMiddleware
+    # unconditionally (a no-op off Anthropic); passing our own would duplicate it.
+    # JARN's caching contribution is the local keep-warm in the model factory
+    # (ModelFactory._inject_keep_warm); cloud providers cache server-side.
+    summarization_mw: tuple[Any, ...] = ()
+    excluded_key = _ensure_summarization_excluded(model)
+    if excluded_key is not None and config.context.auto_compact:
+        try:
+            summarizer_model = factory.build_summarizer() or model
+        except ModelResolutionError:
+            # A misconfigured summarizer must not break startup: auto-summarize on
+            # the main model (matching the built-in's old behavior). Manual
+            # /compact still surfaces the config error at compact time.
+            logger.warning(
+                "summarizer model unbuildable; auto-summarization will use the main model"
+            )
+            summarizer_model = model
+        summarization_mw = (
+            _build_summarization_middleware(
+                summarizer_model,
+                backend,
+                fraction=config.context.compact_at_pct / 100,
+            ),
+        )
+
     agent = create_deep_agent(
         model=model,
         backend=backend,
@@ -265,6 +402,7 @@ def build_runtime(
         interrupt_on=interrupts or None,
         checkpointer=checkpointer,
         tools=tools or None,
+        middleware=summarization_mw,
     )
 
     return JarnRuntime(

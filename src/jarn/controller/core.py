@@ -737,17 +737,6 @@ class Controller:
             return None
         return tokens, window, tokens / window
 
-    def should_auto_compact(self) -> bool:
-        """True when auto-compaction is on and the context gauge has crossed the
-        configured threshold, so the turn loop can compact transparently."""
-        if not self.config.context.auto_compact:
-            return False
-        status = self.context_status()
-        if status is None:
-            return False
-        _tokens, _window, fraction = status
-        return fraction * 100 >= self.config.context.compact_at_pct
-
     def isolation_level(self) -> str:
         """Effective execution isolation level, for status display + doctor.
 

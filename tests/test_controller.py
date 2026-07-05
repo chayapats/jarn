@@ -280,29 +280,8 @@ async def test_compact_no_usage_metadata_records_nothing(tmp_path, monkeypatch, 
     ctrl.close()
 
 
-def test_should_auto_compact_threshold(tmp_path, monkeypatch, base_config):
-    """Triggers only when enabled AND the context gauge crosses the threshold."""
-    base_config.context.auto_compact = True
-    base_config.context.compact_at_pct = 85
-    ctrl = _controller(tmp_path, monkeypatch, base_config)
-
-    monkeypatch.setattr(ctrl, "context_status", lambda: (80, 100, 0.80))
-    assert ctrl.should_auto_compact() is False          # below threshold
-
-    monkeypatch.setattr(ctrl, "context_status", lambda: (86, 100, 0.86))
-    assert ctrl.should_auto_compact() is True           # at/over threshold
-
-    monkeypatch.setattr(ctrl, "context_status", lambda: None)
-    assert ctrl.should_auto_compact() is False          # unknown context
-
-    monkeypatch.setattr(ctrl, "context_status", lambda: (90, 100, 0.90))
-    ctrl.config.context.auto_compact = False
-    assert ctrl.should_auto_compact() is False          # disabled
-    ctrl.close()
-
-
 def test_compact_status(tmp_path, monkeypatch, base_config):
-    """`/compact status` reports auto-compaction settings."""
+    """`/compact status` reports the in-graph auto-summarization settings."""
     base_config.context.auto_compact = True
     base_config.context.compact_at_pct = 85
     ctrl = _controller(tmp_path, monkeypatch, base_config)
@@ -312,6 +291,18 @@ def test_compact_status(tmp_path, monkeypatch, base_config):
     assert result.clear_screen is False
     assert "auto-compaction is on" in result.text.lower()
     assert "85%" in result.text
+    assert "summariz" in result.text.lower()   # names the in-conversation summarization
+    ctrl.close()
+
+
+def test_compact_status_off(tmp_path, monkeypatch, base_config):
+    """With auto-compaction disabled, `/compact status` says so."""
+    base_config.context.auto_compact = False
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    result = ctrl.handle_command("compact", "status")
+
+    assert "auto-compaction is off" in result.text.lower()
     ctrl.close()
 
 
