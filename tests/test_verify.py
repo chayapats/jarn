@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from jarn.agent.verify import ProjectCapabilities, detect_capabilities
@@ -130,3 +132,108 @@ async def test_gate_auto_runs_detected_command(tmp_path):
     assert ev is not None
     assert ev.kind is EventKind.NOTICE
     assert "passed" in ev.text
+
+
+# ---------------------------------------------------------------------------
+# Once-per-turn debounce tests (T-1-3)
+# ---------------------------------------------------------------------------
+
+class _FakeToolMsg:
+    """Minimal ToolMessage stub: produces a TOOL_END event in the session driver."""
+
+    type = "tool"
+    content = ""
+    tool_call_id = None
+    usage_metadata = None
+    response_metadata: dict = {}
+
+    def __init__(self, name: str = "write_file"):
+        self.name = name
+
+
+class _MultiEditAgent:
+    """Streams N write_file TOOL_END messages then completes without interrupts."""
+
+    def __init__(self, n: int = 10, tool_name: str = "write_file"):
+        self.n = n
+        self.tool_name = tool_name
+
+    async def astream(self, payload, config, **kw):
+        for _ in range(self.n):
+            yield ("messages", (_FakeToolMsg(self.tool_name),))
+
+
+class _CancelMidStreamAgent:
+    """Yields one write_file TOOL_END then raises CancelledError."""
+
+    async def astream(self, payload, config, **kw):
+        yield ("messages", (_FakeToolMsg("write_file"),))
+        raise asyncio.CancelledError
+
+
+@pytest.mark.asyncio
+async def test_verify_runs_once_per_turn(tmp_path):
+    """10 write_file TOOL_ENDs in one turn → verify executor invoked exactly once."""
+    from jarn.agent.session import SessionDriver
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    (tmp_path / "go.mod").write_text("module example.com/x\n", encoding="utf-8")
+    ran: list[str] = []
+
+    class _Resp:
+        exit_code = 0
+        output = "ok"
+
+    def _executor(cmd: str) -> _Resp:
+        ran.append(cmd)
+        return _Resp()
+
+    driver = SessionDriver(
+        agent=_MultiEditAgent(n=10),
+        engine=PermissionEngine(mode=PermissionMode.YOLO),
+        tracker=CostTracker(),
+        thread_id="t",
+        verify_gate="auto",
+        project_root=tmp_path,
+        verify_executor=_executor,
+    )
+    _events = [ev async for ev in driver.run_turn("fix it")]
+    assert ran == ["go test ./..."], (
+        f"executor must be called exactly once per turn; got calls={ran}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_verify_after_cancel(tmp_path):
+    """A cancelled turn (CancelledError mid-stream) must NOT run verify."""
+    from jarn.agent.session import SessionDriver
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    (tmp_path / "go.mod").write_text("module example.com/x\n", encoding="utf-8")
+    ran: list[str] = []
+
+    class _Resp:
+        exit_code = 0
+        output = "ok"
+
+    def _executor(cmd: str) -> _Resp:
+        ran.append(cmd)
+        return _Resp()
+
+    driver = SessionDriver(
+        agent=_CancelMidStreamAgent(),
+        engine=PermissionEngine(mode=PermissionMode.YOLO),
+        tracker=CostTracker(),
+        thread_id="t",
+        verify_gate="auto",
+        project_root=tmp_path,
+        verify_executor=_executor,
+    )
+    with pytest.raises(asyncio.CancelledError):
+        async for _ in driver.run_turn("go"):
+            pass
+    assert ran == [], f"verify must not run after cancel; got calls={ran}"

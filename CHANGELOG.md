@@ -22,6 +22,14 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Changed
 
+- **`verify.gate` now runs once per turn, not once per file edit** — previously
+  `verify_after_edit` was invoked on every `write_file`/`edit_file` `TOOL_END`,
+  running the detected test suite once per file in a multi-edit turn. It is now
+  debounced: each edit marks a dirty flag, and a single verify call fires after the
+  final `astream` iteration (when no pending interrupts remain). Cancelled turns
+  (`asyncio.CancelledError`) and `/abort` naturally skip verify because they
+  propagate past the completion branch. Mode semantics are unchanged: `suggest`
+  emits one suggestion notice per turn; `auto` runs the command once per turn.
 - **Unified auto-compaction into one summarization path** — previously two systems
   compacted at ~85%: deepagents' in-graph `SummarizationMiddleware` (main model, fixed
   trigger) and JARN's controller trigger (summarizer model, `context.compact_at_pct`,

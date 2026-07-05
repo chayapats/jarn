@@ -368,8 +368,9 @@ mcp_servers:
 
 # ── Verification gate (post-edit) ────────────────────────────────────────
 verify:
-  gate: suggest            # off | suggest | auto — after write_file/edit_file,
-                           # suggest emits the detected test command; auto runs it
+  gate: suggest            # off | suggest | auto — once per turn, after all
+                           # write_file/edit_file calls complete: suggest emits
+                           # the detected test command; auto runs it
                            # (permissions + danger-guard still apply)
 
 # ── Observability ────────────────────────────────────────────────────────
