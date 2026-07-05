@@ -7,6 +7,14 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **Shell-escape context injection (T-2-7)** — `! <cmd>` output is now captured and fed
+  into the next agent turn's context as a fenced `<shell-escape context>` block so the
+  agent sees what the user ran and what it returned. Capped at 50 lines / 2 000 chars
+  (whichever is smaller), redacted for secrets, and cleared after the first use —
+  multiple `!` commands accumulate oldest-first, and queued inputs receive the block
+  too (they drain through the same enrichment path). Opt out with
+  `execution.shell_escape_context: false`, also exposed in `/config` under **Behavior**.
+
 - **Esc-Esc rewind chord + empty-Enter hint (T-2-6)** — two discoverability
   improvements to the inline REPL:
   - **Esc-Esc rewind chord:** press Esc twice within 500 ms while idle with an

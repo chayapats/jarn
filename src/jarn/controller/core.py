@@ -41,6 +41,16 @@ class CommandResult:
     clear_screen: bool = False
     quit: bool = False
 
+
+@dataclass(slots=True)
+class ShellNote:
+    """One captured shell-escape run, stored for context injection into the next turn."""
+
+    cmd: str
+    exit_code: int | None
+    tail: str
+
+
 class Controller:
     def __init__(
         self,
@@ -116,6 +126,9 @@ class Controller:
         # Non-fatal lifecycle-hook notice to surface once (e.g. a failed
         # session_start hook, or the global-hooks-trust gate refusing to run).
         self._lifecycle_notice: str | None = None
+        # Shell-escape output captured by ! commands; injected once into the next
+        # turn via enrich_turn_input and then cleared.
+        self.pending_shell_context: list[ShellNote] = []
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -594,7 +607,10 @@ class Controller:
         )
 
     def enrich_turn_input(self, user_input: str) -> str:
-        """Inject per-turn memory recall ahead of the user's visible prompt."""
+        """Inject per-turn memory recall and shell-escape context ahead of the user's prompt.
+
+        Shell context is cleared on the FIRST call regardless of turn outcome so
+        there is no double-append if the turn is retried."""
         from jarn.memory import recall_block
 
         block = recall_block(
@@ -603,9 +619,36 @@ class Controller:
             project_root=self.project_root,
             include_project=self.project_trusted,
         )
-        if not block:
+
+        # Consume pending shell context once, regardless of whether the recall
+        # block is present (clear first so a turn error never double-appends).
+        shell_notes = self.pending_shell_context[:]
+        self.pending_shell_context.clear()
+
+        parts: list[str] = []
+        if block:
+            parts.append(block)
+            parts.append("---")
+
+        if shell_notes and self.config.execution.shell_escape_context:
+            lines: list[str] = []
+            for note in shell_notes:
+                exit_str = str(note.exit_code) if note.exit_code is not None else "?"
+                lines.append(f"$ {note.cmd}  (exit {exit_str})")
+                if note.tail:
+                    lines.append(note.tail)
+            shell_block = (
+                "<shell-escape context (ran by the user, not the agent)>\n"
+                + "\n".join(lines)
+                + "\n</shell-escape>"
+            )
+            parts.append(shell_block)
+            parts.append("---")
+
+        if not parts:
             return user_input
-        return f"{block}\n\n---\n\n{user_input}"
+
+        return "\n\n".join(parts) + "\n\n" + user_input
 
     # -- selection choices (for arrow-key modals) ---------------------------
 

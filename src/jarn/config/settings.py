@@ -94,6 +94,8 @@ SETTINGS: tuple[Setting, ...] = (
        "Snapshot files before each turn so /undo can revert."),
     _s("observability.transcript", "bool", "Behavior", "Session transcript",
        "Write a JSONL log of each session under .jarn/sessions."),
+    _s("execution.shell_escape_context", "bool", "Behavior", "! output as context",
+       "Feed `! <cmd>` shell output into the agent's next turn."),
     # ── Appearance ──
     _s("ui.theme", "enum", "Appearance", "Theme",
        "Color theme.", ("dark", "light", "high-contrast")),
