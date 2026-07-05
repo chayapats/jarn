@@ -23,6 +23,7 @@ from jarn.repl.auth_errors import _friendly_auth_error, _provider_hint
 from jarn.repl_renderer import TurnRenderer
 from jarn.tui import palette
 from jarn.tui.controller import Controller
+from jarn.tui.notify import notify
 
 if TYPE_CHECKING:
     from rich.text import Text
@@ -292,8 +293,7 @@ async def _approve(
 ) -> ApprovalReply:
     # Fire the approval notification before the prompt renders.  elapsed=0
     # because the threshold check is skipped for "needs_approval" events.
-    from jarn.tui.notify import notify as _notify
-    _notify("needs_approval", controller.config.ui, elapsed=0.0, write=console.file.write)
+    notify("needs_approval", controller.config.ui, elapsed=0.0, write=console.file.write)
     if request.plan is not None:
         return await _approve_plan(console, controller, request, ask=ask, pick=pick)
     if request.suggested_memory is not None:
