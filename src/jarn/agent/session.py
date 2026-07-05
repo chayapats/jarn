@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time as _time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -163,8 +164,6 @@ class SessionDriver:
         since LangGraph already checkpointed the user message before the (failed)
         model call. This prevents a duplicate human message in the thread.
         """
-        import time as _time
-
         self.tracker.check_or_raise()
 
         messages: list[dict[str, str]] = []
@@ -241,8 +240,6 @@ class SessionDriver:
         single ``finally`` there without indenting this loop. ``payload`` is
         rebuilt in place on each interrupt resume.
         """
-        import time as _time
-
         while True:
             interrupts: list[Any] = []
             try:
@@ -378,7 +375,11 @@ class SessionDriver:
             # loop resumes — therefore guarantees the working tree is captured
             # before ANY mutation runs, on every resolution path (auto-allow, ask,
             # edit-before-apply, background start). Idempotent: the task is reaped
-            # on the first gate, so later gates in the same turn are no-ops.
+            # on the first gate, so later gates in the same turn are no-ops. This
+            # gate also (harmlessly) fires on a non-mutating NETWORK/MCP resume —
+            # those tools raise their own HITL interrupt and resume through this
+            # same loop; awaiting an already-reaped or about-to-complete snapshot
+            # there is a cheap no-op and never wrong.
             await self._ensure_snapshot()
             notice = self._pending_snapshot_notice()
             if notice is not None:
@@ -469,6 +470,44 @@ class SessionDriver:
             self._snapshot_notice_shown = True
             return Event(EventKind.NOTICE, text=SNAPSHOT_FAIL_NOTICE)
         return None
+
+    async def settle_snapshot(self) -> None:
+        """Await every in-flight checkpoint snapshot so a UI-driven checkpoint-stack
+        mutation (``/undo`` / ``/redo`` / an ``/abort`` rollback) can never race a
+        snapshot that is still building its tree OFF ``_checkpoint_lock``.
+
+        Two sources are drained: this driver's own pending task (covers ``/abort``
+        firing *before* the cancelled turn's ``finally`` has detached it — the task
+        is still on the slot) and the module-level ``_DETACHED_SNAPSHOTS`` set
+        (snapshots a cancelled/closed turn detached fire-and-forget, which may still
+        be building in their worker thread). A snapshot's function only returns after
+        it has pushed under the lock, so once its task is done the checkpoint is on
+        the stack — the undo/redo/abort that follows then targets THIS turn's entry.
+
+        Without this, ``undo()`` takes the lock first and pops the PREVIOUS turn's
+        checkpoint (this turn's snapshot has not pushed yet), reverting the tree an
+        extra turn back (over-revert) while the late snapshot then pushes — leaving
+        the stack out of sync with disk.
+
+        Best-effort and non-fatal: snapshot exceptions are swallowed (a failed
+        snapshot just means this turn has no checkpoint — same as the old sync
+        behaviour, still surfaced via the once-per-session NOTICE path); this never
+        raises on them. Fast when nothing is pending — an idle driver returns without
+        awaiting."""
+        # 1. This driver's own task, if /abort beat the cancelled turn's finally
+        #    (the snapshot is still on the slot, not yet detached). No-op when the
+        #    turn already reaped/detached it (``_snapshot_task is None``).
+        await self._ensure_snapshot()
+        # 2. Snapshots detached by a cancelled/closed turn: await each still-pending
+        #    one, letting its own done-callback record any failure and self-remove.
+        #    Loop on done-ness (not set membership) so a callback that has not yet
+        #    run on the loop can't spin us; ``return_exceptions`` keeps a failing
+        #    snapshot from propagating out of settle.
+        while True:
+            pending = [t for t in _DETACHED_SNAPSHOTS if not t.done()]
+            if not pending:
+                break
+            await asyncio.gather(*pending, return_exceptions=True)
 
     # -- thin wrappers for tests / backward compatibility -------------------
 

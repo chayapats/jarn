@@ -26,6 +26,17 @@ All notable changes to J.A.R.N. are documented here. Format follows
   `checkpoint failed — /undo unavailable this turn (see ~/.jarn/logs/jarn.log)` — exactly
   once per session (a failure found during turn cleanup, e.g. on a no-mutation turn, is
   deferred to the start of the next turn). The turn is never aborted.
+- **`/abort`, `/undo`, and `/redo` no longer race a still-building checkpoint snapshot** —
+  after the non-blocking-snapshot change, a turn cancelled while its turn-start snapshot
+  was still building (tree captured off `_checkpoint_lock`, not yet pushed) detached that
+  snapshot fire-and-forget. An immediate `/abort` rollback (or a manual `/undo` right after
+  an Esc-cancel) could take the lock first and pop the *previous* turn's checkpoint —
+  reverting the working tree an extra turn back (over-revert) — while the late snapshot then
+  pushed, leaving the stack out of sync with disk. A new `SessionDriver.settle_snapshot()`
+  (awaited via `Controller.settle_snapshot()` before every UI-driven checkpoint-stack
+  mutation) now waits for the pending and any detached snapshot to land first, so the
+  rollback targets exactly the cancelled turn's start. Reachable only on large repos, where
+  the snapshot is slow enough to still be in flight.
 
 ### Changed
 
