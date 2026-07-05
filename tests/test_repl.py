@@ -3152,3 +3152,128 @@ async def test_history_picker_enter_prefills_without_echo(tmp_path, monkeypatch)
         f"approval picker must still echo label; console: {approval_output!r}"
     )
     app.controller.close()
+
+
+# -- T-2-6: Esc-Esc rewind chord + empty-Enter hint ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_double_esc_opens_rewind(tmp_path, monkeypatch):
+    """Two Esc presses ≤0.5 s apart, idle, empty input → opens the rewind picker."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    rewind_called: list[bool] = []
+
+    async def _fake_rewind() -> None:
+        rewind_called.append(True)
+
+    monkeypatch.setattr(app, "_rewind_picker", _fake_rewind)
+    handler = _esc_handler(app)
+
+    # First Esc: idle, empty buffer — should arm the chord.
+    assert app.input.text == ""
+    handler(event=None)
+    assert app._last_esc_ts is not None, "first idle Esc must arm _last_esc_ts"
+
+    # Second Esc within 500 ms, still idle, still empty → fire rewind.
+    handler(event=None)
+    await asyncio.sleep(0)  # let create_task schedule the rewind coroutine
+    assert rewind_called, "double Esc should invoke the rewind picker"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_single_esc_still_clears(tmp_path, monkeypatch):
+    """A single Esc on non-empty input clears input and does NOT open rewind."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    rewind_called: list[bool] = []
+
+    async def _fake_rewind() -> None:
+        rewind_called.append(True)
+
+    monkeypatch.setattr(app, "_rewind_picker", _fake_rewind)
+    handler = _esc_handler(app)
+
+    app.input.insert_text("hello world")
+    assert app.input.text == "hello world"
+
+    handler(event=None)
+
+    assert app.input.text == "", "single Esc on non-empty input must clear it"
+    assert not rewind_called, "single Esc must NOT open rewind"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_empty_enter_hint_once(tmp_path, monkeypatch):
+    """Idle Enter on empty input prints the hint exactly once; repeat is silent."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    submit = _submit_handler(app)
+
+    assert app.input.text == ""
+    submit(event=None)
+    out1 = app.console.file.getvalue()
+    assert "Esc Esc rewind" in out1, "first empty Enter must show the hint"
+    assert app._hinted is True
+
+    # Second empty Enter — no new text added.
+    submit(event=None)
+    out2 = app.console.file.getvalue()
+    assert out2 == out1, "second empty Enter must not add more output"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_double_esc_picker_open_no_rewind(tmp_path, monkeypatch):
+    """Double Esc while a picker is open cancels the picker; does NOT open rewind."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    rewind_called: list[bool] = []
+
+    async def _fake_rewind() -> None:
+        rewind_called.append(True)
+
+    monkeypatch.setattr(app, "_rewind_picker", _fake_rewind)
+    handler = _esc_handler(app)
+
+    task = asyncio.create_task(
+        app._pick_menu([("one", 1), ("two", 2)], header="test", cancel_returns=None)
+    )
+    await asyncio.sleep(0)  # let the picker install the future
+    assert app._menu_future is not None and not app._menu_future.done()
+
+    # First Esc cancels the picker; second Esc is idle (picker gone) — no rewind.
+    handler(event=None)
+    handler(event=None)
+    await asyncio.sleep(0)
+
+    assert not rewind_called, "Esc while picker open must not open rewind"
+    result = await task
+    assert result is None  # cancel_returns=None
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_double_esc_busy_no_rewind(tmp_path, monkeypatch):
+    """Double Esc while busy cancels the running turn; does NOT open rewind."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    rewind_called: list[bool] = []
+
+    async def _fake_rewind() -> None:
+        rewind_called.append(True)
+
+    monkeypatch.setattr(app, "_rewind_picker", _fake_rewind)
+    handler = _esc_handler(app)
+
+    async def _never() -> None:
+        await asyncio.sleep(3600)
+
+    app._turn_task = asyncio.create_task(_never())
+    turn_task = app._turn_task
+    assert app._busy()
+
+    handler(event=None)  # busy → cancel turn, reset chord
+    handler(event=None)  # busy again (task not yet cancelled) → cancel again
+    await asyncio.sleep(0)  # let cancellation propagate
+
+    assert not rewind_called, "Esc while busy must cancel turn, not open rewind"
+    assert turn_task.cancelled() or turn_task.done()
+    app.controller.close()

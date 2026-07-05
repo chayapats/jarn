@@ -114,6 +114,8 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         )
         self._kb = self._build_keys()
         self._armed = False                       # ctrl+c double-press to exit
+        self._last_esc_ts: float | None = None    # Esc-Esc chord: timestamp of last idle Esc
+        self._hinted: bool = False                # empty-Enter hint shown once per session
         self._last_tool_outputs: list[tuple[str, str]] = []  # for Ctrl+O expand
         self._turn_task: asyncio.Task | None = None
         self._pastes: dict[str, str] = {}          # collapsed token -> full paste
