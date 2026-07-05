@@ -89,7 +89,7 @@ or edit the file directly (and, for an untrusted project, `jarn trust` it first)
 on an untrusted project a permissive `permission_mode` is still persisted but the live
 session stays clamped to the `review-only` floor.
 
-> `/model`, `/mode`, `/sandbox`, `/profile` change the **current session only** and do
+> `/model`, `/mode`, `/sandbox`, `/preset` change the **current session only** and do
 > not persist; use `/config set` (or edit the file) to make a change stick.
 
 ### Fixing a bad API key — `/key`
@@ -134,8 +134,7 @@ Beyond per-value checks, `/config` validates that settings make sense *together*
 - **Warnings** (`⚠`) — the value is harmless but currently has no effect, and is saved
   anyway: a `budget.hard_stop`/`warn_at_pct` while the session budget is `0` (unlimited),
   a `context.compact_at_pct` while `auto_compact` is off, a `context.repo_map_tokens`
-  while the repo map is off, or a value that an active `policy.profile` will overwrite at
-  launch.
+  while the repo map is off.
 
 In the panel the result line is colour-coded: `✗` (rejected), `⚠` (saved with a note),
 `✓` (saved cleanly).
@@ -153,10 +152,10 @@ default_model: openrouter/anthropic/claude-opus-4-8
 # Coarse trust level: plan | ask | auto-edit | yolo
 permission_mode: ask
 
-# ── Policy profile ───────────────────────────────────────────────────────
-# A named bundle of trust-relevant settings applied at launch. Selecting a
-# profile overlays permission_mode + execution.local_sandbox +
-# execution.sandbox_allow_network + policy.web_tools in one shot.
+# ── Policy / web tools ───────────────────────────────────────────────────
+# `policy.web_tools` gates the in-process web_search/web_fetch tools.
+# Use `jarn --preset NAME` (CLI) or `/preset` in the REPL to apply a named
+# bundle of trust-relevant settings at launch:
 #   trusted-repo     — ask · no OS sandbox · network on · web tools on (everyday)
 #   review-only      — plan (read-only) · web tools on
 #   sandbox-required — ask · local_sandbox=require · network off (untrusted, isolated)
@@ -165,14 +164,11 @@ permission_mode: ask
 #                      silently on the bare host; set execution.allow_local_fallback:
 #                      true to opt into host fallback)
 #   offline          — ask · local_sandbox=auto · network off · web tools OFF
-# Precedence: `jarn --profile NAME` (CLI) > policy.profile (here) > raw settings.
 # Untrusted projects are CLAMPED to `review-only` regardless — they can never be
-# loosened (via config, --profile, /profile, /mode, or Shift+Tab) until trusted.
-# Switch at runtime with `/profile`. `policy` keys are stripped from untrusted
-# project configs (capability gate).
+# loosened (/preset, /mode, or Shift+Tab) until trusted.
+# Note: `policy.profile` was removed in v0.6.0; use `--preset` / `/preset`.
 policy:
-  profile: ""              # "" = none (use the raw settings above)
-  web_tools: true          # register web_search/web_fetch? (a profile may flip this)
+  web_tools: true          # register web_search/web_fetch?
 
 # ── Providers ────────────────────────────────────────────────────────────
 # Keys are referenced, never inlined:

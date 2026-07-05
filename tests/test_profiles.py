@@ -1,7 +1,10 @@
-"""M2 — policy profile tests.
+"""Policy preset tests (M2 / T-1-9).
 
-Covers the profile table, precedence + untrusted-floor clamp, loader parsing,
-the web-tools gate in build_runtime, doctor surfacing, and the /profile command.
+Covers the preset table, precedence + untrusted-floor clamp, loader parsing,
+the web-tools gate in build_runtime, doctor surfacing, and the /preset command.
+
+``policy.profile`` / ``--profile`` / ``/profile`` were removed in v0.6.0;
+tests for those are replaced by equivalents that verify removal.
 """
 
 from __future__ import annotations
@@ -12,7 +15,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from jarn.config.loader import ConfigError, load_config
+from jarn.config.loader import load_config
 from jarn.config.profiles import (
     PROFILE_NAMES,
     PROFILES,
@@ -86,6 +89,8 @@ def test_offline_disables_web_tools(base_config):
 
 
 def test_apply_unknown_profile_raises(base_config):
+    from jarn.config.loader import ConfigError
+
     cfg = _fresh(base_config)
     with pytest.raises(ConfigError):
         apply_profile(cfg, "nope")
@@ -96,24 +101,20 @@ def test_apply_unknown_profile_raises(base_config):
 
 def test_cli_profile_beats_config_profile(base_config):
     cfg = _fresh(base_config)
-    cfg.policy.profile = "trusted-repo"
     effective = resolve_effective_profile(
         cfg, project_trusted=True, cli_profile="sandbox-required"
     )
     assert effective == "sandbox-required"
-    # The CLI profile is applied in full, not partially.
     assert cfg.permission_mode == PermissionMode.ASK
     assert cfg.execution.local_sandbox == "require"
     assert cfg.execution.sandbox_allow_network is False
     assert cfg.policy.web_tools is True
 
 
-def test_config_profile_used_when_no_cli(base_config):
+def test_no_preset_leaves_config_untouched(base_config):
     cfg = _fresh(base_config)
-    cfg.policy.profile = "offline"
     effective = resolve_effective_profile(cfg, project_trusted=True)
-    assert effective == "offline"
-    assert cfg.policy.web_tools is False
+    assert effective is None
 
 
 def test_no_profile_returns_none(base_config):
@@ -137,14 +138,6 @@ def test_untrusted_floor_forces_review_only(base_config):
     assert cfg.policy.web_tools is True
 
 
-def test_untrusted_floor_clamps_config_yolo(base_config):
-    cfg = _fresh(base_config)
-    cfg.policy.profile = "ci"
-    effective = resolve_effective_profile(cfg, project_trusted=False)
-    assert effective == "review-only"
-    assert cfg.permission_mode == PermissionMode.PLAN
-
-
 # -- loader parsing ---------------------------------------------------------
 
 
@@ -153,30 +146,35 @@ def _write(path, data):
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
 
 
-def test_policy_profile_roundtrips(tmp_path):
+def test_policy_profile_removed_in_v2(tmp_path):
+    """v1 configs with policy.profile emit a UserWarning and drop the key."""
     gp = tmp_path / "config.yaml"
-    _write(gp, {"policy": {"profile": "offline", "web_tools": False}})
-    cfg = load_config(global_path=gp, project_path=None)
-    assert cfg.policy.profile == "offline"
-    assert cfg.policy.web_tools is False
+    _write(gp, {"config_version": 1, "policy": {"profile": "offline", "web_tools": False}})
+    with pytest.warns(UserWarning, match="policy.profile"):
+        cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.policy.web_tools is False  # other policy keys survive migration
 
 
-def test_policy_default_is_empty(tmp_path):
+def test_policy_default_web_tools_is_true(tmp_path):
     cfg = load_config(
         global_path=tmp_path / "missing.yaml", project_path=None
     )
-    assert cfg.policy.profile == ""
     assert cfg.policy.web_tools is True
 
 
-def test_bad_profile_name_raises(tmp_path):
+def test_bad_profile_name_silently_dropped(tmp_path):
+    """A bogus policy.profile in a v1 config emits a UserWarning (migration), not
+    a ConfigError — the key is just dropped."""
     gp = tmp_path / "config.yaml"
-    _write(gp, {"policy": {"profile": "bogus"}})
-    with pytest.raises(ConfigError):
-        load_config(global_path=gp, project_path=None)
+    _write(gp, {"config_version": 1, "policy": {"profile": "bogus", "web_tools": True}})
+    with pytest.warns(UserWarning, match="policy.profile"):
+        cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.policy.web_tools is True
 
 
 def test_bad_web_tools_type_raises(tmp_path):
+    from jarn.config.loader import ConfigError
+
     gp = tmp_path / "config.yaml"
     _write(gp, {"policy": {"web_tools": "maybe"}})
     with pytest.raises(ConfigError):
@@ -227,7 +225,7 @@ def _runtime_tool_names(rt) -> set[str]:
 # -- doctor -----------------------------------------------------------------
 
 
-def test_doctor_includes_policy_profile(tmp_path, monkeypatch):
+def test_doctor_includes_policy_web_tools(tmp_path, monkeypatch):
     from jarn import cli
     from jarn.config import paths
 
@@ -243,7 +241,7 @@ def test_doctor_includes_policy_profile(tmp_path, monkeypatch):
                 }
             },
             "routing": {"main": "openrouter/some-model"},
-            "policy": {"profile": "offline", "web_tools": False},
+            "policy": {"web_tools": False},
         },
     )
     monkeypatch.setattr(paths, "global_config_path", lambda: gp)
@@ -251,11 +249,11 @@ def test_doctor_includes_policy_profile(tmp_path, monkeypatch):
 
     diag: dict = {}
     cli._collect_doctor(diag)
-    assert diag["policy_profile"] == "offline"
     assert diag["web_tools"] is False
+    assert "policy_profile" not in diag
 
 
-# -- /profile command -------------------------------------------------------
+# -- /profile removed; /preset is the command --------------------------------
 
 
 def _controller(tmp_path, monkeypatch, base_config, *, trusted=True):
@@ -267,37 +265,25 @@ def _controller(tmp_path, monkeypatch, base_config, *, trusted=True):
     return Controller(base_config, root, project_trusted=trusted)
 
 
-def test_profile_command_is_dispatchable():
-    from jarn.extensibility.commands import builtin_command, route_for
+def test_profile_command_is_not_dispatchable():
+    """/profile was removed in v0.6.0 and must not be dispatchable."""
+    from jarn.extensibility.commands import builtin_command
 
     cmd = builtin_command("profile")
-    assert cmd is not None
-    assert route_for("profile") == "controller"
+    assert cmd is None
 
 
-def test_profile_command_no_arg_lists(tmp_path, monkeypatch, base_config):
+def test_profile_command_no_arg_is_unknown(tmp_path, monkeypatch, base_config):
     ctrl = _controller(tmp_path, monkeypatch, base_config)
     res = ctrl.handle_command("profile", "")
-    assert "review-only" in res.text and "offline" in res.text
-    assert res.rebuilt is False
+    assert "Unknown command" in res.text or "unknown" in res.text.lower()
     ctrl.close()
 
 
-def test_profile_command_applies_and_rebuilds(tmp_path, monkeypatch, base_config):
+def test_profile_command_with_arg_is_unknown(tmp_path, monkeypatch, base_config):
     ctrl = _controller(tmp_path, monkeypatch, base_config)
     res = ctrl.handle_command("profile", "sandbox-required")
-    assert res.rebuilt is True
-    assert ctrl.config.execution.local_sandbox == "require"
-    assert ctrl.config.policy.profile == "sandbox-required"
-    assert ctrl.runtime is None
-    ctrl.close()
-
-
-def test_profile_command_unknown_name(tmp_path, monkeypatch, base_config):
-    ctrl = _controller(tmp_path, monkeypatch, base_config)
-    res = ctrl.handle_command("profile", "bogus")
-    assert res.rebuilt is False
-    assert "Unknown preset" in res.text
+    assert "Unknown command" in res.text or "unknown" in res.text.lower()
     ctrl.close()
 
 
@@ -312,29 +298,18 @@ def test_preset_command_echoes_expansion(tmp_path, monkeypatch, base_config):
     ctrl.close()
 
 
-def test_profile_command_is_deprecated_alias(tmp_path, monkeypatch, base_config):
-    """/profile still works but is flagged deprecated, delegating to /preset."""
-    ctrl = _controller(tmp_path, monkeypatch, base_config)
-    res = ctrl.handle_command("profile", "ci")
-    assert res.rebuilt is True
-    assert "deprecated" in res.text.lower()
-    assert ctrl.config.permission_mode.value == "yolo"  # same effect as /preset
-    ctrl.close()
-
-
-def test_profile_command_untrusted_clamps(tmp_path, monkeypatch, base_config):
+def test_preset_command_untrusted_clamps(tmp_path, monkeypatch, base_config):
     ctrl = _controller(tmp_path, monkeypatch, base_config, trusted=False)
-    res = ctrl.handle_command("profile", "ci")
+    res = ctrl.handle_command("preset", "ci")
     # Untrusted session cannot be loosened: ci → review-only floor.
     assert ctrl.config.permission_mode == PermissionMode.PLAN
-    assert ctrl.config.policy.profile == "review-only"
     assert res.rebuilt is True
     ctrl.close()
 
 
 # -- untrusted-floor cannot be bypassed via other channels ------------------
 # (regression guards for the M2 trust-safety review: the floor must hold across
-# every mode/sandbox entry point, not just /profile and launch.)
+# every mode/sandbox entry point, not just /preset and launch.)
 
 
 def test_mode_command_untrusted_cannot_escalate(tmp_path, monkeypatch, base_config):

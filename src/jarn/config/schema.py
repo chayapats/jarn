@@ -183,15 +183,16 @@ class ExecutionConfig:
 
 @dataclass(slots=True)
 class PolicyConfig:
-    """Policy profile selection and policy-driven feature flags.
+    """Policy settings.
 
-    ``profile`` names a bundle in :mod:`jarn.config.profiles` (empty = none).
-    ``web_tools`` gates the in-process web_search/web_fetch tools; profiles such
+    ``web_tools`` gates the in-process web_search/web_fetch tools; presets such
     as ``offline`` set it ``False`` so those tools (which bypass the OS sandbox)
     are not registered.
+
+    ``profile`` was removed in v0.6.0 — use ``jarn --preset`` / ``/preset``
+    instead.
     """
 
-    profile: str = ""
     web_tools: bool = True
 
 

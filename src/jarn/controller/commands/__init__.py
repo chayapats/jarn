@@ -21,7 +21,6 @@ _HANDLERS: dict[str, CommandHandler] = {
     # config
     "config": config.cmd_config,
     "preset": config.cmd_preset,
-    "profile": config.cmd_profile,
     "sandbox": config.cmd_sandbox,
     "model": config.cmd_model,
     "mode": config.cmd_mode,

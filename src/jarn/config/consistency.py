@@ -94,35 +94,6 @@ def check_consistency(config: Config) -> tuple[list[Issue], list[Issue]]:
             "Repo-map size has no effect while Repo map is off.",
         ))
 
-    # -- SOFT: a policy profile will overwrite these at launch ----------------
-    # Profiles are re-applied at the launch boundary (jarn.config.profiles), so a
-    # value that disagrees with the active profile won't survive a restart.
-    profile = config.policy.profile
-    if profile:
-        from jarn.config.profiles import PROFILES
-
-        effect = PROFILES.get(profile)
-        if effect is not None:
-            current = {
-                "permission_mode": config.permission_mode.value,
-                "local_sandbox": ex.local_sandbox,
-                "sandbox_allow_network": ex.sandbox_allow_network,
-                "web_tools": config.policy.web_tools,
-            }
-            key_for = {
-                "permission_mode": "permission_mode",
-                "local_sandbox": "execution.local_sandbox",
-                "sandbox_allow_network": "execution.sandbox_allow_network",
-                "web_tools": "policy.web_tools",
-            }
-            for field_, want in effect.items():
-                if current.get(field_) != want:
-                    warnings.append(Issue(
-                        (key_for[field_], "policy.profile"),
-                        f"Profile {profile!r} sets {key_for[field_]} = {want!r} "
-                        "at launch; your value will be overwritten on restart.",
-                    ))
-
     return errors, warnings
 
 

@@ -5,6 +5,26 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+### Removed
+
+- **`policy.profile` config key, `--profile` CLI flag, and `/profile` slash command removed
+  (v0.6.0 promise fulfilled)** — the deprecated `policy.profile` YAML key, the `--profile`
+  CLI flag (hidden alias of `--preset`), and the `/profile` command (deprecated alias of
+  `/preset`) are gone.  A `UserWarning` is emitted on first load if a v1 config still
+  contains `policy.profile`; the key is dropped and the session continues.  Use
+  `jarn --preset NAME` / `/preset NAME` instead.  Config version bumped to 2 (T-1-9).
+
+### Fixed
+
+- **npm packages now ship `LICENSE`** — `npm/build-packages.mjs` now copies the repo
+  `LICENSE` file into all five assembled packages (`jarn-cli` + three platform binaries).
+  `jarn-cli/package.json` template updated to list `LICENSE` in `files` (T-1-9).
+- **RELEASE.md post-release note now references "the latest CHANGELOG section"** rather
+  than a hardcoded `§0.4.4` version anchor, so the checklist stays accurate after each
+  release (T-1-9).
+- **README-TH.md synced**: test count updated (1408), lint command updated to include
+  `scripts/`, `/profile` table row removed (T-1-9).
+
 ### Fixed
 
 - **REPL console width now tracks terminal resize** — the Rich `Console` width was

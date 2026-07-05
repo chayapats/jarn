@@ -1,7 +1,9 @@
 """P3.A/UNIFY — equivalence + back-compat for the unified permission model.
 
 The untrusted floor was refactored from ``apply_profile("review-only")`` into a
-direct clamp, and ``profile`` is being reframed as a launch-time ``preset``.
+direct clamp, and profile was reframed as a launch-time preset (``--preset`` /
+``/preset``).  ``policy.profile`` was removed in v0.6.0.
+
 These tests pin the BYTE-FOR-BYTE effective settings the floor and the presets
 must produce, so the refactor cannot drift: they pass identically before and
 after the change.
@@ -15,13 +17,12 @@ from jarn.config.profiles import PROFILES, resolve_effective_profile
 from jarn.config.schema import Config, PermissionMode
 
 
-def _cfg(*, mode="ask", local_sandbox="off", network=True, web=True, profile=""):
+def _cfg(*, mode="ask", local_sandbox="off", network=True, web=True):
     c = Config()
     c.permission_mode = PermissionMode(mode)
     c.execution.local_sandbox = local_sandbox
     c.execution.sandbox_allow_network = network
     c.policy.web_tools = web
-    c.policy.profile = profile
     return c
 
 
@@ -44,7 +45,7 @@ def test_untrusted_floor_is_byte_for_byte_review_only(start_mode, preset):
     """However the session is configured, an untrusted project collapses to the
     review-only posture: PLAN + sandbox off + network on + web on. This is the
     equivalence the direct-clamp refactor must preserve exactly."""
-    c = _cfg(mode=start_mode, profile=preset or "")
+    c = _cfg(mode=start_mode)
     resolve_effective_profile(c, project_trusted=False, cli_profile=None)
     assert _effective(c) == FLOOR
 
@@ -70,35 +71,11 @@ def test_trusted_no_preset_leaves_config_untouched():
     assert _effective(c) == (PermissionMode.AUTO_EDIT, "require", False, False)
 
 
-def test_cli_preset_overrides_config_preset_when_trusted():
-    """CLI preset wins over the config's preset (precedence unchanged)."""
-    c = _cfg(profile="offline")
+def test_cli_preset_applies_when_trusted():
+    """CLI preset is applied for a trusted project."""
+    c = _cfg()
     resolve_effective_profile(c, project_trusted=True, cli_profile="ci")
     assert c.permission_mode == PermissionMode(PROFILES["ci"]["permission_mode"])
-
-
-def test_policy_profile_config_key_warns_once(capsys, monkeypatch):
-    """The deprecated policy.profile config key emits a one-time launch notice
-    that names what it expands to."""
-    import jarn.cli as cli
-
-    monkeypatch.setattr(cli, "_warned_policy_profile", False)
-    c = _cfg(profile="ci")
-    cli._warn_policy_profile_deprecated(c)
-    err = capsys.readouterr().err
-    assert "policy.profile is deprecated" in err
-    assert "mode=yolo" in err  # names the expansion
-    # one-time: a second call is silent
-    cli._warn_policy_profile_deprecated(c)
-    assert capsys.readouterr().err == ""
-
-
-def test_policy_profile_unset_is_silent(capsys, monkeypatch):
-    import jarn.cli as cli
-
-    monkeypatch.setattr(cli, "_warned_policy_profile", False)
-    cli._warn_policy_profile_deprecated(_cfg())  # no preset set
-    assert capsys.readouterr().err == ""
 
 
 # -- T-1-9: the ci preset is safe-by-default (docker-isolated, fail closed) ----

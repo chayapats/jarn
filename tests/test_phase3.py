@@ -105,13 +105,12 @@ def test_builtin_command_group_field():
         )
 
 
-def test_profile_command_entry_unchanged():
-    """P3.A is deferred — the 'profile' command entry must not be renamed."""
+def test_profile_command_removed_in_v06():
+    """/profile was removed in v0.6.0; it must not appear in BUILTINS."""
     from jarn.extensibility.commands import BUILTINS
 
     profile_cmd = next((c for c in BUILTINS if c.name == "profile"), None)
-    assert profile_cmd is not None, "/profile must remain in BUILTINS (P3.A deferred)"
-    assert profile_cmd.group == "Setup"
+    assert profile_cmd is None, "/profile must be absent from BUILTINS (removed in v0.6.0)"
 
 
 def test_readme_rows_cover_all_builtins():

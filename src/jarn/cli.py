@@ -18,31 +18,6 @@ from typing import Any
 
 from jarn.version import __version__
 
-#: Fire the policy.profile deprecation notice at most once per process.
-_warned_policy_profile = False
-
-
-def _warn_policy_profile_deprecated(cfg: Any) -> None:
-    """One-time notice when the deprecated ``policy.profile`` config key is set.
-
-    ``profile`` is now a launch-time ``preset``; warn at the launch boundary and
-    name what it expands to, so users can set mode/sandbox directly instead.
-    """
-    global _warned_policy_profile
-    if _warned_policy_profile or not cfg.policy.profile:
-        return
-    _warned_policy_profile = True
-    from jarn.config.profiles import PROFILES
-
-    eff = PROFILES.get(cfg.policy.profile, {})
-    print(
-        f"warning: policy.profile is deprecated and will be removed in v0.6.0; "
-        f"'{cfg.policy.profile}' sets "
-        f"mode={eff.get('permission_mode', '?')}, sandbox={eff.get('local_sandbox', '?')}. "
-        "Set those directly or use --preset.",
-        file=sys.stderr,
-    )
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
@@ -101,13 +76,6 @@ def main(argv: list[str] | None = None) -> int:
             "Apply a preset — a launch-time shortcut that sets mode + sandbox "
             "(trusted-repo|review-only|sandbox-required|ci|offline)."
         ),
-    )
-    # Deprecated alias of --preset (hidden); still honoured, warns when used.
-    parser.add_argument(
-        "--profile",
-        dest="legacy_profile",
-        metavar="NAME",
-        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--max-turns",
@@ -189,16 +157,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    # Unify the permission surface: --preset is canonical, --profile is a
-    # deprecated alias. Merge + warn once here so headless and launch both see
-    # one resolved value. (--mode/--permission-mode already share a dest.)
-    preset_override = args.preset or args.legacy_profile
-    if args.legacy_profile:
-        print(
-            "warning: --profile is deprecated and will be removed in v0.6.0; "
-            "use --preset (same names).",
-            file=sys.stderr,
-        )
+    preset_override = args.preset
 
     # Headless one-shot: dispatch before any TUI setup.
     if args.headless_prompt is not None:
@@ -300,7 +259,6 @@ def _cmd_headless(
     cfg = load_config(
         project_root=root, project_trusted=trusted, project_raw=project_raw
     )
-    _warn_policy_profile_deprecated(cfg)
     setup_logging(cfg.observability.log_level)
     configure_tracing(cfg.observability)
 
@@ -522,7 +480,6 @@ def _cmd_launch(*, resume: bool = False, profile_override: str | None = None) ->
     cfg = load_config(
         project_root=root, project_trusted=trusted, project_raw=project_raw
     )
-    _warn_policy_profile_deprecated(cfg)
     setup_logging(cfg.observability.log_level)
     configure_tracing(cfg.observability)
 

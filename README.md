@@ -207,7 +207,6 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/sandbox [on\|off]` | Show or toggle the execution backend (local/sandbox). |
 | `/key [<key>]` | Set or replace the API key for the current provider (stored in the keychain). |
 | `/preset [<preset-name>]` | Show or apply a preset — a shortcut that sets mode + sandbox at once. |
-| `/profile [<preset-name>]` | Deprecated alias of /preset (kept working). |
 | `/cost` | Show session token usage and cost. |
 | `/compact` | Summarize and compact the conversation context. |
 | `/expand` | Open the last turn's full tool output in the pager (same as Ctrl+O). |
@@ -316,7 +315,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1411 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1408 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)
