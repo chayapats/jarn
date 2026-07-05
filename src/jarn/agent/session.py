@@ -14,7 +14,8 @@ driver works headless (tests) and inside Textual.
 
 from __future__ import annotations
 
-import contextlib
+import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -73,6 +74,20 @@ __all__ = [
     "_unpack_stream_item",
 ]
 
+_log = logging.getLogger("jarn")
+
+#: User-facing NOTICE emitted (exactly once per session) when a checkpoint
+#: snapshot raises — so a silently-disabled ``/undo`` is no longer invisible.
+SNAPSHOT_FAIL_NOTICE = (
+    "checkpoint failed — /undo unavailable this turn (see ~/.jarn/logs/jarn.log)"
+)
+
+#: Strong references to snapshot tasks detached from a cancelled/closed turn so
+#: they finish in their worker thread without being garbage-collected while
+#: pending (which would emit "Task was destroyed but it is pending"). Each task's
+#: done-callback removes its own entry, so this set self-drains.
+_DETACHED_SNAPSHOTS: set[asyncio.Task[Any]] = set()
+
 
 @dataclass(slots=True)
 class SessionDriver:
@@ -124,6 +139,15 @@ class SessionDriver:
     _last_usage_totals: dict[tuple[str, str], tuple[int, int, int, int]] = field(
         default_factory=dict, repr=False
     )
+    #: In-flight working-tree snapshot for the current turn — started off the
+    #: event loop at turn start, awaited at the first mutation gate (and at turn
+    #: end for a no-mutation turn), reaped/detached in ``run_turn``'s cleanup.
+    #: ``None`` when idle.
+    _snapshot_task: asyncio.Task[Any] | None = field(default=None, repr=False)
+    #: A snapshot raised and its NOTICE has not been shown yet (armed at reap time).
+    _snapshot_notice_pending: bool = False
+    #: The once-per-session snapshot-failure NOTICE has already been emitted.
+    _snapshot_notice_shown: bool = False
 
     def _config(self) -> dict[str, Any]:
         return {"configurable": {"thread_id": self.thread_id}}
@@ -176,13 +200,48 @@ class SessionDriver:
             # the correct baseline for a fresh API call.
             self._last_usage_totals.clear()
 
-        # Snapshot the working tree before the agent can edit files, so /undo can
-        # revert this turn. Best-effort — a checkpoint failure must never abort
-        # the turn (the manager itself no-ops cleanly when disabled / not a repo).
+        # A snapshot failure detected during a PRIOR turn's cleanup (after that
+        # turn's last yield) could not be surfaced then — emit its NOTICE now, at
+        # the very start of this turn, still exactly once per session.
+        notice = self._pending_snapshot_notice()
+        if notice is not None:
+            yield notice
+
+        # Snapshot the working tree BEFORE the agent can edit files (so /undo can
+        # revert this turn) — but OFF the event loop, so turn start no longer
+        # blocks on O(repo) git work. The model call runs concurrently; the
+        # snapshot is awaited at the first mutation gate (and, for a no-mutation
+        # turn, at turn end) so no mutating tool ever runs against an uncaptured
+        # tree. Best-effort: a failure never aborts the turn — it is logged with a
+        # traceback and surfaced as a NOTICE exactly once per session.
         if self.checkpoint is not None and not resume:
-            # A snapshot failure must never abort the turn.
-            with contextlib.suppress(Exception):
-                self.checkpoint.snapshot(user_input[:80], now=_time.time())
+            self._start_snapshot(user_input[:80], _time.time())
+
+        try:
+            async for ev in self._stream_turn(payload):
+                yield ev
+            # Turn-end reap (reached only on a NON-cancelled completion): wait for
+            # the snapshot so it is guaranteed to have landed and any failure is
+            # recorded. This runs at turn END only (never turn start) and is
+            # typically instant — the snapshot overlapped the whole model response.
+            # A failure discovered here is past the turn's last yield, so its NOTICE
+            # is deferred to the start of the next turn.
+            await self._ensure_snapshot()
+        finally:
+            # Never leak the snapshot task: a cancelled/closed turn skips the reap
+            # above (GeneratorExit/CancelledError propagates past it), so settle it
+            # here without blocking — detach it to finish in its worker thread (the
+            # snapshot still lands; any failure surfaces on the next turn).
+            self._detach_pending_snapshot()
+
+    async def _stream_turn(self, payload: Any):
+        """Stream one turn's model output and resolve HITL interrupts.
+
+        Extracted from :meth:`run_turn` so the snapshot task can be reaped in a
+        single ``finally`` there without indenting this loop. ``payload`` is
+        rebuilt in place on each interrupt resume.
+        """
+        import time as _time
 
         while True:
             interrupts: list[Any] = []
@@ -309,6 +368,107 @@ class SessionDriver:
                         intr_decisions.append(decision)
                 resolved.append((iid, intr_decisions))
             payload = _resume_payload(resolved)
+
+            # Mutation gate. Every mutating tool (write_file / edit_file / execute
+            # — plus SHELL-gated run_in_background starts) ALWAYS raises a HITL
+            # interrupt (permissions_bridge.MUTATING_TOOLS), even when the engine
+            # auto-approves without prompting, and the tool only EXECUTES when the
+            # graph is resumed at the top of this loop with ``payload``. Awaiting
+            # the snapshot HERE — after the resume decision is built, before the
+            # loop resumes — therefore guarantees the working tree is captured
+            # before ANY mutation runs, on every resolution path (auto-allow, ask,
+            # edit-before-apply, background start). Idempotent: the task is reaped
+            # on the first gate, so later gates in the same turn are no-ops.
+            await self._ensure_snapshot()
+            notice = self._pending_snapshot_notice()
+            if notice is not None:
+                yield notice
+
+    # -- checkpoint snapshot lifecycle --------------------------------------
+
+    def _start_snapshot(self, label: str, ts: float) -> None:
+        """Kick off the working-tree snapshot in a worker thread (off the event
+        loop). The manager's git work is synchronous subprocess code, safe to run
+        via ``to_thread``. Awaited later at the first mutation gate / turn end;
+        reaped or detached in ``run_turn``'s cleanup."""
+        self._snapshot_task = asyncio.create_task(
+            asyncio.to_thread(self.checkpoint.snapshot, label, now=ts)
+        )
+
+    async def _ensure_snapshot(self) -> None:
+        """Block until the in-flight snapshot has landed, so a mutating tool never
+        runs against an uncaptured tree. Idempotent — a turn snapshots once, so
+        later gates are no-ops. A git *exception* is logged with a traceback and
+        recorded as a once-per-session pending NOTICE; a benign ``ok=False`` result
+        (disabled / not-a-repo / nothing-new) is not a failure and surfaces nothing.
+        Never aborts the turn (a snapshot failure is swallowed here)."""
+        task = self._snapshot_task
+        if task is None:
+            return
+        if not task.done():
+            try:
+                await task
+            except asyncio.CancelledError:
+                # The turn is being cancelled while we wait — leave the task on the
+                # slot so run_turn's cleanup detaches it (don't orphan it here).
+                raise
+            except Exception:  # noqa: BLE001 - snapshot is best-effort; never abort
+                pass  # the failure is read back from the task below
+        self._snapshot_task = None
+        self._collect_snapshot_result(task)
+
+    def _detach_pending_snapshot(self) -> None:
+        """``run_turn`` cleanup safety net. If the snapshot task is still set — a
+        cancelled/closed turn skipped the turn-end reap — settle it WITHOUT
+        blocking: collect it if already finished, else detach it to complete in its
+        worker thread (the snapshot still lands; the done-callback surfaces any
+        failure on the next turn). Never awaits, so it is safe under GeneratorExit."""
+        task = self._snapshot_task
+        if task is None:
+            return
+        self._snapshot_task = None
+        if task.done():
+            self._collect_snapshot_result(task)
+        else:
+            self._detach_snapshot(task)
+
+    def _detach_snapshot(self, task: asyncio.Task[Any]) -> None:
+        """Hold a strong reference to a still-running snapshot task and arrange for
+        its outcome to be retrieved when it finishes — so it neither leaks (GC'd
+        while pending) nor warns about an unretrieved exception."""
+        _DETACHED_SNAPSHOTS.add(task)
+        task.add_done_callback(self._on_detached_snapshot_done)
+
+    def _on_detached_snapshot_done(self, task: asyncio.Task[Any]) -> None:
+        _DETACHED_SNAPSHOTS.discard(task)
+        self._collect_snapshot_result(task)
+
+    def _collect_snapshot_result(self, task: asyncio.Task[Any]) -> None:
+        """Read a finished snapshot task's outcome and record a failure NOTICE if it
+        raised. A cancelled task carries no outcome to surface."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self._handle_snapshot_failure(exc)
+
+    def _handle_snapshot_failure(self, exc: BaseException) -> None:
+        """Log the snapshot failure with a full traceback and arm the once-per-
+        session NOTICE (deduped via ``_snapshot_notice_shown``)."""
+        _log.error(
+            "checkpoint snapshot failed; /undo unavailable this turn", exc_info=exc
+        )
+        if not self._snapshot_notice_shown:
+            self._snapshot_notice_pending = True
+
+    def _pending_snapshot_notice(self) -> Event | None:
+        """Return the once-per-session snapshot-failure NOTICE if one is armed and
+        not yet shown (marking it shown), else ``None``."""
+        if self._snapshot_notice_pending and not self._snapshot_notice_shown:
+            self._snapshot_notice_pending = False
+            self._snapshot_notice_shown = True
+            return Event(EventKind.NOTICE, text=SNAPSHOT_FAIL_NOTICE)
+        return None
 
     # -- thin wrappers for tests / backward compatibility -------------------
 

@@ -12,6 +12,33 @@ from jarn.config.schema import PermissionMode
 from jarn.cost import CostTracker
 from jarn.permissions import PermissionEngine
 
+#: Exact user-facing text of the once-per-session snapshot-failure NOTICE.
+_SNAPSHOT_FAIL_TEXT = (
+    "checkpoint failed — /undo unavailable this turn (see ~/.jarn/logs/jarn.log)"
+)
+
+
+class _AIChunk:
+    """Minimal assistant chunk for the fake agents below."""
+
+    type = "ai"
+
+    def __init__(self, content: str = "", usage: dict | None = None) -> None:
+        self.content = content
+        self.usage_metadata = usage if usage is not None else {
+            "input_tokens": 1, "output_tokens": 1
+        }
+        self.response_metadata: dict[str, str] = {}
+
+
+class _Interrupt:
+    def __init__(self, value: object) -> None:
+        self.value = value
+
+
+def _snapshot_notices(events: list) -> list:
+    return [e for e in events if e.kind is EventKind.NOTICE and "checkpoint failed" in e.text]
+
 
 def test_record_usage_attributes_cost_to_requested_tool():
     """The usage-bearing AI chunk's tool call labels its cost in per_tool, and a
@@ -204,3 +231,178 @@ async def test_last_usage_totals_cleared_at_turn_start() -> None:
 
     # After fix: all stale keys gone.
     assert driver._last_usage_totals == {}
+
+
+# -- T-1-4: non-blocking snapshot + loud, once-per-session failure ------------
+
+
+@pytest.mark.asyncio
+async def test_snapshot_failure_notice_once() -> None:
+    """A snapshot that RAISES surfaces exactly ONE user-visible NOTICE per session
+    (deduped across turns), logs a traceback, and never aborts the turn."""
+    import logging
+
+    from jarn.agent.session import ApprovalReply
+
+    # Capture on the "jarn" logger directly — setup_logging() sets propagate=False
+    # elsewhere in the suite, so caplog's root handler would miss these records.
+    jarn_logger = logging.getLogger("jarn")
+    captured: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record)
+
+    handler = _Capture(level=logging.ERROR)
+
+    class BoomCheckpoint:
+        def snapshot(self, label, *, now=None):
+            raise RuntimeError("git exploded")
+
+    class WriteEachTurn:
+        """Interrupts on a write on odd astream calls (turn starts) and completes
+        on even calls (resumes), so every turn reaches the mutation gate."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def astream(self, payload, config, stream_mode=None, **kwargs):
+            self.calls += 1
+            if self.calls % 2 == 1:
+                yield ("updates", {"__interrupt__": (
+                    _Interrupt({"action_requests": [
+                        {"action": "write_file",
+                         "args": {"file_path": "a.txt", "content": "x"}}
+                    ]}),
+                )})
+            else:
+                yield ("messages", (_AIChunk("done."),))
+
+    async def _approve(_req):
+        return ApprovalReply(approved=True)
+
+    driver = SessionDriver(
+        agent=WriteEachTurn(),
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="t",
+        approver=_approve,
+        checkpoint=BoomCheckpoint(),
+    )
+    jarn_logger.addHandler(handler)
+    try:
+        turn1 = [ev async for ev in driver.run_turn("first")]
+        turn2 = [ev async for ev in driver.run_turn("second")]
+    finally:
+        jarn_logger.removeHandler(handler)
+
+    # Exactly one NOTICE in turn 1 (surfaced at the mutation gate), with the exact
+    # user-facing text; none in turn 2 (deduped once per session).
+    assert len(_snapshot_notices(turn1)) == 1, turn1
+    assert _snapshot_notices(turn1)[0].text == _SNAPSHOT_FAIL_TEXT
+    assert _snapshot_notices(turn2) == [], turn2
+    # Never aborts: both turns still complete.
+    assert any(e.kind is EventKind.DONE for e in turn1)
+    assert any(e.kind is EventKind.DONE for e in turn2)
+    # The failure was logged with a full traceback on the jarn logger (both turns
+    # log; the NOTICE is what is deduped, not the diagnostic log).
+    snap_logs = [r for r in captured if "snapshot failed" in r.getMessage().lower()]
+    assert snap_logs and snap_logs[0].exc_info is not None
+
+
+@pytest.mark.asyncio
+async def test_snapshot_failure_notice_deferred_to_next_turn() -> None:
+    """A no-mutation turn awaits the snapshot in cleanup (past its last yield), so a
+    failure there cannot be yielded that turn — its NOTICE is deferred to the START
+    of the next turn, still exactly once."""
+
+    class BoomCheckpoint:
+        def snapshot(self, label, *, now=None):
+            raise RuntimeError("git exploded")
+
+    class ReplyOnly:
+        async def astream(self, payload, config, stream_mode=None, **kwargs):
+            yield ("messages", (_AIChunk("hi"),))
+
+    driver = SessionDriver(
+        agent=ReplyOnly(),
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="t",
+        checkpoint=BoomCheckpoint(),
+    )
+    turn1 = [ev async for ev in driver.run_turn("first")]
+    turn2 = [ev async for ev in driver.run_turn("second")]
+
+    # No mutation gate in turn 1 → failure discovered in cleanup → no NOTICE there.
+    assert _snapshot_notices(turn1) == []
+    # Deferred NOTICE surfaces once, at the very start of turn 2 (before any output).
+    assert len(_snapshot_notices(turn2)) == 1
+    assert turn2[0].kind is EventKind.NOTICE
+    assert turn2[0].text == _SNAPSHOT_FAIL_TEXT
+    assert any(e.kind is EventKind.DONE for e in turn1)
+    assert any(e.kind is EventKind.DONE for e in turn2)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_task_not_leaked_on_cancelled_turn(caplog) -> None:
+    """Cancelling a turn while its snapshot is still running must not leak the task
+    ("Task was destroyed but it is pending") nor block the cancel on git: the task
+    is detached to finish fire-and-forget and its outcome retrieved."""
+    import asyncio
+    import gc
+    import logging
+    import threading
+    import time
+
+    from jarn.agent.checkpoint import SnapshotResult
+    from jarn.agent.session import _DETACHED_SNAPSHOTS
+
+    started = threading.Event()
+
+    class SlowCheckpoint:
+        def snapshot(self, label, *, now=None):
+            started.set()
+            time.sleep(0.2)  # still running when the turn is cancelled
+            return SnapshotResult(ok=True)
+
+    class Hang:
+        async def astream(self, payload, config, stream_mode=None, **kwargs):
+            yield ("messages", (_AIChunk("thinking… "),))
+            await asyncio.sleep(10)  # hold the turn open until cancelled
+
+    driver = SessionDriver(
+        agent=Hang(),
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="t",
+        checkpoint=SlowCheckpoint(),
+    )
+    agen = driver.run_turn("go")
+    first = await agen.__anext__()
+    assert first.kind is EventKind.TEXT
+    # Yield to the loop so the to_thread snapshot actually starts (a synchronous
+    # wait here would block the loop and deadlock the thread launch).
+    for _ in range(200):
+        if started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert started.is_set()  # snapshot thread is running
+    task = driver._snapshot_task
+    assert task is not None and not task.done()
+
+    with caplog.at_level(logging.WARNING, logger="asyncio"):
+        await agen.aclose()  # cancel the turn mid-snapshot (GeneratorExit)
+        # Cleanup reaped the driver slot and detached the still-running task.
+        assert driver._snapshot_task is None
+        assert task in _DETACHED_SNAPSHOTS
+        await asyncio.sleep(0.3)  # let the worker thread finish
+        gc.collect()
+        await asyncio.sleep(0)  # run the done-callback
+
+    # The task completed fire-and-forget (not left pending, not cancelled) and the
+    # done-callback cleaned it out of the detached set.
+    assert task.done() and not task.cancelled()
+    assert task not in _DETACHED_SNAPSHOTS
+    leaked = [r for r in caplog.records if "was destroyed but it is pending" in r.getMessage()]
+    assert not leaked, [r.getMessage() for r in caplog.records]

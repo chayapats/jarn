@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from jarn.agent.checkpoint import CheckpointManager
+from jarn.agent.checkpoint import CheckpointManager, SnapshotResult
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -420,6 +420,91 @@ def test_undo_rollback_on_apply_failure(repo: Path, monkeypatch: pytest.MonkeyPa
 
     redo_after = cp._stack_read(cp._REDO_PREFIX, repo)
     assert redo_after == redo_before, "failed undo must not leave an orphan on redo"
+
+
+# ---------------------------------------------------------------------------
+# T-1-4 — non-blocking snapshot: the mutation gate awaits snapshot completion
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mutation_waits_for_snapshot() -> None:
+    """The first mutating tool must not EXECUTE until the turn-start snapshot has
+    completed — while the model stream may begin while the snapshot is still
+    running (turn start no longer blocks on the snapshot).
+
+    Driven through the real ``SessionDriver.run_turn`` with a fake agent (write
+    interrupt → resume) and a deliberately slow fake snapshot, asserting event
+    order via a shared log. The core invariant (snap_done < tool_execute) is
+    guaranteed by the mutation gate regardless of timing; the non-blocking claim
+    (model_stream < snap_done) holds with a wide margin (µs of model stream vs a
+    150 ms snapshot).
+    """
+    import time as _t
+
+    from jarn.agent.session import ApprovalReply, EventKind, SessionDriver
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    order: list[str] = []
+
+    class SlowCheckpoint:
+        def snapshot(self, label: str, *, now: float | None = None) -> SnapshotResult:
+            order.append("snap_start")
+            _t.sleep(0.15)  # simulate O(repo) git add -A + write-tree
+            order.append("snap_done")
+            return SnapshotResult(ok=True, sha="deadbeef")
+
+    class _AIChunk:
+        type = "ai"
+
+        def __init__(self, content: str) -> None:
+            self.content = content
+            self.usage_metadata = {"input_tokens": 1, "output_tokens": 1}
+            self.response_metadata: dict[str, str] = {}
+
+    class _Interrupt:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+    class WriteThenDone:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def astream(self, payload, config, stream_mode=None, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                order.append("model_stream")
+                yield ("messages", (_AIChunk("writing… "),))
+                yield ("updates", {"__interrupt__": (
+                    _Interrupt({"action_requests": [
+                        {"action": "write_file",
+                         "args": {"file_path": "a.txt", "content": "x"}}
+                    ]}),
+                )})
+            else:
+                order.append("tool_execute")
+                yield ("messages", (_AIChunk("done."),))
+
+    async def _approve(_req: object) -> ApprovalReply:
+        return ApprovalReply(approved=True)
+
+    driver = SessionDriver(
+        agent=WriteThenDone(),
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="t",
+        approver=_approve,
+        checkpoint=SlowCheckpoint(),
+    )
+    events = [ev async for ev in driver.run_turn("write a file")]
+
+    # Non-blocking turn start: the model stream began before the snapshot finished.
+    assert order.index("model_stream") < order.index("snap_done"), order
+    # Core invariant: the snapshot completed before the mutating tool executed.
+    assert order.index("snap_done") < order.index("tool_execute"), order
+    assert any(e.kind is EventKind.DONE for e in events)
 
 
 def test_concurrent_undo_locked(repo: Path) -> None:
