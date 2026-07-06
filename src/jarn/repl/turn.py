@@ -214,8 +214,13 @@ async def _run_turn(
                     f"[{palette.C_ERROR}]{pending_error.text}[/{palette.C_ERROR}]"
                 )
             break
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError) as _exc:
         renderer.cancel()
+        # Re-raise asyncio cancellations so the event loop knows the task was
+        # cancelled.  KeyboardInterrupt is NOT re-raised: the turn function
+        # absorbs it and returns normally, letting the REPL keep running.
+        if isinstance(_exc, asyncio.CancelledError):
+            raise
     finally:
         renderer.finish()
 

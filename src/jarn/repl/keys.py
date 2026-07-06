@@ -155,7 +155,7 @@ class KeysMixin:
             if data.count("\n") >= 3 or len(data) > 800:
                 self._paste_n += 1
                 lines = data.count("\n") + 1
-                token = f"[Pasted #{self._paste_n}: {lines} lines]"
+                token = f"[Pasted text #{self._paste_n} +{lines} lines]"
                 self._pastes[token] = data
                 self.input.insert_text(token)
             else:

@@ -137,6 +137,29 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Fixed
 
+- **Single cancel message per turn (T-2-11)** — cancelling an agent turn (Esc / Ctrl+C)
+  previously could print two stop messages: `interrupted` from `app.py` and `cancelled` from
+  the renderer, depending on the cancel path.  The renderer is now the single owner: the
+  asyncio `CancelledError` path in `repl/turn.py` now calls `renderer.cancel()` before
+  re-raising, and `app.py` defers silently.  Exactly one `cancelled` line is printed per
+  cancelled agent turn.
+
+- **Blank-line rhythm in committed output (T-2-11)** — `_sep()` in `TurnRenderer` previously
+  printed a blank line on every kind transition except consecutive tools, causing extra blank
+  lines when the same kind (e.g. text→text) repeated in non-live-sink mode, compounded by
+  Rich Markdown's own trailing blank in terminal mode.  `_sep()` now emits a blank only when
+  the kind changes (generalized from the old tool-only suppression); consecutive same-kind
+  commits produce no extra blank.
+
+- **`palette.styled_fg` NO_COLOR tautology removed (T-2-11)** — the dead branch
+  `return text if not bold else text` was replaced with `return text` and a clarifying
+  comment.  Behaviour is unchanged (plain text, bold intent dropped), dead code is gone.
+
+- **Paste placeholder format updated to `[Pasted text #N +L lines]` (T-2-11)** — the
+  bracketed-paste collapse token now matches Claude Code's style
+  (`[Pasted text #1 +12 lines]` instead of the old `[Pasted #1: 12 lines]`).  The
+  format string and the `_expand_pastes` dict-lookup round-trip are updated together.
+
 - **npm packages now ship `LICENSE`** — `npm/build-packages.mjs` now copies the repo
   `LICENSE` file into all four assembled packages (`jarn-cli` + three platform binaries).
   `jarn-cli/package.json` template updated to list `LICENSE` in `files` (T-1-9).

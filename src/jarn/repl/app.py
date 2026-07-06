@@ -781,7 +781,9 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 await self._render_todos()
                 self._maybe_autocheckpoint_hint()
         except asyncio.CancelledError:
-            self.console.print(f"\n[{palette.C_DIM}]interrupted[/{palette.C_DIM}]")
+            # renderer.cancel() already printed "cancelled" for agent turns;
+            # for command/shell turns (no renderer) the cancel is silent.
+            pass
         except Exception as exc:  # noqa: BLE001
             # The TUI must not print a traceback (it corrupts the display), so log
             # the full one to the file logger and point the user at it — an

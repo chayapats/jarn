@@ -169,7 +169,12 @@ class TurnRenderer:
             self._live = None
 
     def _sep(self, kind: str) -> None:
-        if not (self._prev == "tool" and kind == "tool"):
+        # Emit a blank line only when the kind changes (or on the very first
+        # commit when _prev is None).  Suppressing same-kind repeats prevents
+        # consecutive text paragraphs (or tools) from stacking double-blanks
+        # on top of the blank line that Rich's Markdown already adds after each
+        # paragraph in terminal mode.
+        if self._prev != kind:
             self.console.print()
         self._prev = kind
 
