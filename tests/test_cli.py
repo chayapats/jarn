@@ -296,10 +296,17 @@ def test_doctor_warns_custom_jarn_home(tmp_path, monkeypatch, capsys):
 
 
 def test_output_schema_requires_print(tmp_path, capsys):
-    """``--output-schema`` without ``-p`` must argparse-error (exit 2, stderr)."""
+    """``--output-schema`` without ``-p`` must argparse-error (exit 2, stderr).
+
+    The assertion targets the specific ``parser.error(...)`` message emitted by
+    the headless-only validation, not a generic argparse "unrecognized argument"
+    string.  This ensures the flag is wired up AND the guard fires correctly.
+    """
     with pytest.raises(SystemExit) as exc:
         main(["--output-schema", str(tmp_path / "schema.json")])
     assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--output-schema requires -p" in err
 
 
 def test_bad_schema_file_exit2(tmp_path, monkeypatch, capsys):
@@ -316,6 +323,29 @@ def test_bad_schema_file_exit2(tmp_path, monkeypatch, capsys):
     bad.write_text("this is not valid json {{{", encoding="utf-8")
 
     code = main(["-p", "hello", "--output-schema", str(bad), "--json"])
+    assert code == 2
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert data["error"]["kind"] == "usage"
+
+
+def test_missing_schema_file_exit2(tmp_path, monkeypatch, capsys):
+    """``--output-schema`` pointing at a nonexistent file exits 2 with kind: 'usage'.
+
+    Exercises the OSError branch of the schema-file loader (distinct from the
+    bad-JSON / ValueError branch covered by ``test_bad_schema_file_exit2``).
+    """
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    gp = _make_headless_config(tmp_path)
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
+    monkeypatch.setattr(cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None))
+
+    nonexistent = tmp_path / "nonexistent.json"  # never created → OSError on read
+
+    code = main(["-p", "hello", "--output-schema", str(nonexistent), "--json"])
     assert code == 2
     out = capsys.readouterr().out
     data = json.loads(out)
