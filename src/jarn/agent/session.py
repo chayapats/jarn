@@ -162,9 +162,14 @@ class SessionDriver:
     #: of subagent names launched via the ``task`` tool this turn (recorded at
     #: TOOL_START, in call order); each newly-seen subgraph namespace consumes the
     #: next pending name. ``_ns_agent`` remembers namespace-key → name bindings for
-    #: the turn so all of a subagent's events carry the same tag. Reset at turn start.
+    #: the turn so all of a subagent's events carry the same tag.
+    #: ``_subagent_seen_calls`` guards against re-emitted update chunks
+    #: (stream_mode=["messages","updates"] + subgraphs=True can surface the same
+    #: TOOL_START more than once) double-appending the same name and shifting
+    #: the FIFO. All three reset at turn start.
     _subagent_pending: list[str] = field(default_factory=list, repr=False)
     _ns_agent: dict[str, str] = field(default_factory=dict, repr=False)
+    _subagent_seen_calls: set[str] = field(default_factory=set, repr=False)
     #: In-flight working-tree snapshot for the current turn — started off the
     #: event loop at turn start, awaited at the first mutation gate (and at turn
     #: end for a no-mutation turn), reaped/detached in ``run_turn``'s cleanup.
@@ -209,6 +214,7 @@ class SessionDriver:
         # Fresh subagent-tagging state each turn (correlation is per-turn only).
         self._subagent_pending = []
         self._ns_agent = {}
+        self._subagent_seen_calls = set()
         if not resume:
             # Clear ALL entries at turn start, not just the current thread's.
             # The cumulative-stream dedup uses this dict to baseline provider totals

@@ -673,3 +673,75 @@ async def test_main_untagged():
     events = [ev async for ev in _ns_driver(agent).run_turn("go")]
     texts = [e for e in events if e.kind is EventKind.TEXT]
     assert texts and all(e.data.get("agent") is None for e in texts)
+
+
+@pytest.mark.asyncio
+async def test_nested_task_does_not_pollute_fifo():
+    """A task launch that arrives under a subgraph namespace (a nested subagent
+    calling task) must NOT be appended to _subagent_pending.  Before Fix 1,
+    that stale name is popped by the NEXT top-level subagent binding and
+    mislabels it.
+
+    Sequence:
+      1. main-graph launches A  → pending=["A"]
+      2. A's subgraph (_NS_A) launches nested  (should be ignored for FIFO)
+      3. main-graph launches B  → pending=["A","B"] after fix; ["A","nested","B"] before
+      4. _NS_A streams → binds to "A"
+      5. _NS_B streams → should bind to "B" (not "nested")
+    """
+    agent = _NSAgent([
+        # 1 — main graph launches A
+        ((), "updates", _task_launch(("A", "call_A"))),
+        # 2 — A's subgraph launches a nested sub (must not enter FIFO)
+        (_NS_A, "updates", _task_launch(("nested", "call_nested"))),
+        # 3 — main graph launches B
+        ((), "updates", _task_launch(("B", "call_B"))),
+        # 4 & 5 — subgraph output
+        (_NS_A, "messages", (_AIChunk("A output"),)),
+        (_NS_B, "messages", (_AIChunk("B output"),)),
+    ])
+    events = [ev async for ev in _ns_driver(agent).run_turn("go")]
+    by_text = {e.text: e for e in events if e.kind is EventKind.TEXT}
+    assert by_text["A output"].data.get("agent") == "A", (
+        f"expected 'A', got {by_text['A output'].data.get('agent')!r}"
+    )
+    assert by_text["B output"].data.get("agent") == "B", (
+        f"expected 'B', got {by_text['B output'].data.get('agent')!r} (nested pollution?)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_duplicate_task_launch_not_double_counted():
+    """When the same task TOOL_START (same tool_call_id) is re-emitted by
+    LangGraph (stream_mode=["messages","updates"] + subgraphs=True can surface
+    the same update chunk more than once), it must not shift the FIFO.
+
+    Before Fix 2 the duplicate appends the same name a second time so the
+    next binding consumes the stale copy and mislabels the second subagent.
+
+    Sequence:
+      1. main-graph emits task launch for A (call_id="call_A")  → pending=["A"]
+      2. duplicate: same chunk re-emitted (call_id="call_A")   → must NOT append again
+      3. main-graph launches B (call_id="call_B")              → pending=["A","B"]
+      4. _NS_A streams → binds to "A"
+      5. _NS_B streams → must bind to "B" (not stale "A")
+    """
+    agent = _NSAgent([
+        # 1 — first emission
+        ((), "updates", _task_launch(("A", "call_A"))),
+        # 2 — duplicate of the same TOOL_START
+        ((), "updates", _task_launch(("A", "call_A"))),
+        # 3 — second subagent launch
+        ((), "updates", _task_launch(("B", "call_B"))),
+        # 4 & 5 — subgraph output
+        (_NS_A, "messages", (_AIChunk("A output"),)),
+        (_NS_B, "messages", (_AIChunk("B output"),)),
+    ])
+    events = [ev async for ev in _ns_driver(agent).run_turn("go")]
+    by_text = {e.text: e for e in events if e.kind is EventKind.TEXT}
+    assert by_text["A output"].data.get("agent") == "A", (
+        f"expected 'A', got {by_text['A output'].data.get('agent')!r}"
+    )
+    assert by_text["B output"].data.get("agent") == "B", (
+        f"expected 'B', got {by_text['B output'].data.get('agent')!r} (duplicate shifted FIFO?)"
+    )
