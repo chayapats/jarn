@@ -135,7 +135,7 @@ async def _run_turn(
             payload = "" if resume else turn_text
             async for event in driver.run_turn(payload, resume=resume):
                 if event.kind is EventKind.TEXT:
-                    renderer.on_text(event.text)
+                    renderer.on_text(event.text, agent=event.data.get("agent"))
                     if token_sink is not None:
                         token_sink(event.text)
                     produced = True
@@ -149,6 +149,7 @@ async def _run_turn(
                         event.text,
                         event.data.get("args", {}),
                         tool_call_id=event.data.get("tool_call_id"),
+                        agent=event.data.get("agent"),
                     )
                     produced = True
                 elif event.kind is EventKind.TOOL_END:
@@ -157,6 +158,7 @@ async def _run_turn(
                         event.data.get("summary", ""),
                         event.data.get("full", ""),
                         tool_call_id=event.data.get("tool_call_id"),
+                        agent=event.data.get("agent"),
                     )
                     # Refresh the live plan checklist the moment a todo write lands,
                     # so it re-renders in place mid-turn (not only after the turn).

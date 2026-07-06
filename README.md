@@ -64,6 +64,10 @@ base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists 
 - **Bring your own model** — 13 providers (OpenRouter, Anthropic, OpenAI, Google,
   Mistral, Groq, DeepSeek, Together, Fireworks, xAI, Ollama, LM Studio, plus a generic
   OpenAI-compatible endpoint) with per-task routing so subagents can use cheaper models.
+- **Labelled subagent streaming** — output from delegated `task` subagents is tagged
+  with a dim `┊ <name> ` prefix and collapses to a single `└ <name>: working… (N tool
+  calls)` status line (full text in the Ctrl+O pager), so parallel subagents no longer
+  interleave anonymously.
 - **Cost- & context-aware** — live token/cost tracking (with a per-tool breakdown)
   and a per-session budget that can warn or hard-stop; a context-% gauge and live
   generation throughput (tok/s) that work for local models (LM Studio / Ollama)
@@ -383,7 +387,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1554 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1558 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

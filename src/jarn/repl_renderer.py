@@ -92,6 +92,12 @@ class TurnRenderer:
         self._seen_starts: set[str] = set()
         self._tools: dict[str, ToolRenderState] = {}
         self.tool_outputs: list[tuple[str, str]] = tool_sink if tool_sink is not None else []
+        # T-3-5 subagent tagging (display-only). Per-turn state: tool-call count and
+        # accumulated (collapsed) prose per subagent name, plus the pager index that
+        # prose is streamed into so Ctrl+O sees the full text mid-turn.
+        self._subagent_tools: dict[str, int] = {}
+        self._subagent_prose: dict[str, str] = {}
+        self._subagent_pager_idx: dict[str, int] = {}
         self._spin()
 
     def _refresh_width(self) -> None:
@@ -193,12 +199,88 @@ class TurnRenderer:
             self.console.print(Text(self._rbuf.strip(), style=palette.C_DIM))
         self._rbuf = ""
 
-    def on_text(self, text: str) -> None:
+    def on_text(self, text: str, *, agent: str | None = None) -> None:
+        # A subagent's streamed prose collapses to a single live status line rather
+        # than flooding scrollback; the full text stays available in the Ctrl+O pager.
+        if agent:
+            self._on_subagent_text(agent, text)
+            return
         self._unspin()
         self._commit_reasoning()
         self._buf += text
         self._flush_stable()
         self._live_show()
+
+    # -- T-3-5 subagent progress labels -------------------------------------
+
+    def _agent_prefix(self, agent: str | None) -> str:
+        """Dim ``┊ <name> `` prefix marking a line as a subagent's, or ``""``."""
+        if not agent:
+            return ""
+        return f"[{palette.C_DIM}]┊ {esc(agent)} [/{palette.C_DIM}]"
+
+    def _on_subagent_text(self, agent: str, text: str) -> None:
+        """Collapse subagent prose: accumulate it into the Ctrl+O pager (in place) and
+        refresh the live status line instead of committing it to scrollback."""
+        full = self._subagent_prose.get(agent, "") + text
+        self._subagent_prose[agent] = full
+        label = f"{agent} (subagent)"
+        idx = self._subagent_pager_idx.get(agent)
+        if idx is None:
+            self.tool_outputs.append((label, full))
+            self._subagent_pager_idx[agent] = len(self.tool_outputs) - 1
+        else:
+            self.tool_outputs[idx] = (label, full)
+        self._show_subagent_status()
+
+    def _subagent_names(self) -> list[str]:
+        """Active subagents this turn, in first-seen order (tools and/or prose)."""
+        return list(dict.fromkeys([*self._subagent_tools, *self._subagent_prose]))
+
+    def _show_subagent_status(self) -> None:
+        """Render the live ``└ <name>: working… (N tool calls)`` status for every
+        active subagent (one line each) into the shared live region."""
+        agents = self._subagent_names()
+        if not agents:
+            return
+        body = "\n".join(
+            f"└ {a}: working… ({self._subagent_tools.get(a, 0)} tool calls)"
+            for a in agents
+        )
+        if self._live_sink is not None:
+            self._live_sink(body)
+            return
+        if not self.console.is_terminal:
+            return
+        if self._live is None:
+            self._live = Live(
+                console=self.console,
+                transient=True,
+                refresh_per_second=12,
+                vertical_overflow="visible",
+            )
+            self._live.start()
+        self._live.update(Text(body, style=palette.C_DIM))
+
+    def _commit_subagent_summaries(self) -> None:
+        """At turn end, commit one compact ``┊ <name> ⎿ done · N tool calls`` line per
+        subagent to scrollback (the collapsed live status disappears with the turn)."""
+        agents = self._subagent_names()
+        if not agents:
+            return
+        self._refresh_width()
+        self._live_clear()
+        for a in agents:
+            n = self._subagent_tools.get(a, 0)
+            hint = " · ctrl+o" if self._subagent_prose.get(a, "").strip() else ""
+            self.console.print(
+                f"[{palette.C_DIM}]┊ {esc(a)} ⎿ done · {n} tool calls{hint}"
+                f"[/{palette.C_DIM}]"
+            )
+        # One-shot: clear so a defensive second finish()/cancel() can't double-print.
+        self._subagent_tools = {}
+        self._subagent_prose = {}
+        self._subagent_pager_idx = {}
 
     def _flush_stable(self) -> None:
         # With a live_sink (inline REPL) the live preview renders the whole growing
@@ -234,7 +316,10 @@ class TurnRenderer:
             return tool_call_id
         return tool_signature(name, args)
 
-    def on_tool(self, name: str, args: dict, *, tool_call_id: str | None = None) -> None:
+    def on_tool(
+        self, name: str, args: dict, *,
+        tool_call_id: str | None = None, agent: str | None = None,
+    ) -> None:
         key = self._tool_key(name, args, tool_call_id)
         if key in self._seen_starts:
             return
@@ -244,12 +329,17 @@ class TurnRenderer:
         self._unspin()
         self._refresh_width()
         self._sep("tool")
-        line = f"[{palette.C_TOOL}]⏺[/{palette.C_TOOL}] [bold]{esc(name)}[/bold]"
+        if agent:
+            self._subagent_tools[agent] = self._subagent_tools.get(agent, 0) + 1
+        prefix = self._agent_prefix(agent)
+        line = f"{prefix}[{palette.C_TOOL}]⏺[/{palette.C_TOOL}] [bold]{esc(name)}[/bold]"
         arg_s = fmt_args(args)
         if arg_s:
             line += f"  [{palette.C_DIM}]{esc(arg_s)}[/{palette.C_DIM}]"
         self.console.print(line)
         self._tools[key] = ToolRenderState(name=name, args=args)
+        if agent:
+            self._show_subagent_status()
         self._spin()
 
     def _resolve_tool_state(
@@ -271,6 +361,7 @@ class TurnRenderer:
         full: str = "",
         *,
         tool_call_id: str | None = None,
+        agent: str | None = None,
     ) -> None:
         if not summary:
             return
@@ -283,8 +374,12 @@ class TurnRenderer:
             dt = time.monotonic() - state.started
             dur = f" · {dt:.1f}s"
             state.ended = True
+        # A subagent's result line carries the same dim ┊ <name> prefix; the leading
+        # indent is folded into the prefix so tagged lines stay left-aligned with it.
+        prefix = self._agent_prefix(agent)
+        indent = "" if agent else "  "
         self.console.print(
-            f"  [{palette.C_DIM}]⎿ {esc(summary)}{dur}[/{palette.C_DIM}]{hint}"
+            f"{prefix}{indent}[{palette.C_DIM}]⎿ {esc(summary)}{dur}[/{palette.C_DIM}]{hint}"
         )
         if full:
             self.tool_outputs.append((name, full))
@@ -340,11 +435,13 @@ class TurnRenderer:
     def finish(self) -> None:
         self._commit_reasoning()
         self._commit_text()
+        self._commit_subagent_summaries()
         self._unspin()
 
     def cancel(self) -> None:
         self._commit_reasoning()
         self._commit_text()
+        self._commit_subagent_summaries()
         self._unspin()
         self._refresh_width()
         self.console.print(f"\n[{palette.C_DIM}]cancelled[/{palette.C_DIM}]")

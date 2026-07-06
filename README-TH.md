@@ -32,6 +32,7 @@ J.A.R.N. คือ terminal coding agent ที่ออกแบบในแน
 - **Reliable by design** — flow แบบ plan → act → verify ฝังอยู่ใน system prompt พร้อม self-verification loop ที่รัน build/test/lint ของโปรเจกต์ก่อนรายงานว่าเสร็จ completion badge `` ⎿ verified: pytest ✓ 214 passed · 3.2s `` ยืนยันผลลัพธ์จริง ไม่ใช่แค่คาดเดา (`verify.gate: auto`) และมี diagnostics feedback loop (LSP-lite) ที่ lint/type-check เฉพาะไฟล์ที่เทิร์นนั้นแก้ (ruff + pyright) พร้อม queue รอบ auto-fix แบบจำกัดรอบได้ 1 รอบ ให้ agent จับ type error ที่เพิ่งสร้างเองได้ทันที (`verify.diagnostics: auto`)
 - **ปลอดภัยเป็นค่าเริ่มต้น** — ระบบ permission หลายชั้น (coarse mode + fine-grained rules) คั่นกลางทุก file write และ shell command โดยมี *danger-guard* ที่ยืนยันการกระทำร้ายแรงเสมอ — แม้แต่ใน YOLO mode
 - **เลือก model เองได้ (Bring your own model)** — รองรับ 13 provider (OpenRouter, Anthropic, OpenAI, Google, Mistral, Groq, DeepSeek, Together, Fireworks, xAI, Ollama, LM Studio, และ generic OpenAI-compatible endpoint) พร้อม per-task routing ให้ subagent ใช้ model ที่ถูกกว่าได้
+- **สตรีม subagent แบบมีป้ายกำกับ** — output จาก subagent ที่ถูก delegate ผ่าน `task` จะถูกติดป้ายด้วย prefix สีจาง `┊ <name> ` และยุบเป็นบรรทัดสถานะเดียว `└ <name>: working… (N tool calls)` (ข้อความเต็มดูได้ใน pager ด้วย Ctrl+O) ทำให้ subagent ที่รันขนานกันไม่ปนกันแบบไม่มีชื่ออีกต่อไป
 - **รู้ต้นทุนและ context ตลอดเวลา** — ติดตาม token/cost แบบ live (พร้อม breakdown ราย tool) และ budget ต่อ session ที่แจ้งเตือนหรือหยุดอัตโนมัติได้; มี context-% gauge และ throughput การ generate แบบ live (tok/s) ที่ทำงานกับ local model (LM Studio / Ollama) ด้วย ไม่ใช่แค่ cloud model ที่มีราคา
 - **รู้วันเวลา (Date-aware)** — วันที่/เวลาท้องถิ่นปัจจุบันถูกใส่เข้า system prompt ทำให้คำสั่งที่อ้างอิง "วันนี้" ไม่ยึดติดกับ training cutoff ของ model
 - **ค้นหาเว็บแบบ Pluggable** — `web_search` รองรับ Tavily, Brave Search, และ Exa นอกจาก DuckDuckGo แบบ keyless ที่ใช้เป็น fallback  ตั้งค่า `search.provider: auto` (ค่าเริ่มต้น) แล้ว export `TAVILY_API_KEY` / `BRAVE_API_KEY` / `EXA_API_KEY` — ตัวแรกที่มีค่าจะถูกใช้งาน
@@ -254,7 +255,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1554 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1558 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)

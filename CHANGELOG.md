@@ -7,6 +7,17 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **Subagent progress labels in the stream (T-3-5)** — output from delegated
+  `task` subagents is now labelled instead of interleaving anonymously. Each
+  streamed event is correlated back to the subagent that produced it (the name from
+  the `task` args, tied to the subgraph namespace as it first appears) and tagged
+  `agent=<name>`. Tagged tool lines render with a dim `┊ <name> ` prefix; a
+  subagent's streamed prose collapses to a single live status line
+  `└ <name>: working… (N tool calls)` (the full text stays in the Ctrl+O pager), and
+  committed scrollback keeps the compact form — the subagent's tool lines plus a
+  one-line `┊ <name> ⎿ done · N tool calls` summary. Parallel subagents are labelled
+  independently. Display-only: cost/usage attribution (model-based) is unchanged.
+
 - **Pluggable web-search providers (T-3-4)** — `web_search` now supports Tavily,
   Brave Search, and Exa in addition to the original keyless DuckDuckGo scraper.
   Set `search.provider: tavily|brave|exa` to pin a provider, or leave it as `auto`

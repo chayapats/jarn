@@ -158,6 +158,13 @@ class SessionDriver:
     _last_usage_totals: dict[tuple[str, str], tuple[int, int, int, int]] = field(
         default_factory=dict, repr=False
     )
+    #: T-3-5 subagent stream tagging (display-only). ``_subagent_pending`` is a FIFO
+    #: of subagent names launched via the ``task`` tool this turn (recorded at
+    #: TOOL_START, in call order); each newly-seen subgraph namespace consumes the
+    #: next pending name. ``_ns_agent`` remembers namespace-key → name bindings for
+    #: the turn so all of a subagent's events carry the same tag. Reset at turn start.
+    _subagent_pending: list[str] = field(default_factory=list, repr=False)
+    _ns_agent: dict[str, str] = field(default_factory=dict, repr=False)
     #: In-flight working-tree snapshot for the current turn — started off the
     #: event loop at turn start, awaited at the first mutation gate (and at turn
     #: end for a no-mutation turn), reaped/detached in ``run_turn``'s cleanup.
@@ -199,6 +206,9 @@ class SessionDriver:
         self._turn_text = ""
         self._verify_dirty = False
         self._edited_paths = set()
+        # Fresh subagent-tagging state each turn (correlation is per-turn only).
+        self._subagent_pending = []
+        self._ns_agent = {}
         if not resume:
             # Clear ALL entries at turn start, not just the current thread's.
             # The cumulative-stream dedup uses this dict to baseline provider totals
@@ -266,11 +276,11 @@ class SessionDriver:
                     payload, self._config(),
                     stream_mode=["messages", "updates"], subgraphs=True,
                 ):
-                    _, mode, chunk = _unpack_stream_item(item)
+                    namespace, mode, chunk = _unpack_stream_item(item)
                     if mode is None:
                         continue
                     if mode == "messages":
-                        ev = self._handle_message_chunk(chunk)
+                        ev = self._handle_message_chunk(chunk, namespace)
                         if ev:
                             # Accumulate assistant text chunks for the transcript.
                             if ev.kind is EventKind.TEXT and self.transcript is not None:
@@ -309,7 +319,7 @@ class SessionDriver:
                             )
                             return
                     elif mode == "updates":
-                        for ev in self._handle_update_chunk(chunk, interrupts):
+                        for ev in self._handle_update_chunk(chunk, interrupts, namespace):
                             # Write tool-start events incrementally.
                             if ev.kind is EventKind.TOOL_START and self.transcript is not None:
                                 self.transcript.write_tool(
@@ -579,11 +589,13 @@ class SessionDriver:
 
     # -- thin wrappers for tests / backward compatibility -------------------
 
-    def _handle_message_chunk(self, chunk: Any) -> Event | None:
-        return handle_message_chunk(self, chunk)
+    def _handle_message_chunk(self, chunk: Any, namespace: Any = ()) -> Event | None:
+        return handle_message_chunk(self, chunk, namespace)
 
-    def _handle_update_chunk(self, chunk: dict[str, Any], interrupts: list[Any]):
-        yield from handle_update_chunk(self, chunk, interrupts)
+    def _handle_update_chunk(
+        self, chunk: dict[str, Any], interrupts: list[Any], namespace: Any = ()
+    ):
+        yield from handle_update_chunk(self, chunk, interrupts, namespace)
 
     def _record_usage(self, msg: Any) -> None:
         record_usage(self, msg)

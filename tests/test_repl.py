@@ -4372,3 +4372,46 @@ async def test_real_user_drain_drops_stale_internal_items(tmp_path, monkeypatch)
         "stale internal diagnostics item was NOT dropped after real user drain"
     )
     app.controller.close()
+
+
+# -- T-3-5: subagent progress labels render -----------------------------------
+
+
+def test_subagent_prefix_render():
+    """A tagged subagent's tool line renders with a dim ``┊ <name> `` prefix, its
+    streamed prose collapses to a single ``└ <name>: working…`` live status line
+    (with the full text kept in the ctrl+o pager), and a compact per-subagent
+    summary lands in committed scrollback at finish."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+
+    pager: list = []
+    live: list[str] = []
+    console = Console(file=StringIO(), width=80)
+    r = _TurnRenderer(console, tool_sink=pager, live_sink=live.append, spinner=False)
+
+    # A tagged tool line: dim ┊ researcher prefix in committed scrollback.
+    r.on_tool("read_file", {"path": "x"}, agent="researcher")
+    out = console.file.getvalue()
+    assert "┊ researcher" in out
+    assert "read_file" in out
+
+    # Tagged prose collapses: NOT dumped to scrollback, pushed to the live status
+    # line, full text stashed in the pager for ctrl+o.
+    long_prose = "a very long subagent narration that should not flood scrollback"
+    r.on_text(long_prose, agent="researcher")
+    out = console.file.getvalue()
+    assert long_prose not in out  # collapsed, not committed as markdown
+    assert any("researcher" in s and "working" in s for s in live)
+    assert any("1 tool call" in s for s in live)  # (N tool calls) reflects the count
+    assert any(long_prose in full for _, full in pager)  # available in ctrl+o
+
+    # Finish commits a compact one-line per-subagent summary.
+    r.finish()
+    out = console.file.getvalue()
+    assert "researcher" in out
+    # Main-untagged prose still commits to scrollback normally (regression guard).
+    r2 = _TurnRenderer(Console(file=(buf := StringIO()), width=80),
+                       live_sink=lambda _s: None, spinner=False)
+    r2.on_text("plain main answer")
+    r2.finish()
+    assert "plain main answer" in buf.getvalue()
