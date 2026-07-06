@@ -50,6 +50,17 @@ in your project directory when you approve them (or automatically in permissive 
   control; `jarn doctor` warns when it is non-default.
 - **Network:** `web_fetch` / `web_search` and MCP tools are gated through the permission
   engine. `web_fetch` blocks private/loopback/metadata addresses by default.
+- **Pluggable search provider API keys:** `web_search` can be configured to use
+  Tavily, Brave Search, or Exa instead of the keyless DuckDuckGo scraper.  Keys are
+  always resolved through the existing secret-reference resolver (`${ENV_VAR}`,
+  `keychain:jarn/<provider>`, `file:jarn/<provider>`) — inline literals are never
+  accepted.  Resolved key values are never included in tool output strings.  The
+  following HTTPS hosts are contacted only by the named provider clients (NOT through
+  the `web_fetch` SSRF guard — they are fixed trusted API hosts, not user-supplied URLs):
+    - `api.tavily.com`              — Tavily Search API
+    - `api.search.brave.com`        — Brave Search API
+    - `api.exa.ai`                  — Exa Search API
+    - `html.duckduckgo.com`         — DuckDuckGo HTML scraper (SSRF-guarded, keyless fallback)
 - **`@git:` mentions:** the four supported subcommands (`status`, `diff`, `staged`,
   `log`) run via a fixed, read-only argv allowlist (`git status --porcelain=v1 -b`,
   `git diff`, `git diff --staged`, `git log --oneline -15`).  The subprocess is called

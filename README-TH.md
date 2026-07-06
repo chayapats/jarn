@@ -34,6 +34,7 @@ J.A.R.N. คือ terminal coding agent ที่ออกแบบในแน
 - **เลือก model เองได้ (Bring your own model)** — รองรับ 13 provider (OpenRouter, Anthropic, OpenAI, Google, Mistral, Groq, DeepSeek, Together, Fireworks, xAI, Ollama, LM Studio, และ generic OpenAI-compatible endpoint) พร้อม per-task routing ให้ subagent ใช้ model ที่ถูกกว่าได้
 - **รู้ต้นทุนและ context ตลอดเวลา** — ติดตาม token/cost แบบ live (พร้อม breakdown ราย tool) และ budget ต่อ session ที่แจ้งเตือนหรือหยุดอัตโนมัติได้; มี context-% gauge และ throughput การ generate แบบ live (tok/s) ที่ทำงานกับ local model (LM Studio / Ollama) ด้วย ไม่ใช่แค่ cloud model ที่มีราคา
 - **รู้วันเวลา (Date-aware)** — วันที่/เวลาท้องถิ่นปัจจุบันถูกใส่เข้า system prompt ทำให้คำสั่งที่อ้างอิง "วันนี้" ไม่ยึดติดกับ training cutoff ของ model
+- **ค้นหาเว็บแบบ Pluggable** — `web_search` รองรับ Tavily, Brave Search, และ Exa นอกจาก DuckDuckGo แบบ keyless ที่ใช้เป็น fallback  ตั้งค่า `search.provider: auto` (ค่าเริ่มต้น) แล้ว export `TAVILY_API_KEY` / `BRAVE_API_KEY` / `EXA_API_KEY` — ตัวแรกที่มีค่าจะถูกใช้งาน
 - **ขยายได้ง่าย** — skill, slash command, custom subagent, lifecycle hook, และ MCP server ทั้งหมดกำหนดผ่านไฟล์ธรรมดาใน `~/.jarn` และ `.jarn/`
 
 ## ติดตั้ง
@@ -253,7 +254,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1548 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1554 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)

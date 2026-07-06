@@ -152,6 +152,30 @@ default_model: openrouter/anthropic/claude-opus-4-8
 # Coarse trust level: plan | ask | auto-edit | yolo
 permission_mode: ask
 
+# ── Pluggable web search ─────────────────────────────────────────────────
+# `search.provider` selects which backend `web_search` uses.
+# `search.api_key` is a reference to the key for the explicitly-named provider.
+#
+# Providers: auto (default) | duckduckgo | tavily | brave | exa
+#
+# In `auto` mode each provider is discovered by its conventional env var or
+# keychain entry — no api_key needed in config.  In `auto`, the priority order
+# is tavily → brave → exa; first with a resolved key wins.  When none resolve,
+# the keyless DuckDuckGo scraper is used as a fallback.
+#
+# Per-provider env vars and keychain entries:
+#   Tavily: ${TAVILY_API_KEY}    / keychain:jarn/tavily
+#   Brave:  ${BRAVE_API_KEY}     / keychain:jarn/brave
+#   Exa:    ${EXA_API_KEY}       / keychain:jarn/exa
+#
+# To pin a single provider with a key ref:
+#   search:
+#     provider: tavily
+#     api_key: ${TAVILY_API_KEY}   # or keychain:jarn/tavily
+search:
+  provider: auto
+  api_key: ""     # reference-only; set per-provider env vars for auto-discovery
+
 # ── Policy / web tools ───────────────────────────────────────────────────
 # `policy.web_tools` gates the in-process web_search/web_fetch tools.
 # Use `jarn --preset NAME` (CLI) or `/preset` in the REPL to apply a named
@@ -474,6 +498,53 @@ At REPL launch, `palette.configure_ui(theme, accent)` applies theme tokens to th
 shared palette (chat colors, toolbar background/foreground, cost/context colors).
 The bottom toolbar is rendered by `tui/toolbar.py` and shows **model · mode · queue ·
 ctx · cost** (low-priority segments drop on narrow terminals).
+
+## Pluggable web search (`search`)
+
+`web_search` supports multiple search backends.  By default (`provider: auto`) it
+tries Tavily → Brave → Exa in priority order and falls back to the keyless
+DuckDuckGo HTML scraper when none have a resolved key.
+
+```yaml
+search:
+  provider: auto       # auto | duckduckgo | tavily | brave | exa
+  api_key: ""          # reference-only; applies only when provider is named explicitly
+```
+
+### Providers
+
+| Provider | How to supply the key |
+|---|---|
+| `tavily` | `${TAVILY_API_KEY}` env var or `keychain:jarn/tavily` |
+| `brave` | `${BRAVE_API_KEY}` env var or `keychain:jarn/brave` |
+| `exa` | `${EXA_API_KEY}` env var or `keychain:jarn/exa` |
+| `duckduckgo` | No key required |
+
+In `auto` mode the key discovery order is: (1) conventional env var
+(`TAVILY_API_KEY` / `BRAVE_API_KEY` / `EXA_API_KEY`), then (2) keychain entry
+`keychain:jarn/<provider>`.  The single `search.api_key` field is **only**
+consulted when you name an explicit provider — it is never used in `auto` mode.
+
+### Examples
+
+```yaml
+# Auto-discover — export BRAVE_API_KEY and jarn will use Brave automatically:
+search:
+  provider: auto
+
+# Pin to Tavily with an explicit key reference:
+search:
+  provider: tavily
+  api_key: ${TAVILY_API_KEY}
+
+# Pin to Tavily, key stored in OS keychain:
+search:
+  provider: tavily
+  api_key: keychain:jarn/tavily
+```
+
+`web_fetch` and the SSRF guard are completely separate from the provider
+selection — they are never used for API calls to the provider hosts.
 
 ## Wiki knowledge base (`wiki`)
 

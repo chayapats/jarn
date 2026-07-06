@@ -149,5 +149,22 @@ def collect_doctor(
         root, project_trusted=project_trusted, config=cfg
     )
 
+    # Search provider diagnostics
+    from jarn.agent.web_tools import _resolve_provider_key
+
+    search_provider = cfg.search.provider.value
+    if search_provider in ("tavily", "brave", "exa"):
+        key_resolved = _resolve_provider_key(search_provider, cfg) is not None
+    elif search_provider == "auto":
+        key_resolved = any(
+            _resolve_provider_key(p, cfg) is not None for p in ("tavily", "brave", "exa")
+        )
+    else:  # duckduckgo
+        key_resolved = True  # keyless
+    diag["search"] = {
+        "provider": search_provider,
+        "key_resolved": key_resolved,
+    }
+
     diag["ok"] = ok
     return 0 if ok else 1

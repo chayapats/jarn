@@ -410,7 +410,7 @@ def build_runtime(
     # 'offline' profile sets policy.web_tools False).
     from jarn.agent.web_tools import build_web_tools
 
-    web_tools = build_web_tools() if config.policy.web_tools else []
+    web_tools = build_web_tools(config) if config.policy.web_tools else []
     tools = [*web_tools, *(extra_tools or [])]
 
     tools, system_prompt = _wire_builtin_tools(

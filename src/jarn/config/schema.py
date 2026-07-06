@@ -31,6 +31,42 @@ class PermissionMode(str, Enum):
         return {"plan": 0, "ask": 1, "auto-edit": 2, "yolo": 3}[self.value]
 
 
+class SearchProviderType(str, Enum):
+    """Which search provider ``web_search`` should use.
+
+    ``auto``       — try tavily → brave → exa in order; first with a resolved
+                     key wins; fall back to the keyless DuckDuckGo scraper.
+    ``duckduckgo`` — always use the keyless DDG HTML scraper.
+    ``tavily``     — use Tavily (requires ``TAVILY_API_KEY`` or ``search.api_key``).
+    ``brave``      — use Brave Search (requires ``BRAVE_API_KEY`` or ``search.api_key``).
+    ``exa``        — use Exa (requires ``EXA_API_KEY`` or ``search.api_key``).
+    """
+
+    AUTO = "auto"
+    DUCKDUCKGO = "duckduckgo"
+    TAVILY = "tavily"
+    BRAVE = "brave"
+    EXA = "exa"
+
+
+@dataclass(slots=True)
+class SearchConfig:
+    """Pluggable web-search provider settings.
+
+    ``provider``
+        Which search backend to use (default ``auto``).
+
+    ``api_key``
+        Secret reference (``${ENV_VAR}`` / ``keychain:jarn/<provider>`` / ``file:…``)
+        for the explicitly-named provider.  Ignored in ``auto`` mode — per-provider
+        env vars and keychain entries are discovered automatically.  Never an inline
+        literal.
+    """
+
+    provider: SearchProviderType = SearchProviderType.AUTO
+    api_key: str = ""   # reference-only; resolved via jarn.config.secrets.resolve
+
+
 class ProviderType(str, Enum):
     # OpenAI-compatible (served through ChatOpenAI + base_url — no extra deps)
     OPENROUTER = "openrouter"
@@ -450,6 +486,7 @@ class Config:
     plan: PlanConfig = field(default_factory=PlanConfig)
     verify: VerifyConfig = field(default_factory=VerifyConfig)
     pricing: PricingConfig = field(default_factory=PricingConfig)
+    search: SearchConfig = field(default_factory=SearchConfig)
 
     def resolved_main_model(self) -> str | None:
         """The model used for the top-level agent loop."""
