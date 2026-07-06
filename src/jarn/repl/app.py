@@ -88,8 +88,13 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         *,
         resume: bool = False,
         project_trusted: bool = True,
+        detected_theme: str | None = None,
     ) -> None:
         self.config = config
+        # Terminal background resolved ONCE at startup (light/dark) when
+        # ui.theme is "auto"; a runtime `/theme auto` reuses this instead of
+        # re-probing (a runtime OSC-11 probe races prompt_toolkit's input reader).
+        self._detected_theme = detected_theme
         self.controller = Controller(
             config, project_root, project_trusted=project_trusted
         )
@@ -378,8 +383,6 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             text = f"jarn — {self._proj_name}"
         elif state == "quit":
             text = "jarn"
-        else:
-            text = state  # passthrough for callers that build their own text
         set_title(text, settings=self.config.ui, write=self.console.file.write, isatty=self._title_isatty)
 
     def _busy(self) -> bool:
@@ -469,7 +472,12 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         """Region above the input: the live plan checklist (when a turn has written
         todos), in-progress text, an animated thinking indicator while the model
         works, a transient flash (mode change, etc.), else nothing."""
-        if self._menu_future is not None and self._menu_options:
+        # Render the menu whenever a picker is active — even with zero options: a
+        # history filter (``_menu_filter is not None``) that matched nothing must
+        # still show its "(no matches)" modal, not collapse into an invisible one.
+        if self._menu_future is not None and (
+            self._menu_options or self._menu_filter is not None
+        ):
             return self._menu_html()
         # The live todos block is a turn-time thing: only composed while busy, and
         # only above the prose/thinking body — never over a picker/_ask prompt.

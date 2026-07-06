@@ -120,9 +120,21 @@ class KeysMixin:
             # Echo the submitted line into the scrollback transcript (the
             # input buffer is cleared, so without this the message vanishes).
             send = self._expand_pastes(stripped)
-            # Print feedback before expanding git mentions (slow git call can be lengthy).
+            # Print feedback before expanding git mentions (a slow git call can be
+            # lengthy) — but ONLY when an allowlisted @git: subcommand is actually
+            # present. An unknown @git:token is left verbatim by expand_mentions, so
+            # announcing an expansion that won't happen would be misleading. Reuse
+            # completion.py's tokenizer + allowlist so the gate matches expansion.
             if "@git:" in send:
-                self.console.print(f"[{palette.C_DIM}]expanding @git mention…[/{palette.C_DIM}]")
+                from jarn.tui.completion import _GIT_ALLOWLIST, _MENTION_EXPAND_RE
+
+                if any(
+                    m.group(1) == "git" and m.group(2) in _GIT_ALLOWLIST
+                    for m in _MENTION_EXPAND_RE.finditer(send)
+                ):
+                    self.console.print(
+                        f"[{palette.C_DIM}]expanding @git mention…[/{palette.C_DIM}]"
+                    )
             send = self._expand_mentions(send)
             self._pastes.clear()
             if stripped.startswith("!"):
@@ -282,6 +294,8 @@ class KeysMixin:
             No-op if another overlay (e.g. an approval prompt) is already open."""
             if self._menu_future is not None and not self._menu_future.done():
                 return  # don't overwrite an in-flight approval/picker future
+            if self._line_future is not None and not self._line_future.done():
+                return  # a pending _ask owns the input; don't open history over it
             asyncio.create_task(self._history_picker())
 
         @kb.add("s-tab", filter=live)
@@ -387,6 +401,12 @@ class KeysMixin:
             if self._menu_future is not None and not self._menu_future.done():
                 self._menu_future.set_result(self._menu_cancel)
                 self._last_esc_ts = None  # picker cancel, not idle; reset chord
+                return
+            if self._line_future is not None and not self._line_future.done():
+                # A pending app-native _ask line prompt owns the input — Esc must
+                # NOT fire the rewind chord or clear the prompt (that would orphan
+                # the future / wedge a yolo confirm). Absorb it and reset the chord.
+                self._last_esc_ts = None
                 return
             if self._expanded:
                 self._collapse()

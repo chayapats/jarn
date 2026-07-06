@@ -397,3 +397,59 @@ def test_git_mention_completion_replacement(tmp_path):
     cands = _provider(tmp_path).complete("look at @git:")
     status = next(c for c in cands if c.label == "@git:status")
     assert status.replacement == "look at @git:status"
+
+
+# ---------------------------------------------------------------------------
+# Wave-2 final review: completion cap must never truncate tier-1 prefix matches
+# ---------------------------------------------------------------------------
+
+
+def test_bare_slash_lists_all_registry_commands(tmp_path):
+    """Browsing with a bare ``/`` must list EVERY registered command.
+
+    The combined tier1+tier2 ``_CAP`` regressed browsing: a bare ``/`` is a pure
+    prefix match of the empty string, so all commands are tier-1 — none may be
+    dropped by the fuzzy cap.
+    """
+    from jarn.extensibility.commands import completion_catalog
+
+    catalog = completion_catalog()
+    assert len(catalog) > 10, "precondition: more registry commands than _CAP"
+    provider = CompletionProvider(command_catalog=catalog, project_root=tmp_path)
+    cands = provider.complete("/")
+    labels = {c.label for c in cands}
+    assert len(cands) == len(catalog), (
+        f"bare / must list all {len(catalog)} commands, got {len(cands)}"
+    )
+    for name in catalog:
+        assert f"/{name}" in labels, f"/{name} missing from bare-/ browse list"
+
+
+def test_prefix_tier_never_truncated(tmp_path):
+    """≥ ``_CAP`` prefix matches must ALL be returned with zero fuzzy padding —
+    the cap only bounds tier-2 fuzzy extras, never tier-1 prefix matches."""
+    from jarn.tui.completion import _CAP
+
+    n = _CAP + 5
+    catalog = {f"x{i:02d}": f"cmd {i}" for i in range(n)}
+    provider = CompletionProvider(command_catalog=catalog, project_root=tmp_path)
+    cands = provider.complete("/x")
+    labels = [c.label for c in cands]
+    assert len(cands) == n, f"expected all {n} prefix matches, got {len(cands)}"
+    assert set(labels) == {f"/x{i:02d}" for i in range(n)}
+
+
+def test_command_args_prefix_tier_never_truncated(tmp_path):
+    """The same no-truncate rule holds for ``/cmd <arg>`` completion: ≥ ``_CAP``
+    argument choices sharing a prefix all complete (parallel to _commands)."""
+    from jarn.tui.completion import _CAP
+
+    n = _CAP + 5
+    refs = [f"openrouter/model-{i:02d}" for i in range(n)]
+    provider = CompletionProvider(
+        command_catalog={"model": "switch model"},
+        project_root=tmp_path,
+        model_refs=refs,
+    )
+    cands = provider.complete("/model openrouter/model-")
+    assert len(cands) == n, f"expected all {n} prefix matches, got {len(cands)}"

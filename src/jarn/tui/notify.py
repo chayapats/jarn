@@ -20,6 +20,21 @@ if TYPE_CHECKING:
     from jarn.config.schema import UIConfig
 
 
+def _flush(write: Callable[[str], Any]) -> None:
+    """Flush the stream backing *write* so a newline-free control sequence isn't
+    left buffered.
+
+    Under prompt_toolkit's ``patch_stdout(raw=True)`` the ``StdoutProxy`` holds
+    writes that contain no ``\\n`` until a later flush — so a turn-end BEL or an
+    OSC-2 title (both newline-free) would otherwise sit in the buffer and never
+    reach the terminal.  The backing stream is the ``write`` callable's bound
+    ``__self__`` (``console.file`` in production); a bare callable with no
+    ``__self__`` degrades to a no-op.
+    """
+    stream = getattr(write, "__self__", None)
+    getattr(stream, "flush", lambda: None)()
+
+
 def set_title(
     text: str,
     *,
@@ -50,6 +65,7 @@ def set_title(
     if not isatty():
         return
     write(f"\x1b]2;{text}\x07")
+    _flush(write)
 
 
 def notify(
@@ -86,6 +102,7 @@ def notify(
 
     if mode in ("bell", "both"):
         write("\a")
+        _flush(write)
 
     if mode in ("desktop", "both"):
         _desktop_notify(event, elapsed=elapsed)
