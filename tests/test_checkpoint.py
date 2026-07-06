@@ -447,6 +447,61 @@ def test_find_for_turn_none_on_non_git_dir(tmp_path: Path) -> None:
     assert mgr.find_for_turn("t", 0) is None
 
 
+def test_find_for_turn_forged_prefix_does_not_confuse_parser(repo: Path) -> None:
+    """A snapshot whose label contains a forged [jarn:thread=… turn=…] prefix (from
+    user_input[:80] embedding a tag) must still resolve on the REAL suffix thread.
+    The anchored regex ($) picks the terminal tag, not the leftmost one."""
+    mgr = _manager(repo)
+    (repo / "README.txt").write_text("forged\n", encoding="utf-8")
+    # label embeds a forged tag; full subject ends with the REAL [jarn:thread=real turn=0]
+    snap = mgr.snapshot(
+        "user said [jarn:thread=attacker turn=99]",
+        now=1234.0,
+        thread_id="real-thread",
+        turn_index=0,
+    )
+    assert snap.ok, snap.message
+    # Must resolve on the real thread/turn, NOT the forged one.
+    ref = mgr.find_for_turn("real-thread", 0)
+    assert ref is not None, "real thread/turn must be found"
+    assert ref.sha == snap.sha
+    assert mgr.find_for_turn("attacker", 99) is None
+
+
+def test_find_for_turn_alias_walk(repo: Path) -> None:
+    """find_for_turn follows a one-hop alias B → A to find A's snapshots."""
+    mgr = _manager(repo)
+    thread_a = "thread-a-1234"
+    thread_b = "thread-b-5678"
+    (repo / "README.txt").write_text("on-a\n", encoding="utf-8")
+    snap = mgr.snapshot("t0", now=1.0, thread_id=thread_a, turn_index=0)
+    assert snap.ok
+    # Register B as a fork of A that kept 1 turn.
+    mgr.register_thread_alias(thread_b, thread_a, 1)
+    # find_for_turn(B, 0) must walk to A and return A's snapshot.
+    ref = mgr.find_for_turn(thread_b, 0)
+    assert ref is not None, "alias walk should find the parent snapshot"
+    assert ref.sha == snap.sha
+    # turn_index 1 is out-of-range (B kept 1 turn, index 0 only).
+    assert mgr.find_for_turn(thread_b, 1) is None
+
+
+def test_find_for_turn_alias_chain(repo: Path) -> None:
+    """find_for_turn walks a multi-hop chain C → B → A (3-generation fork)."""
+    mgr = _manager(repo)
+    thread_a, thread_b, thread_c = "aa", "bb", "cc"
+    (repo / "README.txt").write_text("on-a\n", encoding="utf-8")
+    snap = mgr.snapshot("t0", now=1.0, thread_id=thread_a, turn_index=0)
+    assert snap.ok
+    # B is a fork of A (kept 2 turns), C is a fork of B (kept 1 turn).
+    mgr.register_thread_alias(thread_b, thread_a, 2)
+    mgr.register_thread_alias(thread_c, thread_b, 1)
+    # C → B → A must find A's snapshot at turn 0.
+    ref = mgr.find_for_turn(thread_c, 0)
+    assert ref is not None, "3-generation chain should find the grandparent snapshot"
+    assert ref.sha == snap.sha
+
+
 def test_restore_to_reverts_tree_and_is_undoable(repo: Path) -> None:
     """restore_to() sets the worktree to a target snapshot AND pushes the pre-restore
     tree onto the undo stack, so /undo reverts the rewind's file restore (no work is
@@ -490,6 +545,53 @@ def test_restore_to_disabled_and_non_git_noop(repo: Path, tmp_path: Path) -> Non
     non_git = CheckpointManager(repo_root=non_git_dir, enabled=True)
     r2 = non_git.restore_to("deadbeef")
     assert not r2.ok and ("git" in r2.message.lower() or "repo" in r2.message.lower())
+
+
+# ---------------------------------------------------------------------------
+# M-1 — direct real-git tests for diff_stat and has_uncheckpointed_changes
+# ---------------------------------------------------------------------------
+
+
+def test_diff_stat_lines_on_change(repo: Path) -> None:
+    """diff_stat returns non-empty lines listing the files that differ from the snapshot."""
+    mgr = _manager(repo)
+    (repo / "README.txt").write_text("before\n", encoding="utf-8")
+    snap = mgr.snapshot("base", now=1.0)
+    assert snap.ok
+    (repo / "README.txt").write_text("after\n", encoding="utf-8")
+    lines = mgr.diff_stat(snap.sha)
+    assert isinstance(lines, list)
+    assert len(lines) > 0
+    assert any("README" in ln for ln in lines)
+
+
+def test_diff_stat_empty_when_tree_matches_snapshot(repo: Path) -> None:
+    """diff_stat returns [] (no changed files) when the working tree is identical to the snapshot."""
+    mgr = _manager(repo)
+    snap = mgr.snapshot("base", now=1.0)
+    assert snap.ok
+    # No modifications — tree identical to snapshot.
+    lines = mgr.diff_stat(snap.sha)
+    assert all("|" not in ln for ln in lines), f"unexpected diff lines: {lines}"
+
+
+def test_has_uncheckpointed_changes_true_after_edit(repo: Path) -> None:
+    """has_uncheckpointed_changes() returns True after a file is modified since the last snapshot."""
+    mgr = _manager(repo)
+    (repo / "README.txt").write_text("before\n", encoding="utf-8")
+    snap = mgr.snapshot("base", now=1.0)
+    assert snap.ok
+    (repo / "README.txt").write_text("after\n", encoding="utf-8")
+    assert mgr.has_uncheckpointed_changes() is True
+
+
+def test_has_uncheckpointed_changes_false_right_after_snapshot(repo: Path) -> None:
+    """has_uncheckpointed_changes() returns False immediately after a successful snapshot."""
+    mgr = _manager(repo)
+    (repo / "README.txt").write_text("stable\n", encoding="utf-8")
+    snap = mgr.snapshot("base", now=1.0)
+    assert snap.ok
+    assert mgr.has_uncheckpointed_changes() is False
 
 
 def test_undo_rollback_on_apply_failure(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1356,6 +1356,99 @@ async def test_fork_mechanism_preserves_original_thread_real_saver():
     assert b_contents == ["first", "ans1"]  # the branch keeps only the prefix
 
 
+@pytest.mark.asyncio
+async def test_fork_to_turn_registers_alias(tmp_path, monkeypatch, base_config):
+    """fork_to_turn registers the new thread as an alias of the original so that
+    find_for_turn on the forked thread walks back to resolve the parent's snapshots."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from jarn.config.schema import GitConfig
+
+    base_config.git = GitConfig(autocheckpoint=True)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = _repo_with_commit(tmp_path)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    ctrl = Controller(base_config, root)
+    original_thread = ctrl.thread_id
+    tracked = root / "file.txt"
+
+    # Snapshot on the original thread at turn 0.
+    tracked.write_text("turn-0\n", encoding="utf-8")
+    snap = ctrl.checkpoint_manager.snapshot(
+        "t0", now=1.0, thread_id=original_thread, turn_index=0
+    )
+    assert snap.ok
+    tracked.write_text("dirty\n", encoding="utf-8")
+
+    msgs = [
+        HumanMessage(content="q0"), AIMessage(content="a0"),
+        HumanMessage(content="q1"), AIMessage(content="a1"),
+    ]
+    _, ctrl.runtime = _rewind_runtime(msgs)
+    await ctrl.fork_to_turn(2)  # keep [q0, a0] = 1 human turn
+    new_thread = ctrl.thread_id
+    assert new_thread != original_thread
+
+    # Alias must be registered.
+    alias = ctrl.checkpoint_manager._thread_aliases.get(new_thread)
+    assert alias is not None, "fork_to_turn must register an alias"
+    assert alias[0] == original_thread
+
+    # find_for_turn on the new thread must resolve via alias walk.
+    ref = ctrl.checkpoint_manager.find_for_turn(new_thread, 0)
+    assert ref is not None, "alias walk should find the original thread's snapshot"
+    assert ref.sha == snap.sha
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_stacked_rewind_restores_files(tmp_path, monkeypatch, base_config):
+    """Stacked rewind in one session: snapshot on A, fork A→B, fork B→C with
+    restore_files=True — the alias walk B→A finds the snapshot and restores files."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from jarn.config.schema import GitConfig
+
+    base_config.git = GitConfig(autocheckpoint=True)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = _repo_with_commit(tmp_path)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    ctrl = Controller(base_config, root)
+    thread_a = ctrl.thread_id
+    tracked = root / "file.txt"
+
+    # Snapshot on thread A at turn 0.
+    tracked.write_text("turn-0\n", encoding="utf-8")
+    s0 = ctrl.checkpoint_manager.snapshot("t0", now=1.0, thread_id=thread_a, turn_index=0)
+    assert s0.ok
+    tracked.write_text("turn-1\n", encoding="utf-8")
+    ctrl.checkpoint_manager.snapshot("t1", now=2.0, thread_id=thread_a, turn_index=1)
+    tracked.write_text("dirty\n", encoding="utf-8")
+
+    # Fork A → B (keep [q0, a0] = 1 human turn).
+    msgs_a = [
+        HumanMessage(content="q0"), AIMessage(content="a0"),
+        HumanMessage(content="q1"), AIMessage(content="a1"),
+    ]
+    _, ctrl.runtime = _rewind_runtime(msgs_a)
+    await ctrl.fork_to_turn(2)
+    thread_b = ctrl.thread_id
+    assert thread_b != thread_a
+
+    # Fork B → C with restore_files=True, rewinding to turn 0.
+    # Snapshots are on thread A; the alias B→A lets find_for_turn walk back.
+    msgs_b = [HumanMessage(content="q0"), AIMessage(content="a0")]
+    _, ctrl.runtime = _rewind_runtime(msgs_b)
+    cut = await ctrl.fork_to_turn(0, restore_files=True)
+    assert cut == 0
+    thread_c = ctrl.thread_id
+    assert thread_c != thread_b
+
+    # File must be restored to the turn-0 snapshot, not the dirty state.
+    assert tracked.read_text(encoding="utf-8") == "turn-0\n"
+    ctrl.close()
+
+
 # ---------------------------------------------------------------------------
 # T-2-7: shell-escape context injection
 # ---------------------------------------------------------------------------

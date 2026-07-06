@@ -1821,6 +1821,86 @@ async def test_rewind_autocheckpoint_off_skips_confirm(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_confirm_rewind_no_checkpoint_note_text(tmp_path, monkeypatch):
+    """When find_for_turn returns None, the printed dim note mentions
+    'forked in an earlier session' to explain the cross-session fork case."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    cpm = app.controller.checkpoint_manager
+    cpm.enabled = True
+    cpm._is_repo = True
+    monkeypatch.setattr(cpm, "find_for_turn", lambda thread, turn: None)
+
+    buf = StringIO()
+    app.console = Console(file=buf, width=120, no_color=True)
+
+    result = await app._confirm_rewind_restore(0, [(0, "first")])
+
+    assert result is False
+    import re as _re
+    output = _re.sub(r"\s+", " ", buf.getvalue())
+    assert "forked in an earlier session" in output
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_confirm_rewind_restore_preview_header(tmp_path, monkeypatch):
+    """The diff-stat preview header mentions untracked file removal."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    from jarn import repl
+    from jarn.agent.checkpoint import CheckpointRef
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    cpm = app.controller.checkpoint_manager
+    cpm.enabled = True
+    cpm._is_repo = True
+    monkeypatch.setattr(
+        cpm, "find_for_turn",
+        lambda thread, turn: CheckpointRef(sha="abc", thread_id=thread, turn_index=turn),
+    )
+    monkeypatch.setattr(cpm, "diff_stat", lambda sha: [" file.txt | 2 +-"])
+    monkeypatch.setattr(cpm, "has_uncheckpointed_changes", lambda: False)
+
+    buf = StringIO()
+    app.console = Console(file=buf, width=120, no_color=True)
+
+    async def _pick(options, header="", cancel_returns=None):
+        return True
+
+    monkeypatch.setattr(app, "_pick_menu", _pick)
+
+    await app._confirm_rewind_restore(0, [(0, "first")])
+
+    output = buf.getvalue()
+    assert "untracked" in output.lower()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
 async def test_skills_available_after_ensure_extensions(tmp_path, monkeypatch):
     from jarn import repl
     from jarn.agent.builder import JarnRuntime

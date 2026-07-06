@@ -404,7 +404,10 @@ class Controller:
         if not messages or keep_count < 0:
             return None
 
+        import asyncio
+
         kept_prefix = list(messages[:keep_count])  # empty when keep_count == 0
+        original_thread = self.thread_id
 
         # Slice 2: revert the working tree to the chosen turn's checkpoint before
         # forking. Resolve against the ORIGINAL thread; the turn index is the
@@ -413,19 +416,28 @@ class Controller:
             turn_index = sum(
                 1 for m in kept_prefix if getattr(m, "type", "") == "human"
             )
-            ref = self.checkpoint_manager.find_for_turn(self.thread_id, turn_index)
+            ref = await asyncio.to_thread(
+                self.checkpoint_manager.find_for_turn, self.thread_id, turn_index
+            )
             if ref is not None:
                 # Settle any in-flight snapshot first so restore_to's undo-stack
                 # push targets a consistent stack (mirrors /abort, /undo, /redo).
                 await self.settle_snapshot()
-                import asyncio
-
                 await asyncio.to_thread(self.checkpoint_manager.restore_to, ref.sha)
 
         from langchain_core.messages import RemoveMessage
         from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
+        # Compute kept_turns before minting the new thread_id.
+        _kept_turns = sum(
+            1 for m in kept_prefix if getattr(m, "type", "") == "human"
+        )
         self.new_thread()  # mint a fresh thread_id; resets tracker.context_tokens
+        # Register alias so find_for_turn can walk back to the parent on a stacked
+        # rewind within the same session (in-memory, not persisted).
+        self.checkpoint_manager.register_thread_alias(
+            self.thread_id, original_thread, _kept_turns
+        )
         await rt.agent.aupdate_state(
             self._config(),
             {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *kept_prefix]},
