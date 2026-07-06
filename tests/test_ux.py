@@ -372,9 +372,12 @@ def test_blank_line_rhythm():
     NEW _sep: ``if _prev != kind: console.print()``
         → suppresses the blank when the kind does not change
 
-    The spy counts calls to ``console.print()`` with NO arguments (the blank-line
-    signal) rather than relying on StringIO content, which is invisible in test
-    mode because Rich Markdown does not add a trailing blank in StringIO consoles.
+    Rationale: exactly one separator blank belongs between committed blocks of
+    DIFFERENT kinds; consecutive same-kind commits get none.  No production path
+    commits same-kind text consecutively, so the same-kind suppression only
+    removes the spurious extra blank the old rule emitted.  The spy counts
+    ``console.print()`` calls with NO arguments (the blank-line signal) directly,
+    since a blank line is not distinguishable in StringIO buffer content.
     """
     from io import StringIO
 

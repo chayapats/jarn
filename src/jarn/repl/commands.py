@@ -541,16 +541,17 @@ class CommandMixin:
         2. Persists ``ui.theme`` via ``controller.set_setting`` so the choice
            survives a restart.
         """
-        from jarn.tui import termbg
-
         c = self.console
         _VALID = ("dark", "light", "high-contrast", "auto")
 
-        # Resolve "auto" to an actual palette name for display / apply.
+        # Resolve "auto" to an actual palette name for display / apply.  The
+        # terminal-background detection runs ONCE at startup (while we still own
+        # the tty) and is cached on the app as ``_detected_theme``; probing again
+        # at runtime would race prompt_toolkit's input reader (junk keystrokes +
+        # wrong fallback), so /theme reuses the cached value instead.
         def _resolve(name: str) -> str:
             if name == "auto":
-                detected = termbg.detect()
-                return detected if detected in ("light", "dark") else "dark"
+                return self._detected_theme or "dark"
             return name
 
         chosen: str | None = args.strip().lower() if args.strip() else None
@@ -558,10 +559,10 @@ class CommandMixin:
         if chosen is None:
             # Open the arrow-key picker.
             current = self.controller.config.ui.theme
-            resolved = await asyncio.to_thread(_resolve, current)
+            resolved = _resolve(current)
             if current == "auto":
                 header = (
-                    f"Pick theme (currently: auto → {resolved}) · "
+                    f"Pick theme (currently: auto → {resolved} (detected at startup)) · "
                     "↑/↓ · Enter · Esc cancel"
                 )
             else:
@@ -584,8 +585,8 @@ class CommandMixin:
                 )
                 return
 
-        # Apply: resolve auto → actual palette name, then configure.
-        palette_name = await asyncio.to_thread(_resolve, str(chosen))
+        # Apply: resolve auto → actual palette name (cached, sync), then configure.
+        palette_name = _resolve(str(chosen))
         palette.configure_ui(theme=palette_name, accent=self.controller.config.ui.accent)
 
         # Persist via the standard config-set path.

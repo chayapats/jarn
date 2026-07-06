@@ -73,10 +73,19 @@ def run_inline(
     apply_repl_keyfix()
     resolved_theme = _resolve_theme(config)
     palette.configure_ui(theme=resolved_theme, accent=config.ui.accent)
+    # Cache the startup background detection so a runtime ``/theme auto`` reuses it
+    # instead of re-probing (a runtime OSC-11 probe races prompt_toolkit's input
+    # reader). Only meaningful when startup theme is "auto"; else the resolved
+    # value is a fixed palette name, not a detected background.
+    detected_theme = resolved_theme if config.ui.theme == "auto" else None
     with contextlib.suppress(KeyboardInterrupt, EOFError):
         asyncio.run(
             InlineApp(
-                config, project_root, resume=resume, project_trusted=project_trusted
+                config,
+                project_root,
+                resume=resume,
+                project_trusted=project_trusted,
+                detected_theme=detected_theme,
             ).run()
         )
     return 0

@@ -215,23 +215,23 @@ class CompletionProvider:
                 tier1_set.add(name)
 
         # Tier 2 — fuzzy matches not already in tier 1, ranked by score.
+        # NEVER cap tier 1 (prefix/browse matches must all show — bare ``/`` lists
+        # every command); the cap bounds only the tier-2 fuzzy extras. When
+        # len(tier1) >= _CAP, ``slots`` is 0 so fuzzy adds nothing and tier1 stays
+        # complete.
         remaining = [n for n in self.command_catalog if n not in tier1_set]
         slots = max(0, _CAP - len(tier1))
         tier2 = fuzzy_rank(prefix, remaining)[:slots]
 
-        out: list[Completion] = []
-        for name in tier1 + tier2:
-            if len(out) >= _CAP:
-                break
-            out.append(
-                Completion(
-                    f"/{name}",
-                    f"/{name} ",
-                    "command",
-                    description=self.command_catalog.get(name, ""),
-                )
+        return [
+            Completion(
+                f"/{name}",
+                f"/{name} ",
+                "command",
+                description=self.command_catalog.get(name, ""),
             )
-        return out
+            for name in tier1 + tier2
+        ]
 
     def _command_args(self, cmd: str, frag: str, prefix: str) -> list[Completion]:
         """Complete the argument fragment after ``/cmd ``."""
@@ -269,16 +269,16 @@ class CompletionProvider:
                 tier1_set.add(choice)
 
         # Tier 2 — fuzzy matches not already in tier 1, ranked by score.
+        # Never cap tier 1 (prefix matches all show); the cap bounds only the
+        # tier-2 fuzzy extras (parallel to _commands).
         remaining = [c for c in sorted_choices if c not in tier1_set]
         slots = max(0, _CAP - len(tier1))
         tier2 = fuzzy_rank(frag, remaining)[:slots]
 
-        out: list[Completion] = []
-        for choice in tier1 + tier2:
-            if len(out) >= _CAP:
-                break
-            out.append(Completion(choice, f"{prefix}{choice}", "argument"))
-        return out
+        return [
+            Completion(choice, f"{prefix}{choice}", "argument")
+            for choice in tier1 + tier2
+        ]
 
     def _listing(self, search_dir: Path) -> tuple[Path, ...] | None:
         """Return the sorted entries of ``search_dir``, reusing a brief cache.
@@ -491,7 +491,12 @@ class GitMentionResolver:
                         f"@git:{subcmd}",
                         f"{prefix_text}@git:{subcmd}",
                         self.kind,
-                        description=f"git {' '.join(_GIT_ALLOWLIST[subcmd][1:])}",
+                        # Skip argv[0] ("git") AND the injected color-off flags so
+                        # the menu description stays clean ("git status …").
+                        description=(
+                            "git "
+                            + " ".join(_GIT_ALLOWLIST[subcmd][1 + len(_GIT_COLOR_OFF):])
+                        ),
                     )
                 )
         return out
@@ -521,13 +526,18 @@ class UrlMentionResolver:
 # Fixed read-only argv allowlist for @git: expansion
 # ---------------------------------------------------------------------------
 
+#: Injected right after ``git`` in every allowlist argv so a user's
+#: ``color.ui = always`` config can't bleed ANSI escape codes into the payload
+#: the agent reads.
+_GIT_COLOR_OFF: tuple[str, ...] = ("-c", "color.ui=false")
+
 #: Subcommands exposed via ``@git:``; each maps to a fixed, read-only argv
 #: (no shell, no user-supplied arguments).
 _GIT_ALLOWLIST: dict[str, list[str]] = {
-    "status": ["git", "status", "--porcelain=v1", "-b"],
-    "diff": ["git", "diff"],
-    "staged": ["git", "diff", "--staged"],
-    "log": ["git", "log", "--oneline", "-15"],
+    "status": ["git", *_GIT_COLOR_OFF, "status", "--porcelain=v1", "-b"],
+    "diff": ["git", *_GIT_COLOR_OFF, "diff"],
+    "staged": ["git", *_GIT_COLOR_OFF, "diff", "--staged"],
+    "log": ["git", *_GIT_COLOR_OFF, "log", "--oneline", "-15"],
 }
 
 _GIT_TIMEOUT: int = 5          # seconds

@@ -145,11 +145,12 @@ All notable changes to J.A.R.N. are documented here. Format follows
   cancelled agent turn.
 
 - **Blank-line rhythm in committed output (T-2-11)** — `_sep()` in `TurnRenderer` previously
-  printed a blank line on every kind transition except consecutive tools, causing extra blank
-  lines when the same kind (e.g. text→text) repeated in non-live-sink mode, compounded by
-  Rich Markdown's own trailing blank in terminal mode.  `_sep()` now emits a blank only when
-  the kind changes (generalized from the old tool-only suppression); consecutive same-kind
-  commits produce no extra blank.
+  printed a blank line on every kind transition except consecutive tools, so a same-kind
+  repeat (e.g. text→text) emitted a spurious extra blank.  `_sep()` now emits a single
+  separator only when the committed kind actually changes (generalized from the old
+  tool-only suppression); consecutive same-kind commits produce no extra blank.  This is
+  safe because no production path commits same-kind text consecutively — the suppression
+  only removes the spurious blank.
 
 - **`palette.styled_fg` NO_COLOR tautology removed (T-2-11)** — the dead branch
   `return text if not bold else text` was replaced with `return text` and a clarifying

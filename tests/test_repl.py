@@ -3710,49 +3710,262 @@ async def test_theme_command_switches_and_persists(tmp_path, monkeypatch):
     app.controller.close()
 
 
-async def test_theme_auto_detection_runs_off_event_loop(tmp_path, monkeypatch):
-    """/theme auto must run termbg.detect off the event loop via asyncio.to_thread."""
-    import threading
+async def test_theme_auto_reuses_startup_cache_no_runtime_probe(tmp_path, monkeypatch):
+    """/theme auto must reuse the STARTUP-detected background and never run a
+    runtime OSC-11 probe.
 
+    A runtime ``termbg.detect`` races prompt_toolkit's input reader (junk
+    keystrokes + wrong fallback), so the startup detection is cached on the app
+    and reused; ``termbg.detect`` must NOT be called by /theme.
+    """
     from jarn.tui import palette, termbg
 
     app = _make_inline_app(tmp_path, monkeypatch)
+    # Startup detection resolved the terminal background to "light" and cached it
+    # on the app; /theme must read this instead of re-probing.
+    app._detected_theme = "light"
 
-    # Record the thread where detect() is called.
-    detect_threads: list[threading.Thread] = []
+    probe_calls: list[int] = []
 
-    def fake_detect():
-        detect_threads.append(threading.current_thread())
-        return "light"
+    def _fail_detect():
+        probe_calls.append(1)
+        return "dark"
 
-    monkeypatch.setattr(termbg, "detect", fake_detect)
+    monkeypatch.setattr(termbg, "detect", _fail_detect)
 
-    # Stub set_setting to capture calls and return success.
     def _fake_set_setting(key: str, val: str) -> tuple[bool, str]:
         app.controller.config.ui.theme = val
         return True, f"saved {key} = {val}"
 
     monkeypatch.setattr(app.controller, "set_setting", _fake_set_setting)
 
-    # Set theme to "auto" so detection will be triggered.
     app.controller.config.ui.theme = "auto"
     palette.configure_ui(theme="dark")
 
-    # Run /theme auto — this should trigger detection off-loop.
     await app._command("theme", "auto")
 
-    # Verify detect was called at least once.
-    assert detect_threads, "termbg.detect must be called when resolving 'auto' theme"
+    assert not probe_calls, (
+        "/theme auto must NOT run a runtime termbg.detect probe; reuse the "
+        f"startup cache. Got {len(probe_calls)} probe call(s)."
+    )
+    # The cached 'light' background was applied at runtime.
+    assert palette._PALETTES["light"].toolbar_bg == palette.TOOLBAR_BG, (
+        "/theme auto must apply the cached (light) palette"
+    )
+    app.controller.close()
 
-    # Get the event loop thread.
-    event_loop_thread = threading.current_thread()
 
-    # Verify at least one call happened off the event loop thread.
-    off_loop_calls = [t for t in detect_threads if t != event_loop_thread]
-    assert off_loop_calls, (
-        f"termbg.detect must be called off the event loop. "
-        f"Event loop thread: {event_loop_thread.name}, "
-        f"detect call threads: {[t.name for t in detect_threads]}"
+# ===========================================================================
+# Wave-2 final review round
+# ===========================================================================
+
+
+def _ctrl_r_handler(app):
+    """Return the real `c-r`/`_ctrl_r` keybinding handler (the Ctrl+R path)."""
+    for binding in app._kb.bindings:
+        if getattr(binding.handler, "__name__", "") == "_ctrl_r":
+            return binding.handler
+    raise AssertionError("no _ctrl_r binding found")
+
+
+class _BufferingProxy:
+    """Mimics prompt_toolkit's StdoutProxy under ``patch_stdout(raw=True)``: a
+    newline-free ``write`` buffers (records but stays UNFLUSHED) until ``flush``."""
+
+    def __init__(self) -> None:
+        self.data = ""
+        self.flushed = True
+
+    def write(self, s: str) -> None:
+        self.data += s
+        self.flushed = False   # buffered, not yet on the terminal
+
+    def flush(self) -> None:
+        self.flushed = True
+
+    def isatty(self) -> bool:
+        return True
+
+
+# ── Critical 1: notify/title flush under patch_stdout's StdoutProxy ──────────
+
+
+def test_set_title_flushes_buffering_proxy():
+    """set_title must flush after the newline-free OSC-2 write so the title
+    reaches the terminal under patch_stdout(raw=True) (else it sits buffered)."""
+    from jarn.config.schema import UIConfig
+    from jarn.tui.notify import set_title
+
+    proxy = _BufferingProxy()
+    set_title(
+        "hi", settings=UIConfig(terminal_title=True),
+        write=proxy.write, isatty=proxy.isatty,
+    )
+    assert proxy.data.startswith("\x1b]2;"), "OSC-2 title must be written"
+    assert proxy.flushed, "set_title must flush the proxy after writing the title"
+
+
+def test_notify_bell_flushes_buffering_proxy():
+    """notify's bell branch must flush after the newline-free BEL so it rings on a
+    quiet turn-end under patch_stdout(raw=True)."""
+    from jarn.config.schema import UIConfig
+    from jarn.tui.notify import notify
+
+    proxy = _BufferingProxy()
+    notify(
+        "turn_done", UIConfig(notify="bell", notify_min_secs=0),
+        elapsed=5.0, write=proxy.write,
+    )
+    assert "\a" in proxy.data, "bell (\\a) must be written"
+    assert proxy.flushed, "notify must flush the proxy after writing the BEL"
+
+
+# ── Critical 2: Esc-Esc chord / Ctrl+R must not fire over a pending _ask ─────
+
+
+@pytest.mark.asyncio
+async def test_esc_chord_during_ask_no_rewind(tmp_path, monkeypatch):
+    """Esc while an app-native _ask line prompt is pending must NOT fire the
+    Esc-Esc rewind chord and must NOT touch the pending _line_future."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    rewind_called: list[bool] = []
+
+    async def _fake_rewind() -> None:
+        rewind_called.append(True)
+
+    monkeypatch.setattr(app, "_rewind_picker", _fake_rewind)
+    handler = _esc_handler(app)
+
+    fut = asyncio.get_running_loop().create_future()
+    app._line_future = fut
+    assert app.input.text == ""
+
+    # Two Esc presses that WOULD arm + fire the chord if _line_future were ignored.
+    handler(event=None)
+    handler(event=None)
+    await asyncio.sleep(0)
+
+    assert not rewind_called, "Esc during a pending _ask must not open rewind"
+    assert app._line_future is fut and not fut.done(), (
+        "Esc must not resolve or replace the pending _line_future"
+    )
+    assert app._last_esc_ts is None, "Esc during _ask must reset the chord timestamp"
+    fut.cancel()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_ctrl_r_during_ask_no_op(tmp_path, monkeypatch):
+    """Ctrl+R while an app-native _ask line prompt is pending is a no-op: it must
+    not open the history picker over the prompt or disturb the _line_future."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    picker_called: list[bool] = []
+
+    async def _fake_history() -> None:
+        picker_called.append(True)
+
+    monkeypatch.setattr(app, "_history_picker", _fake_history)
+    handler = _ctrl_r_handler(app)
+
+    fut = asyncio.get_running_loop().create_future()
+    app._line_future = fut
+
+    handler(event=None)
+    await asyncio.sleep(0)
+
+    assert not picker_called, "Ctrl+R during a pending _ask must not open history picker"
+    assert app._line_future is fut and not fut.done()
+    fut.cancel()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_esc_in_pager_collapses_and_resets_chord(tmp_path, monkeypatch):
+    """Esc while the pager overlay is open collapses it and resets the chord
+    timestamp (pins the previously-untested pager branch of _esc_key)."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    handler = _esc_handler(app)
+
+    app._expanded = True
+    app._last_esc_ts = 123.0   # a stale armed chord timestamp
+
+    handler(event=None)
+
+    assert app._expanded is False, "Esc in pager must collapse the overlay"
+    assert app._last_esc_ts is None, "Esc in pager must reset the chord timestamp"
+    app.controller.close()
+
+
+# ── Important 4: zero-match history filter must still render the modal ───────
+
+
+@pytest.mark.asyncio
+async def test_stream_control_zero_match_picker_shows_no_matches(tmp_path, monkeypatch):
+    """A history picker filtered to zero matches must still render the menu (with
+    the '(no matches)' footer) — not an invisible/blank modal."""
+    from prompt_toolkit.formatted_text import HTML
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app._menu_future = asyncio.get_running_loop().create_future()
+    app._menu_filter = "zzzzz"     # filter active (non-None)
+    app._menu_options = []          # zero matches
+    result = app._stream_control()
+    assert isinstance(result, HTML), "zero-match picker must still render the menu HTML"
+    assert "(no matches)" in result.value, "footer must show '(no matches)'"
+    app._menu_future.cancel()
+    app.controller.close()
+
+
+# ── @git mention feedback gate + color-disabled argv ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_git_mention_feedback_only_for_allowlisted_subcommand(tmp_path, monkeypatch):
+    """The 'expanding @git mention…' feedback prints only for an ALLOWLISTED
+    subcommand — an unknown @git: token (left verbatim at expand time) must not
+    print the misleading feedback."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    submit = _submit_handler(app)
+
+    async def _fake_handle(_):
+        pass
+    monkeypatch.setattr(app, "_handle", _fake_handle)
+
+    app.input.insert_text("check @git:frobnicate")
+    submit(event=None)
+
+    out = app.console.file.getvalue()
+    assert "expanding @git mention" not in out, (
+        "unknown @git: subcommand must not trigger the expansion feedback"
+    )
+    app.controller.close()
+
+
+def test_git_mention_argv_disables_color(tmp_path, monkeypatch):
+    """Every @git: expansion runs git with '-c color.ui=false' right after 'git'
+    so a user's color.ui=always config can't bleed ANSI into the payload."""
+    import subprocess as _subprocess
+
+    from jarn.tui.completion import expand_mentions
+
+    captured: list[list[str]] = []
+
+    class _FakeResult:
+        returncode = 0
+        stdout = "output\n"
+        stderr = ""
+
+    def _capture(argv, **kwargs):
+        captured.append(argv)
+        return _FakeResult()
+
+    monkeypatch.setattr(_subprocess, "run", _capture)
+    expand_mentions(
+        "@git:status @git:diff @git:staged @git:log", project_root=tmp_path
     )
 
-    app.controller.close()
+    assert captured, "git subprocess must have been invoked"
+    for argv in captured:
+        assert argv[:3] == ["git", "-c", "color.ui=false"], (
+            f"expected color-disabled git argv, got {argv!r}"
+        )
