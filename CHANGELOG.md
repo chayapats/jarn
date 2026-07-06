@@ -7,6 +7,17 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **Word-level (intraline) diff emphasis (T-2-8)** — edit-approval diffs now
+  highlight the exact characters that changed within a modified line, not just
+  colour the whole line red/green.  Adjacent equal-count runs of deleted/added
+  lines are paired 1:1; each pair uses `difflib.SequenceMatcher` to locate
+  changed spans and renders them with `bold reverse` emphasis on top of the
+  existing red/green line colour.  Lines longer than 200 characters or with a
+  similarity ratio below 0.3 fall back to plain line-level rendering to avoid
+  noisy full-line reverse-video.  The `max_lines` cap and footer behaviour are
+  unchanged.  Full syntax highlighting inside diffs was deliberately excluded
+  (readability + YAGNI).
+
 - **Shell-escape context injection (T-2-7)** — `! <cmd>` output is now captured and fed
   into the next agent turn's context as a fenced `<shell-escape context>` block so the
   agent sees what the user ran and what it returned. Capped at 50 lines / 2 000 chars
