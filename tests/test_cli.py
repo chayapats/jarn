@@ -648,10 +648,13 @@ def _introspect_parser(parser):
 
 @pytest.mark.parametrize("shell", ["bash", "zsh", "fish"])
 def test_completions_cover_parser(shell: str) -> None:
-    """Emitted completion script must mention every subcommand and long flag.
+    """Emitted script must carry a REAL completion declaration for every
+    subcommand and long flag the parser defines.
 
     Anti-drift: introspects the real parser so adding a future subcommand or
-    flag automatically makes this test enforce its inclusion.
+    flag automatically makes this test enforce its inclusion. The per-shell
+    match targets the actual declaration (not merely the string appearing
+    somewhere), so dropping a flag's real `-l`/`-W`/spec entry fails the test.
     """
     from jarn.completions import emit_completions
 
@@ -660,11 +663,71 @@ def test_completions_cover_parser(shell: str) -> None:
     script = emit_completions(shell, parser)
 
     missing_subs = [cmd for cmd in subcommands if cmd not in script]
-    missing_flags = [flag for flag in long_flags if flag not in script]
-
     assert not missing_subs, (
         f"[{shell}] completions missing subcommands: {missing_subs}"
     )
+
+    if shell == "fish":
+        # Honest: the real `complete ... -l <name>` DECLARATION must exist —
+        # not just the flag string buried in a description.
+        missing_flags = [
+            f for f in long_flags if f"-l {f.lstrip('-')}" not in script
+        ]
+    else:
+        # bash: `-W "… --flag …"`; zsh: `'--flag[…]'` — the flag itself appears
+        # in the real completion spec.
+        missing_flags = [f for f in long_flags if f not in script]
+
     assert not missing_flags, (
-        f"[{shell}] completions missing long flags: {missing_flags}"
+        f"[{shell}] completions missing long-flag declarations: {missing_flags}"
     )
+
+
+def test_completions_zsh_arguments_is_single_continued_call() -> None:
+    """The zsh `_arguments -C` block must be ONE continued command.
+
+    Every flag-spec line (and `'1:command:->subcommand'`) must end with a `\\`
+    line-continuation so the specs flow into the same `_arguments` call and
+    `$state` is reachable. Without the continuations, only the first spec is
+    seen, `'1:command:->subcommand'` is orphaned, `$state` is never set, and the
+    whole `case $state in` block is dead — subcommand + per-sub completion break.
+    """
+    from jarn.completions import emit_completions
+
+    parser = _build_parser()
+    script = emit_completions("zsh", parser)
+    lines = script.splitlines()
+
+    start = next(i for i, ln in enumerate(lines) if "_arguments -C" in ln)
+    end = next(i for i, ln in enumerate(lines) if "'*::args:->args'" in ln)
+    assert end > start, "malformed zsh _arguments block"
+
+    # Every line from `_arguments -C` up to the last spec must continue with `\`.
+    for i in range(start, end):
+        assert lines[i].rstrip().endswith("\\"), (
+            f"zsh _arguments line not continued (orphans the rest): {lines[i]!r}"
+        )
+    # The final spec terminates the call (no dangling continuation).
+    assert not lines[end].rstrip().endswith("\\")
+
+
+@pytest.mark.parametrize("shell", ["zsh", "fish"])
+def test_completions_use_real_help_not_flag_names(shell: str) -> None:
+    """Descriptions come from argparse help, never from the flag string itself.
+
+    A flag used as its own description (`-d '--resume'` / `'--resume[--resume …]'`)
+    is ugly and hollow. Assert real help text surfaces and no flag-as-description
+    slips through.
+    """
+    from jarn.completions import emit_completions
+
+    parser = _build_parser()
+    script = emit_completions(shell, parser)
+
+    if shell == "fish":
+        assert "-d '--" not in script, "fish uses a flag string as its description"
+    else:  # zsh
+        assert "[--" not in script, "zsh uses a flag string as its description"
+
+    # A real help string must appear (setup --force: 'Overwrite …').
+    assert "Overwrite" in script
