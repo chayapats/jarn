@@ -106,6 +106,9 @@ SETTINGS: tuple[Setting, ...] = (
        "Write a JSONL log of each session under .jarn/sessions."),
     _s("execution.shell_escape_context", "bool", "Behavior", "! output as context",
        "Feed `! <cmd>` shell output into the agent's next turn."),
+    _s("execution.inline_images", "enum", "Behavior", "Inline images",
+       "Send @-mentioned images to the model directly (auto), or as text @paths (off).",
+       ("auto", "off")),
     # ── Appearance ──
     _s("ui.theme", "enum", "Appearance", "Theme",
        "Color theme. auto detects light/dark from the terminal background.", ("auto", "dark", "light", "high-contrast")),

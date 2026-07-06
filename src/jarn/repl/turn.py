@@ -10,7 +10,8 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, cast
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -48,6 +49,36 @@ _EDIT_BEFORE_APPLY = object()
 #: others it is not an :class:`ApprovalReply` — the editor flow produces the reply.
 _EDIT_MEMORY = object()
 
+#: Substrings that mark a provider ERROR as an image/vision/multimodal capability
+#: rejection (T-3-7). Matched case-insensitively against the error text, and only
+#: consulted on a turn that actually inlined images, so a false positive is bounded
+#: to one harmless text-only re-send.
+_IMAGE_ERROR_MARKERS: tuple[str, ...] = ("image", "vision", "multimodal", "modalit")
+
+
+def select_inline_images(controller: Controller, text: str) -> list[Path]:
+    """Return the image paths to inline for this turn's user message (T-3-7).
+
+    Empty when ``execution.inline_images`` is ``off`` or the session-level fallback
+    has already fired (``controller.inline_images_disabled``). Otherwise scans
+    ``text`` for qualifying image ``@``-mentions via the completion scanner
+    (exists + image mimetype + ≤ 5 MB). Called at submit; the result is threaded
+    through :func:`_run_turn` into ``SessionDriver.run_turn``."""
+    if (
+        controller.config.execution.inline_images != "auto"
+        or controller.inline_images_disabled
+    ):
+        return []
+    from jarn.tui.completion import scan_image_mentions
+
+    return scan_image_mentions(text, controller.project_root or Path.cwd())
+
+
+def _is_image_capability_error(event: Event) -> bool:
+    """True when a provider ERROR looks like an image/vision/multimodal rejection."""
+    text = (event.text or "").lower()
+    return any(marker in text for marker in _IMAGE_ERROR_MARKERS)
+
 
 async def _run_turn(
     console: Console,
@@ -65,6 +96,7 @@ async def _run_turn(
     todos_sink: Callable[[], Awaitable[None]] | None = None,
     title_hook: Callable[[str], None] | None = None,
     queue_sink: Callable[..., int] | None = None,
+    images: list[Path] | None = None,
 ) -> list[tuple[str, str]]:
     """Stream a turn; return the turn's expandable ``(tool, full output)`` pairs.
 
@@ -128,12 +160,26 @@ async def _run_turn(
         # thread's existing state (LangGraph already checkpointed the user
         # message before the failed model call) so the user turn isn't duplicated.
         resume = False
+        image_fallback_done = False
         while True:
             driver = controller.make_driver(approver)
             produced = False
             pending_error: Event | None = None
             payload = "" if resume else turn_text
-            async for event in driver.run_turn(payload, resume=resume):
+            # Inline images only on a fresh (non-resume) attempt while the session
+            # fallback hasn't disabled them. A model-rotation resume re-runs on the
+            # already-checkpointed state (which still holds the image blocks), so it
+            # must not re-inline; only pass the kwarg when there is something to send,
+            # so drivers with the old signature (tests) are unaffected.
+            turn_images = (
+                images
+                if (images and not resume and not controller.inline_images_disabled)
+                else None
+            )
+            run_kwargs: dict[str, Any] = {"resume": resume}
+            if turn_images:
+                run_kwargs["images"] = turn_images
+            async for event in driver.run_turn(payload, **run_kwargs):
                 if event.kind is EventKind.TEXT:
                     renderer.on_text(event.text, agent=event.data.get("agent"))
                     if token_sink is not None:
@@ -210,6 +256,28 @@ async def _run_turn(
             if pending_error is None:
                 controller.reset_model_rotation()  # back to primary on success
                 break
+            # T-3-7 image fallback: a provider that rejects the inlined image gets
+            # ONE same-model text-only retry (do NOT rotate). One-shot per turn and
+            # one-way per session — the flag makes `auto` behave like `off` for the
+            # rest of the session, and the guard stops a second image error from
+            # re-triggering (it then surfaces normally / falls to the branches below).
+            if (
+                turn_images
+                and not image_fallback_done
+                and not produced
+                and _is_image_capability_error(pending_error)
+            ):
+                controller.inline_images_disabled = True
+                image_fallback_done = True
+                # Strip the rejected image message from state so the text-only
+                # re-send doesn't leave the model re-seeing the image.
+                await controller.drop_pending_image_message()
+                renderer.on_notice(
+                    f"[{palette.C_NOTICE}]image not accepted by this model — "
+                    f"retrying without the inline image (text-only)[/{palette.C_NOTICE}]"
+                )
+                resume = False  # re-send the turn text; images are dropped
+                continue
             if pending_error.data.get("retryable") and not produced:
                 new_ref = controller.rotate_to_fallback()
                 if new_ref:

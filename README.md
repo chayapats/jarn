@@ -227,6 +227,12 @@ preview appear inline.
   `.jarn/pastes/` and inserted as an `@path` the agent reads on send.
   Supported on **macOS** (PNG/TIFF/JPEG), **Linux** (Wayland `wl-paste` or X11
   `xclip`), and **Windows** (PowerShell); images over 10 MB are rejected.
+  With `execution.inline_images: auto` (the default), an `@`-mentioned image
+  (≤ 5 MB) is sent to the model as a **native image content block** in your message
+  — so weak vision models see it directly instead of hoping they call `read_file`.
+  Set `inline_images: off` for the old text-only `@path` behaviour. If a provider
+  rejects images, JARN retries the turn **text-only** once and stops inlining for
+  the rest of the session.
 - **Esc Esc** (two Esc presses within 500 ms, idle, empty input) opens the **`/rewind`
   picker** — same chord as Claude Code. The first Esc still clears non-empty input;
   only the second Esc on an already-empty buffer fires the picker. After you pick a
@@ -401,7 +407,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1565 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1569 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

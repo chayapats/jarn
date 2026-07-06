@@ -344,6 +344,13 @@ execution:
                            # (e.g. "1000:1000") to avoid root-owned files. Not forced
                            # by default because many images need root for apt/pip.
   multimodal: true         # read_file auto-detects image/PDF/audio/video
+  inline_images: auto      # auto | off. auto: an @-mentioned image (≤ 5 MB) is sent
+                           # to the model as a native image content block in your
+                           # message — so weak vision models see it without having to
+                           # call read_file (the @path stays in the text too). off:
+                           # the old text-only @path behaviour. If a provider rejects
+                           # images, JARN retries the turn text-only once and treats
+                           # auto like off for the rest of the session.
   allow_local_fallback: false   # if `backend: docker|sandbox` can't start, run on the
                                 # host anyway? OFF = fail closed (recommended).
                                 # When on, the status bar shows "host (no sandbox)".

@@ -139,6 +139,10 @@ class Controller:
         # input. Passed to each per-turn SessionDriver so the round cap holds
         # across the driver instances that make up one auto-fix chain.
         self._diag_chain_round: int = 0
+        # T-3-7: set True after a provider rejects inlined images, so `auto` behaves
+        # like `off` for the rest of the session (session-lifetime, not per-turn —
+        # drivers are recreated each turn and would reset a per-driver flag).
+        self.inline_images_disabled: bool = False
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -641,6 +645,47 @@ class Controller:
                 return cand
             idx += 1
         return None
+
+    async def drop_pending_image_message(self) -> bool:
+        """Remove the last checkpointed human message from the current thread IFF it
+        carries inline image blocks (T-3-7 image fallback).
+
+        After a provider rejects inlined images, the front-end re-sends the turn
+        text-only. LangGraph has already checkpointed the image-laden human message
+        (that is why model-rotation *resumes* rather than re-sends), so a plain
+        re-send would leave the rejected image in state and the model would see it
+        again. Stripping only a message that actually contains image blocks makes
+        this safe whether or not the failed call persisted the message: if it did we
+        remove it; if it did not, the last human message is a prior text turn we must
+        not touch. Best-effort — returns ``False`` (no-op) when the runtime/agent
+        can't update state (e.g. a fake agent in tests) or on any error."""
+        agent = getattr(self.runtime, "agent", None)
+        aget = getattr(agent, "aget_state", None)
+        aupdate = getattr(agent, "aupdate_state", None)
+        if aget is None or aupdate is None:
+            return False
+        try:
+            state = await aget(self._config())
+            messages = (getattr(state, "values", {}) or {}).get("messages", []) or []
+            last_human = next(
+                (m for m in reversed(messages) if getattr(m, "type", "") == "human"),
+                None,
+            )
+            if last_human is None:
+                return False
+            mid = getattr(last_human, "id", None)
+            content = getattr(last_human, "content", None)
+            has_image = isinstance(content, list) and any(
+                isinstance(b, dict) and b.get("type") == "image" for b in content
+            )
+            if mid is None or not has_image:
+                return False
+            from langchain_core.messages import RemoveMessage
+
+            await aupdate(self._config(), {"messages": [RemoveMessage(id=mid)]})
+            return True
+        except Exception:  # noqa: BLE001 - best-effort; never abort the fallback retry
+            return False
 
     def record_session_title(self, title: str, *, when: float) -> None:
         self.sessions.touch(self.thread_id, title, when=when)

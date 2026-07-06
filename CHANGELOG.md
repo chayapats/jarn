@@ -7,6 +7,19 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **Direct image content blocks (T-3-7)** — an `@`-mentioned image is now inlined
+  into your message as a native multimodal content block (base64), so weak vision
+  models see the image directly instead of depending on them choosing to call
+  `read_file`. Gated by `execution.inline_images: auto|off` (default `auto`): `auto`
+  inlines images ≤ 5 MB whose `@path` resolves to an image file (non-image and
+  oversize mentions stay text-only), `off` keeps the old text-only `@path`
+  behaviour. The original `@path` stays in the message text so `read_file` still
+  works and transcripts stay greppable. Block shape is the langchain-core v1
+  `{"type":"image","base64":…,"mime_type":…}` — the same shape DeepAgents'
+  `read_file` emits. If a provider rejects images, the front-end retries the turn
+  **once, same-model, text-only** with a notice and disables inlining for the rest
+  of the session (`auto` then behaves like `off`). Also settable via `/config`.
+
 - **Headless structured output — `--output-schema` (T-3-6)** — `jarn -p "..." --output-schema schema.json --json` constrains the agent's final answer to the given JSON Schema and returns the parsed object as `result` in the JSON envelope (`--json` mode), enabling jq-able CI pipelines. The flag is headless-only (argparse errors if given without `-p`). Bad/missing schema files exit `2` with `error.kind: "usage"`; a model that fails to satisfy the schema exits `1` with `error.kind: "schema"`. The schema is passed as `response_format` through cli → headless → Controller → `build_runtime` → `create_deep_agent`.
 
 - **Subagent progress labels in the stream (T-3-5)** — output from delegated
