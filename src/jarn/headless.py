@@ -188,6 +188,7 @@ async def _run_headless(
     system_prompt_override: str | None = None,
     resume_session: str | None = None,
     response_format: Any | None = None,
+    add_dirs: list[Path] | None = None,
 ) -> HeadlessResult:
     """Async core: build the runtime, run up to ``max_turns``, return results.
 
@@ -210,6 +211,7 @@ async def _run_headless(
         config, project_root, project_trusted=project_trusted,
         system_prompt_override=system_prompt_override,
         response_format=response_format,
+        extra_roots=add_dirs,
     )
     try:
         ok, message = controller.validate()
@@ -317,6 +319,7 @@ def run_headless(
     max_turns: int = 1,
     resume_session: str | None = None,
     response_format: Any | None = None,
+    add_dirs: list[Path] | None = None,
 ) -> int:
     """Synchronous entry point called by the CLI.
 
@@ -342,6 +345,7 @@ def run_headless(
                 max_turns=max_turns,
                 resume_session=resume_session,
                 response_format=response_format,
+                add_dirs=add_dirs,
             )
         )
     except Exception as exc:  # noqa: BLE001

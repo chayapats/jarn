@@ -110,6 +110,32 @@ async def test_run_headless_returns_model_text(tmp_path, monkeypatch, base_confi
     assert result.turns == 1
 
 
+@pytest.mark.asyncio
+async def test_run_headless_threads_extra_roots(tmp_path, monkeypatch, base_config):
+    """_run_headless builds the Controller with add_dirs in scope (item F): the
+    --add-dir grant must reach the engine/backend, not stop at the CLI."""
+    import jarn.headless as headless_mod
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    captured: dict = {}
+    orig_init = headless_mod.Controller.__init__
+
+    def _spy_init(self, *a, **k):
+        captured["extra_roots"] = k.get("extra_roots")
+        orig_init(self, *a, **k)
+
+    monkeypatch.setattr(headless_mod.Controller, "__init__", _spy_init)
+    _stub_controller(monkeypatch)
+
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    await _run_headless("hi", base_config, tmp_path, add_dirs=[extra])
+
+    assert captured["extra_roots"] == [extra], (
+        "add_dirs must be passed to Controller(extra_roots=…) in headless"
+    )
+
+
 def test_run_headless_exits_0_via_run_headless(tmp_path, monkeypatch, base_config, capsys):
     """run_headless prints the text and returns 0."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))

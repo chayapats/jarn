@@ -372,7 +372,8 @@ def _run_provider(provider: str, query: str, max_results: int, key: str) -> str:
         else:
             return f"web_search failed: unknown provider {provider!r}"
         return _format_results(query, items)
-    except (httpx.HTTPError, httpx.HTTPStatusError, ValueError, KeyError) as exc:
+    except (httpx.HTTPError, ValueError, KeyError) as exc:
+        # httpx.HTTPStatusError is a subclass of httpx.HTTPError — no need to list it.
         return f"web_search failed: {exc}"
     except Exception as exc:  # noqa: BLE001
         return f"web_search failed: {exc}"

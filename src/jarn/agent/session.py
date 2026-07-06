@@ -679,9 +679,19 @@ async def _diagnostics_after_edit(driver: SessionDriver) -> Any | None:
     mode = driver.diagnostics_mode
     if mode == "off":
         return None
-    paths = [Path(p) for p in driver._edited_paths if p]
     project_root = driver.project_root
-    if not paths or project_root is None:
+    if project_root is None:
+        return None
+    # Anchor edited paths to the project root BEFORE running the tools. The
+    # edited paths come from the model-authored ``file_path`` tool arg and are
+    # usually PROJECT-ROOT-RELATIVE, while jarn's process CWD may be a subdir or
+    # unrelated (``-p`` / find_project_root). Passing a bare relative path to
+    # ruff/pyright (which run with no ``cwd=``) resolves it against the process
+    # CWD → a nonexistent file → the feature silently reports nothing (or a bogus
+    # E902). ``project_root / p`` keeps an already-absolute p as-is (pathlib rule)
+    # and also neutralises a ``-``-prefixed-filename arg-injection nit.
+    paths = [Path(project_root) / p for p in driver._edited_paths if p]
+    if not paths:
         return None
     try:
         diags = await asyncio.wait_for(
@@ -705,6 +715,13 @@ async def _diagnostics_after_edit(driver: SessionDriver) -> Any | None:
     if not error_diags:
         return None
     if driver._diag_round >= driver.diagnostics_max_rounds:
-        return None
+        # Round cap reached with errors still present: don't silently drop them.
+        # Surface a suggest-style NOTICE (count + top findings) so the user sees
+        # what auto-fix could not resolve within the round budget.
+        text = format_diagnostics(diags)
+        return Event(
+            EventKind.NOTICE,
+            data={"diagnostics": {"text": text, "count": len(diags)}},
+        )
     payload = f"Diagnostics after your edits:\n{format_diagnostics(diags)}\nFix them."
     return Event(EventKind.NOTICE, data={"diagnostics_auto_queue": payload})

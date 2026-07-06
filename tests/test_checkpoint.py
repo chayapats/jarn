@@ -468,6 +468,65 @@ def test_find_for_turn_forged_prefix_does_not_confuse_parser(repo: Path) -> None
     assert mgr.find_for_turn("attacker", 99) is None
 
 
+def test_find_for_turn_prefers_last_match(repo: Path, monkeypatch) -> None:
+    """When duplicate ``(thread, turn)`` snapshot tags exist — the in-graph
+    summarizer reduces the human-message count, so later turns re-issue a turn
+    index already used — ``find_for_turn`` must return the NEWEST (the last
+    record of the creatordate-sorted iterator), not an arbitrary first hit.
+
+    RED before the fix: ``find_for_turn`` returned the FIRST match, so a rewind
+    file-restore after auto-compaction could pick an arbitrary colliding snapshot.
+    """
+    import jarn.agent.checkpoint as cp
+
+    mgr = _manager(repo)
+    tag = "[jarn:thread=t turn=1]"
+    # A correct ``--sort=creatordate`` iterator yields oldest-first, newest-last.
+    monkeypatch.setattr(
+        cp,
+        "_iter_snapshot_records",
+        lambda root: [
+            ("0000older0000", f"older-snap @ 1 {tag}"),
+            ("ffffnewerffff", f"newer-snap @ 2 {tag}"),
+        ],
+    )
+    ref = mgr.find_for_turn("t", 1)
+    assert ref is not None
+    assert ref.sha == "ffffnewerffff", (
+        "find_for_turn must return the NEWEST colliding snapshot (last match)"
+    )
+
+
+def test_find_for_turn_returns_newest_of_duplicate_tags(repo: Path, monkeypatch) -> None:
+    """End-to-end: two real snapshots sharing ``(thread, turn)`` resolve to the
+    newest by git creatordate — the ``--sort=creatordate`` + take-last fix.
+
+    Committer dates are pinned so the ordering is deterministic regardless of the
+    (content-derived, therefore arbitrary) snapshot ref names.
+    """
+    mgr = _manager(repo)
+    thread = "dup-thread"
+
+    # Snapshot 1: older committer date, tree "v1".
+    (repo / "README.txt").write_text("v1\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2001-01-01T00:00:00 +0000")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2001-01-01T00:00:00 +0000")
+    snap1 = mgr.snapshot("dup-a", now=1.0, thread_id=thread, turn_index=1)
+    assert snap1.ok, snap1.message
+
+    # Snapshot 2: newer committer date, tree "v2" → distinct SHA, SAME turn tag.
+    (repo / "README.txt").write_text("v2\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2002-01-01T00:00:00 +0000")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2002-01-01T00:00:00 +0000")
+    snap2 = mgr.snapshot("dup-b", now=2.0, thread_id=thread, turn_index=1)
+    assert snap2.ok, snap2.message
+    assert snap1.sha != snap2.sha, "distinct trees must yield distinct snapshots"
+
+    ref = mgr.find_for_turn(thread, 1)
+    assert ref is not None
+    assert ref.sha == snap2.sha, "the newest colliding snapshot must win"
+
+
 def test_find_for_turn_alias_walk(repo: Path) -> None:
     """find_for_turn follows a one-hop alias B → A to find A's snapshots."""
     mgr = _manager(repo)

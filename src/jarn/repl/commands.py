@@ -103,6 +103,7 @@ class CommandMixin:
                 tool_sink=self._last_tool_outputs,
                 token_sink=self._count_stream_chars,
                 todos_sink=self._on_todos_live,
+                queue_sink=self._input_queue.append,
             )
             await self._render_todos()
             self._maybe_autocheckpoint_hint()
@@ -224,6 +225,7 @@ class CommandMixin:
             tool_sink=self._last_tool_outputs,
             token_sink=self._count_stream_chars,
             todos_sink=self._on_todos_live,
+            queue_sink=self._input_queue.append,
         )
         await self._render_todos()
         self._maybe_autocheckpoint_hint()
@@ -270,9 +272,11 @@ class CommandMixin:
         - REFUSED outright on an untrusted project (a scope-widening capability
           must not be grantable to a repo whose config we don't trust) — no
           prompt, no change.
-        - In ``ask`` mode it REQUIRES explicit approval before widening scope.
-          ``auto-edit``/``yolo`` add directly (the user already opted into the
-          looser mode); ``plan`` widens nothing that plan can act on.
+        - In ``ask`` AND ``plan`` modes it REQUIRES explicit approval before
+          widening scope. ``plan`` must confirm too: a root added in plan
+          persists into a later Shift+Tab escalation to auto-edit, so it must
+          not slip in unconfirmed. ``auto-edit``/``yolo`` add directly (the user
+          already opted into the looser mode).
 
         The added root extends the engine's WRITE scope AND the backend FS guard
         + sandbox bind/writable set (the runtime rebuilds on the next turn).
@@ -296,7 +300,10 @@ class CommandMixin:
                 f"agent's write scope).[/{palette.C_ERROR}]"
             )
             return
-        if self.controller.config.permission_mode is PermissionMode.ASK:
+        if self.controller.config.permission_mode in (
+            PermissionMode.ASK,
+            PermissionMode.PLAN,
+        ):
             answer = (
                 await self._ask(
                     f"Add '{raw}' as a writable root for this session? [y/N]: "
@@ -489,6 +496,9 @@ class CommandMixin:
         # active turn task, so call _run_turn directly — same as _handle does).
         c.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(prompt)}")
         self._last_tool_outputs = []
+        # Match the main submit path (repl/app.py): pass queue_sink so a
+        # diagnostics auto-fix round on the rewound/edited prompt is queued, and
+        # inline any @image mention in that prompt (both no-op unless enabled).
         await repl_turn._run_turn(
             c, self.controller, prompt, self._ask,
             pick=self._pick_approval, view=self._view_full_diff,
@@ -497,6 +507,8 @@ class CommandMixin:
             tool_sink=self._last_tool_outputs,
             token_sink=self._count_stream_chars,
             todos_sink=self._on_todos_live,
+            queue_sink=self._input_queue.append,
+            images=repl_turn.select_inline_images(self.controller, prompt),
         )
         await self._render_todos()
         self._maybe_autocheckpoint_hint()

@@ -1207,6 +1207,161 @@ async def test_cmd_compact_edit_aborted_keeps_context(tmp_path, monkeypatch):
     app.controller.close()
 
 
+# ── item C: per-turn wiring on the three secondary _run_turn call sites ─────────
+
+
+def _spy_run_turn(monkeypatch):
+    """Replace repl.turn._run_turn with a spy capturing each call's kwargs."""
+    from jarn import repl
+
+    captured: list[dict] = []
+
+    async def _spy(*_a, **k):
+        captured.append(k)
+        return []
+
+    monkeypatch.setattr(repl.turn, "_run_turn", _spy)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_custom_command_turn_wires_queue_sink(tmp_path, monkeypatch):
+    """A custom-command turn passes ``queue_sink`` so a diagnostics auto-fix round
+    under ``diagnostics: auto`` is queued rather than silently discarded."""
+    from types import SimpleNamespace
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr(app, "_ensure_extensions", _noop)
+    monkeypatch.setattr(app, "_render_todos", _noop)
+    monkeypatch.setattr(app, "_maybe_autocheckpoint_hint", lambda: None)
+    app.controller.runtime = SimpleNamespace(
+        commands={"greet": SimpleNamespace(render=lambda a: "do the thing")}
+    )
+    captured = _spy_run_turn(monkeypatch)
+
+    await app._command("greet", "")
+
+    assert captured, "custom-command turn never called _run_turn"
+    assert captured[0].get("queue_sink") == app._input_queue.append
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_git_seed_turn_wires_queue_sink(tmp_path, monkeypatch):
+    """`/commit` (and `/review`) seed turns pass ``queue_sink`` too."""
+    from types import SimpleNamespace
+
+    import jarn.agent.git_commands as gc
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr(app, "_render_todos", _noop)
+    monkeypatch.setattr(app, "_maybe_autocheckpoint_hint", lambda: None)
+    monkeypatch.setattr(gc, "gather_diff", lambda root: SimpleNamespace(is_repo=True))
+    monkeypatch.setattr(gc, "commit_prompt", lambda diff: "commit prompt")
+    monkeypatch.setattr(gc, "review_prompt", lambda diff: "review prompt")
+    captured = _spy_run_turn(monkeypatch)
+
+    await app._cmd_git_seed("commit")
+
+    assert captured, "git-seed turn never called _run_turn"
+    assert captured[0].get("queue_sink") == app._input_queue.append
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_rewind_continuation_wires_queue_sink_and_images(tmp_path, monkeypatch):
+    """The rewind-continuation turn passes BOTH ``queue_sink`` (so an auto-fix
+    round on an edited/rewound prompt is queued) AND ``images`` (so an @image
+    mention in the rewound prompt can be inlined) — matching the main submit path.
+    """
+    from types import SimpleNamespace
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app._menu_future = None
+
+    async def _human_turns():
+        return [(0, "first turn"), (1, "second turn")]
+
+    async def _pick_menu(options, **kw):
+        return (0, "first turn")
+
+    async def _confirm(cut_index, turns):
+        return False
+
+    async def _ask(prompt, prefill=""):
+        return ""  # keep the prompt as-is
+
+    async def _fork(cut_index, restore_files=False):
+        return SimpleNamespace()
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr(app.controller, "human_turns", _human_turns)
+    monkeypatch.setattr(app, "_pick_menu", _pick_menu)
+    monkeypatch.setattr(app, "_confirm_rewind_restore", _confirm)
+    monkeypatch.setattr(app, "_ask", _ask)
+    monkeypatch.setattr(app.controller, "fork_to_turn", _fork)
+    monkeypatch.setattr(app, "_replay_transcript", _noop)
+    monkeypatch.setattr(app, "_render_todos", _noop)
+    monkeypatch.setattr(app, "_maybe_autocheckpoint_hint", lambda: None)
+    captured = _spy_run_turn(monkeypatch)
+
+    await app._rewind_picker()
+
+    assert captured, "rewind continuation never called _run_turn"
+    assert captured[0].get("queue_sink") == app._input_queue.append
+    assert "images" in captured[0], "rewind continuation must pass images= too"
+    app.controller.close()
+
+
+# ── item J: /add-dir must confirm in PLAN mode, not just ASK ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_add_dir_confirms_in_plan_mode(tmp_path, monkeypatch):
+    """`/add-dir` in PLAN mode requires explicit confirmation before widening
+    scope — a root added in plan persists into a later Shift+Tab escalation to
+    auto-edit, so it must not slip in unconfirmed.
+
+    RED before the fix: PLAN mode skipped the confirm and added the root outright.
+    """
+    from jarn.config.schema import PermissionMode
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.controller.config.permission_mode = PermissionMode.PLAN
+    app.controller.project_trusted = True
+
+    added: list[str] = []
+    monkeypatch.setattr(
+        app.controller, "add_root", lambda raw: (added.append(raw), (True, "ok"))[1]
+    )
+    asked: list[str] = []
+
+    async def _ask(prompt, **kw):
+        asked.append(prompt)
+        return "n"
+
+    monkeypatch.setattr(app, "_ask", _ask)
+
+    target = tmp_path / "extra"
+    target.mkdir()
+    await app._cmd_add_dir(str(target))
+
+    assert asked, "PLAN mode must prompt before widening scope"
+    assert added == [], "declining the confirm must not add the root"
+    assert "cancelled" in app.console.file.getvalue().lower()
+    app.controller.close()
+
+
 @pytest.mark.asyncio
 async def test_cmd_compact_nothing_to_compact(tmp_path, monkeypatch):
     """An empty preview short-circuits before any prompt — nothing to apply."""

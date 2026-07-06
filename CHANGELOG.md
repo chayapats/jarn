@@ -10,14 +10,17 @@ All notable changes to J.A.R.N. are documented here. Format follows
 - **`--add-dir` multi-root workspaces (T-3-9)** — the agent's filesystem write scope
   generalizes from a single project root to a set of roots (primary first). Add extra
   writable roots at launch with `jarn --add-dir <dir>` (repeatable; each must exist and
-  be a directory) or mid-session with the new `/add-dir <path>` command. A write is
+  be a directory — honored in the interactive TUI **and** headless `jarn -p …` runs) or
+  mid-session with the new `/add-dir <path>` command. A write is
   in-scope when it resolves under **any** root, and the per-root `resolve()`
   symlink-escape discipline holds for every added root exactly as for the primary. The
   same roots set is propagated to the permission engine, the local virtual-mode FS
   guard, the OS-sandbox writable allow-set, and the Docker bind mounts, so an
   engine-allowed added-root write is also permitted at syscall time. `/add-dir` is
-  capability-gated: it requires approval in `ask` mode and is refused on an untrusted
-  project. Added roots widen the **write scope only** — project context (JARN.md) and
+  capability-gated: it requires approval in `ask` **and `plan`** modes (a root added in
+  plan persists into a later escalation to auto-edit, so it must be confirmed) and is
+  refused on an untrusted project. Added roots widen the **write scope only** — project
+  context (JARN.md) and
   checkpoint/undo (`/undo`, `/rewind`) stay **primary-root only**, and `/add-dir` prints
   that limitation when it adds a root. `jarn doctor` now lists all active roots. See
   `docs/PERMISSIONS.md` and `SECURITY.md`.
@@ -67,8 +70,13 @@ All notable changes to J.A.R.N. are documented here. Format follows
   `» queued:` / `› …` echo, so the agent fixes the type error it just introduced.
   Provably bounded: `verify.diagnostics_max_rounds` (default 1) caps consecutive
   auto-fix rounds per user turn (the counter resets only on real user input, so an
-  auto round that introduces new errors still stops at the cap). Scoped to edited
-  files only — pre-existing errors elsewhere never surface. `verify.diagnostics_ts:
+  auto round that introduces new errors still stops at the cap); when the cap is
+  reached with errors still present, a `suggest`-style notice surfaces the remaining
+  findings instead of dropping them silently. Edited paths are anchored to the
+  project root before running so diagnostics work regardless of the process CWD
+  (e.g. under `-p` / a subdir launch). Scoped to edited files only — pre-existing
+  errors elsewhere never surface. Skipped entirely in headless `-p` runs (its notice
+  is not consumed there). `verify.diagnostics_ts:
   false` optionally adds `npx tsc --noEmit` (off by default: tsc is project-wide and
   slow; its findings are still filtered back to the edited files). All three keys
   are in the `/config` panel (plus `verify.gate`, previously YAML-only). New
@@ -96,7 +104,11 @@ All notable changes to J.A.R.N. are documented here. Format follows
   turn-start snapshot now records its `thread_id` + 0-based `turn_index`
   (`CheckpointManager.find_for_turn`), which is how a chosen turn resolves back to
   its checkpoint; old snapshots without the tag simply fall back to
-  conversation-only. Needs `git.autocheckpoint` on — with it off (the default), the
+  conversation-only. When auto-summarization reduces the human-message count a later
+  turn can re-issue a `(thread, turn)` tag; snapshot refs are read
+  `--sort=creatordate` and `find_for_turn` takes the **newest** match, so a rewind
+  after auto-compaction restores the right snapshot rather than an arbitrary
+  colliding one. Needs `git.autocheckpoint` on — with it off (the default), the
   picker shows no extra confirm and behaves exactly as slice 1. New public API:
   `CheckpointManager.find_for_turn` / `restore_to` / `diff_stat` /
   `has_uncheckpointed_changes`; `Controller.fork_to_turn(..., restore_files=)`.

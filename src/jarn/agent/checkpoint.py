@@ -187,10 +187,18 @@ def _iter_snapshot_records(root: Path) -> list[tuple[str, str]]:
 
     Reads the stable ``refs/jarn/checkpoints/snap/`` namespace (which persists
     across undo/redo stack mutations) in a SINGLE ``for-each-ref`` so resolving a
-    turn is one subprocess rather than one-per-snapshot."""
+    turn is one subprocess rather than one-per-snapshot.
+
+    Sorted by ``creatordate`` (oldest first, newest last) so a caller resolving a
+    turn can deterministically pick the NEWEST when duplicate ``(thread, turn)``
+    tags exist — they do when the in-graph summarizer reduces the human-message
+    count and a later turn re-issues an index already used. Without the sort the
+    order is refname/SHA-lexicographic (arbitrary) and the collision resolves to
+    an arbitrary snapshot."""
     result = _git(
         [
             "for-each-ref",
+            "--sort=creatordate",
             "--format=%(objectname)%09%(subject)",
             "refs/jarn/checkpoints/snap/",
         ],
@@ -704,6 +712,11 @@ class CheckpointManager:
         candidate_id = thread_id
         candidate_turn = turn_index
         for _ in range(_MAX_HOPS + 1):
+            # Records come back oldest-first, newest-last (--sort=creatordate), so
+            # keep scanning and take the LAST match: when duplicate (thread, turn)
+            # tags exist (auto-summarization re-issues a turn index), the newest
+            # colliding snapshot wins — not an arbitrary first hit.
+            match: CheckpointRef | None = None
             for sha, subject in _iter_snapshot_records(self.repo_root):
                 m = _TURN_META_RE.search(subject)
                 if (
@@ -711,12 +724,14 @@ class CheckpointManager:
                     and m.group("thread") == candidate_id
                     and int(m.group("turn")) == candidate_turn
                 ):
-                    return CheckpointRef(
+                    match = CheckpointRef(
                         sha=sha,
                         thread_id=thread_id,
                         turn_index=turn_index,
                         label=subject,
                     )
+            if match is not None:
+                return match
             alias = self._thread_aliases.get(candidate_id)
             if alias is None:
                 break

@@ -238,6 +238,91 @@ def test_headless_non_yolo_no_warning(tmp_path, monkeypatch, capsys):
     assert "yolo" not in captured.err.lower()
 
 
+def test_headless_add_dir_threads_into_run_headless(tmp_path, monkeypatch):
+    """`jarn -p ... --add-dir X` (item F): X is validated and threaded into
+    run_headless as add_dirs — the documented flag must not silently no-op in -p.
+    """
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    gp = _make_headless_config(tmp_path)
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None)
+    )
+
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    captured: dict = {}
+
+    import jarn.headless as hd
+
+    def _fake_run_headless(prompt, cfg, root, **k):
+        captured["add_dirs"] = k.get("add_dirs")
+        return 0
+
+    monkeypatch.setattr(hd, "run_headless", _fake_run_headless)
+
+    result = cli_mod._cmd_headless(prompt_arg="do something", add_dirs=[str(extra)])
+    assert result == 0
+    assert captured["add_dirs"] == [extra.resolve()], (
+        "--add-dir must be validated and passed to run_headless in -p mode"
+    )
+
+
+def test_headless_add_dir_invalid_fails_fast(tmp_path, monkeypatch, capsys):
+    """A nonexistent --add-dir in -p mode fails fast (fail-closed, not a
+    half-promise that silently no-ops)."""
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    gp = _make_headless_config(tmp_path)
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None)
+    )
+
+    import jarn.headless as hd
+
+    monkeypatch.setattr(hd, "run_headless", lambda *a, **k: 0)
+
+    result = cli_mod._cmd_headless(
+        prompt_arg="hi", add_dirs=[str(tmp_path / "does-not-exist")]
+    )
+    assert result == 1
+    assert "add-dir" in capsys.readouterr().err.lower()
+
+
+def test_headless_gates_diagnostics_off(tmp_path, monkeypatch):
+    """Headless (-p) forces verify.diagnostics off (item G): ruff/pyright output
+    is dropped in -p mode, so paying up to 30s/edit-turn for it is pure latency
+    tax. The on-disk config leaves it at the default (``suggest``)."""
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    gp = _make_headless_config(tmp_path)
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None)
+    )
+
+    captured: dict = {}
+
+    import jarn.headless as hd
+
+    def _fake_run_headless(prompt, cfg, root, **k):
+        captured["diagnostics"] = cfg.verify.diagnostics
+        return 0
+
+    monkeypatch.setattr(hd, "run_headless", _fake_run_headless)
+
+    cli_mod._cmd_headless(prompt_arg="do something")
+    assert captured["diagnostics"] == "off"
+
+
 def test_trust_hooks_cli_writes_marker(tmp_path, monkeypatch, capsys):
     """`jarn trust-hooks` writes the one-time global-hooks accept marker and
     reports its path; a second call is idempotent."""

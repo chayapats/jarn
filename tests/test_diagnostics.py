@@ -71,6 +71,52 @@ def test_ruff_parse(tmp_path):
     assert ruff_diags[0].line >= 1
 
 
+# ── test_relative_edited_path_anchored_to_project_root (item A) ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_relative_edited_path_anchored_to_project_root(tmp_path, monkeypatch):
+    """A project-relative edited path is diagnosed even when the process CWD is
+    NOT the project root.
+
+    RED before the anchor: ``_diagnostics_after_edit`` passed ``Path('bad.py')``,
+    which ruff resolved against the process CWD (a sibling dir here) → a
+    nonexistent file → ruff errored → the flagship diagnostics feature silently
+    reported nothing. The fix anchors edited paths to ``driver.project_root``.
+    """
+    if not shutil.which("ruff"):
+        pytest.skip("ruff not installed")
+    from jarn.agent.session import SessionDriver, _diagnostics_after_edit
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    bad = tmp_path / "bad.py"
+    bad.write_text("import os\n\ndef foo(): pass\n", encoding="utf-8")
+
+    # Point the PROCESS CWD at a DIFFERENT directory than the project root, so a
+    # relative path only resolves correctly when anchored to project_root.
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    monkeypatch.chdir(other)
+
+    driver = SessionDriver(
+        agent=_WriteFileAgent(),
+        engine=PermissionEngine(),
+        tracker=CostTracker(),
+        thread_id="t1",
+        diagnostics_mode="suggest",
+        project_root=tmp_path,
+        _edited_paths={"bad.py"},  # model-authored, project-root-relative
+    )
+
+    ev = await _diagnostics_after_edit(driver)
+    assert ev is not None, (
+        "diagnostics silently produced nothing when CWD != project root "
+        "(relative edited path was not anchored to the project root)"
+    )
+    assert "F401" in ev.data["diagnostics"]["text"]
+
+
 # ── test_pyright_parse ─────────────────────────────────────────────────────────
 
 
@@ -170,6 +216,53 @@ async def test_round_cap(tmp_path, monkeypatch):
     events = [ev async for ev in driver.run_turn("fix it again")]
     queue_evs = [e for e in events if e.data.get("diagnostics_auto_queue")]
     assert len(queue_evs) == 0, "Should not queue when _diag_round >= diagnostics_max_rounds"
+
+
+# ── test_round_cap_surfaces_notice (item H) ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_round_cap_surfaces_notice(tmp_path, monkeypatch):
+    """At the auto round cap WITH errors still present, a diagnostics NOTICE is
+    surfaced (count + top findings) rather than silently returning None."""
+    from jarn.agent.diagnostics import Diag
+    from jarn.agent.session import SessionDriver
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    monkeypatch.setattr(
+        "jarn.agent.session.collect_diagnostics",
+        lambda paths, project_root, **kw: [
+            Diag(
+                file="f.py",
+                line=1,
+                severity="error",
+                code="F401",
+                message="unused import os",
+                tool="ruff",
+            ),
+        ],
+    )
+
+    driver = SessionDriver(
+        agent=_WriteFileAgent(),
+        engine=PermissionEngine(),
+        tracker=CostTracker(),
+        thread_id="t1",
+        diagnostics_mode="auto",
+        diagnostics_max_rounds=1,
+        _diag_round=1,  # already at cap
+        project_root=tmp_path,
+    )
+    events = [ev async for ev in driver.run_turn("fix it again")]
+    queue_evs = [e for e in events if e.data.get("diagnostics_auto_queue")]
+    diag_notices = [e for e in events if e.data.get("diagnostics")]
+    assert queue_evs == [], "at the cap it must not queue another auto-fix round"
+    assert len(diag_notices) == 1, (
+        "a capped-but-still-errored turn must surface a diagnostics NOTICE, "
+        "not drop the remaining errors silently"
+    )
+    assert "F401" in diag_notices[0].data["diagnostics"].get("text", "")
 
 
 # ── test_suggest_notice_only ───────────────────────────────────────────────────
