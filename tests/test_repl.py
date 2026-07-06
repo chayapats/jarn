@@ -3408,3 +3408,116 @@ async def test_bang_tail_cap_lines_and_chars(tmp_path, monkeypatch):
     assert len(tail) <= 2000
     assert tail.endswith("<9>")
     app.controller.close()
+
+
+# ---------------------------------------------------------------------------
+# T-2-9: @git: and @url: mention expansion
+# ---------------------------------------------------------------------------
+
+
+def test_url_mention_rewrites():
+    """``@url:https://x`` is rewritten to a web_fetch instruction; no prefetch."""
+    from jarn.tui.completion import expand_mentions
+
+    result = expand_mentions("check @url:https://example.com for info")
+    assert "@url:https://example.com" not in result
+    assert "fetch https://example.com with web_fetch and use its content" in result
+
+
+def test_unknown_git_subcommand_verbatim(tmp_path):
+    """Unknown ``@git:frobnicate`` tokens are left verbatim (not crashed)."""
+    from jarn.tui.completion import expand_mentions
+
+    result = expand_mentions("try @git:frobnicate", project_root=tmp_path)
+    assert "@git:frobnicate" in result
+
+
+def test_git_mention_expands(tmp_path):
+    """``@git:status`` in a message is replaced with a fenced block of real git output."""
+    import subprocess
+
+    from jarn.tui.completion import expand_mentions
+
+    # Set up a real git repo with a staged file.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"],
+        cwd=repo, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=repo, check=True, capture_output=True,
+    )
+    (repo / "staged.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "staged.py"], cwd=repo, check=True, capture_output=True)
+
+    result = expand_mentions("look at @git:status", project_root=repo)
+
+    # Token replaced with fenced block.
+    assert "@git:status" not in result
+    assert "<git-mention status" in result
+    assert "</git-mention>" in result
+    # Real porcelain output contains the staged file.
+    assert "staged.py" in result
+
+
+def test_git_mention_redacts_secrets(tmp_path, monkeypatch):
+    """Git output containing a secret-shaped string is redacted before injection."""
+    import subprocess as _subprocess
+
+    from jarn.tui.completion import expand_mentions
+
+    fake_key = "sk-ant-api03-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+    class _FakeResult:
+        returncode = 0
+        stdout = f"A  some_file.py\n# branch: main\nADDED_KEY={fake_key}\n"
+        stderr = ""
+
+    monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: _FakeResult())
+
+    result = expand_mentions("@git:status", project_root=tmp_path)
+
+    assert fake_key not in result
+    # sk-… style replacement or [REDACTED] — either is acceptable
+    assert "sk-…" in result or "[REDACTED]" in result
+
+
+def test_git_mention_timeout_becomes_error_block(tmp_path, monkeypatch):
+    """A subprocess timeout produces an error block instead of crashing."""
+    import subprocess as _subprocess
+
+    from jarn.tui.completion import expand_mentions
+
+    def _timeout(*args, **kwargs):
+        raise _subprocess.TimeoutExpired(args[0], 5)
+
+    monkeypatch.setattr(_subprocess, "run", _timeout)
+
+    result = expand_mentions("@git:status", project_root=tmp_path)
+
+    assert "@git:status" not in result
+    assert "<git-mention status" in result
+    assert "timed out" in result.lower() or "error" in result.lower()
+
+
+def test_git_mention_multiple_tokens(tmp_path, monkeypatch):
+    """Multiple ``@git:`` tokens in one message all expand."""
+    import subprocess as _subprocess
+
+    from jarn.tui.completion import expand_mentions
+
+    class _FakeResult:
+        returncode = 0
+        stdout = "output\n"
+        stderr = ""
+
+    monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: _FakeResult())
+
+    result = expand_mentions("@git:status and @git:log", project_root=tmp_path)
+
+    assert "@git:status" not in result
+    assert "@git:log" not in result
+    assert result.count("<git-mention") == 2

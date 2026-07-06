@@ -170,7 +170,17 @@ preview appear inline.
 ```
 
 - **Type** a message and press **Enter** to send (**Shift+Enter** / **Ctrl+J** for a newline).
-- Start a line with **`/`** for a command (see below). **`@`** references a file path.
+- Start a line with **`/`** for a command (see below). **`@`** references a file path or a
+  rich mention:
+  - **`@<path>`** — file or directory (default; bare `@`).
+  - **`@folder:<frag>`** — directories only.
+  - **`@symbol:<name>`** — repo-map symbol (function / class).
+  - **`@git:status|diff|staged|log`** — on submit, replaced by a fenced block of real
+    read-only git output (`--porcelain=v1 -b`, `diff`, `diff --staged`,
+    `log --oneline -15`). Fixed argv allowlist, no shell, 5 s timeout. Output is
+    secret-redacted before injection.
+  - **`@url:<url>`** — rewrites to `fetch <url> with web_fetch and use its content`
+    at submit time; no pre-fetch (network stays agent-mediated and SSRF-guarded).
 - **↑ / ↓** navigate input history.
 - **Tab** accepts the highlighted completion (`/command` or `@file`). Completion uses a
   **two-tier fuzzy engine**: exact-prefix matches appear first (unchanged predictability),
@@ -359,7 +369,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1459 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1468 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

@@ -366,3 +366,34 @@ def test_fuzzy_rank_gap_penalty_ordering():
     # "ac" in "axxxxxc": a(0)→c(6), 5-char gap
     result = fuzzy_rank("ac", ["axxxxxc", "abcdef"])
     assert result[0] == "abcdef"
+
+
+# ---------------------------------------------------------------------------
+# T-2-9: @git: and @url: mentions
+# ---------------------------------------------------------------------------
+
+
+def test_git_mention_completion(tmp_path):
+    """``@git:`` completes all 4 read-only subcommands."""
+    cands = _provider(tmp_path).complete("@git:")
+    labels = [c.label for c in cands]
+    assert "@git:status" in labels
+    assert "@git:diff" in labels
+    assert "@git:staged" in labels
+    assert "@git:log" in labels
+    assert all(c.kind == "git" for c in cands)
+
+
+def test_git_mention_completion_prefix_filter(tmp_path):
+    """``@git:st`` should complete to ``@git:status`` only (prefix filter)."""
+    cands = _provider(tmp_path).complete("@git:st")
+    labels = [c.label for c in cands]
+    assert "@git:status" in labels
+    assert "@git:diff" not in labels
+
+
+def test_git_mention_completion_replacement(tmp_path):
+    """Chosen completion replaces the mention token while preserving the prefix."""
+    cands = _provider(tmp_path).complete("look at @git:")
+    status = next(c for c in cands if c.label == "@git:status")
+    assert status.replacement == "look at @git:status"

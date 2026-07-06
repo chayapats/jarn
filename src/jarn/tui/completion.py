@@ -5,24 +5,26 @@ renders the returned candidates and applies the chosen replacement.
 
 ``@`` mentions are extensible via a small resolver registry.  A bare ``@frag``
 completes file paths (the common case, unchanged); an explicit ``@kind:frag``
-routes to a registered resolver.  The shipped kinds are local and synchronous:
+routes to a registered resolver.  The shipped kinds are:
 
   * ``@frag``          → file/dir paths (FileMentionResolver, kind "file")
   * ``@folder:frag``   → directories only (FolderMentionResolver, kind "folder")
   * ``@symbol:frag``   → symbols from the repo map (SymbolMentionResolver,
                          kind "symbol"); replacement is the agent-readable
                          ``@<rel>:<symbol>`` token.
-
-These are completion-only authoring aids: they insert a precise token that the
-agent resolves with its existing read tools; nothing is pre-expanded into the
-prompt.  TODO(rich-at-mentions): later slices add ``@git`` (sync), then content
-pre-expansion on submit, then ``@url`` / ``@docs`` (async fetch + cache) — each
-needs a different (non-per-keystroke / async) surface, so they are out of scope
-here.
+  * ``@git:subcmd``    → completes status/diff/staged/log; at submit time
+                         ``expand_mentions`` runs the real command and injects
+                         the output as a ``<git-mention>`` block
+                         (GitMentionResolver, kind "git").
+  * ``@url:<url>``     → no keystroke completions (freeform URL); at submit time
+                         ``expand_mentions`` rewrites to a web_fetch instruction
+                         (UrlMentionResolver, kind "url").
 """
 
 from __future__ import annotations
 
+import re
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -466,6 +468,142 @@ class SymbolMentionResolver:
         return out
 
 
+@dataclass(slots=True, frozen=True)
+class GitMentionResolver:
+    """``@git:subcmd`` → completes the 4 read-only subcommands.
+
+    Completion-time: returns the known subcommands filtered by the typed
+    fragment.  At submit time ``expand_mentions`` runs the real git command
+    and replaces the token with the output (see the module-level function).
+    """
+
+    kind: str = "git"
+
+    def resolve(
+        self, provider: CompletionProvider, prefix_text: str, frag: str, root: Path
+    ) -> list[Completion]:
+        frag_cf = frag.casefold()
+        out: list[Completion] = []
+        for subcmd in sorted(_GIT_ALLOWLIST):
+            if not frag or subcmd.casefold().startswith(frag_cf):
+                out.append(
+                    Completion(
+                        f"@git:{subcmd}",
+                        f"{prefix_text}@git:{subcmd}",
+                        self.kind,
+                        description=f"git {' '.join(_GIT_ALLOWLIST[subcmd][1:])}",
+                    )
+                )
+        return out
+
+
+@dataclass(slots=True, frozen=True)
+class UrlMentionResolver:
+    """``@url:<url>`` → no keystroke completions (freeform URL).
+
+    Registers under kind ``"url"`` so the prefix is recognised by the routing
+    layer rather than falling through to the file resolver.  Expansion to
+    ``fetch <url> with web_fetch and use its content`` happens at submit time
+    via ``expand_mentions``; no network call is made during completion
+    (stays agent-mediated + SSRF-guarded).
+    """
+
+    kind: str = "url"
+
+    def resolve(
+        self, provider: CompletionProvider, prefix_text: str, frag: str, root: Path
+    ) -> list[Completion]:
+        # Freeform — no keystroke completions.
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Fixed read-only argv allowlist for @git: expansion
+# ---------------------------------------------------------------------------
+
+#: Subcommands exposed via ``@git:``; each maps to a fixed, read-only argv
+#: (no shell, no user-supplied arguments).
+_GIT_ALLOWLIST: dict[str, list[str]] = {
+    "status": ["git", "status", "--porcelain=v1", "-b"],
+    "diff": ["git", "diff"],
+    "staged": ["git", "diff", "--staged"],
+    "log": ["git", "log", "--oneline", "-15"],
+}
+
+_GIT_TIMEOUT: int = 5          # seconds
+_GIT_MAX_CHARS: int = 2_000    # tail-truncate to this many chars
+
+#: Regex matching ``@git:<subcmd>`` and ``@url:<rest>`` tokens; both are
+#: whitespace-terminated (``\S+``) so they survive mid-sentence placement.
+_MENTION_EXPAND_RE: re.Pattern[str] = re.compile(r"@(git|url):(\S+)")
+
+
+def expand_mentions(text: str, project_root: Path | None = None) -> str:
+    """Expand ``@git:X`` and ``@url:X`` tokens at submit time.
+
+    ``@git:X`` — runs the fixed read-only argv for subcommand X, wraps the
+    output in a ``<git-mention X (exit N)>…</git-mention>`` block, and passes
+    the output through the central secret-redaction helper.  Unknown subcommands
+    (not in ``_GIT_ALLOWLIST``) are left verbatim.  The subprocess is called
+    directly (no shell), cwd=project_root, 5 s timeout, output tail-capped at
+    2 000 chars.
+
+    ``@url:https://…`` — pure text rewrite to
+    ``fetch <url> with web_fetch and use its content``; no network call is made
+    here (the agent performs the fetch via its own gated web_fetch tool).
+
+    Tokens are whitespace-delimited (``@kind:\\S+``), consistent with the
+    completion-engine tokenizer.  Multiple mentions in one message all expand
+    in a single pass.  Expansion does not recurse into paste tokens or code
+    fences already present in the text (expansion is a flat regex substitution;
+    it will not match inside previously-expanded ``<git-mention>`` blocks
+    because those blocks do not start with ``@``).
+    """
+    from jarn.config.secrets import redact_secrets  # local import to keep module light
+
+    def _replace(m: re.Match[str]) -> str:
+        kind = m.group(1)
+        rest = m.group(2)
+
+        if kind == "url":
+            return f"fetch {rest} with web_fetch and use its content"
+
+        # kind == "git"
+        argv = _GIT_ALLOWLIST.get(rest)
+        if argv is None:
+            return m.group(0)  # unknown subcommand → left verbatim
+
+        cwd = str(project_root) if project_root is not None else None
+        try:
+            proc = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=_GIT_TIMEOUT,
+                cwd=cwd,
+            )
+            exit_code = proc.returncode
+            output = (proc.stdout or "") + (proc.stderr or "")
+            if len(output) > _GIT_MAX_CHARS:
+                output = output[-_GIT_MAX_CHARS:]
+            output = redact_secrets(output)
+            return f"<git-mention {rest} (exit {exit_code})>\n{output}</git-mention>"
+        except subprocess.TimeoutExpired:
+            return (
+                f"<git-mention {rest} (error: timed out after {_GIT_TIMEOUT}s)>\n"
+                f"git {rest}: timed out after {_GIT_TIMEOUT}s\n"
+                "</git-mention>"
+            )
+        except Exception as exc:  # noqa: BLE001
+            return (
+                f"<git-mention {rest} (error: {exc})>\n"
+                f"git {rest}: {exc}\n"
+                "</git-mention>"
+            )
+
+    return _MENTION_EXPAND_RE.sub(_replace, text)
+
+
 #: The default resolver for a bare ``@frag`` token.
 _FILE_RESOLVER: FileMentionResolver = FileMentionResolver()
 
@@ -475,9 +613,11 @@ def _build_registry(*resolvers: MentionResolver) -> dict[str, MentionResolver]:
 
 
 #: Registry of explicit ``@kind:`` mention resolvers, keyed by each resolver's
-#: ``kind``.  Additive — new kinds (e.g. ``@git`` in a later slice) register
-#: here without touching routing or the bare-``@`` file path.
+#: ``kind``.  Additive — new kinds register here without touching routing or
+#: the bare-``@`` file path.
 _RESOLVERS: dict[str, MentionResolver] = _build_registry(
     FolderMentionResolver(),
     SymbolMentionResolver(),
+    GitMentionResolver(),
+    UrlMentionResolver(),
 )
