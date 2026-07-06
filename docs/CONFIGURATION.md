@@ -713,18 +713,27 @@ jarn -p "follow up" --resume-session abc  # send a new message on thread abc
 
 `--json` prints one JSON object on stdout:
 
-- **Success:** `{result, tokens, cost, turns, tool_calls}`
+- **Success:** `{result, tokens, cost, turns, tool_calls}` — `result` is a string, or a parsed JSON object when `--output-schema` is used.
 - **Failure:** `{error: {kind, message}}` (kinds include `error`, `refusal`,
-  `budget`, `timeout`)
+  `budget`, `timeout`, `schema`, `usage`)
 
 **Exit codes:**
 
 | Code | Meaning |
 |------|---------|
 | `0` | Success |
-| `1` | Generic error (config, provider, unexpected failure) |
-| `2` | Approval refused (fail-closed in `ask`/`plan`, or danger-guard in auto modes) or session budget hard-stop |
+| `1` | Generic error (config, provider, unexpected failure) or `schema` — agent failed to satisfy `--output-schema` |
+| `2` | Approval refused (fail-closed in `ask`/`plan`, or danger-guard in auto modes), session budget hard-stop, or `usage` — bad/unreadable `--output-schema` file |
 | `124` | Timeout |
+
+**`--output-schema FILE`** (headless-only, use with `--json`): path to a JSON Schema
+file. The agent's final answer is constrained to the schema; on success the `result`
+field contains the parsed object:
+
+```bash
+# Extract a structured answer and pipe to jq
+jarn -p "list changed files" --output-schema files.schema.json --json | jq '.result.files[]'
+```
 
 `--max-turns N` runs up to *N* agent turns on the same session thread. After the
 first turn, later turns resume without a new user message so the agent can keep

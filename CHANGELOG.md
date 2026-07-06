@@ -7,6 +7,8 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **Headless structured output — `--output-schema` (T-3-6)** — `jarn -p "..." --output-schema schema.json --json` constrains the agent's final answer to the given JSON Schema and returns the parsed object as `result` in the JSON envelope (`--json` mode), enabling jq-able CI pipelines. The flag is headless-only (argparse errors if given without `-p`). Bad/missing schema files exit `2` with `error.kind: "usage"`; a model that fails to satisfy the schema exits `1` with `error.kind: "schema"`. The schema is passed as `response_format` through cli → headless → Controller → `build_runtime` → `create_deep_agent`.
+
 - **Subagent progress labels in the stream (T-3-5)** — output from delegated
   `task` subagents is now labelled instead of interleaving anonymously. Each
   streamed event is correlated back to the subagent that produced it (the name from
