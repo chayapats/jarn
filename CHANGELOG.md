@@ -7,6 +7,17 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **Pluggable web-search providers (T-3-4)** — `web_search` now supports Tavily,
+  Brave Search, and Exa in addition to the original keyless DuckDuckGo scraper.
+  Set `search.provider: tavily|brave|exa` to pin a provider, or leave it as `auto`
+  (default) to auto-discover the first provider whose key is set
+  (`TAVILY_API_KEY` → `BRAVE_API_KEY` → `EXA_API_KEY`, then DDG fallback).  Keys
+  are resolved through the existing secret-reference resolver (`${ENV_VAR}`,
+  `keychain:jarn/<provider>`) — never inline.  Output format is identical to the
+  DDG scraper so prompts are unchanged.  `jarn doctor` now reports the active search
+  provider and whether its key resolves.  `web_fetch` and its SSRF guard are
+  untouched.
+
 - **Diagnostics feedback loop — LSP-lite (T-3-3)** — after the verify gate, ruff +
   pyright run on the files the turn edited (each only when its binary is installed;
   30 s combined budget) and feed lint/type errors back. `verify.diagnostics: suggest`

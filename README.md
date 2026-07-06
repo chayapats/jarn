@@ -70,6 +70,9 @@ base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists 
   too, not just priced cloud ones.
 - **Date-aware** — the current local date/time is injected into the system prompt,
   so "today"-relative requests don't anchor to the model's training cutoff.
+- **Pluggable web search** — `web_search` supports Tavily, Brave Search, and Exa in
+  addition to the keyless DuckDuckGo fallback.  Set `search.provider: auto` (default)
+  and export `TAVILY_API_KEY` / `BRAVE_API_KEY` / `EXA_API_KEY` — the first one set wins.
 - **Extensible** — skills, slash commands, custom subagents, lifecycle hooks, and MCP
   servers, all configured through plain files in `~/.jarn` and `.jarn/`.
 
@@ -380,7 +383,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1548 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1554 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

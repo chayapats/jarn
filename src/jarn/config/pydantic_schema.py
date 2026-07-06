@@ -31,6 +31,8 @@ from jarn.config.schema import (
     ProviderConfig,
     ProviderType,
     RoutingConfig,
+    SearchConfig,
+    SearchProviderType,
     TracingConfig,
     UIConfig,
     VerifyConfig,
@@ -745,6 +747,35 @@ class PricingConfigModel(_StrictModel):
         return _normalize_bool(value, "pricing.network")
 
 
+class SearchConfigModel(_StrictModel):
+    """Pluggable web-search provider configuration."""
+
+    provider: SearchProviderType = SearchProviderType.AUTO
+    api_key: str = ""
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _provider(cls, value: Any) -> SearchProviderType:
+        try:
+            return SearchProviderType(str(value))
+        except ValueError as exc:
+            valid = [e.value for e in SearchProviderType]
+            raise ConfigValidationError(
+                f"search.provider must be one of {valid} (got {value!r})."
+            ) from exc
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def _api_key(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise ConfigValidationError(
+                f"search.api_key must be a string (got {value!r})."
+            )
+        return value
+
+
 class ConfigModel(_StrictModel):
     config_version: int = CURRENT_CONFIG_VERSION
     default_profile: str = "openrouter"
@@ -771,6 +802,7 @@ class ConfigModel(_StrictModel):
     plan: PlanConfigModel = Field(default_factory=PlanConfigModel)
     verify: VerifyConfigModel = Field(default_factory=VerifyConfigModel)
     pricing: PricingConfigModel = Field(default_factory=PricingConfigModel)
+    search: SearchConfigModel = Field(default_factory=SearchConfigModel)
 
     @field_validator("permission_mode", mode="before")
     @classmethod
@@ -1018,4 +1050,8 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             diagnostics_ts=model.verify.diagnostics_ts,
         ),
         pricing=PricingConfig(network=model.pricing.network),
+        search=SearchConfig(
+            provider=model.search.provider,
+            api_key=model.search.api_key,
+        ),
     )
