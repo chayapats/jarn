@@ -127,6 +127,20 @@ settings stripped, or run `jarn trust <path>` after reviewing the repo. Use
 `jarn doctor` to see which skills, commands, subagents, hooks, and MCP servers
 would load (including shadowed or skipped files).
 
+## Uninstall
+
+To fully remove all J.A.R.N. state (config, secrets, trust store, sessions) and
+OS keychain entries:
+
+```bash
+jarn uninstall          # shows an itemized summary, then prompts for confirmation
+jarn uninstall --yes    # skip the prompt
+```
+
+`jarn uninstall` removes **only** `~/.jarn` (global state) — it never touches
+project-local `.jarn/` directories. After removal it prints the package-manager
+uninstall line (`npm uninstall -g jarn-cli` or `pip uninstall jarn`).
+
 ## Quick start
 
 **With OpenRouter (recommended — one browser click, no manual key handling):**
@@ -451,7 +465,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1626 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1630 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

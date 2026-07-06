@@ -141,6 +141,9 @@ not on the host in `yolo`. We do not claim the pattern set is complete.
 3. Stay in `ask` or `plan` mode for untrusted codebases.
 4. Set `execution.allow_local_fallback: false` if you require sandbox-or-nothing.
 5. Keep `~/.jarn` permissions tight (`chmod 700 ~/.jarn`).
+6. **To fully remove all jarn keys and state** (e.g. when leaving a machine or trial):
+   run `jarn uninstall` — it removes `~/.jarn` and deletes every `jarn/<provider>`
+   OS keychain entry after an itemized confirmation prompt.
 
 ## Dependency security
 

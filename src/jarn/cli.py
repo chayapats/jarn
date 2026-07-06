@@ -191,6 +191,17 @@ def build_parser() -> argparse.ArgumentParser:
         "catches the callback, and stores the API key in the OS keychain",
     )
 
+    p_uninstall = sub.add_parser(
+        "uninstall",
+        help="Remove global ~/.jarn state and OS keychain entries, then print "
+        "the package-manager uninstall command",
+    )
+    p_uninstall.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the itemized confirmation prompt",
+    )
+
     p_bug = sub.add_parser(
         "bug",
         help="Assemble a redacted bug report and open a prefilled GitHub issue",
@@ -278,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_trust_hooks()
     if args.command == "login":
         return _cmd_login()
+    if args.command == "uninstall":
+        return _cmd_uninstall(yes=args.yes)
     if args.command == "bug":
         return _cmd_bug(dry_run=args.dry_run)
     if args.command == "completions":
@@ -623,6 +636,13 @@ def _cmd_login() -> int:
         "config was left untouched — set `providers.openrouter.api_key` manually."
     )
     return 1
+
+
+def _cmd_uninstall(*, yes: bool = False) -> int:
+    """Remove global ~/.jarn state and OS keychain entries."""
+    from jarn.uninstall import run_uninstall
+
+    return run_uninstall(yes=yes)
 
 
 def _write_openrouter_key_ref(reference: str) -> bool:

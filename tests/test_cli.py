@@ -731,3 +731,162 @@ def test_completions_use_real_help_not_flag_names(shell: str) -> None:
 
     # A real help string must appear (setup --force: 'Overwrite …').
     assert "Overwrite" in script
+
+
+# ---------------------------------------------------------------------------
+# T-4-5 — jarn uninstall
+# ---------------------------------------------------------------------------
+
+
+def test_uninstall_removes_home_and_keys(tmp_path, monkeypatch, capsys):
+    """jarn uninstall --yes removes ~/.jarn and calls delete_password for every provider.
+
+    Uses a fake global home (tmp_path subdir) and monkeypatched keyring so the
+    real ~/.jarn and the real keychain are never touched.
+    """
+    import keyring
+
+    from jarn.config import paths
+    from jarn.config.defaults import ALL_PROVIDERS
+
+    # Build a fake global home with some content.
+    fake_home = tmp_path / "fake_jarn_home"
+    fake_home.mkdir()
+    (fake_home / "config.yaml").write_text("key: val\n", encoding="utf-8")
+    (fake_home / "secrets").mkdir()
+    (fake_home / "secrets" / "dummy.txt").write_text("secret", encoding="utf-8")
+
+    monkeypatch.setattr(paths, "global_home", lambda: fake_home)
+
+    deleted_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(keyring, "delete_password", lambda s, a: deleted_calls.append((s, a)))
+
+    assert main(["uninstall", "--yes"]) == 0
+
+    # Global home is gone.
+    assert not fake_home.exists(), "global home was not removed"
+
+    # delete_password called for every provider candidate.
+    for provider in ALL_PROVIDERS:
+        assert ("jarn", provider) in deleted_calls, (
+            f"delete_password not called for provider {provider!r}"
+        )
+
+
+def test_uninstall_spares_projects(tmp_path, monkeypatch):
+    """jarn uninstall --yes removes only ~/.jarn — project-local .jarn/ dirs are untouched.
+
+    The implementation must remove ONLY paths.global_home() and never enumerate
+    or touch project-local .jarn/ directories that live under a project root.
+    """
+    import keyring
+
+    from jarn.config import paths
+
+    # Fake global home.
+    fake_home = tmp_path / "global_jarn"
+    fake_home.mkdir()
+
+    # A separate project root with its own .jarn/.
+    project_root = tmp_path / "myproject"
+    project_root.mkdir()
+    project_jarn = project_root / ".jarn"
+    project_jarn.mkdir()
+    (project_jarn / "config.yaml").write_text("project: true\n", encoding="utf-8")
+
+    monkeypatch.setattr(paths, "global_home", lambda: fake_home)
+    monkeypatch.setattr(keyring, "delete_password", lambda s, a: None)
+
+    assert main(["uninstall", "--yes"]) == 0
+
+    # Global home removed.
+    assert not fake_home.exists(), "global home was not removed"
+
+    # Project-local .jarn/ is untouched.
+    assert project_jarn.exists(), "project .jarn/ was incorrectly removed"
+    assert (project_jarn / "config.yaml").is_file(), "project config was lost"
+
+
+def test_uninstall_confirm_flow(tmp_path, monkeypatch, capsys):
+    """Without --yes an itemized summary is shown; declining aborts with everything intact.
+
+    Verifies: (1) the summary mentions dir size, keychain entries, and trust
+    entries; (2) a 'n' answer leaves the home dir AND keychain untouched (no
+    delete_password calls, no shutil.rmtree call).
+    """
+    import keyring
+
+    from jarn.config import paths
+
+    # Fake global home with a trust.yaml containing 2 entries.
+    fake_home = tmp_path / "fake_jarn_home"
+    fake_home.mkdir()
+    (fake_home / "config.yaml").write_text("key: val\n", encoding="utf-8")
+
+    import yaml
+
+    (fake_home / "trust.yaml").write_text(
+        yaml.safe_dump({"/projects/alpha": "aabbcc", "/projects/beta": "ddeeff"}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(paths, "global_home", lambda: fake_home)
+
+    deleted_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(keyring, "delete_password", lambda s, a: deleted_calls.append((s, a)))
+
+    # Decline the confirmation prompt.
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+    result = main(["uninstall"])
+
+    # Aborted → non-zero exit.
+    assert result != 0, "declining should return a non-zero exit code"
+
+    # Global home is INTACT.
+    assert fake_home.exists(), "home dir was removed despite declining"
+
+    # Keychain untouched.
+    assert deleted_calls == [], f"delete_password was called despite declining: {deleted_calls}"
+
+    # Summary was printed (size + keychain + trust info).
+    out = capsys.readouterr().out
+    assert "keychain" in out.lower(), "summary did not mention keychain entries"
+    assert "trust" in out.lower(), "summary did not mention trust-store entries"
+
+
+def test_uninstall_channel_hint(tmp_path, monkeypatch, capsys):
+    """Final message uses 'npm' when sys.frozen is truthy, 'pip' when it is not.
+
+    sys.frozen is injected via monkeypatch so we can test both branches in one
+    test without touching the actual process state persistently.
+    """
+    import sys
+
+    import keyring
+
+    from jarn.config import paths
+
+    monkeypatch.setattr(keyring, "delete_password", lambda s, a: None)
+
+    # --- pip branch: sys.frozen is absent ---
+    if hasattr(sys, "frozen"):
+        monkeypatch.delattr(sys, "frozen")
+    fake_home_pip = tmp_path / "jarn_home_pip"
+    fake_home_pip.mkdir()
+    monkeypatch.setattr(paths, "global_home", lambda: fake_home_pip)
+
+    assert main(["uninstall", "--yes"]) == 0
+    out_pip = capsys.readouterr().out
+    assert "pip" in out_pip, f"expected 'pip' in output, got: {out_pip!r}"
+    assert "npm" not in out_pip, f"'npm' should not appear in pip-branch output: {out_pip!r}"
+
+    # --- npm branch: sys.frozen is True ---
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    fake_home_npm = tmp_path / "jarn_home_npm"
+    fake_home_npm.mkdir()
+    monkeypatch.setattr(paths, "global_home", lambda: fake_home_npm)
+
+    assert main(["uninstall", "--yes"]) == 0
+    out_npm = capsys.readouterr().out
+    assert "npm" in out_npm, f"expected 'npm' in output, got: {out_npm!r}"
