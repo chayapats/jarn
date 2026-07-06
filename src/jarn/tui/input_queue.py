@@ -9,6 +9,9 @@ from dataclasses import dataclass
 class QueuedLine:
     display: str
     payload: str
+    #: True for programmatically-queued internal items (e.g. diagnostics auto-fix
+    #: rounds) that were never echoed as ``» queued: …`` to the user.
+    internal: bool = False
 
 
 class InputQueue:
@@ -17,8 +20,10 @@ class InputQueue:
     def __init__(self) -> None:
         self._items: list[QueuedLine] = []
 
-    def append(self, display: str, payload: str) -> int:
-        self._items.append(QueuedLine(display=display, payload=payload))
+    def append(self, display: str, payload: str, internal: bool = False) -> int:
+        self._items.append(
+            QueuedLine(display=display, payload=payload, internal=internal)
+        )
         return len(self._items)
 
     def pop_next(self) -> QueuedLine | None:

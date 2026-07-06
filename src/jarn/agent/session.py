@@ -18,8 +18,10 @@ import asyncio
 import logging
 import time as _time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+from jarn.agent.diagnostics import collect_diagnostics, format_diagnostics
 from jarn.agent.events import (
     ApprovalReply,
     ApprovalRequest,
@@ -138,6 +140,20 @@ class SessionDriver:
     #: Cleared at turn start; triggers one deferred verify call when the turn
     #: completes without pending interrupts (see debounce logic in run_turn).
     _verify_dirty: bool = False
+    #: Paths edited this turn (populated from ``_last_edit_target`` on each
+    #: write_file / edit_file TOOL_END). Scopes diagnostics to edited files only.
+    _edited_paths: set[str] = field(default_factory=set)
+    #: Diagnostics feedback mode: ``off`` | ``suggest`` | ``auto`` (from config).
+    diagnostics_mode: str = "off"
+    #: Max consecutive auto-fix rounds per turn-chain (loop guard).
+    diagnostics_max_rounds: int = 1
+    #: Also run ``npx tsc --noEmit`` in the diagnostics pass (opt-in; tsc has no
+    #: per-file mode so it checks the whole project — slow on big codebases).
+    diagnostics_ts: bool = False
+    #: Which auto-diag round this driver is in (0 = first/real turn).  Set per
+    #: turn by the controller; incremented in the REPL when an auto-queue event
+    #: fires.
+    _diag_round: int = 0
     #: Last cumulative usage seen per (thread, model) — streaming providers resend totals.
     _last_usage_totals: dict[tuple[str, str], tuple[int, int, int, int]] = field(
         default_factory=dict, repr=False
@@ -182,6 +198,7 @@ class SessionDriver:
             self.transcript.write_user(user_input, ts=_time.time())
         self._turn_text = ""
         self._verify_dirty = False
+        self._edited_paths = set()
         if not resume:
             # Clear ALL entries at turn start, not just the current thread's.
             # The cumulative-stream dedup uses this dict to baseline provider totals
@@ -274,6 +291,8 @@ class SessionDriver:
                                 "edit_file",
                             ):
                                 self._verify_dirty = True
+                                if self._last_edit_target:
+                                    self._edited_paths.add(self._last_edit_target)
                         # Mid-turn budget enforcement: usage was just recorded for
                         # this message, so re-check the hard-stop the same way it is
                         # checked before the turn and abort cleanly if exceeded.
@@ -323,6 +342,12 @@ class SessionDriver:
                     if notice is not None:
                         yield notice
                     self._verify_dirty = False
+                # Deferred diagnostics: run ruff/pyright on the edited files and
+                # emit a NOTICE (suggest) or a queue-trigger (auto).
+                if self._edited_paths and self.diagnostics_mode != "off":
+                    diag_ev = await _diagnostics_after_edit(self)
+                    if diag_ev is not None:
+                        yield diag_ev
                 # Flush the accumulated assistant reply as a single transcript line.
                 if self.transcript is not None and self._turn_text:
                     self.transcript.write_assistant(self._turn_text, ts=_time.time())
@@ -576,3 +601,53 @@ class SessionDriver:
     async def _run_post_hooks(self, name: str):
         async for item in run_post_hooks(self, name):
             yield item
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics helper (T-3-3)
+# ---------------------------------------------------------------------------
+
+
+async def _diagnostics_after_edit(driver: SessionDriver) -> Any | None:
+    """Run diagnostics on edited files and return an Event or None.
+
+    Called only when ``driver._edited_paths`` is non-empty and
+    ``driver.diagnostics_mode != "off"``.
+
+    Modes:
+    - ``suggest``: always emit a NOTICE with the formatted diagnostics text.
+    - ``auto``:    queue a follow-up turn if there are *error*-severity findings
+                   and we haven't hit ``diagnostics_max_rounds``.
+    """
+    mode = driver.diagnostics_mode
+    if mode == "off":
+        return None
+    paths = [Path(p) for p in driver._edited_paths if p]
+    project_root = driver.project_root
+    if not paths or project_root is None:
+        return None
+    try:
+        diags = await asyncio.wait_for(
+            asyncio.to_thread(
+                collect_diagnostics, paths, project_root, ts=driver.diagnostics_ts
+            ),
+            timeout=30.0,
+        )
+    except TimeoutError:
+        return None
+    if not diags:
+        return None
+    error_diags = [d for d in diags if d.severity == "error"]
+    if mode == "suggest":
+        text = format_diagnostics(diags)
+        return Event(
+            EventKind.NOTICE,
+            data={"diagnostics": {"text": text, "count": len(diags)}},
+        )
+    # auto mode: queue only if errors exist and rounds remain
+    if not error_diags:
+        return None
+    if driver._diag_round >= driver.diagnostics_max_rounds:
+        return None
+    payload = f"Diagnostics after your edits:\n{format_diagnostics(diags)}\nFix them."
+    return Event(EventKind.NOTICE, data={"diagnostics_auto_queue": payload})

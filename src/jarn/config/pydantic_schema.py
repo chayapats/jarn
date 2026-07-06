@@ -691,6 +691,9 @@ class PlanConfigModel(_StrictModel):
 
 class VerifyConfigModel(_StrictModel):
     gate: str = "suggest"
+    diagnostics: str = "suggest"
+    diagnostics_max_rounds: int = 1
+    diagnostics_ts: bool = False
 
     @field_validator("gate", mode="before")
     @classmethod
@@ -703,6 +706,34 @@ class VerifyConfigModel(_StrictModel):
                 f"verify.gate must be one of {sorted(_VALID_VERIFY_GATES)} (got {raw!r})."
             )
         return raw
+
+    @field_validator("diagnostics", mode="before")
+    @classmethod
+    def _diagnostics(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_DIAGNOSTICS_MODES
+
+        raw = str(value)
+        if raw not in _VALID_DIAGNOSTICS_MODES:
+            raise ConfigValidationError(
+                f"verify.diagnostics must be one of "
+                f"{sorted(_VALID_DIAGNOSTICS_MODES)} (got {raw!r})."
+            )
+        return raw
+
+    @field_validator("diagnostics_max_rounds", mode="before")
+    @classmethod
+    def _diagnostics_max_rounds(cls, value: Any) -> int:
+        raw = _coerce_int(value, "verify.diagnostics_max_rounds")
+        if raw < 1:
+            raise ConfigValidationError(
+                f"verify.diagnostics_max_rounds must be >= 1 (got {raw})."
+            )
+        return raw
+
+    @field_validator("diagnostics_ts", mode="before")
+    @classmethod
+    def _diagnostics_ts(cls, value: Any) -> bool:
+        return _normalize_bool(value, "verify.diagnostics_ts")
 
 
 class PricingConfigModel(_StrictModel):
@@ -980,6 +1011,11 @@ def config_to_dataclass(model: ConfigModel) -> Config:
         ),
         wiki=WikiConfig(enabled=model.wiki.enabled),
         plan=PlanConfig(exit_mode=model.plan.exit_mode),
-        verify=VerifyConfig(gate=model.verify.gate),
+        verify=VerifyConfig(
+            gate=model.verify.gate,
+            diagnostics=model.verify.diagnostics,
+            diagnostics_max_rounds=model.verify.diagnostics_max_rounds,
+            diagnostics_ts=model.verify.diagnostics_ts,
+        ),
         pricing=PricingConfig(network=model.pricing.network),
     )

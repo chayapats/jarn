@@ -4252,3 +4252,79 @@ def test_verify_badge_render_suggest():
     assert "confirm" in out
     assert "verify.gate: auto" in out
     assert "⎿" in out
+
+
+@pytest.mark.asyncio
+async def test_diag_auto_queue_internal_not_echoed(tmp_path, monkeypatch):
+    """A diagnostics auto-fix round is queued as an INTERNAL item: payload only,
+    no '» queued:' echo, and the chain-round counter is bumped before it runs."""
+    from jarn import repl
+    from jarn.tui.input_queue import InputQueue
+
+    ctrl = _controller(tmp_path, monkeypatch)
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+    payload = (
+        "Diagnostics after your edits:\n"
+        "  ruff  f.py:1  error  [F401] unused import os\n"
+        "Fix them."
+    )
+    events = [
+        Event(EventKind.NOTICE, "", {"diagnostics_auto_queue": payload}),
+        Event(EventKind.DONE),
+    ]
+    monkeypatch.setattr(ctrl, "make_driver", lambda approver: _FakeDriver(events))
+
+    queue = InputQueue()
+    console = Console(file=StringIO(), width=100)
+    await repl._run_turn(
+        console, ctrl, "hi", _ask_returning(""), queue_sink=queue.append
+    )
+    out = console.file.getvalue()
+    assert "» queued:" not in out          # internal item is never echoed as queued
+    assert "Fix them." not in out          # payload itself is not printed
+    assert len(queue) == 1
+    item = queue.pop_next()
+    assert item is not None
+    assert item.internal is True
+    assert item.display == ""              # nothing for the drain path to echo
+    assert item.payload == payload
+    assert ctrl._diag_chain_round == 1     # bumped BEFORE the round runs (loop guard)
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_diag_chain_round_reset_on_user_drain_only(tmp_path, monkeypatch):
+    """Draining a REAL user item resets the diag chain round; an internal
+    auto-fix item does not (the cap must hold across its own edits)."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+
+    async def _noop_handle(text):
+        return None
+    monkeypatch.setattr(app, "_handle", _noop_handle)
+
+    # Internal auto-fix item: counter must survive the drain.
+    app.controller._diag_chain_round = 1
+    app._input_queue.append("", "Diagnostics after your edits:\n…\nFix them.", internal=True)
+    app._drain_queue()
+    await asyncio.sleep(0)  # let the (noop) turn task settle
+    assert app.controller._diag_chain_round == 1
+
+    # Real user item: counter resets — a fresh turn-chain begins.
+    app._input_queue.append("do more", "do more")
+    app._drain_queue()
+    await asyncio.sleep(0)
+    assert app.controller._diag_chain_round == 0
+    app.controller.close()

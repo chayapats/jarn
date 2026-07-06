@@ -7,6 +7,22 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **Diagnostics feedback loop — LSP-lite (T-3-3)** — after the verify gate, ruff +
+  pyright run on the files the turn edited (each only when its binary is installed;
+  30 s combined budget) and feed lint/type errors back. `verify.diagnostics: suggest`
+  (default) prints a notice listing the findings; `auto` queues ONE internal
+  follow-up turn — `Diagnostics after your edits: … Fix them.` — that runs without a
+  `» queued:` / `› …` echo, so the agent fixes the type error it just introduced.
+  Provably bounded: `verify.diagnostics_max_rounds` (default 1) caps consecutive
+  auto-fix rounds per user turn (the counter resets only on real user input, so an
+  auto round that introduces new errors still stops at the cap). Scoped to edited
+  files only — pre-existing errors elsewhere never surface. `verify.diagnostics_ts:
+  false` optionally adds `npx tsc --noEmit` (off by default: tsc is project-wide and
+  slow; its findings are still filtered back to the edited files). All three keys
+  are in the `/config` panel (plus `verify.gate`, previously YAML-only). New
+  `jarn.agent.diagnostics` module (`collect_diagnostics` / `format_diagnostics`);
+  skipped on cancelled/errored turns, same semantics as the verify gate.
+
 - **Verified badge on turn completion (T-3-2)** — a structured `verify` NOTICE event
   is emitted at the end of every edit-turn, rendered as a badge on the last line:
   `⎿ verified: pytest ✓ 214 passed · 3.2s` (pass) or `⎿ verify: pytest ✗ 2 failed ·
