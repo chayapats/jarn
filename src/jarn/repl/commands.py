@@ -653,7 +653,15 @@ class CommandMixin:
         backend = CancellableLocalShellBackend(str(cwd))
         # execute is blocking; offload to a thread so the event-loop stays live
         # (Esc can still fire while the command runs).
-        response = await asyncio.to_thread(backend.execute, command)
+        try:
+            response = await asyncio.to_thread(backend.execute, command)
+        except asyncio.CancelledError:
+            # Esc/cancel hit while the shell command was running.  Print feedback
+            # (the renderer owns "cancelled" for agent turns; the shell path has no
+            # renderer, so we own the message here) then re-raise so the event-loop
+            # sees the cancellation.
+            c.print(f"[{palette.C_DIM}]interrupted[/{palette.C_DIM}]")
+            raise
         c.print(response.output)
         if self.controller.config.execution.shell_escape_context:
             raw = response.output or ""

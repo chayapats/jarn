@@ -1785,6 +1785,54 @@ async def test_shell_escape_bare_bang_prints_hint(tmp_path, monkeypatch):
     app.controller.close()
 
 
+@pytest.mark.asyncio
+async def test_shell_escape_cancel_prints_interrupted(tmp_path, monkeypatch):
+    """Cancelling a running ! command prints exactly one 'interrupted' line.
+
+    Before the fix _shell_escape let CancelledError propagate silently; the
+    _handle except block just passed.  After the fix _shell_escape catches
+    CancelledError, prints the dim 'interrupted' line, and re-raises so the
+    event-loop still knows the task was cancelled.
+
+    Also confirms the agent-turn path is unaffected: test_single_stop_message
+    verifies that path still prints exactly one 'cancelled' (renderer-owned).
+    """
+    import asyncio as _asyncio
+
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    buf = StringIO()
+    app.console = Console(file=buf, width=80)
+
+    # Patch asyncio.to_thread so the shell backend "blocks" via a slow coroutine —
+    # this makes Esc/cancel hit exactly the await point in _shell_escape.
+    async def _slow_to_thread(fn, *args, **kwargs):  # noqa: ARG001
+        await _asyncio.sleep(10)
+
+    monkeypatch.setattr("asyncio.to_thread", _slow_to_thread)
+
+    task = _asyncio.create_task(app._shell_escape("sleep 10"))
+    await _asyncio.sleep(0.05)   # let the task reach the blocking await
+    task.cancel()
+    with contextlib.suppress(_asyncio.CancelledError):
+        await task
+
+    out = buf.getvalue()
+    assert "interrupted" in out, f"expected 'interrupted' in output, got: {out!r}"
+    count = out.count("interrupted")
+    assert count == 1, f"expected exactly 1 'interrupted', got {count}: {out!r}"
+    app.controller.close()
+
+
 def _git_repo_with_commit(root):
     """Create a fresh git repo with one commit at ``root``."""
     def g(*args):

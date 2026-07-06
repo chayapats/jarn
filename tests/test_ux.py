@@ -364,12 +364,17 @@ async def test_wizard_model_step_degrades_to_manual_when_unreachable(tmp_path, m
 
 
 def test_blank_line_rhythm():
-    """_sep emits at most one blank between kinds — no triple newlines in committed output.
+    """Spy-based test: _sep emits 0 blanks for same-kind (text→text) and 1+ for
+    kind transitions (reasoning→text).  Goes RED under the old _sep logic.
 
-    In terminal mode Rich's Markdown adds a trailing blank line after every paragraph.
-    The old _sep emitted an extra blank even for same-kind (text→text) transitions, which
-    stacked the Markdown trailing blank with the sep blank to produce three newlines.
-    The fix: suppress the sep blank when the kind does not change.
+    OLD _sep: ``if not (_prev == "tool" and kind == "tool"): console.print()``
+        → always emits a blank for text→text (non-tool→non-tool always fires)
+    NEW _sep: ``if _prev != kind: console.print()``
+        → suppresses the blank when the kind does not change
+
+    The spy counts calls to ``console.print()`` with NO arguments (the blank-line
+    signal) rather than relying on StringIO content, which is invisible in test
+    mode because Rich Markdown does not add a trailing blank in StringIO consoles.
     """
     from io import StringIO
 
@@ -377,22 +382,45 @@ def test_blank_line_rhythm():
 
     from jarn.repl_renderer import TurnRenderer
 
-    buf = StringIO()
-    # force_terminal so Rich's Markdown renderer adds trailing blank after paragraphs
-    # (non-terminal mode omits that padding, making the bug invisible in test)
-    console = Console(file=buf, width=80, force_terminal=True)
-    r = TurnRenderer(console, spinner=False)
+    def _renderer_with_spy():
+        c = Console(file=StringIO(), width=80)
+        calls: list[tuple] = []
+        orig = c.print
+        def spy(*args, **kwargs):  # noqa: E306
+            calls.append(args)
+            orig(*args, **kwargs)
+        c.print = spy  # type: ignore[method-assign]
+        return TurnRenderer(c, spinner=False), calls
 
-    # Two consecutive text paragraphs (non-live-sink) each trigger _flush_stable.
-    # The second commit calls _sep("text") with _prev already "text":
-    #   old code → blank emitted  → combined with Markdown trailing blank → \n\n\n
-    #   new code → blank suppressed (same kind) → only Markdown trailing \n → no triple
-    r.on_text("first para\n\n")
-    r.on_text("second para\n\n")
-    r.finish()
+    # ── A: text → text ───────────────────────────────────────────────────────
+    # _sep("text") fires for first commit (prev=None → blank expected).
+    # _sep("text") fires for second commit: NEW → no blank; OLD → blank.
+    r_a, calls_a = _renderer_with_spy()
+    r_a.on_text("first para\n\n")
+    mark_a = len(calls_a)          # snapshot after first commit
+    r_a.on_text("second para\n\n")
+    r_a.finish()
 
-    out = buf.getvalue()
-    assert "\n\n\n" not in out, f"triple newline in committed output: {out!r}"
+    blanks_between = sum(1 for a in calls_a[mark_a:] if a == ())
+    assert blanks_between == 0, (
+        f"text→text: 0 separator blanks expected between commits, "
+        f"got {blanks_between}. Old _sep() always emitted 1 here (regression)."
+    )
+
+    # ── B: reasoning → text (transition blank must fire) ────────────────────
+    # on_text triggers _commit_reasoning (_sep("reasoning"), prev=None → 1 blank)
+    # then _flush_stable (_sep("text"), prev="reasoning" → 1 transition blank).
+    r_b, calls_b = _renderer_with_spy()
+    r_b.on_reasoning("thinking…")
+    mark_b = len(calls_b)         # snapshot after on_reasoning (no sep fired yet)
+    r_b.on_text("answer\n\n")
+    r_b.finish()
+
+    blanks_in_transition = sum(1 for a in calls_b[mark_b:] if a == ())
+    assert blanks_in_transition >= 1, (
+        f"reasoning→text: at least 1 transition blank expected, "
+        f"got {blanks_in_transition}"
+    )
 
 
 def test_no_color_styled_fg():
