@@ -361,3 +361,59 @@ async def test_wizard_model_step_degrades_to_manual_when_unreachable(tmp_path, m
             await pilot.press("enter")
             await pilot.pause()
     assert app.answers["model"] == "ollama/my-local-model"
+
+
+def test_blank_line_rhythm():
+    """_sep emits at most one blank between kinds — no triple newlines in committed output.
+
+    In terminal mode Rich's Markdown adds a trailing blank line after every paragraph.
+    The old _sep emitted an extra blank even for same-kind (text→text) transitions, which
+    stacked the Markdown trailing blank with the sep blank to produce three newlines.
+    The fix: suppress the sep blank when the kind does not change.
+    """
+    from io import StringIO
+
+    from rich.console import Console
+
+    from jarn.repl_renderer import TurnRenderer
+
+    buf = StringIO()
+    # force_terminal so Rich's Markdown renderer adds trailing blank after paragraphs
+    # (non-terminal mode omits that padding, making the bug invisible in test)
+    console = Console(file=buf, width=80, force_terminal=True)
+    r = TurnRenderer(console, spinner=False)
+
+    # Two consecutive text paragraphs (non-live-sink) each trigger _flush_stable.
+    # The second commit calls _sep("text") with _prev already "text":
+    #   old code → blank emitted  → combined with Markdown trailing blank → \n\n\n
+    #   new code → blank suppressed (same kind) → only Markdown trailing \n → no triple
+    r.on_text("first para\n\n")
+    r.on_text("second para\n\n")
+    r.finish()
+
+    out = buf.getvalue()
+    assert "\n\n\n" not in out, f"triple newline in committed output: {out!r}"
+
+
+def test_no_color_styled_fg():
+    """With NO_COLOR active, styled_fg returns plain text for both bold and non-bold."""
+    import os
+
+    from jarn.tui.palette import styled_fg
+
+    old = os.environ.get("NO_COLOR")
+    try:
+        os.environ["NO_COLOR"] = "1"
+        plain = styled_fg("#ff0000", "hello")
+        bold_plain = styled_fg("#ff0000", "hello", bold=True)
+    finally:
+        if old is None:
+            os.environ.pop("NO_COLOR", None)
+        else:
+            os.environ["NO_COLOR"] = old
+
+    assert plain == "hello"
+    assert bold_plain == "hello"
+    # No HTML markup or ANSI escapes leak through
+    assert "<style" not in bold_plain
+    assert "<b>" not in bold_plain

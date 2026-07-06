@@ -494,6 +494,46 @@ def test_inline_expanded_text(tmp_path, monkeypatch):
     app.controller.close()
 
 
+@pytest.mark.asyncio
+async def test_single_stop_message(tmp_path, monkeypatch):
+    """Cancelling an agent turn yields exactly one stop message — renderer owns it."""
+    from jarn.repl.turn import _run_turn as _rt
+
+    ctrl = _controller(tmp_path, monkeypatch)
+
+    async def _noop_runtime() -> None:
+        return None
+
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+
+    async def _slow_stream():
+        yield Event(EventKind.TEXT, "starting…")
+        await asyncio.sleep(10)  # long wait — will be cancelled here
+
+    class _SlowDriver:
+        def run_turn(self, text, *, resume=False):
+            return _slow_stream()
+
+    monkeypatch.setattr(ctrl, "make_driver", lambda approver: _SlowDriver())
+
+    console = Console(file=StringIO(), width=80)
+
+    task = asyncio.create_task(
+        _rt(console, ctrl, "hi", _ask_returning(""), live_sink=lambda s: None, spinner=False)
+    )
+    await asyncio.sleep(0.05)  # let the turn start
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    out = console.file.getvalue()
+    stop_words = ["cancelled", "interrupted"]
+    count = sum(out.count(w) for w in stop_words)
+    assert count == 1, f"expected 1 stop message, got {count}: {out!r}"
+    assert "cancelled" in out, f"renderer should own the cancel message: {out!r}"
+    ctrl.close()
+
+
 def test_tool_sink_accumulates_live():
     """Tool outputs append to a provided sink as they arrive (mid-turn Ctrl+O)."""
     from jarn.repl_renderer import TurnRenderer as _TurnRenderer
@@ -1692,7 +1732,7 @@ def test_pastes_cleared_after_expand(tmp_path, monkeypatch):
         routing=RoutingConfig(main="openrouter/m"),
     )
     app = repl.InlineApp(cfg, root)
-    token = "[Pasted #1: 5 lines]"
+    token = "[Pasted text #1 +5 lines]"
     app._pastes[token] = "line one\nline two\nline three"
     expanded = app._expand_pastes(token)
     app._pastes.clear()
