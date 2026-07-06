@@ -64,13 +64,17 @@ async def _run_turn(
     token_sink: Callable[[str], None] | None = None,
     todos_sink: Callable[[], Awaitable[None]] | None = None,
     title_hook: Callable[[str], None] | None = None,
+    queue_sink: Callable[..., int] | None = None,
 ) -> list[tuple[str, str]]:
     """Stream a turn; return the turn's expandable ``(tool, full output)`` pairs.
 
     If ``tool_sink`` is given, tool outputs are appended to it live (so a pager
     can read them mid-turn). If ``todos_sink`` is given, it is awaited on every
     ``write_todos`` tool completion so the front-end can refresh the live plan
-    checklist in place as the agent flips items."""
+    checklist in place as the agent flips items. If ``queue_sink`` is given
+    (the REPL's ``InputQueue.append``), a diagnostics auto-fix round is queued
+    through it as an *internal* item (``internal=True``) so the drain runs it
+    without a ``» queued:`` / ``› …`` user-line echo."""
     try:
         await controller.ensure_runtime()
     except Exception as exc:  # noqa: BLE001
@@ -158,6 +162,34 @@ async def _run_turn(
                     # so it re-renders in place mid-turn (not only after the turn).
                     if todos_sink is not None and event.text == "write_todos":
                         await todos_sink()
+                    produced = True
+                elif event.kind is EventKind.NOTICE and event.data.get(
+                    "diagnostics_auto_queue"
+                ):
+                    # Diagnostics auto-fix (T-3-3): queue ONE internal follow-up
+                    # turn. The chain-round counter is bumped BEFORE the round
+                    # runs so its driver sees round>=1 and the cap holds even if
+                    # the auto round introduces new errors. Reset to 0 on real
+                    # user input (keys._submit / app._drain_queue).
+                    if queue_sink is not None:
+                        controller._diag_chain_round += 1
+                        queue_sink(
+                            "", event.data["diagnostics_auto_queue"], internal=True
+                        )
+                        renderer.on_notice(
+                            f"[{palette.C_DIM}]diagnostics: errors in edited files "
+                            f"— auto-fix round queued[/{palette.C_DIM}]"
+                        )
+                    produced = True
+                elif event.kind is EventKind.NOTICE and event.data.get("diagnostics"):
+                    # Diagnostics suggest-mode NOTICE: plain notice listing findings.
+                    d = event.data["diagnostics"]
+                    body = _rich_escape(str(d.get("text", "")))
+                    renderer.on_notice(
+                        f"[{palette.C_NOTICE}]diagnostics: {d.get('count', 0)} "
+                        f"issue(s) in edited files[/{palette.C_NOTICE}]\n"
+                        f"[{palette.C_DIM}]{body}[/{palette.C_DIM}]"
+                    )
                     produced = True
                 elif event.kind is EventKind.NOTICE or (
                     event.kind is EventKind.APPROVAL

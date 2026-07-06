@@ -741,8 +741,14 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             if item is None:
                 return
             # No prompt echo here: the line was already echoed once with the
-            # `» queued: …` marker at submit time (see _submit). Re-echoing it as
-            # `› …` on drain would put two scrollback lines per queued input.
+            # `» queued: …` marker at submit time (see _submit) — and INTERNAL
+            # items (diagnostics auto-fix rounds) are never echoed at all, by
+            # design. Re-echoing on drain would double a queued input's lines
+            # (or fake a user line for an internal one).
+            if not item.internal:
+                # A real user line starts a fresh turn-chain: reset the
+                # diagnostics auto-fix round counter (T-3-3 loop guard).
+                self.controller._diag_chain_round = 0
             self._turn_start = time.monotonic()
             self._turn_stream_chars = 0
             self._turn_base_output = self.controller.tracker.total.output_tokens
@@ -772,6 +778,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                     token_sink=self._count_stream_chars,
                     todos_sink=self._on_todos_live,
                     title_hook=self._title_hook,
+                    queue_sink=self._input_queue.append,
                 )
                 # Turn completed normally (not cancelled — CancelledError would
                 # have bypassed this line).  Fire the turn-end notification.

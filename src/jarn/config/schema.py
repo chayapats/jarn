@@ -253,18 +253,39 @@ class MCPServer:
 
 _VALID_VERIFY_GATES: frozenset[str] = frozenset({"off", "suggest", "auto"})
 
+_VALID_DIAGNOSTICS_MODES: frozenset[str] = frozenset({"off", "suggest", "auto"})
+
 
 @dataclass(slots=True)
 class VerifyConfig:
-    """Post-edit verification gate.
+    """Post-edit verification gate + diagnostics feedback loop.
 
-    ``off``     — no post-edit verify prompts or runs.
-    ``suggest`` — (default) emit a NOTICE with the detected test command.
-    ``auto``    — run the detected test command via the execution backend when
-                  permissions allow (explicit opt-in).
+    ``gate``
+        ``off``     — no post-edit verify prompts or runs.
+        ``suggest`` — (default) emit a NOTICE with the detected test command.
+        ``auto``    — run the detected test command via the execution backend
+                      when permissions allow (explicit opt-in).
+
+    ``diagnostics``
+        ``off``     — no diagnostics feedback.
+        ``suggest`` — (default) emit a NOTICE listing ruff/pyright findings on
+                      edited files so the user can see them.
+        ``auto``    — if edited files have new errors, queue ONE internal
+                      follow-up turn asking the agent to fix them.  Bounded by
+                      ``diagnostics_max_rounds`` (default 1) to prevent loops.
+
+    ``diagnostics_max_rounds``
+        Maximum consecutive auto-fix rounds before the loop stops.  Default 1.
+
+    ``diagnostics_ts``
+        Run ``npx tsc --noEmit --pretty false`` as a diagnostics tool.  OFF by
+        default: tsc runs project-wide and is slow — opt in explicitly.
     """
 
     gate: str = "suggest"
+    diagnostics: str = "suggest"
+    diagnostics_max_rounds: int = 1
+    diagnostics_ts: bool = False
 
 
 @dataclass(slots=True)

@@ -391,6 +391,25 @@ verify:
                            # the detected test command; auto runs it and renders
                            # a badge: ⎿ verified: pytest ✓ 214 passed · 3.2s
                            # (permissions + danger-guard still apply)
+  diagnostics: suggest     # off | suggest | auto — diagnostics feedback loop
+                           # (LSP-lite). After the verify gate, ruff + pyright
+                           # run on the files THIS turn edited (never the whole
+                           # project, so pre-existing issues elsewhere stay out
+                           # of scope; each tool runs only if its binary exists).
+                           #   suggest — (default) notice listing the findings
+                           #   auto    — if the edits introduced errors, queue
+                           #             ONE internal follow-up turn telling the
+                           #             agent to fix them (not echoed as a user
+                           #             line)
+                           # 30 s combined budget; skipped on cancelled/error turns.
+  diagnostics_max_rounds: 1  # loop guard for `auto`: max consecutive auto-fix
+                             # rounds per user turn. Resets on real user input;
+                             # an auto round that introduces NEW errors still
+                             # stops at this cap — no runaway loops.
+  diagnostics_ts: false    # also run `npx tsc --noEmit` in the diagnostics pass.
+                           # OFF by default: tsc has no per-file mode, so it
+                           # checks the whole project (slow on big codebases).
+                           # Findings are still filtered to the edited files.
 
 # ── Observability ────────────────────────────────────────────────────────
 observability:

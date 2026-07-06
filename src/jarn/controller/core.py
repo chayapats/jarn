@@ -129,6 +129,11 @@ class Controller:
         # Shell-escape output captured by ! commands; injected once into the next
         # turn via enrich_turn_input and then cleared.
         self.pending_shell_context: list[ShellNote] = []
+        # Diagnostics auto-fix chain round (T-3-3): 0 for a real user turn,
+        # incremented when an auto-fix round is queued, reset on real user
+        # input. Passed to each per-turn SessionDriver so the round cap holds
+        # across the driver instances that make up one auto-fix chain.
+        self._diag_chain_round: int = 0
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -488,6 +493,10 @@ class Controller:
             verify_executor=getattr(
                 getattr(self.runtime, "backend", None), "execute", None
             ),
+            diagnostics_mode=self.config.verify.diagnostics,
+            diagnostics_max_rounds=self.config.verify.diagnostics_max_rounds,
+            diagnostics_ts=self.config.verify.diagnostics_ts,
+            _diag_round=self._diag_chain_round,
         )
         # Retain for settle_snapshot: the /undo, /redo, and /abort paths await this
         # driver's pending turn-start snapshot before mutating the checkpoint stack.
