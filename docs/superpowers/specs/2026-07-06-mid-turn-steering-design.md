@@ -33,7 +33,11 @@ Grounded in code:
 So the seam for mid-turn steering is the `updates` boundary inside `_stream_turn` — the
 one place where a super-step (a model node or a tool/ToolNode node) has *completed* and
 its result is durably checkpointed, and where re-entering `astream` is already a supported
-control-flow path.
+control-flow path. **Crucial refinement (developed in §2):** not every completed
+`updates` super-step is a *safe* injection point. A model-node super-step completes with an
+`AIMessage` whose `tool_calls` are still **pending** (unexecuted); the seam we actually
+inject at is a *settled tool boundary* — one where the last checkpointed message is not an
+`AIMessage` awaiting its `ToolMessage`s.
 
 **Key invariant we rely on:** the SQLite checkpointer is not optional for the TUI.
 `create_async_checkpointer` (`src/jarn/memory/sessions.py:89`) is required whenever the
@@ -127,22 +131,41 @@ engine, and interrupt path are untouched.
    not whenever the key is pressed — the REPL writes a slot at any time, the driver reads it
    only at the boundary.
 
-2. **Check + break at the main-graph `updates` boundary.** In `_stream_turn`, in the
+2. **Check + break ONLY at a *settled* main-graph tool boundary.** In `_stream_turn`, in the
    `elif mode == "updates":` arm (`session.py:366-375`), after the existing
-   `for ev in self._handle_update_chunk(...)` yields, add (only when `namespace` is falsy —
-   i.e. the **main** graph, never a subagent subgraph; `namespace` is already in scope from
-   `_unpack_stream_item`, `session.py:324`):
+   `for ev in self._handle_update_chunk(...)` yields, add the gated injection below. Two
+   guards matter equally:
+   - `not namespace` — the **main** graph only, never a subagent subgraph (`namespace` is
+     already in scope from `_unpack_stream_item`, `session.py:324`).
+   - **settled** — the last checkpointed message must NOT be an `AIMessage` with
+     unfulfilled `tool_calls`. **This is the load-bearing correctness guard.** A model-node
+     `updates` super-step *has completed* but its `AIMessage` carries `tool_calls` that are
+     still **pending** — `handle_update_chunk` emits `TOOL_START` by iterating
+     `msg.tool_calls` in *updates* mode (`stream_handlers.py:125-160`), while the tool
+     RESULTS (`ToolMessage` → `TOOL_END`) arrive LATER in *messages* mode
+     (`handle_message_chunk`, `stream_handlers.py:77-91`, `mtype == "tool"`). Appending a
+     `HumanMessage` at the model-node boundary therefore produces
+     `AIMessage(tool_calls) → HumanMessage → ToolMessage` on resume (or a dangling
+     `tool_use` with no `tool_result`), which violates Anthropic's rule that a `tool_result`
+     must immediately follow its `tool_use` — the next model call 400s. We must wait for the
+     *tool-node* super-step, whose `updates` boundary leaves the round's `ToolMessage`s as the
+     last messages in state (a settled boundary), and inject there.
+
    ```
    if self.steer_source is not None and not namespace:
-       steer = self.steer_source()
-       if steer:
-           # stop the stream cleanly at this completed super-step
+       if self._pending_steer is None:
+           self._pending_steer = self.steer_source()   # pull once; hold until injected
+       if self._pending_steer and await self._steer_boundary_settled():
+           steer = self._pending_steer
+           # stop the stream cleanly at this settled tool boundary
            await agen.aclose()
-           # append the steer as a real user message on THIS thread
+           # append the steer as a real user message on THIS thread — safe now:
+           # the current tool round's ToolMessages are already in state.
            from langchain_core.messages import HumanMessage
            await self.agent.aupdate_state(
                self._config(), {"messages": [HumanMessage(content=steer)]}
            )
+           self._pending_steer = None
            if self.transcript is not None:
                self.transcript.write_user(f"(steered) {steer}", ts=_time.time())
            yield Event(EventKind.NOTICE, text=f"(steered) {steer}",
@@ -150,11 +173,46 @@ engine, and interrupt path are untouched.
            payload = None          # resume from checkpoint, no new turn payload
            steered = True
            break                   # leave the async-for; re-enter the while-loop
+       # else: a steer is held but this boundary is a pending tool round —
+       # do NOT consume it; keep _pending_steer and re-check at the next
+       # (settled) boundary once the ToolMessages for this round land.
    ```
-   This requires binding the generator so it can be closed: replace
-   `async for item in self.agent.astream(...)` with
-   `agen = self.agent.astream(...)` + `async for item in agen:` and `steered = False`
-   initialised per while-iteration.
+
+   `_steer_boundary_settled()` is a new helper that reads state and returns `False` iff the
+   last checkpointed message is an `AIMessage` still awaiting its results (mirrors the
+   existing `aget_state` read in `_current_turn_index`, `session.py:468-485`):
+   ```
+   async def _steer_boundary_settled(self) -> bool:
+       get_state = getattr(self.agent, "aget_state", None)
+       if get_state is None:
+           return True                      # fake agent w/o state (tests): treat as settled
+       state = await get_state(self._config())
+       messages = (getattr(state, "values", {}) or {}).get("messages", []) or []
+       if not messages:
+           return True
+       last = messages[-1]
+       # A pending tool round is the ONLY unsafe shape: an AIMessage whose tool_calls
+       # have no following ToolMessages yet. (Text-only AIMessage → tool_calls == [] →
+       # settled; last is a ToolMessage → settled; last is a HumanMessage → settled.)
+       return not (getattr(last, "type", "") == "ai" and getattr(last, "tool_calls", None))
+   ```
+   (A stricter variant matches each `tool_call.id` to a `ToolMessage.tool_call_id`; the
+   last-message check is sufficient because an `AIMessage` with `tool_calls` is only ever the
+   *last* message while its round is unexecuted — once the ToolNode runs, its `ToolMessage`s
+   are appended after it.)
+
+   Binding the generator is required so it can be closed: replace
+   `async for item in self.agent.astream(...)` with `agen = self.agent.astream(...)` +
+   `async for item in agen:`, and initialise `steered = False` per while-iteration. Add a
+   `_pending_steer: str | None = None` field to `SessionDriver`.
+
+   **Net behavior for the primary use case** ("steer during a long read/think phase"): a
+   steer set while the model is emitting a `read_file` tool call is *not* consumed at the
+   model-node boundary (pending round → deferred); it is consumed at the following tool-node
+   boundary, yielding the valid, provider-accepted sequence
+   `AIMessage(read_file) → ToolMessage(contents) → HumanMessage(steer) → AIMessage(next)`.
+   The steer still lands before the model's *next* tool call — just after the in-flight
+   tool's result, which is exactly right (it never strands a `tool_use`).
 
 3. **Skip DONE / interrupt handling on a steer pass.** After the `async for`, before the
    `if not interrupts:` block (`session.py:389`), add `if steered: continue`. This loops
@@ -166,22 +224,31 @@ engine, and interrupt path are untouched.
    (`session.py:202`, `{"configurable": {"thread_id": self.thread_id}}`) — the same config
    `astream` runs under — so the append and the resume target the same checkpoint lineage.
 
-**Cancel/append/resume sequence (one steer):**
+**Cancel/append/resume sequence (one steer, arriving during a `read_file` round):**
 
 ```
-astream(payload)  ──▶ … updates(super-step k, main graph) ─▶ steer_source() → "text"
-                                                             │
-                          await agen.aclose()   (stop stream, checkpoint k is durable)
-                          await aupdate_state({messages:[HumanMessage("text")]})
-                          payload = None
-                          continue while-loop
-astream(None)     ──▶ model node reads state (…, tool results from k, HumanMessage) ─▶ next tool call
+astream(payload) ─▶ updates(model node): AIMessage(read_file) pending  ─▶ steer held
+                    _steer_boundary_settled() → False (last msg = AIMessage+tool_calls)
+                    → DEFER (keep _pending_steer, keep streaming)
+                 ─▶ updates(tool node):  ToolMessage(read_file) now last ─▶ steer applies
+                    _steer_boundary_settled() → True
+                       await agen.aclose()   (stop stream; round k is durable & settled)
+                       await aupdate_state({messages:[HumanMessage("text")]})
+                       payload = None ; continue while-loop
+astream(None)    ─▶ model node reads state (…, ToolMessage(k), HumanMessage) ─▶ next tool call
 ```
+State order is `AIMessage(read_file) → ToolMessage(contents) → HumanMessage(steer) → …` —
+a valid, provider-accepted sequence with no split `tool_use`/`tool_result` pair.
 
-**In-flight tool-result preservation restated:** the break is deferred to a *completed*
-`updates` super-step, so a ToolNode's results are already checkpointed before we
-`aclose()`. If a steer arrives during token streaming (`messages` mode) it is simply not
-acted on until the current super-step's `updates` chunk arrives — the natural, safe seam.
+**In-flight tool-result preservation restated:** the break is deferred to a *settled* tool
+boundary — a super-step whose `updates` chunk leaves a `ToolMessage` (or a text-only
+`AIMessage`/`HumanMessage`) as the last message in state, never an `AIMessage` with pending
+`tool_calls`. A ToolNode's results are therefore already checkpointed before we `aclose()`,
+and we never split a `tool_use`/`tool_result` pair. A steer that arrives while the model is
+streaming a tool call (`messages` mode, or the model-node `updates` boundary) is held in
+`_pending_steer` and applied only once that round's `ToolMessage`s land — the model-node
+boundary is the **unsafe** seam and is explicitly skipped; the following tool-node boundary
+is the safe one.
 
 ---
 
@@ -229,11 +296,15 @@ keeping the model from being flooded with stacked mid-turn injections.
 
 ## 4. Semantics
 
-**Transcript / message ordering.** The steer lands as a `HumanMessage` appended *after* the
-last completed super-step's messages (assistant text + any tool results from super-step *k*)
-and *before* the next model node runs. In graph state the order is therefore:
-`… → AIMessage(k) [→ ToolMessages(k)] → HumanMessage("steer") → AIMessage(k+1)`. The model
-provably sees the steer before its next tool call (this is the §5 assertion). In the display
+**Transcript / message ordering.** The steer lands as a `HumanMessage` appended at a
+*settled* boundary — meaning **all `ToolMessage`s of super-step *k* are already present in
+state** (this is the precondition enforced by `_steer_boundary_settled`, §2, and it is
+load-bearing, not incidental). The `HumanMessage` is therefore never inserted between an
+`AIMessage(tool_calls)` and its `ToolMessage`s. In graph state the order is:
+`… → AIMessage(k, tool_calls) → ToolMessage(k) [× each call] → HumanMessage("steer") → AIMessage(k+1)`
+(or, for a text-only super-step, `… → AIMessage(k, text) → HumanMessage("steer") → …`). The
+model provably sees the steer before its next tool call, and every `tool_use` is immediately
+followed by its `tool_result` (this is the §5 T1/T1-companion assertion). In the display
 transcript, `TranscriptWriter.write_user` records it as `(steered) <text>`
 (`sessions.py:217`), interleaved at the point it was injected — matching scrollback.
 
@@ -270,9 +341,12 @@ that dispatched the work, which is the intended mental model.
    observation that LangGraph persists immediately, `core.py:649-661`). Abort's file rollback
    does **not** touch conversation state, so the message survives into the next turn as the
    last human message. This is benign (the user *did* type it) and consistent with how a
-   checkpointed message survives an aborted turn today. **Open question (§6):** whether
-   T-4-6 should strip a just-applied-but-unconsumed steer on abort; recommendation is to
-   leave it (simplicity, and it is visible/greppable), but flag for the owner.
+   checkpointed message survives an aborted turn today. **Revisited under the §2 gating fix:**
+   because a steer is applied only at a *settled* boundary (after a round's `ToolMessage`s
+   land), a just-applied-but-unconsumed steer can never orphan a `tool_use` — the persisted
+   state is always a valid sequence. That removes the only real hazard, so "leave it" is safe
+   and is the recommendation; the §6 open question is downgraded to a cosmetic owner
+   preference (strip for tidiness vs. keep visible).
 
    Esc/Ctrl+C cancel (`_cancel_turn(note_edits=True)`, `app.py:391`) follows the same two
    windows; it does not roll back, so an applied steer likewise persists.
@@ -299,9 +373,13 @@ Fixture-driven, in the style of `tests/test_session_stream.py` (fake agents yiel
 *Setup.* A fake agent that both **streams triples** and **records state ops** in order:
 
 - `astream(payload, config, …)` is called twice. Call 1 yields a completed main-graph
-  `updates` super-step (e.g. `_task_launch`-style tool node, or a simple
-  `((), "updates", {"model": {"messages": [AIMessage(...)]}})`). Call 2 (invoked with
-  `payload is None`) yields the *next* super-step: a tool call, captured for the assertion.
+  `updates` super-step at a **settled** boundary — a text-only assistant super-step
+  `((), "updates", {"model": {"messages": [AIMessage("thinking…")]}})` (no `tool_calls`).
+  Call 2 (invoked with `payload is None`) yields the *next* super-step: a tool call, captured
+  for the assertion.
+- `aget_state(config)` returns `SimpleNamespace(values={"messages": [AIMessage("thinking…")]})`
+  (last message has no `tool_calls`) so `_steer_boundary_settled()` is `True` and the steer
+  injects at call 1's boundary. (Mirrors `_FakeAgent`, `test_compact.py:18-27`.)
 - The agent records a log list, e.g. `self.ops`, appending `("astream", payload)` on each
   `astream` and `("update", values)` on each `aupdate_state` — so ordering is assertable.
 - `steer_source` is a lambda returning `"use pytest not unittest"` on its **first** call and
@@ -318,17 +396,55 @@ built like `_ns_driver` (`test_session_stream.py:620`) plus the new `steer_sourc
   `data["steer"] is True` — the steer is visible in-transcript before the next tool.
 - A single `DONE` event closes the turn (`EventKind.DONE`, one turn, not two).
 
+### T1-companion — steer WHILE a tool call is pending → valid message sequence (the regression guard)
+
+This is the test that would have caught the Critical: it proves a steer arriving at a
+*pending* tool round is deferred to the settled boundary and never splits a
+`tool_use`/`tool_result` pair.
+
+*Setup.* A fake agent whose stream and `aget_state` model the real two-mode split:
+
+- `astream` call 1 (`payload == turn`) yields, in order: a main-graph **updates** chunk
+  carrying `AIMessage(tool_calls=[{"name":"read_file","id":"c1", "args":{…}}])` (the
+  `TOOL_START` seam, pending), then a **messages** chunk
+  `((), "messages", (ToolMessage(content="file contents", tool_call_id="c1", name="read_file"),))`
+  (main-graph namespace `()`; the `TOOL_END` seam — results land *after* the pending updates
+  chunk, exactly as `stream_handlers.py:77-91` vs `:125-160`).
+- `aget_state` is **stateful**: it returns `[AIMessage(tool_calls=…)]` (last message pending,
+  `_steer_boundary_settled → False`) until `aupdate_state`/the ToolMessage has landed, then
+  returns `[AIMessage(tool_calls=…), ToolMessage(c1), …]` (last message a `ToolMessage`,
+  settled → `True`). Simplest implementation: the fake tracks a `self._settled` flag flipped
+  when the ToolMessage triples have been yielded.
+- `astream` call 2 (`payload is None`) yields the next super-step (e.g. a text reply).
+- `steer_source` returns `"stop, use the other file"` once.
+- Record `self.ops` as in T1.
+
+*Assertions.*
+- `_steer_boundary_settled()` returned `False` at the model-node (pending) boundary, so the
+  steer was **held, not applied there** — assert no `("update", …)` op precedes the
+  `read_file` `TOOL_START`/`TOOL_END` in `self.ops`.
+- The `HumanMessage` append (`self.ops` `("update", …)`) occurs **after** the `ToolMessage`
+  for `c1` is in state — i.e. the recorded final message order is
+  `AIMessage(tool_calls c1) → ToolMessage(c1) → HumanMessage("stop, use the other file")`,
+  with no `HumanMessage` between the `AIMessage` and its `ToolMessage`.
+- A validity assertion that generalizes the rule: for every `AIMessage` in the resulting
+  message list that has `tool_calls`, each `tool_call.id` has an immediately-following
+  `ToolMessage` with matching `tool_call_id` (no orphaned `tool_use`) — this is the precise
+  provider-acceptability check.
+
 ### T2 — abort during a pending steer
 
 *Setup.* A `Hang`-style agent (`test_session_stream.py:378`) whose call-1 `astream` yields
-one main-graph `updates` chunk then `await asyncio.sleep(10)` on call 2 (holds the turn
-open). `steer_source` returns text once. `aupdate_state` records into `self.updated`.
+one main-graph `updates` chunk (settled: `aget_state` returns a last message with no pending
+`tool_calls`, so the steer applies at that boundary) then `await asyncio.sleep(10)` on call 2
+(holds the turn open). `steer_source` returns text once. `aupdate_state` records into
+`self.updated`.
 
 *Drive.* Start the turn as a task, advance it past the first `updates` boundary (so the
 steer is applied and the resume `astream(None)` is hanging), then cancel:
 `agen = driver.run_turn(...)`, pump `__anext__()` until the steer NOTICE is seen, then
 `await agen.aclose()` (mirrors `test_snapshot_task_not_leaked_on_cancelled_turn`,
-`test_session_stream.py:404`).
+`test_session_stream.py:354`).
 
 *Assertions.*
 - `aclose()` does not raise and no `DONE` is emitted (turn was cancelled mid-resume).
@@ -361,15 +477,21 @@ steer is applied and the resume `astream(None)` is hanging), then cancel:
 
 ## 6. Open questions / risks (T-4-6 must resolve empirically)
 
-1. **[TOP RISK] `aupdate_state` between two `astream` calls on the same thread + the real
-   `AsyncSqliteSaver`.** The fixture tests use fake agents; they cannot prove that, against
-   the real async SQLite checkpointer (`create_async_checkpointer`, `sessions.py:89`),
-   `aclose()` leaves a *clean* checkpoint (no half-written super-step) and that
-   `aupdate_state` then `astream(None)` on the same `thread_id` (a) does not deadlock on the
-   single sqlite connection and (b) produces the exact message order in §4. T-4-6 must add a
-   real-checkpointer integration check (a temp `state.sqlite`, a trivial 2-node graph) and
-   verify order + no error. This is the single most important thing to validate before
-   shipping.
+1. **[TOP RISK] The injected `HumanMessage` must NEVER land between an `AIMessage(tool_calls)`
+   and its `ToolMessage`s — verify against the real `AsyncSqliteSaver`.** The fixture tests
+   use fake agents; they cannot prove that, against the real async SQLite checkpointer
+   (`create_async_checkpointer`, `sessions.py:89`): (a) at a settled boundary `aget_state`
+   actually reflects the just-landed `ToolMessage`s (so `_steer_boundary_settled` is reading
+   truth, not a stale checkpoint); (b) `aclose()` leaves a *clean* checkpoint (no half-written
+   super-step); and (c) `aupdate_state` then `astream(None)` on the same `thread_id` neither
+   deadlocks the single sqlite connection nor mis-orders messages. **The pass/fail assertion
+   is the tool_use/tool_result adjacency invariant:** in the resulting checkpointed message
+   list, every `AIMessage.tool_calls[i].id` is immediately followed by a `ToolMessage` with
+   the matching `tool_call_id`, and no `HumanMessage` ever separates them. T-4-6 must add a
+   real-checkpointer integration check (a temp `state.sqlite`, a trivial model→tools graph
+   that emits a real tool round) that (i) steers *during* the pending round and (ii) asserts
+   this invariant + a clean resume. This is the single most important thing to validate
+   before shipping — it is the exact defect the design review caught in the first draft.
 
 2. **`agen.aclose()` semantics under LangGraph.** Confirm that closing the `astream` async
    generator mid-iteration cancels only the *un-started next* super-step and does not emit a
@@ -385,6 +507,12 @@ steer is applied and the resume `astream(None)` is hanging), then cancel:
    that exact append pattern is already proven in-repo (`compact_apply`/`fork_to_turn`/
    `drop_pending_image_message`), but T-4-6 should A/B it against `Command(update=…)` and
    switch if the two-step shows any checkpoint interleave issue from risk 1.
+   **Important — this does NOT solve the Critical:** folding append+resume into one
+   `Command(update=…)` call only removes the abort race window; it still inserts the
+   `HumanMessage` at *whatever* boundary it is invoked. If invoked at a pending tool round it
+   produces the same `AIMessage(tool_calls) → HumanMessage → ToolMessage` violation. The
+   settled-boundary gate (`_steer_boundary_settled`, §2) is what fixes the Critical and is
+   required regardless of which of the two append forms is chosen.
 
 4. **No further `updates` boundary before turn end.** If the model finishes (emits its final
    answer with no tool calls) before the driver hits a main-graph `updates` boundary, the
@@ -407,11 +535,16 @@ steer is applied and the resume `astream(None)` is hanging), then cancel:
 ## 7. T-4-6 implementation checklist (files → change)
 
 - `src/jarn/agent/session.py`
-  - Add `steer_source: Callable[[], str | None] | None = None` field to `SessionDriver`.
+  - Add `steer_source: Callable[[], str | None] | None = None` and
+    `_pending_steer: str | None = None` fields to `SessionDriver`.
+  - Add the `_steer_boundary_settled()` helper (reads `aget_state`; `False` iff the last
+    message is an `AIMessage` with unfulfilled `tool_calls` — §2).
   - `_stream_turn` (`session.py:307`): bind the `astream` generator; add the main-graph
-    `updates`-boundary steer check (`not namespace`), `aclose` → `aupdate_state` →
-    `payload=None` → `steered=True; break`; add `if steered: continue` before the
-    `if not interrupts:` block.
+    (`not namespace`) **settled-boundary** steer check — pull-and-hold into `_pending_steer`,
+    inject only when `_steer_boundary_settled()` is `True`: `aclose` → `aupdate_state` →
+    clear `_pending_steer` → `payload=None` → `steered=True; break`; add `if steered: continue`
+    before the `if not interrupts:` block. Defer (keep `_pending_steer`, keep streaming) when
+    the boundary is a pending tool round.
   - Emit the `Event(EventKind.NOTICE, data={"steer": True})` marker + transcript write.
 - `src/jarn/controller/core.py`
   - `make_driver` (`core.py:482`): wire `steer_source=` from the controller's steer slot.
@@ -429,7 +562,8 @@ steer is applied and the resume `astream(None)` is hanging), then cancel:
   too coarse for the renderer; otherwise reuse `NOTICE` + `data["steer"]`.
 - Docs (same PR as T-4-6, per global constraints): README / README-TH `/queue` usage,
   CHANGELOG `[Unreleased]`, and the README command doc-sync test count.
-- Tests: T1/T2/T3 (§5) + the real-checkpointer integration check (risk 1).
+- Tests: T1, **T1-companion (steer while a tool call is pending — the regression guard)**,
+  T2, T3 (§5) + the real-checkpointer integration check (risk 1).
 
 **Explicit DoD carry-over:** T-3-8 delivers this spec with a chosen mechanism (**(a)
 cooperative checkpoint**) and a test plan; T-4-6 is thereby unblocked.
