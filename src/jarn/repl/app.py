@@ -89,6 +89,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         resume: bool = False,
         project_trusted: bool = True,
         detected_theme: str | None = None,
+        add_dirs: list[Path] | None = None,
     ) -> None:
         self.config = config
         # Terminal background resolved ONCE at startup (light/dark) when
@@ -96,7 +97,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         # re-probing (a runtime OSC-11 probe races prompt_toolkit's input reader).
         self._detected_theme = detected_theme
         self.controller = Controller(
-            config, project_root, project_trusted=project_trusted
+            config,
+            project_root,
+            project_trusted=project_trusted,
+            extra_roots=add_dirs,
         )
         # Derive project name once (used in OSC 2 title strings).
         self._proj_name: str = project_root.name if project_root is not None else "jarn"

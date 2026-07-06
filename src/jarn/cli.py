@@ -25,6 +25,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--version", action="version", version=f"jarn {__version__}")
     parser.add_argument("--resume", action="store_true", help="Pick a previous session to resume on launch")
+    parser.add_argument(
+        "--add-dir",
+        dest="add_dir",
+        action="append",
+        metavar="DIR",
+        help=(
+            "Add a directory to the session's write scope (repeatable). Each dir "
+            "becomes an active root the agent may edit, alongside the project "
+            "root. Checkpoint/undo and project context stay primary-root only."
+        ),
+    )
 
     # Headless one-shot flags (top-level, not a subcommand).
     parser.add_argument(
@@ -226,7 +237,11 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_trust(path=args.path, remove=args.remove, as_json=args.json)
     if args.command == "trust-hooks":
         return _cmd_trust_hooks()
-    return _cmd_launch(resume=args.resume, profile_override=preset_override)
+    return _cmd_launch(
+        resume=args.resume,
+        profile_override=preset_override,
+        add_dirs=args.add_dir,
+    )
 
 
 def _cmd_headless(
@@ -501,10 +516,43 @@ def _trust_list(store: Any, *, as_json: bool) -> int:
     return 0
 
 
-def _cmd_launch(*, resume: bool = False, profile_override: str | None = None) -> int:
+def _validate_add_dirs(raw: list[str] | None) -> tuple[list[Path], str | None]:
+    """Resolve and validate ``--add-dir`` values (must exist / be a directory).
+
+    Returns ``(roots, error)``. ``error`` is non-None on the first invalid dir;
+    the caller surfaces it and aborts (fail fast — don't launch with a promised
+    root that isn't there). Roots are resolved + de-duplicated, primary excluded
+    later by the engine's own de-dupe.
+    """
+    roots: list[Path] = []
+    for entry in raw or []:
+        try:
+            path = Path(entry).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError) as exc:
+            return [], f"--add-dir: cannot resolve {entry!r}: {exc}"
+        if not path.exists():
+            return [], f"--add-dir: {path} does not exist."
+        if not path.is_dir():
+            return [], f"--add-dir: {path} is not a directory."
+        if path not in roots:
+            roots.append(path)
+    return roots, None
+
+
+def _cmd_launch(
+    *,
+    resume: bool = False,
+    profile_override: str | None = None,
+    add_dirs: list[str] | None = None,
+) -> int:
     from jarn.config import paths
     from jarn.config.loader import ConfigError, load_config
     from jarn.observability import configure_tracing, setup_logging
+
+    extra_roots, add_dir_err = _validate_add_dirs(add_dirs)
+    if add_dir_err is not None:
+        print(f"error: {add_dir_err}", file=sys.stderr)
+        return 1
 
     if not paths.global_config_path().is_file():
         print("No configuration found. Running first-time setup...\n")
@@ -546,7 +594,9 @@ def _cmd_launch(*, resume: bool = False, profile_override: str | None = None) ->
     # The terminal front-end (native scrollback) is the only chat UI.
     from jarn.repl import run_inline
 
-    return run_inline(cfg, root, resume=resume, project_trusted=trusted)
+    return run_inline(
+        cfg, root, resume=resume, project_trusted=trusted, add_dirs=extra_roots
+    )
 
 
 def _resolve_project_trust(root: Path) -> tuple[bool, dict[str, Any], str | None]:

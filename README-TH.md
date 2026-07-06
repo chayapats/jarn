@@ -111,7 +111,15 @@ jarn -p "do X" --cwd /path/to/project       # กำหนด working directory
 ```bash
 jarn            # เริ่ม session ใหม่
 jarn --resume   # เลือก session เก่าที่ต้องการต่อตอน launch
+jarn --add-dir ../shared-lib --add-dir ../sibling-repo  # เพิ่ม writable root (ใส่ซ้ำได้)
 ```
+
+**Multi-root workspaces (`--add-dir`):** ปกติ write scope ของ agent คือ project root
+เท่านั้น ใช้ `--add-dir <dir>` (ใส่ซ้ำได้) เพื่อให้สิทธิ์เขียนไปยัง directory พี่น้องด้วย
+(เหมาะกับงาน monorepo/sibling-repo) เพิ่มกลาง session ได้ด้วย `/add-dir <path>`
+(ต้องอนุมัติใน `ask` mode; ถูกปฏิเสธถ้า project ยังไม่ trust) root ที่เพิ่มขยายแค่
+**write scope** เท่านั้น — project context (JARN.md) และ checkpoint/undo (`/undo`,
+`/rewind`) ยังใช้ **primary root เท่านั้น**
 
 J.A.R.N. แสดงผล conversation ลงบน terminal buffer ปกติโดยตรง — ไม่มี alternate screen conversation ทั้งหมดอยู่ใน **native scrollback** ของ terminal: เลื่อนทีเดียวเลื่อนทุกอย่าง และ selection/copy ของ terminal ทำงานได้ตลอดทั้งประวัติ เหมือน Claude Code เป๊ะ reply ของ assistant จะ stream แบบ live และ render เป็น Markdown; tool call, การขออนุมัติ, และ diff preview ต่อ turn แสดงแบบ inline
 
@@ -186,6 +194,7 @@ Reply ของ assistant render เป็น **Markdown** (heading, list, code 
 | `/permissions` | ดู permission rule และ allowlist ปัจจุบัน |
 | `/mcp [status] [--refresh]` | ดู MCP server ที่ตั้งไว้ พร้อม health และ error ล่าสุดราย server |
 | `/trust` | trust project root นี้ เพื่อยกเลิก review-only floor ของ repo ที่ยังไม่ trust |
+| `/add-dir <path>` | เพิ่ม directory เข้า write scope ของ session นี้ (multi-root; ต้องอนุมัติ) |
 | `/queue [clear\|cancel <n>\|move <from> <to>]` | ดูหรือจัดการ input ที่ queue ไว้ (ขณะ turn รันอยู่) |
 | `/undo` | ย้อนกลับ file change ของ agent turn ล่าสุด |
 | `/redo` | ทำ file change ที่ undo ไปซ้ำอีกครั้ง |
@@ -255,7 +264,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1569 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1576 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)

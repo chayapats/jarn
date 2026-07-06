@@ -11,6 +11,7 @@ def collect_doctor(
     config: Any = None,
     project_root: Any = None,
     project_trusted: bool | None = None,
+    extra_roots: Any = None,
 ) -> int:
     """Populate ``diag`` with doctor diagnostics and return the exit code.
 
@@ -64,6 +65,12 @@ def collect_doctor(
         if project_trusted is None:
             project_trusted = True
         diag["project_trusted"] = project_trusted
+
+    # Active in-scope roots: the primary project root first, then any added
+    # (--add-dir / /add-dir) roots that widen the WRITE scope for this session.
+    active_roots: list[str] = [str(root)] if root else []
+    active_roots.extend(str(p) for p in (extra_roots or []))
+    diag["roots"] = active_roots
 
     diag["default_profile"] = cfg.default_profile
     diag["main_model"] = cfg.resolved_main_model()

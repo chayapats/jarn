@@ -71,6 +71,36 @@ in your project directory when you approve them (or automatically in permissive 
   pre-fetch occurs** in the REPL.  The agent's gated `web_fetch` tool (subject to the
   permission engine and SSRF guard) performs the actual network request.
 
+### Filesystem write scope (`--add-dir` multi-root)
+
+The agent's write scope is bounded to a set of **roots** (the primary project root
+first, plus any added with `jarn --add-dir <dir>` at launch or `/add-dir <path>`
+mid-session). A write is in-scope only when it resolves under one of these roots; an
+out-of-scope write is downgraded to *ask* (never silently allowed) and flagged
+dangerous.
+
+- **Per-root symlink discipline.** Each root's containment check follows symlinks
+  (`Path.resolve()`), so a symlink placed *inside* an added root that points *outside*
+  every root resolves out-of-scope and is rejected — the same escape defense that
+  protects the primary root protects every added root. Relative write targets are
+  anchored to the **primary** root, not the process CWD, so `../outside` is judged by
+  intent.
+- **One roots set, three enforcement points.** The engine's intent check, the local
+  backend's virtual-mode filesystem guard, the OS sandbox (`sandbox-exec` / `bwrap`)
+  writable allow-set, and the Docker bind mounts are all driven from the **same** roots
+  set. An added-root write the engine allows is therefore also permitted at syscall
+  time (no silent block), and a write outside all roots is denied at every layer
+  (defense in depth against the TOCTOU window).
+- **`/add-dir` is capability-gated.** Mid-session it requires explicit approval in
+  `ask` mode and is **refused outright on an untrusted project** — a scope-widening
+  capability is never granted to a repo whose config you have not trusted.
+- **Checkpoint is primary-root only (a real limitation).** Auto-checkpoints, and thus
+  `/undo` and `/rewind` file restore, snapshot the **primary project root only**. Edits
+  the agent makes inside an **added** root are **not captured** and cannot be reverted
+  through jarn — use your own VCS in those directories. `/add-dir` prints this warning
+  when it adds a root. Project context (`JARN.md`) is likewise loaded from the primary
+  root only.
+
 ### What we do not guarantee in v0.4 alpha
 
 - Complete protection against a malicious **trusted** project (you approved its config)

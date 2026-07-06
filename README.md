@@ -174,7 +174,17 @@ blocks catastrophic commands in every mode.
 ```bash
 jarn            # start a session
 jarn --resume   # pick a previous session to resume on launch
+jarn --add-dir ../shared-lib --add-dir ../sibling-repo  # extra writable roots (repeatable)
 ```
+
+**Multi-root workspaces (`--add-dir`):** by default the agent's write scope is the
+project root. Pass `--add-dir <dir>` (repeatable) to grant scoped write access to a
+sibling directory too — useful for monorepo/sibling-repo work. Each dir must exist
+and be a directory. You can also add one mid-session with `/add-dir <path>`
+(approval-gated in `ask` mode; refused on an untrusted project). Added roots widen
+the **write scope only** — project context (JARN.md) is loaded from the primary root,
+and checkpoint/undo (`/undo`, `/rewind`) snapshot the **primary root only**. See
+[docs/PERMISSIONS.md](docs/PERMISSIONS.md) and [SECURITY.md](SECURITY.md).
 
 J.A.R.N. renders the conversation straight to your terminal's normal buffer —
 no alternate screen. The whole transcript lives in your terminal's **native
@@ -292,6 +302,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/permissions` | Show current permission rules and allowlist. |
 | `/mcp [status] [--refresh]` | Show configured MCP servers with per-server health and last error. |
 | `/trust` | Trust this project root and lift the untrusted review-only floor. |
+| `/add-dir <path>` | Add a directory to this session's write scope (multi-root; approval-gated). |
 | `/queue [clear\|cancel <n>\|move <from> <to>]` | Show or manage queued input lines (while a turn is running). |
 | `/undo` | Revert the last agent turn's file changes. |
 | `/redo` | Re-apply the last undone agent turn's file changes. |
@@ -407,7 +418,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1569 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1576 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)
