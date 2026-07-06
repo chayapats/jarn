@@ -388,7 +388,8 @@ mcp_servers:
 verify:
   gate: suggest            # off | suggest | auto — once per turn, after all
                            # write_file/edit_file calls complete: suggest emits
-                           # the detected test command; auto runs it
+                           # the detected test command; auto runs it and renders
+                           # a badge: ⎿ verified: pytest ✓ 214 passed · 3.2s
                            # (permissions + danger-guard still apply)
 
 # ── Observability ────────────────────────────────────────────────────────

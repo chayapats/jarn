@@ -53,6 +53,8 @@ base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists 
 
 - **Reliable by design** — plan → act → verify is baked into the system prompt, with
   a self-verification loop that runs your project's build/test/lint before reporting done.
+  The completion badge — `` ⎿ verified: pytest ✓ 214 passed · 3.2s `` — confirms the
+  result; it never claims success on a guess (`verify.gate: auto`).
 - **Safe by default** — a multi-layer permission system (coarse modes + fine-grained
   rules) sits in front of every file write and shell command, backed by a hard
   *danger-guard* that always confirms catastrophic actions — even in YOLO mode.
@@ -375,7 +377,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1525 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1530 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

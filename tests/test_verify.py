@@ -95,7 +95,7 @@ async def test_gate_suggest(tmp_path):
     ev = await verify_after_edit(driver, "write_file")
     assert ev is not None
     assert ev.kind is EventKind.NOTICE
-    assert "go test ./..." in ev.text
+    assert ev.data.get("verify", {}).get("cmd") == "go test ./..."
 
 
 @pytest.mark.asyncio
@@ -131,7 +131,7 @@ async def test_gate_auto_runs_detected_command(tmp_path):
     assert ran == ["go test ./..."]
     assert ev is not None
     assert ev.kind is EventKind.NOTICE
-    assert "passed" in ev.text
+    assert ev.data.get("verify", {}).get("ok") is True
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +203,122 @@ async def test_verify_runs_once_per_turn(tmp_path):
     assert ran == ["go test ./..."], (
         f"executor must be called exactly once per turn; got calls={ran}"
     )
+
+
+class _FakeAIMsg:
+    """Minimal AI message stub: produces a TEXT event in the session driver."""
+
+    type = "ai"
+    content = "Fixed!"
+    tool_calls: list = []
+    usage_metadata = None
+    response_metadata: dict = {}
+
+
+class _TextThenEditAgent:
+    """Streams AI text + write_file TOOL_END."""
+
+    async def astream(self, payload, config, **kw):
+        yield ("messages", (_FakeAIMsg(),))
+        yield ("messages", (_FakeToolMsg("write_file"),))
+
+
+class _ReadOnlyAgent:
+    """Streams only AI text, no file writes."""
+
+    async def astream(self, payload, config, **kw):
+        yield ("messages", (_FakeAIMsg(),))
+
+
+@pytest.mark.asyncio
+async def test_verify_badge_event_emitted_after_final_text(tmp_path):
+    """NOTICE with data['verify'] must be emitted, after all TEXT events, for edit turns."""
+    from jarn.agent.events import EventKind
+    from jarn.agent.session import SessionDriver
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    (tmp_path / "go.mod").write_text("module example.com/x\n", encoding="utf-8")
+
+    class _Resp:
+        exit_code = 0
+        output = "ok\n1 passed, 0 failed"
+
+    def _executor(cmd: str) -> _Resp:
+        return _Resp()
+
+    driver = SessionDriver(
+        agent=_TextThenEditAgent(),
+        engine=PermissionEngine(mode=PermissionMode.YOLO),
+        tracker=CostTracker(),
+        thread_id="t",
+        verify_gate="auto",
+        project_root=tmp_path,
+        verify_executor=_executor,
+    )
+    events = [ev async for ev in driver.run_turn("fix it")]
+
+    verify_notices = [
+        ev for ev in events
+        if ev.kind is EventKind.NOTICE and ev.data.get("verify")
+    ]
+    assert len(verify_notices) == 1, f"Expected 1 verify notice, got: {verify_notices}"
+
+    vd = verify_notices[0].data["verify"]
+    text_events = [ev for ev in events if ev.kind is EventKind.TEXT]
+    assert text_events, "Expected at least one TEXT event"
+
+    verify_idx = events.index(verify_notices[0])
+    max_text_idx = max(events.index(ev) for ev in text_events)
+    assert verify_idx > max_text_idx, (
+        f"verify notice index {verify_idx} should be > max text index {max_text_idx}"
+    )
+
+    assert vd["cmd"] == "go test ./...", f"Expected cmd='go test ./...', got: {vd}"
+    assert vd["ok"] is True, f"Expected ok=True, got: {vd}"
+    assert isinstance(vd["secs"], float), f"Expected secs to be float, got: {type(vd['secs'])}"
+
+
+@pytest.mark.asyncio
+async def test_no_verify_badge_on_read_only_turn(tmp_path):
+    """Read-only turns (no write_file/edit_file) must not emit a verify badge."""
+    from jarn.agent.events import EventKind
+    from jarn.agent.session import SessionDriver
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    (tmp_path / "go.mod").write_text("module example.com/x\n", encoding="utf-8")
+
+    ran: list[str] = []
+
+    class _Resp:
+        exit_code = 0
+        output = "ok"
+
+    def _executor(cmd: str) -> _Resp:
+        ran.append(cmd)
+        return _Resp()
+
+    driver = SessionDriver(
+        agent=_ReadOnlyAgent(),
+        engine=PermissionEngine(mode=PermissionMode.YOLO),
+        tracker=CostTracker(),
+        thread_id="t",
+        verify_gate="auto",
+        project_root=tmp_path,
+        verify_executor=_executor,
+    )
+    events = [ev async for ev in driver.run_turn("read something")]
+
+    assert ran == [], f"Executor should not be called for read-only turns; got: {ran}"
+
+    verify_notices = [
+        ev for ev in events
+        if ev.kind is EventKind.NOTICE and ev.data.get("verify")
+    ]
+    assert verify_notices == [], f"No verify notice expected for read-only turns; got: {verify_notices}"
 
 
 @pytest.mark.asyncio

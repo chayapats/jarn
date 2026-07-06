@@ -7,6 +7,15 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **Verified badge on turn completion (T-3-2)** — a structured `verify` NOTICE event
+  is emitted at the end of every edit-turn, rendered as a badge on the last line:
+  `⎿ verified: pytest ✓ 214 passed · 3.2s` (pass) or `⎿ verify: pytest ✗ 2 failed ·
+  details · ctrl+o` (fail — full output in Ctrl+O pager). Suggest mode shows
+  `⎿ verify: run pytest to confirm (verify.gate: auto to automate)`. Adds per-runner
+  summary extraction (`summarize_output`: pytest / cargo / go test / npm-family) and
+  per-turn timing (`secs`). Badge never appears on cancelled, errored, or read-only
+  turns.
+
 - **`/rewind` slice 2 — atomic conversation + file rewind (T-3-1)** — the `/rewind`
   picker gains a second arrow-key confirm after you choose a turn: **Restore files
   too (recommended)** / **Conversation only** / **Cancel**. Restoring reverts the
