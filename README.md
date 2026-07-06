@@ -203,7 +203,12 @@ preview appear inline.
   `xclip`), and **Windows** (PowerShell); images over 10 MB are rejected.
 - **Esc Esc** (two Esc presses within 500 ms, idle, empty input) opens the **`/rewind`
   picker** — same chord as Claude Code. The first Esc still clears non-empty input;
-  only the second Esc on an already-empty buffer fires the picker.
+  only the second Esc on an already-empty buffer fires the picker. After you pick a
+  turn, a second arrow-key confirm offers **Restore files too** (revert the working
+  tree to that turn's checkpoint, shown as a `git diff --stat` preview) or
+  **Conversation only** (leave files as-is). Restoring is itself reversible with
+  `/undo`; the file restore needs `git.autocheckpoint` on (otherwise the picker
+  quietly rewinds the conversation only, exactly as before).
 - **Esc** cancels the running turn. **Ctrl+C** cancels a turn / clears the input,
   and **twice in a row** exits (Claude Code-style). **Ctrl+Q** also quits.
 - **Copy text:** the terminal owns selection — just **drag to select and ⌘C**
@@ -249,7 +254,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/clear` | Clear the conversation and start a fresh thread. |
 | `/sessions` | List and resume previous sessions. |
 | `/resume` | Pick a previous session to resume. |
-| `/rewind` | Rewind the conversation to an earlier turn and continue (forks a new thread). |
+| `/rewind` | Rewind to an earlier turn and continue (forks a new thread); optionally restore files to that turn too. A second arrow-key confirm reverts the working tree to that turn's checkpoint (shown as a `git diff --stat` preview), so conversation and files rewind together. |
 | `/skills` | List available skills. |
 | `/memory [search\|show\|add\|update\|delete\|dump] ...` | List, search, show, add, update, delete, or dump long-term memory. |
 | `/permissions` | Show current permission rules and allowlist. |
@@ -370,7 +375,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1500 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1514 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

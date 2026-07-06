@@ -364,7 +364,9 @@ class Controller:
             turns.append((idx, preview))
         return turns
 
-    async def fork_to_turn(self, keep_count: int) -> int | None:
+    async def fork_to_turn(
+        self, keep_count: int, *, restore_files: bool = False
+    ) -> int | None:
         """Branch the conversation: keep ``messages[:keep_count]`` on a *new*
         thread and continue from there. The original thread is untouched and
         still resumable (this forks, it does not destroy).
@@ -380,6 +382,17 @@ class Controller:
         compaction relies on. Resets the context-token gauge like
         :meth:`new_thread`.
 
+        When ``restore_files`` is True (slice 2), the working tree is reverted to
+        the chosen turn's checkpoint BEFORE the thread is forked, so conversation
+        and files rewind atomically. The checkpoint is resolved on the ORIGINAL
+        thread (snapshots were recorded against it) by the human-turn count in the
+        kept prefix — the same 0-based turn index the session driver records at
+        snapshot time. Any in-flight snapshot is settled first (the /abort race
+        guard) so the restore targets a consistent stack. A missing checkpoint
+        (autocheckpoint off, turn never snapshotted) degrades to conversation-only
+        — the fork still proceeds, the tree is left untouched. When
+        ``restore_files`` is False the behavior is byte-identical to slice 1.
+
         Returns the cut index actually used, or ``None`` when there is nothing
         to rewind (empty thread or a negative ``keep_count``). ``keep_count == 0``
         is a *valid* rewind to before the very first turn: it seeds an empty
@@ -392,6 +405,23 @@ class Controller:
             return None
 
         kept_prefix = list(messages[:keep_count])  # empty when keep_count == 0
+
+        # Slice 2: revert the working tree to the chosen turn's checkpoint before
+        # forking. Resolve against the ORIGINAL thread; the turn index is the
+        # human-turn count in the kept prefix (matches the driver's recording).
+        if restore_files:
+            turn_index = sum(
+                1 for m in kept_prefix if getattr(m, "type", "") == "human"
+            )
+            ref = self.checkpoint_manager.find_for_turn(self.thread_id, turn_index)
+            if ref is not None:
+                # Settle any in-flight snapshot first so restore_to's undo-stack
+                # push targets a consistent stack (mirrors /abort, /undo, /redo).
+                await self.settle_snapshot()
+                import asyncio
+
+                await asyncio.to_thread(self.checkpoint_manager.restore_to, ref.sha)
+
         from langchain_core.messages import RemoveMessage
         from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
@@ -402,10 +432,6 @@ class Controller:
         )
         return keep_count
 
-    # TODO(rewind-conversation) slice 2: link this fork to the git checkpoint
-    # stack (a per-turn turn-id<->snapshot-SHA index) so file edits made since
-    # the chosen turn revert atomically with the conversation. Today the working
-    # tree is NOT reverted on rewind — the picker points the user at /undo.
     # TODO(rewind-conversation) slice 3: in-place/destructive rewind on the same
     # thread + true free message-editing.
     # TODO(rewind-conversation) slice 4: visual branch tree across forked threads

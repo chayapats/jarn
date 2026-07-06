@@ -397,6 +397,101 @@ def test_list_empty_on_non_git_dir(tmp_path: Path) -> None:
     assert mgr.list() == []
 
 
+# ---------------------------------------------------------------------------
+# T-3-1 — per-turn snapshot metadata + find_for_turn + restore_to
+# ---------------------------------------------------------------------------
+
+
+def test_find_for_turn(repo: Path) -> None:
+    """After 3 turn-start snapshots tagged with (thread, turn_index), find_for_turn
+    returns the SHA snapshotted at the requested turn — the conversation↔file link
+    that lets /rewind restore the tree atomically with the fork."""
+    mgr = _manager(repo)
+    thread = "thread-xyz"
+    shas: list[str] = []
+    for turn in range(3):
+        (repo / "README.txt").write_text(f"turn-{turn}\n", encoding="utf-8")
+        snap = mgr.snapshot(
+            f"t{turn}", now=float(turn + 1), thread_id=thread, turn_index=turn
+        )
+        assert snap.ok, snap.message
+        shas.append(snap.sha)
+
+    ref = mgr.find_for_turn(thread, 2)
+    assert ref is not None
+    assert ref.sha == shas[2]
+    assert ref.turn_index == 2
+    assert ref.thread_id == thread
+    # Every recorded turn resolves to its own snapshot.
+    assert mgr.find_for_turn(thread, 0).sha == shas[0]  # type: ignore[union-attr]
+    assert mgr.find_for_turn(thread, 1).sha == shas[1]  # type: ignore[union-attr]
+    # An unknown turn / unknown thread → None (never crashes).
+    assert mgr.find_for_turn(thread, 9) is None
+    assert mgr.find_for_turn("other-thread", 2) is None
+
+
+def test_find_for_turn_none_for_old_format_records(repo: Path) -> None:
+    """Snapshots taken WITHOUT thread/turn metadata (pre-T-3-1 records) are simply
+    not matched — find_for_turn returns None (conversation-only fallback), never
+    crashes. Backwards compatibility for sessions started before this feature."""
+    mgr = _manager(repo)
+    (repo / "README.txt").write_text("legacy\n", encoding="utf-8")
+    snap = mgr.snapshot("legacy-turn", now=1.0)  # no thread_id / turn_index kwargs
+    assert snap.ok
+    assert mgr.find_for_turn("any-thread", 0) is None
+
+
+def test_find_for_turn_none_on_non_git_dir(tmp_path: Path) -> None:
+    """find_for_turn is a no-op (None) outside a git repo — never raises."""
+    mgr = CheckpointManager(repo_root=tmp_path, enabled=True)
+    assert mgr.find_for_turn("t", 0) is None
+
+
+def test_restore_to_reverts_tree_and_is_undoable(repo: Path) -> None:
+    """restore_to() sets the worktree to a target snapshot AND pushes the pre-restore
+    tree onto the undo stack, so /undo reverts the rewind's file restore (no work is
+    ever lost). Also asserts the untracked-file semantics on restore + the HEAD
+    invariant."""
+    head_before = _head(repo)
+    mgr = _manager(repo)
+    (repo / "README.txt").write_text("target\n", encoding="utf-8")
+    snap = mgr.snapshot("target-turn", now=1.0)
+    assert snap.ok
+
+    # Diverge the tree — the mid-refactor state we rewind away from, including a
+    # NEW untracked file the agent added after the target snapshot.
+    (repo / "README.txt").write_text("current\n", encoding="utf-8")
+    (repo / "new.py").write_text("print(1)\n", encoding="utf-8")
+
+    res = mgr.restore_to(snap.sha)
+    assert res.ok, res.message
+    assert (repo / "README.txt").read_text(encoding="utf-8") == "target\n"
+    # Untracked file created since the target snapshot is removed by the restore
+    # (follows the existing _apply_snapshot semantics used by /undo).
+    assert not (repo / "new.py").exists()
+    assert _head(repo) == head_before  # HEAD never moves
+
+    # /undo brings the pre-restore tree back — the rewind is itself reversible.
+    undo = mgr.undo()
+    assert undo.ok, undo.message
+    assert (repo / "README.txt").read_text(encoding="utf-8") == "current\n"
+    assert (repo / "new.py").exists()
+    assert _head(repo) == head_before
+
+
+def test_restore_to_disabled_and_non_git_noop(repo: Path, tmp_path: Path) -> None:
+    """restore_to degrades cleanly when disabled or outside a repo (no crash)."""
+    disabled = _manager(repo, enabled=False)
+    r = disabled.restore_to("deadbeef")
+    assert not r.ok and "disabled" in r.message.lower()
+
+    non_git_dir = tmp_path / "nope"
+    non_git_dir.mkdir()
+    non_git = CheckpointManager(repo_root=non_git_dir, enabled=True)
+    r2 = non_git.restore_to("deadbeef")
+    assert not r2.ok and ("git" in r2.message.lower() or "repo" in r2.message.lower())
+
+
 def test_undo_rollback_on_apply_failure(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """If restore fails, redo stack must stay unchanged (no orphan entry)."""
     from jarn.agent import checkpoint as cp
@@ -453,7 +548,14 @@ async def test_mutation_waits_for_snapshot() -> None:
         snapshot_notice_pending: bool = False
         snapshot_notice_shown: bool = False
 
-        def snapshot(self, label: str, *, now: float | None = None) -> SnapshotResult:
+        def snapshot(
+            self,
+            label: str,
+            *,
+            now: float | None = None,
+            thread_id: str | None = None,
+            turn_index: int | None = None,
+        ) -> SnapshotResult:
             order.append("snap_start")
             _t.sleep(0.15)  # simulate O(repo) git add -A + write-tree
             order.append("snap_done")
@@ -508,6 +610,108 @@ async def test_mutation_waits_for_snapshot() -> None:
     # Core invariant: the snapshot completed before the mutating tool executed.
     assert order.index("snap_done") < order.index("tool_execute"), order
     assert any(e.kind is EventKind.DONE for e in events)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_records_thread_and_turn_index() -> None:
+    """The session driver tags each turn-start snapshot with its thread_id and the
+    0-based turn index (count of human messages already in the thread), so /rewind
+    can resolve the checkpoint for a chosen turn. T-3-1 metadata plumbing."""
+    from types import SimpleNamespace
+
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from jarn.agent.session import EventKind, SessionDriver
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    captured: dict[str, object] = {}
+
+    class RecordingCheckpoint:
+        snapshot_notice_pending = False
+        snapshot_notice_shown = False
+
+        def snapshot(self, label, *, now=None, thread_id=None, turn_index=None):
+            captured["thread_id"] = thread_id
+            captured["turn_index"] = turn_index
+            return SnapshotResult(ok=True, sha="abc")
+
+    class _AIChunk:
+        type = "ai"
+
+        def __init__(self, content: str) -> None:
+            self.content = content
+            self.usage_metadata = {"input_tokens": 1, "output_tokens": 1}
+            self.response_metadata: dict[str, str] = {}
+
+    class Agent:
+        async def astream(self, payload, config, stream_mode=None, **kwargs):
+            yield ("messages", (_AIChunk("hi"),))
+
+        async def aget_state(self, config):
+            # Two prior human turns already in the thread → this is turn 2.
+            return SimpleNamespace(values={"messages": [
+                HumanMessage(content="q0"), AIMessage(content="a0"),
+                HumanMessage(content="q1"), AIMessage(content="a1"),
+            ]})
+
+    driver = SessionDriver(
+        agent=Agent(),
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="thread-42",
+        checkpoint=RecordingCheckpoint(),
+    )
+    events = [ev async for ev in driver.run_turn("q2")]
+    assert any(e.kind is EventKind.DONE for e in events)
+    assert captured["thread_id"] == "thread-42"
+    assert captured["turn_index"] == 2
+
+
+@pytest.mark.asyncio
+async def test_snapshot_turn_index_none_when_state_unavailable() -> None:
+    """A fake agent without aget_state (or a read error) records turn_index=None —
+    the snapshot is still taken (old-format record), find_for_turn just won't match."""
+    from jarn.agent.session import EventKind, SessionDriver
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    captured: dict[str, object] = {}
+
+    class RecordingCheckpoint:
+        snapshot_notice_pending = False
+        snapshot_notice_shown = False
+
+        def snapshot(self, label, *, now=None, thread_id=None, turn_index=None):
+            captured["thread_id"] = thread_id
+            captured["turn_index"] = turn_index
+            return SnapshotResult(ok=True, sha="abc")
+
+    class _AIChunk:
+        type = "ai"
+
+        def __init__(self, content: str) -> None:
+            self.content = content
+            self.usage_metadata = {"input_tokens": 1, "output_tokens": 1}
+            self.response_metadata: dict[str, str] = {}
+
+    class Agent:  # no aget_state
+        async def astream(self, payload, config, stream_mode=None, **kwargs):
+            yield ("messages", (_AIChunk("hi"),))
+
+    driver = SessionDriver(
+        agent=Agent(),
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="thread-9",
+        checkpoint=RecordingCheckpoint(),
+    )
+    events = [ev async for ev in driver.run_turn("q0")]
+    assert any(e.kind is EventKind.DONE for e in events)
+    assert captured["thread_id"] == "thread-9"
+    assert captured["turn_index"] is None
 
 
 def test_concurrent_undo_locked(repo: Path) -> None:

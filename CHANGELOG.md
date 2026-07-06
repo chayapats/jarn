@@ -7,6 +7,22 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **`/rewind` slice 2 — atomic conversation + file rewind (T-3-1)** — the `/rewind`
+  picker gains a second arrow-key confirm after you choose a turn: **Restore files
+  too (recommended)** / **Conversation only** / **Cancel**. Restoring reverts the
+  working tree to that turn's git checkpoint *before* forking the thread, so the
+  conversation and the files rewind together (previously `/rewind` rewound the
+  conversation only and pointed you at `/undo`). The confirm previews what will
+  revert as a capped `git diff --stat` (≤10 lines + `+N more`) and shows a ⚠ when
+  the tree has hand-edits no checkpoint captured. The file restore is itself
+  reversible — `/undo` brings the pre-rewind tree back (no work is ever lost). Each
+  turn-start snapshot now records its `thread_id` + 0-based `turn_index`
+  (`CheckpointManager.find_for_turn`), which is how a chosen turn resolves back to
+  its checkpoint; old snapshots without the tag simply fall back to
+  conversation-only. Needs `git.autocheckpoint` on — with it off (the default), the
+  picker shows no extra confirm and behaves exactly as slice 1. New public API:
+  `CheckpointManager.find_for_turn` / `restore_to` / `diff_stat` /
+  `has_uncheckpointed_changes`; `Controller.fork_to_turn(..., restore_files=)`.
 - **`/theme` command + terminal background auto-detection (T-2-10)** — new
   `/theme [dark|light|high-contrast|auto]` command: bare `/theme` opens an
   arrow-key picker (↑/↓ + Enter; Esc cancel) showing the four options with the

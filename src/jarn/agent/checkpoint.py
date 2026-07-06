@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -74,6 +75,34 @@ class CheckpointEntry:
     sha: str
     label: str
     ref: str               # full ref name, e.g. refs/jarn/checkpoints/undo/0
+
+
+@dataclass(slots=True)
+class CheckpointRef:
+    """A snapshot resolved back to the conversation turn that produced it.
+
+    Returned by :meth:`CheckpointManager.find_for_turn` so ``/rewind`` can restore
+    the working tree to the exact state captured at the start of a chosen turn.
+    """
+    sha: str
+    thread_id: str
+    turn_index: int
+    label: str = ""
+
+
+#: Turn metadata embedded in a snapshot commit's subject line so a snapshot can be
+#: resolved back to the (thread, turn) that produced it. ``thread`` is a uuid4 hex
+#: (no spaces / brackets), ``turn`` a 0-based index. Old records lacking this tag
+#: simply never match — :meth:`find_for_turn` returns None (conversation-only).
+_TURN_META_RE = re.compile(r"\[jarn:thread=(?P<thread>[^\s\]]+) turn=(?P<turn>\d+)\]")
+
+
+def _turn_meta_suffix(thread_id: str | None, turn_index: int | None) -> str:
+    """Return the ``[jarn:thread=… turn=…]`` suffix for a snapshot subject, or ''
+    when either field is absent (backwards-compatible: no tag ⇒ old-format record)."""
+    if thread_id is None or turn_index is None:
+        return ""
+    return f" [jarn:thread={thread_id} turn={turn_index}]"
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +180,30 @@ def _read_ref_message(sha: str, root: Path) -> str:
     if result.returncode != 0:
         return sha[:12]
     return result.stdout.strip()
+
+
+def _iter_snapshot_records(root: Path) -> list[tuple[str, str]]:
+    """Return ``(sha, subject)`` for every stored snapshot ref, newest last.
+
+    Reads the stable ``refs/jarn/checkpoints/snap/`` namespace (which persists
+    across undo/redo stack mutations) in a SINGLE ``for-each-ref`` so resolving a
+    turn is one subprocess rather than one-per-snapshot."""
+    result = _git(
+        [
+            "for-each-ref",
+            "--format=%(objectname)%09%(subject)",
+            "refs/jarn/checkpoints/snap/",
+        ],
+        cwd=root,
+    )
+    if result.returncode != 0:
+        return []
+    records: list[tuple[str, str]] = []
+    for line in result.stdout.splitlines():
+        if "\t" in line:
+            sha, subject = line.split("\t", 1)
+            records.append((sha.strip(), subject))
+    return records
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +503,8 @@ class CheckpointManager:
         label: str,
         *,
         now: float | None = None,
+        thread_id: str | None = None,
+        turn_index: int | None = None,
     ) -> SnapshotResult:
         """Capture the current working tree into the undo stack.
 
@@ -459,6 +514,13 @@ class CheckpointManager:
 
         Pushing a new snapshot clears the redo stack (like most undo systems).
         ``now`` is the current epoch time; injectable for testing.
+
+        ``thread_id`` and ``turn_index`` (supplied by the session driver at
+        turn start) are recorded in the snapshot's subject so ``/rewind`` can
+        later resolve the checkpoint for a chosen turn via
+        :meth:`find_for_turn`. Both are optional and backwards-compatible: a
+        snapshot taken without them is an untagged (old-format) record that
+        ``find_for_turn`` simply never matches.
         """
         if not self.enabled:
             return SnapshotResult(ok=False, message="autocheckpoint disabled")
@@ -466,7 +528,10 @@ class CheckpointManager:
             return SnapshotResult(ok=False, message="not a git repository")
 
         ts = now if now is not None else _time_module.time()
-        full_label = f"jarn-checkpoint: {label} @ {int(ts)}"
+        full_label = (
+            f"jarn-checkpoint: {label} @ {int(ts)}"
+            + _turn_meta_suffix(thread_id, turn_index)
+        )
 
         sha, err = _build_snapshot(full_label, self.repo_root)
         if sha is None:
@@ -597,6 +662,112 @@ class CheckpointManager:
 
         label = _read_ref_message(target_sha, self.repo_root)
         return RestoreResult(ok=True, message=f"redone: {label}")
+
+    # -- /rewind slice 2: conversation ↔ file linkage -----------------------
+
+    def find_for_turn(self, thread_id: str, turn_index: int) -> CheckpointRef | None:
+        """Resolve the snapshot taken at the start of ``turn_index`` on ``thread_id``.
+
+        Scans the stored snapshot refs for one whose subject carries the matching
+        ``[jarn:thread=… turn=…]`` tag (see :meth:`snapshot`). Returns a
+        :class:`CheckpointRef` or ``None`` when no tagged snapshot matches — which
+        covers old-format records, autocheckpoint-off sessions, a turn that made no
+        file changes (deduped, so no distinct snapshot), and non-git dirs. Never
+        raises: a missing match is a conversation-only fallback, not an error.
+        """
+        if not self._is_repo:
+            return None
+        for sha, subject in _iter_snapshot_records(self.repo_root):
+            m = _TURN_META_RE.search(subject)
+            if (
+                m is not None
+                and m.group("thread") == thread_id
+                and int(m.group("turn")) == turn_index
+            ):
+                return CheckpointRef(
+                    sha=sha,
+                    thread_id=thread_id,
+                    turn_index=turn_index,
+                    label=subject,
+                )
+        return None
+
+    def restore_to(self, sha: str) -> RestoreResult:
+        """Restore the working tree to snapshot ``sha`` (the ``/rewind`` file revert).
+
+        Reuses the same primitives as :meth:`undo`: it first captures the CURRENT
+        tree as a fresh snapshot and pushes it onto the undo stack — so the rewind's
+        file restore is itself reversible (``/undo`` brings the pre-rewind tree back;
+        no uncommitted work is ever lost) — then applies the target snapshot and
+        clears the redo stack (a new action invalidates redo). ``HEAD``, the branch,
+        and the staged index are never touched. Best-effort and non-fatal: a git
+        failure leaves the tree untouched and returns ``ok=False``.
+        """
+        if not self.enabled:
+            return RestoreResult(ok=False, message="autocheckpoint disabled")
+        if not self._is_repo:
+            return RestoreResult(ok=False, message="not a git repository")
+
+        with _checkpoint_lock(self.repo_root):
+            # Capture the pre-restore tree so /undo can revert the rewind. Built
+            # BEFORE applying the target; a benign "nothing/ no commits" result just
+            # means there is nothing distinct to save (skip the push).
+            ts = _time_module.time()
+            pre_sha, _pre_err = _build_snapshot(
+                f"jarn-checkpoint: pre-rewind @ {int(ts)}", self.repo_root
+            )
+
+            ok, err = _apply_snapshot(sha, self.repo_root)
+            if not ok:
+                return RestoreResult(ok=False, message=f"restore failed: {err}")
+
+            if pre_sha is not None:
+                _update_ref(_snap_ref(pre_sha), pre_sha, self.repo_root)
+                _stack_push(_UNDO_PREFIX, pre_sha, self.repo_root)
+                self._prune_stack(_UNDO_PREFIX)
+            # A rewind is a new action: pending redo points no longer apply.
+            _stack_clear(_REDO_PREFIX, self.repo_root)
+
+        label = _read_ref_message(sha, self.repo_root)
+        return RestoreResult(ok=True, message=f"restored: {label}")
+
+    def diff_stat(self, sha: str) -> list[str]:
+        """Return ``git diff --stat <sha>`` lines: the tracked files that WOULD change
+        if the tree were restored to ``sha``. Used by ``/rewind``'s confirm to preview
+        the revert. Empty on error / no diff / non-git dir (never raises)."""
+        if not self._is_repo:
+            return []
+        r = _git(["diff", "--stat", sha], cwd=self.repo_root)
+        if r.returncode != 0:
+            return []
+        return [ln for ln in r.stdout.splitlines() if ln.strip()]
+
+    def has_uncheckpointed_changes(self) -> bool:
+        """True if the working tree differs from the most recent snapshot — edits no
+        jarn checkpoint captured (the user hand-edited since the last turn). Used by
+        ``/rewind`` to warn before a restore silently discards them. False when there
+        is no snapshot to compare against, or outside a git repo (never raises)."""
+        if not self._is_repo:
+            return False
+        undo_stack = _stack_read(_UNDO_PREFIX, self.repo_root)
+        if not undo_stack:
+            return False
+        probe_sha, _err = _build_snapshot(
+            "jarn-checkpoint: probe", self.repo_root
+        )
+        if probe_sha is None:
+            return False
+        top_tree = _git(
+            ["rev-parse", f"{undo_stack[0]}^{{tree}}"], cwd=self.repo_root
+        )
+        probe_tree = _git(
+            ["rev-parse", f"{probe_sha}^{{tree}}"], cwd=self.repo_root
+        )
+        return (
+            top_tree.returncode == 0
+            and probe_tree.returncode == 0
+            and top_tree.stdout.strip() != probe_tree.stdout.strip()
+        )
 
     def list(self) -> list[CheckpointEntry]:
         """Return the undo stack as an ordered list (most recent first)."""

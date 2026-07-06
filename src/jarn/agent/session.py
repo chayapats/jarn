@@ -212,7 +212,8 @@ class SessionDriver:
         # tree. Best-effort: a failure never aborts the turn — it is logged with a
         # traceback and surfaced as a NOTICE exactly once per session.
         if self.checkpoint is not None and not resume:
-            self._start_snapshot(user_input[:80], _time.time())
+            turn_index = await self._current_turn_index()
+            self._start_snapshot(user_input[:80], _time.time(), turn_index=turn_index)
 
         try:
             async for ev in self._stream_turn(payload):
@@ -384,13 +385,43 @@ class SessionDriver:
 
     # -- checkpoint snapshot lifecycle --------------------------------------
 
-    def _start_snapshot(self, label: str, ts: float) -> None:
+    async def _current_turn_index(self) -> int | None:
+        """0-based index of the turn about to run = the count of human messages
+        ALREADY in this thread's checkpointed state (before this turn's message is
+        appended). Recorded on the turn-start snapshot so ``/rewind`` can resolve a
+        chosen turn back to its checkpoint (:meth:`CheckpointManager.find_for_turn`).
+
+        Returns ``None`` when the graph state can't be read (a fake agent without
+        ``aget_state`` in tests, or any error) — the snapshot is still taken, just
+        as an untagged old-format record that ``find_for_turn`` won't match."""
+        get_state = getattr(self.agent, "aget_state", None)
+        if get_state is None:
+            return None
+        try:
+            state = await get_state(self._config())
+        except Exception:  # noqa: BLE001 - metadata is best-effort; never abort the turn
+            return None
+        messages = (getattr(state, "values", {}) or {}).get("messages", []) or []
+        return sum(1 for m in messages if getattr(m, "type", "") == "human")
+
+    def _start_snapshot(
+        self, label: str, ts: float, *, turn_index: int | None = None
+    ) -> None:
         """Kick off the working-tree snapshot in a worker thread (off the event
         loop). The manager's git work is synchronous subprocess code, safe to run
         via ``to_thread``. Awaited later at the first mutation gate / turn end;
-        reaped or detached in ``run_turn``'s cleanup."""
+        reaped or detached in ``run_turn``'s cleanup.
+
+        ``turn_index`` (with this driver's ``thread_id``) tags the snapshot so
+        ``/rewind`` can resolve it back to the turn that produced it."""
         self._snapshot_task = asyncio.create_task(
-            asyncio.to_thread(self.checkpoint.snapshot, label, now=ts)
+            asyncio.to_thread(
+                self.checkpoint.snapshot,
+                label,
+                now=ts,
+                thread_id=self.thread_id,
+                turn_index=turn_index,
+            )
         )
 
     async def _ensure_snapshot(self) -> None:
