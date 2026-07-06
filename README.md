@@ -180,8 +180,9 @@ jarn --add-dir ../shared-lib --add-dir ../sibling-repo  # extra writable roots (
 **Multi-root workspaces (`--add-dir`):** by default the agent's write scope is the
 project root. Pass `--add-dir <dir>` (repeatable) to grant scoped write access to a
 sibling directory too — useful for monorepo/sibling-repo work. Each dir must exist
-and be a directory. You can also add one mid-session with `/add-dir <path>`
-(approval-gated in `ask` mode; refused on an untrusted project). Added roots widen
+and be a directory. The launch flag works for headless runs too (`jarn -p … --add-dir
+<dir>`). You can also add one mid-session with `/add-dir <path>` (approval-gated in
+`ask`/`plan` modes; refused on an untrusted project). Added roots widen
 the **write scope only** — project context (JARN.md) is loaded from the primary root,
 and checkpoint/undo (`/undo`, `/rewind`) snapshot the **primary root only**. See
 [docs/PERMISSIONS.md](docs/PERMISSIONS.md) and [SECURITY.md](SECURITY.md).
@@ -418,7 +419,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1576 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1591 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

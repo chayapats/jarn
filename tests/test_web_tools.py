@@ -414,6 +414,38 @@ def test_auto_selection(monkeypatch):
     assert "AutoBrave" in out
 
 
+def test_auto_fallback_ddg(monkeypatch):
+    """auto with NO provider key resolvable falls back to the keyless DDG scraper.
+
+    The plan's failing-test spec named this branch ("`auto` picks the first
+    provider whose key resolves, ELSE DuckDuckGo") but no test exercised it.
+    """
+    cfg = _make_search_cfg("auto", api_key="")  # search.api_key explicitly empty
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    # No keychain entry for any provider in the test env — auto falls to DDG.
+
+    # DDG routes through the SSRF-guarded, IP-pinned _fetch_raw path.
+    _public_dns(monkeypatch)
+    seen: list[str] = []
+
+    def _fake_fetch(url, **k):
+        seen.append(url)
+        return _raw(_DDG_HTML)
+
+    monkeypatch.setattr(web_tools, "_fetch_raw", _fake_fetch)
+    monkeypatch.setattr(web_tools, "_active_config", cfg)
+
+    out = web_search.invoke({"query": "gold price"})
+    # The DDG scraper ran (its endpoint was hit) and returned formatted results.
+    assert any("duckduckgo.com" in u for u in seen), (
+        f"auto with no keys must fall back to the DDG scraper; hit {seen}"
+    )
+    assert "Gold price today" in out
+    assert "https://gold.example/price" in out
+
+
 def test_provider_error_string(monkeypatch):
     """HTTP failure from a provider returns a tool-error string; never raises."""
     cfg = _make_search_cfg("tavily")
@@ -427,6 +459,8 @@ def test_provider_error_string(monkeypatch):
     out = web_search.invoke({"query": "error test"})
     assert "web_search failed" in out
     assert isinstance(out, str)
+    # The resolved API key must never leak into the surfaced error string.
+    assert "tvly-test-key-12345" not in out
 
 
 def test_key_by_reference(monkeypatch):

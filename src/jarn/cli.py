@@ -209,6 +209,7 @@ def main(argv: list[str] | None = None) -> int:
             profile_override=preset_override,
             resume_session=args.headless_resume_session,
             output_schema=args.headless_output_schema,
+            add_dirs=args.add_dir,
         )
 
     # Fix the macOS Caps Lock language-switch stray-character bug before any TUI
@@ -255,11 +256,18 @@ def _cmd_headless(
     profile_override: str | None = None,
     resume_session: str | None = None,
     output_schema: str | None = None,
+    add_dirs: list[str] | None = None,
 ) -> int:
     """Run a single non-interactive agent turn and print the result.
 
     Reads config from disk (same path as the normal launch), applies any CLI
     overrides, then delegates to :func:`jarn.headless.run_headless`.
+
+    ``--add-dir`` grants (``add_dirs``) are validated with the same
+    :func:`_validate_add_dirs` the interactive launch uses and threaded through to
+    the Controller's write scope. Like the launch flag, an ``--add-dir`` given at
+    start is an explicit operator grant (same trust model as the primary root), so
+    it does NOT need the mid-session ``/add-dir`` trust/ask gate.
     """
     import sys
 
@@ -305,6 +313,18 @@ def _cmd_headless(
     )
     setup_logging(cfg.observability.log_level)
     configure_tracing(cfg.observability)
+
+    # Validate --add-dir grants up front (fail fast — don't run with a promised
+    # root that isn't there). Same validation as the interactive launch.
+    extra_roots, add_dir_err = _validate_add_dirs(add_dirs)
+    if add_dir_err is not None:
+        print(f"error: {add_dir_err}", file=sys.stderr)
+        return 1
+
+    # T-3-3 (item G): in -p mode the diagnostics NOTICE is dropped, but ruff/pyright
+    # would still spend up to 30s per edit-turn. Gate the whole feature off so a
+    # headless run never pays that latency tax for output nobody consumes.
+    cfg.verify.diagnostics = "off"
 
     # Apply CLI overrides.
     if model_override:
@@ -371,6 +391,7 @@ def _cmd_headless(
         max_turns=max_turns,
         resume_session=resume_session,
         response_format=response_format,
+        add_dirs=extra_roots,
     )
 
 

@@ -92,7 +92,8 @@ network (MCP, async subagents) still prompt `ask`.
 
 The write scope generalizes from a single project root to a set of roots
 (**primary first**). Add extra roots at launch with `jarn --add-dir <dir>`
-(repeatable) or mid-session with `/add-dir <path>`. A write is in-scope when it
+(repeatable) — this works for both the interactive TUI and headless `jarn -p …`
+runs — or mid-session with `/add-dir <path>`. A write is in-scope when it
 resolves under **any** root, and the per-root `resolve()` symlink discipline holds
 for **every** root: a symlink inside an added root that escapes it is rejected
 exactly as for the primary. The same roots set is propagated to the backend
@@ -100,8 +101,12 @@ filesystem guard, the OS sandbox writable allow-set, and the Docker bind mounts,
 an engine-allowed added-root write is enforceable — not blocked — at syscall time.
 
 `/add-dir` is **approval-gated**: mid-session it requires explicit confirmation in
-`ask` mode, and it is **refused outright on an untrusted project** (a scope-widening
-capability must not be grantable to a repo whose config you have not trusted).
+`ask` **and `plan`** modes (a root added in plan persists into a later escalation to
+auto-edit, so it must be confirmed), and it is **refused outright on an untrusted
+project** (a scope-widening capability must not be grantable to a repo whose config
+you have not trusted). The launch `--add-dir` flag (interactive or `-p`) is an
+explicit operator grant at start — same trust model as the primary root — so it does
+not go through the mid-session ask/trust gate.
 
 Added roots widen the **write scope only**. Two things stay **primary-root only**,
 by design:

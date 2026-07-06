@@ -245,3 +245,84 @@ async def test_fallback_on_provider_error(tmp_path, monkeypatch):
     assert second.resumed is False         # text is re-sent (not a bare resume)
     assert len(seq) == 0                    # exactly two attempts, no more
     ctrl.close()
+
+
+# ── item E: drop_pending_image_message (the fallback crux) ──────────────────────
+
+
+class _StateAgent:
+    """Fake agent exposing aget_state/aupdate_state over a fixed message list."""
+
+    def __init__(self, messages) -> None:
+        self._messages = messages
+        self.updates: list[dict] = []
+
+    async def aget_state(self, config):
+        return SimpleNamespace(values={"messages": self._messages})
+
+    async def aupdate_state(self, config, update):
+        self.updates.append(update)
+
+
+def _img_ctrl(tmp_path, monkeypatch, messages):
+    from jarn.tui.controller import Controller
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    ctrl = Controller(cfg, root)
+    agent = _StateAgent(messages)
+    ctrl.runtime = SimpleNamespace(agent=agent)
+    return ctrl, agent
+
+
+@pytest.mark.asyncio
+async def test_drop_pending_image_message_removes_image_human(tmp_path, monkeypatch):
+    """A last HumanMessage carrying image blocks IS removed (RemoveMessage via
+    aupdate_state) so the text-only re-send doesn't leave the rejected image in
+    state."""
+    messages = [
+        SimpleNamespace(type="human", id="h1", content="earlier text turn"),
+        SimpleNamespace(type="ai", id="a1", content="a reply"),
+        SimpleNamespace(
+            type="human",
+            id="h2",
+            content=[
+                {"type": "text", "text": "describe this"},
+                {"type": "image", "source_type": "base64", "data": "AAA="},
+            ],
+        ),
+    ]
+    ctrl, agent = _img_ctrl(tmp_path, monkeypatch, messages)
+
+    removed = await ctrl.drop_pending_image_message()
+
+    assert removed is True
+    assert len(agent.updates) == 1, "the image-bearing human message must be removed"
+    remove_msgs = agent.updates[0]["messages"]
+    assert len(remove_msgs) == 1
+    assert getattr(remove_msgs[0], "id", None) == "h2"
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_drop_pending_image_message_noop_without_image(tmp_path, monkeypatch):
+    """A last HumanMessage with NO image blocks → returns without any update, so a
+    prior text turn is never wrongly removed."""
+    messages = [
+        SimpleNamespace(type="human", id="h1", content="first"),
+        SimpleNamespace(type="ai", id="a1", content="a reply"),
+        SimpleNamespace(type="human", id="h2", content="plain text, no image"),
+    ]
+    ctrl, agent = _img_ctrl(tmp_path, monkeypatch, messages)
+
+    removed = await ctrl.drop_pending_image_message()
+
+    assert removed is False
+    assert agent.updates == [], "must NOT remove a non-image human message"
+    ctrl.close()
