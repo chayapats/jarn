@@ -1203,6 +1203,116 @@ async def test_fork_preserves_original_thread(tmp_path, monkeypatch, base_config
 
 
 @pytest.mark.asyncio
+async def test_fork_restores_files(tmp_path, monkeypatch, base_config):
+    """T-3-1: fork_to_turn(restore_files=True) reverts the working tree to the chosen
+    turn's checkpoint (byte-identical) BEFORE forking, and the new thread's history
+    ends at that turn. Conversation and files rewind atomically."""
+    from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
+    from langgraph.graph.message import REMOVE_ALL_MESSAGES
+
+    base_config.git = GitConfig(autocheckpoint=True)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = _repo_with_commit(tmp_path)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    ctrl = Controller(base_config, root)
+    thread = ctrl.thread_id
+    tracked = root / "file.txt"
+
+    # Three turn-start snapshots, each capturing a distinct tree, tagged with the
+    # thread + 0-based turn index the session driver records at turn start.
+    tracked.write_text("a\n", encoding="utf-8")
+    ctrl.checkpoint_manager.snapshot("t0", now=1.0, thread_id=thread, turn_index=0)
+    tracked.write_text("b\n", encoding="utf-8")
+    ctrl.checkpoint_manager.snapshot("t1", now=2.0, thread_id=thread, turn_index=1)
+    tracked.write_text("c\n", encoding="utf-8")
+    s2 = ctrl.checkpoint_manager.snapshot("t2", now=3.0, thread_id=thread, turn_index=2)
+    assert s2.ok
+    # Mid-refactor edits after turn 2 (never snapshotted).
+    tracked.write_text("dirty\n", encoding="utf-8")
+
+    msgs = [
+        HumanMessage(content="q0"), AIMessage(content="a0"),
+        HumanMessage(content="q1"), AIMessage(content="a1"),
+        HumanMessage(content="q2"), AIMessage(content="a2"),
+    ]
+    agent, ctrl.runtime = _rewind_runtime(msgs)
+
+    # keep messages[:4] = [q0,a0,q1,a1] → 2 human turns in the prefix → turn_index 2.
+    cut = await ctrl.fork_to_turn(4, restore_files=True)
+    assert cut == 4
+    # Tree byte-identical to the turn-2 snapshot.
+    assert tracked.read_text(encoding="utf-8") == "c\n"
+    # New-thread history ends at the 2nd human turn's answer (a1).
+    recorded = agent.updated["messages"]
+    assert isinstance(recorded[0], RemoveMessage)
+    assert recorded[0].id == REMOVE_ALL_MESSAGES
+    assert [m.content for m in recorded[1:]] == ["q0", "a0", "q1", "a1"]
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_fork_conversation_only(tmp_path, monkeypatch, base_config):
+    """T-3-1: restore_files=False leaves the working tree untouched (slice-1 behavior)
+    — the fork happens but no file revert. Byte-identical to the pre-fork tree."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    base_config.git = GitConfig(autocheckpoint=True)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = _repo_with_commit(tmp_path)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    ctrl = Controller(base_config, root)
+    thread = ctrl.thread_id
+    tracked = root / "file.txt"
+
+    tracked.write_text("a\n", encoding="utf-8")
+    ctrl.checkpoint_manager.snapshot("t0", now=1.0, thread_id=thread, turn_index=0)
+    tracked.write_text("b\n", encoding="utf-8")
+    ctrl.checkpoint_manager.snapshot("t1", now=2.0, thread_id=thread, turn_index=1)
+    tracked.write_text("dirty\n", encoding="utf-8")
+
+    msgs = [
+        HumanMessage(content="q0"), AIMessage(content="a0"),
+        HumanMessage(content="q1"), AIMessage(content="a1"),
+    ]
+    agent, ctrl.runtime = _rewind_runtime(msgs)
+
+    cut = await ctrl.fork_to_turn(2, restore_files=False)
+    assert cut == 2
+    # Tree UNTOUCHED — no restore when declining.
+    assert tracked.read_text(encoding="utf-8") == "dirty\n"
+    # The fork still happened (kept prefix seeded onto the new thread).
+    assert [m.content for m in agent.updated["messages"][1:]] == ["q0", "a0"]
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_fork_restore_falls_back_when_no_checkpoint(tmp_path, monkeypatch, base_config):
+    """restore_files=True but no matching checkpoint (turn never snapshotted) → the
+    fork proceeds conversation-only, tree untouched, no crash (graceful fallback)."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    base_config.git = GitConfig(autocheckpoint=True)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = _repo_with_commit(tmp_path)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    ctrl = Controller(base_config, root)
+    tracked = root / "file.txt"
+    tracked.write_text("dirty\n", encoding="utf-8")  # no snapshots recorded at all
+
+    msgs = [
+        HumanMessage(content="q0"), AIMessage(content="a0"),
+        HumanMessage(content="q1"), AIMessage(content="a1"),
+    ]
+    agent, ctrl.runtime = _rewind_runtime(msgs)
+
+    cut = await ctrl.fork_to_turn(2, restore_files=True)
+    assert cut == 2
+    assert tracked.read_text(encoding="utf-8") == "dirty\n"  # untouched (no checkpoint)
+    assert [m.content for m in agent.updated["messages"][1:]] == ["q0", "a0"]
+    ctrl.close()
+
+
+@pytest.mark.asyncio
 async def test_fork_mechanism_preserves_original_thread_real_saver():
     """Integration: the operation fork_to_turn performs — a fresh thread_id plus
     aupdate_state({messages: [RemoveMessage(REMOVE_ALL_MESSAGES), *prefix]}) — leaves

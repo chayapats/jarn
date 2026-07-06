@@ -66,9 +66,9 @@ async def test_run_turn_calls_checkpoint_snapshot_and_writes_transcript(tmp_path
     snap_calls: list[str] = []
     _orig = mgr.snapshot
 
-    def _spy(label: str, *, now: float | None = None):
+    def _spy(label: str, *, now: float | None = None, thread_id=None, turn_index=None):
         snap_calls.append(label)
-        return _orig(label, now=now)
+        return _orig(label, now=now, thread_id=thread_id, turn_index=turn_index)
 
     mgr.snapshot = _spy  # type: ignore[method-assign]
 

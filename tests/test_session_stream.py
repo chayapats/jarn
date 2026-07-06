@@ -259,7 +259,7 @@ async def test_snapshot_failure_notice_once() -> None:
         snapshot_notice_pending: bool = False
         snapshot_notice_shown: bool = False
 
-        def snapshot(self, label, *, now=None):
+        def snapshot(self, label, *, now=None, thread_id=None, turn_index=None):
             raise RuntimeError("git exploded")
 
     class WriteEachTurn:
@@ -323,7 +323,7 @@ async def test_snapshot_failure_notice_deferred_to_next_turn() -> None:
         snapshot_notice_pending: bool = False
         snapshot_notice_shown: bool = False
 
-        def snapshot(self, label, *, now=None):
+        def snapshot(self, label, *, now=None, thread_id=None, turn_index=None):
             raise RuntimeError("git exploded")
 
     class ReplyOnly:
@@ -370,7 +370,7 @@ async def test_snapshot_task_not_leaked_on_cancelled_turn(caplog) -> None:
         snapshot_notice_pending: bool = False
         snapshot_notice_shown: bool = False
 
-        def snapshot(self, label, *, now=None):
+        def snapshot(self, label, *, now=None, thread_id=None, turn_index=None):
             started.set()
             time.sleep(0.2)  # still running when the turn is cancelled
             return SnapshotResult(ok=True)
@@ -442,7 +442,7 @@ async def test_settle_snapshot_swallows_failure() -> None:
         snapshot_notice_pending: bool = False
         snapshot_notice_shown: bool = False
 
-        def snapshot(self, label, *, now=None):
+        def snapshot(self, label, *, now=None, thread_id=None, turn_index=None):
             raise RuntimeError("git exploded")
 
     driver = SessionDriver(
@@ -479,7 +479,7 @@ async def test_snapshot_failure_notice_once_across_drivers() -> None:
         snapshot_notice_pending: bool = False
         snapshot_notice_shown: bool = False
 
-        def snapshot(self, label, *, now=None) -> None:
+        def snapshot(self, label, *, now=None, thread_id=None, turn_index=None) -> None:
             raise RuntimeError("git exploded")
 
     class _WriteEachTurn:
@@ -549,7 +549,7 @@ async def test_deferred_snapshot_failure_surfaces_on_fresh_driver() -> None:
         snapshot_notice_pending: bool = False
         snapshot_notice_shown: bool = False
 
-        def snapshot(self, label, *, now=None) -> None:
+        def snapshot(self, label, *, now=None, thread_id=None, turn_index=None) -> None:
             raise RuntimeError("git exploded")
 
     class _ReplyOnly:

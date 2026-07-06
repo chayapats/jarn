@@ -1651,7 +1651,7 @@ async def test_rewind_blank_continuation_indexes_branch(tmp_path, monkeypatch):
     async def _human_turns():
         return [(0, ""), (2, "second")]  # fork target (turn 1) has empty content
 
-    async def _fork(idx):
+    async def _fork(idx, *, restore_files=False):
         return idx  # non-None: the fork "succeeded"
 
     async def _pick(options, header="", cancel_returns=None):
@@ -1675,6 +1675,148 @@ async def test_rewind_blank_continuation_indexes_branch(tmp_path, monkeypatch):
 
     await app._rewind_picker()
     assert titles, "blank-continuation rewind must index the new branch in /resume"
+    app.controller.close()
+
+
+def _rewind_app(tmp_path, monkeypatch):
+    """An InlineApp whose checkpoint manager is (fake-)enabled inside a git repo,
+    so the /rewind second confirm (restore files?) is exercised."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    # Pretend autocheckpoint is on inside a repo, with a checkpoint for the turn.
+    from jarn.agent.checkpoint import CheckpointRef
+
+    cpm = app.controller.checkpoint_manager
+    cpm.enabled = True
+    cpm._is_repo = True
+    monkeypatch.setattr(
+        cpm, "find_for_turn",
+        lambda thread, turn: CheckpointRef(sha="deadbeef", thread_id=thread, turn_index=turn),
+    )
+    monkeypatch.setattr(cpm, "diff_stat", lambda sha: [" file.txt | 2 +-"])
+    monkeypatch.setattr(cpm, "has_uncheckpointed_changes", lambda: False)
+    return app
+
+
+def _wire_rewind(app, monkeypatch, confirm_value, fork_calls):
+    """Common monkeypatching for the /rewind picker-flow tests."""
+    async def _human_turns():
+        return [(0, "first"), (2, "second"), (4, "third")]
+
+    async def _fork(idx, *, restore_files=False):
+        fork_calls.append((idx, restore_files))
+        return idx
+
+    async def _pick(options, header="", cancel_returns=None):
+        if "Rewind to turn" in header:
+            return (0, "first")  # choose turn 1
+        return confirm_value  # the restore-files confirm
+
+    async def _ask(*a, **k):
+        return ""  # blank → no continuation turn
+
+    async def _replay():
+        return None
+
+    monkeypatch.setattr(app.controller, "human_turns", _human_turns)
+    monkeypatch.setattr(app.controller, "fork_to_turn", _fork)
+    monkeypatch.setattr(app, "_pick_menu", _pick)
+    monkeypatch.setattr(app, "_ask", _ask)
+    monkeypatch.setattr(app, "_replay_transcript", _replay)
+    monkeypatch.setattr(
+        app.controller, "record_session_title", lambda title, *, when: None
+    )
+
+
+@pytest.mark.asyncio
+async def test_rewind_confirm_restore_path(tmp_path, monkeypatch):
+    """Picking 'Restore files too' forks with restore_files=True (conversation +
+    files rewind atomically)."""
+    app = _rewind_app(tmp_path, monkeypatch)
+    fork_calls: list[tuple[int, bool]] = []
+    _wire_rewind(app, monkeypatch, confirm_value=True, fork_calls=fork_calls)
+
+    await app._rewind_picker()
+
+    assert fork_calls == [(0, True)]
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_rewind_confirm_conversation_only_path(tmp_path, monkeypatch):
+    """Picking 'Conversation only' forks with restore_files=False (slice-1 behavior)."""
+    app = _rewind_app(tmp_path, monkeypatch)
+    fork_calls: list[tuple[int, bool]] = []
+    _wire_rewind(app, monkeypatch, confirm_value=False, fork_calls=fork_calls)
+
+    await app._rewind_picker()
+
+    assert fork_calls == [(0, False)]
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_rewind_confirm_cancel_path(tmp_path, monkeypatch):
+    """Cancelling the restore confirm aborts the whole rewind — no fork happens."""
+    app = _rewind_app(tmp_path, monkeypatch)
+    fork_calls: list[tuple[int, bool]] = []
+    _wire_rewind(app, monkeypatch, confirm_value=None, fork_calls=fork_calls)
+
+    await app._rewind_picker()
+
+    assert fork_calls == []  # rewind cancelled before forking
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_rewind_autocheckpoint_off_skips_confirm(tmp_path, monkeypatch):
+    """With autocheckpoint off, /rewind shows NO restore confirm and forks
+    conversation-only — byte-identical to slice 1 for the default config."""
+    app = _rewind_app(tmp_path, monkeypatch)
+    app.controller.checkpoint_manager.enabled = False  # autocheckpoint off
+    fork_calls: list[tuple[int, bool]] = []
+    confirm_menu_shown = []
+
+    async def _human_turns():
+        return [(0, "first"), (2, "second")]
+
+    async def _fork(idx, *, restore_files=False):
+        fork_calls.append((idx, restore_files))
+        return idx
+
+    async def _pick(options, header="", cancel_returns=None):
+        if "Restore files" in header:
+            confirm_menu_shown.append(True)
+        return (0, "first")
+
+    async def _ask(*a, **k):
+        return ""
+
+    async def _replay():
+        return None
+
+    monkeypatch.setattr(app.controller, "human_turns", _human_turns)
+    monkeypatch.setattr(app.controller, "fork_to_turn", _fork)
+    monkeypatch.setattr(app, "_pick_menu", _pick)
+    monkeypatch.setattr(app, "_ask", _ask)
+    monkeypatch.setattr(app, "_replay_transcript", _replay)
+    monkeypatch.setattr(
+        app.controller, "record_session_title", lambda title, *, when: None
+    )
+
+    await app._rewind_picker()
+
+    assert not confirm_menu_shown, "no restore confirm when autocheckpoint is off"
+    assert fork_calls == [(0, False)]  # conversation-only fork
     app.controller.close()
 
 

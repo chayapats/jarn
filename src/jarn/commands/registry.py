@@ -144,7 +144,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("resume", "Pick a previous session to resume.", "ui", group="Session"),
     CommandSpec(
         "rewind",
-        "Rewind the conversation to an earlier turn and continue (forks a new thread).",
+        "Rewind to an earlier turn and continue (forks a new thread); "
+        "optionally restore files to that turn too.",
         "ui",
         group="Session",
     ),

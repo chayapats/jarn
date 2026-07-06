@@ -345,9 +345,11 @@ class CommandMixin:
         everything before it, optionally edit that turn's prompt, then continue.
 
         The original thread is left intact (still in /sessions for /resume) — this
-        branches, it does not destroy. This rewinds the CONVERSATION only: file
-        edits made after the chosen turn are NOT reverted; the notice points the
-        user at /undo for those (git-checkpoint linkage is slice 2).
+        branches, it does not destroy. After the turn is chosen a second confirm
+        (see :meth:`_confirm_rewind_restore`) can also restore the working tree to
+        that turn's git checkpoint, so conversation and files rewind atomically
+        (slice 2). Declining it — or having autocheckpoint off — leaves files as-is
+        and points the user at /undo, exactly as slice 1 did.
 
         Runs through the normal queue, so it never fires mid-turn: a `/rewind`
         typed while a turn is running is queued and only runs once that turn
@@ -389,6 +391,13 @@ class CommandMixin:
         if chosen is None:
             return
         cut_index, original_prompt = chosen
+        # Slice 2: second confirm — restore files too, or conversation only?
+        # Returns True (restore) / False (conversation only) / None (cancel).
+        decision = await self._confirm_rewind_restore(cut_index, turns)
+        if decision is None:
+            c.print(f"[{palette.C_DIM}]Rewind cancelled.[/{palette.C_DIM}]")
+            return
+        restore_files = decision
         # Optional prompt edit: pre-fill the input with the chosen turn's text so
         # the user can tweak it before re-running (blank keeps the original).
         edited = await self._ask(
@@ -396,18 +405,26 @@ class CommandMixin:
         )
         prompt = edited if edited else original_prompt
 
-        cut = await self.controller.fork_to_turn(cut_index)
+        cut = await self.controller.fork_to_turn(cut_index, restore_files=restore_files)
         if cut is None:
             c.print(f"[{palette.C_DIM}]Nothing to rewind.[/{palette.C_DIM}]")
             return
         self._last_todos_sig = None
         await self._replay_transcript()
-        c.print(
-            f"[{palette.C_NOTICE}]↩ rewound to a new branch[/{palette.C_NOTICE}] "
-            f"[{palette.C_DIM}]— the original session is still in /resume. "
-            f"File edits made after this point are NOT reverted — /undo rolls back "
-            f"file changes one turn at a time.[/{palette.C_DIM}]"
-        )
+        if restore_files:
+            c.print(
+                f"[{palette.C_NOTICE}]↩ rewound to a new branch — conversation and "
+                f"files restored to this turn[/{palette.C_NOTICE}] "
+                f"[{palette.C_DIM}]— the original session is still in /resume; "
+                f"/undo reverts this file restore.[/{palette.C_DIM}]"
+            )
+        else:
+            c.print(
+                f"[{palette.C_NOTICE}]↩ rewound to a new branch[/{palette.C_NOTICE}] "
+                f"[{palette.C_DIM}]— the original session is still in /resume. "
+                f"File edits made after this point are NOT reverted — /undo rolls back "
+                f"file changes one turn at a time.[/{palette.C_DIM}]"
+            )
         if not prompt:
             # No continuation: still index the new branch so it survives in /resume
             # (otherwise it's an orphan checkpoint with no sessions row). Title it by
@@ -431,6 +448,68 @@ class CommandMixin:
         )
         await self._render_todos()
         self._maybe_autocheckpoint_hint()
+
+    async def _confirm_rewind_restore(
+        self, cut_index: int, turns: list[tuple[int, str]]
+    ):
+        """`/rewind` second confirm: restore the working tree to the chosen turn too,
+        or rewind the conversation only?
+
+        Returns ``True`` (restore files), ``False`` (conversation only), or ``None``
+        (cancel the whole rewind). When autocheckpoint is off or no checkpoint
+        captured the chosen turn, there is nothing to restore — returns ``False``
+        WITHOUT showing a menu, so /rewind stays byte-identical to slice 1 for the
+        default (autocheckpoint-off) config. Otherwise it previews the revert
+        (``git diff --stat``, capped) and defaults the highlight to restore.
+        """
+        c = self.console
+        cpm = self.controller.checkpoint_manager
+        if not cpm.enabled or not cpm.is_repo:
+            return False  # no checkpoints — slice-1 conversation-only, no extra menu
+        # 0-based turn index of the chosen cut = human turns strictly before it —
+        # the same quantity the session driver records on each turn-start snapshot.
+        turn_index = sum(1 for idx, _ in turns if idx < cut_index)
+        ref = await asyncio.to_thread(
+            cpm.find_for_turn, self.controller.thread_id, turn_index
+        )
+        if ref is None:
+            c.print(
+                f"[{palette.C_DIM}]No checkpoint captured for that turn "
+                f"(autocheckpoint may have been off, or the turn made no file edits) "
+                f"— reverting the conversation only.[/{palette.C_DIM}]"
+            )
+            return False
+        # Preview what the restore would revert (git diff --stat, ≤10 lines).
+        stat = await asyncio.to_thread(cpm.diff_stat, ref.sha)
+        if stat:
+            c.print(
+                f"[{palette.C_DIM}]Files that would revert to this turn:"
+                f"[/{palette.C_DIM}]"
+            )
+            for line in stat[:10]:
+                c.print(f"  [{palette.C_DIM}]{_rich_escape(line)}[/{palette.C_DIM}]")
+            if len(stat) > 10:
+                c.print(
+                    f"  [{palette.C_DIM}]… +{len(stat) - 10} more[/{palette.C_DIM}]"
+                )
+        # Warn when the tree has hand-edits no checkpoint captured — the restore
+        # would roll them back (they stay recoverable via /undo, but flag it).
+        if await asyncio.to_thread(cpm.has_uncheckpointed_changes):
+            c.print(
+                f"[{palette.C_WARN}]⚠ Uncommitted changes not captured by any "
+                f"checkpoint will be rolled back by the restore (/undo can recover "
+                f"them).[/{palette.C_WARN}]"
+            )
+        options: list[tuple[str, bool | None]] = [
+            ("Restore files too (recommended)", True),
+            ("Conversation only", False),
+            ("Cancel", None),
+        ]
+        return await self._pick_menu(
+            options,
+            header="Restore files? · ↑/↓ · Enter · Esc cancel",
+            cancel_returns=None,
+        )
 
     async def _pick_model_or_mode(self, what: str) -> None:
         c = self.console
