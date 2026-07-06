@@ -7,6 +7,21 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **`/theme` command + terminal background auto-detection (T-2-10)** — new
+  `/theme [dark|light|high-contrast|auto]` command: bare `/theme` opens an
+  arrow-key picker (↑/↓ + Enter; Esc cancel) showing the four options with the
+  currently-resolved theme in the header; `/theme <name>` applies directly.
+  Applying re-runs `palette.configure_ui` at runtime (toolbar/live region pick
+  up new colours immediately; already-committed scrollback stays as-is) and
+  persists `ui.theme` via the standard config-set path.
+  New `ui.theme: auto` value — resolves at startup via an OSC-11 terminal
+  background probe (`\x1b]11;?\x07`): reads the reply in raw mode with a hard
+  100 ms deadline, computes sRGB relative luminance, classifies as `light` or
+  `dark`; falls back to `dark` when stdin/stdout are not a tty (pipes, CI),
+  or when the terminal does not reply.  Detection runs before
+  prompt_toolkit's Application owns the tty.  New module `jarn.tui.termbg`
+  exposes `parse_osc11`, `luminance`, and `detect` as public API.
+
 - **`@git:` and `@url:` rich mentions (T-2-9)** — two new submit-time mention kinds
   that expand on Enter before the agent sees the message:
   - **`@git:status|diff|staged|log`** — replaced by a fenced `<git-mention>` block

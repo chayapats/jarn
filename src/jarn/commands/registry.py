@@ -36,6 +36,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         usage="[plan|ask|auto-edit|yolo]",
         group="Daily",
     ),
+    CommandSpec(
+        "theme",
+        "Show or switch the color theme (dark/light/high-contrast/auto).",
+        "ui",
+        usage="[dark|light|high-contrast|auto]",
+        group="Daily",
+    ),
     CommandSpec("cost", "Show session token usage and cost.", "core", group="Daily"),
     CommandSpec("undo", "Revert the last agent turn's file changes.", "core", group="Daily"),
     CommandSpec(

@@ -205,3 +205,37 @@ async def test_key_command_inline_arg_does_not_prompt(tmp_path, monkeypatch):
     assert app.controller.runtime is None
     assert app.controller.config.providers["openrouter"].api_key == "keychain:jarn/openrouter"
     app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_theme_picker(tmp_path, monkeypatch):
+    """/theme bare opens an arrow-key picker with dark/light/high-contrast/auto."""
+    from jarn.tui import palette
+
+    app = _app(tmp_path, monkeypatch)
+    picked_options: list[list[tuple[str, object]]] = []
+
+    async def _fake_pick_menu(options, *, header="", cancel_returns=None, fastkeys=None):
+        picked_options.append(options)
+        # Simulate user picking "light"
+        return "light"
+
+    monkeypatch.setattr(app, "_pick_menu", _fake_pick_menu)
+
+    # Stub set_setting to avoid real filesystem I/O
+    monkeypatch.setattr(app.controller, "set_setting", lambda key, val: (True, f"saved {key} = {val}"))
+
+    await app._command("theme", "")
+
+    assert picked_options, "/theme bare must open a picker"
+    opts = picked_options[0]
+    values = [v for _, v in opts if v is not None]
+    assert "dark" in values
+    assert "light" in values
+    assert "high-contrast" in values
+    assert "auto" in values
+    # Picker must contain at least one Cancel option (value None)
+    assert any(v is None for _, v in opts)
+    # After picking light, palette must be updated
+    assert palette._PALETTES["light"].toolbar_bg == palette.TOOLBAR_BG
+    app.controller.close()

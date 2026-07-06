@@ -14,7 +14,7 @@ import random
 from dataclasses import dataclass
 from typing import Literal
 
-ThemeName = Literal["dark", "light", "high-contrast"]
+ThemeName = Literal["dark", "light", "high-contrast", "auto"]
 
 
 @dataclass(frozen=True, slots=True)

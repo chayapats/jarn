@@ -98,7 +98,7 @@ SETTINGS: tuple[Setting, ...] = (
        "Feed `! <cmd>` shell output into the agent's next turn."),
     # ── Appearance ──
     _s("ui.theme", "enum", "Appearance", "Theme",
-       "Color theme.", ("dark", "light", "high-contrast")),
+       "Color theme. auto detects light/dark from the terminal background.", ("auto", "dark", "light", "high-contrast")),
     _s("ui.accent", "str", "Appearance", "Accent color",
        "Brand accent color (e.g. cyan, magenta)."),
     _s("ui.splash", "enum", "Appearance", "Splash",

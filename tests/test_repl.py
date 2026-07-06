@@ -3583,3 +3583,40 @@ async def test_git_mention_expansion_no_feedback_without_git(tmp_path, monkeypat
     out = app.console.file.getvalue()
     assert "expanding @git mention" not in out
     app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_theme_command_switches_and_persists(tmp_path, monkeypatch):
+    """/theme light re-applies the palette at runtime and persists ui.theme=light."""
+    from jarn.tui import palette
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    # Stub set_setting to capture calls and return success.
+    set_calls: list[tuple[str, str]] = []
+
+    def _fake_set_setting(key: str, val: str) -> tuple[bool, str]:
+        set_calls.append((key, val))
+        app.controller.config.ui.theme = val
+        return True, f"saved {key} = {val}"
+
+    monkeypatch.setattr(app.controller, "set_setting", _fake_set_setting)
+
+    # Start with dark theme
+    palette.configure_ui(theme="dark")
+    assert palette._PALETTES["dark"].toolbar_bg == palette.TOOLBAR_BG
+
+    await app._command("theme", "light")
+
+    # Palette should be updated immediately
+    assert palette._PALETTES["light"].toolbar_bg == palette.TOOLBAR_BG, (
+        "/theme light must apply the palette at runtime"
+    )
+    # Setting should have been persisted
+    assert set_calls, "/theme must persist via set_setting"
+    assert set_calls[0] == ("ui.theme", "light"), (
+        f"expected set_setting('ui.theme', 'light'), got {set_calls}"
+    )
+    # Config updated
+    assert app.controller.config.ui.theme == "light"
+    app.controller.close()

@@ -42,6 +42,24 @@ from jarn.repl.turn import (
 from jarn.tui import palette
 
 
+def _resolve_theme(config: Config) -> str:
+    """Return the palette name to apply for ``config.ui.theme``.
+
+    When theme is ``"auto"``, run the OSC-11 terminal-background probe
+    **before** prompt_toolkit's Application starts so we still own the tty.
+    Falls back to ``"dark"`` when the terminal does not reply (non-tty, CI,
+    unresponsive terminal).
+
+    Must be called after :func:`~jarn.tui.keyfix.apply_repl_keyfix` (which
+    pops any stray kitty flags) but before the PT Application is created.
+    """
+    if config.ui.theme != "auto":
+        return config.ui.theme
+    from jarn.tui.termbg import detect
+    detected = detect()
+    return detected if detected in ("light", "dark") else "dark"
+
+
 def run_inline(
     config: Config,
     project_root: Path | None,
@@ -53,7 +71,8 @@ def run_inline(
     from jarn.tui.keyfix import apply_repl_keyfix
 
     apply_repl_keyfix()
-    palette.configure_ui(theme=config.ui.theme, accent=config.ui.accent)
+    resolved_theme = _resolve_theme(config)
+    palette.configure_ui(theme=resolved_theme, accent=config.ui.accent)
     with contextlib.suppress(KeyboardInterrupt, EOFError):
         asyncio.run(
             InlineApp(
@@ -78,6 +97,7 @@ __all__ = [
     "_edit_text_in_editor",
     "_friendly_auth_error",
     "_provider_hint",
+    "_resolve_theme",
     "_run_turn",
     "run_inline",
 ]

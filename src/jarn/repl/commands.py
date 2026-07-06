@@ -160,6 +160,9 @@ class CommandMixin:
         if name == "model" and args.strip() in ("refresh", "list"):
             await self._refresh_models()
             return
+        if name == "theme":
+            await self._cmd_theme(args)
+            return
         if name in ("model", "mode") and not args.strip():
             await self._pick_model_or_mode(name)
             return
@@ -523,6 +526,78 @@ class CommandMixin:
         elif mtype == "tool" and text:
             first = text.splitlines()[0] if text else ""
             self.console.print(f"  [{palette.C_DIM}]⎿ {_rich_escape(first[:80])}[/{palette.C_DIM}]")
+
+    async def _cmd_theme(self, args: str) -> None:
+        """`/theme [dark|light|high-contrast|auto]`: switch the color theme.
+
+        With no argument: opens an arrow-key picker listing all four options;
+        the title shows which theme is currently resolved (for ``auto``, the
+        detected light/dark value is shown in parentheses).
+        With an argument: applies directly (same as ``/config set ui.theme``).
+
+        Applying a theme:
+        1. Re-runs ``palette.configure_ui`` so the toolbar/live region picks up
+           the new colors immediately (already-committed scrollback stays as-is).
+        2. Persists ``ui.theme`` via ``controller.set_setting`` so the choice
+           survives a restart.
+        """
+        from jarn.tui import termbg
+
+        c = self.console
+        _VALID = ("dark", "light", "high-contrast", "auto")
+
+        # Resolve "auto" to an actual palette name for display / apply.
+        def _resolve(name: str) -> str:
+            if name == "auto":
+                detected = termbg.detect()
+                return detected if detected in ("light", "dark") else "dark"
+            return name
+
+        chosen: str | None = args.strip().lower() if args.strip() else None
+
+        if chosen is None:
+            # Open the arrow-key picker.
+            current = self.controller.config.ui.theme
+            resolved = _resolve(current)
+            if current == "auto":
+                header = (
+                    f"Pick theme (currently: auto → {resolved}) · "
+                    "↑/↓ · Enter · Esc cancel"
+                )
+            else:
+                header = f"Pick theme (currently: {current}) · ↑/↓ · Enter · Esc cancel"
+            options: list[tuple[str, str | None]] = [
+                ("dark", "dark"),
+                ("light", "light"),
+                ("high-contrast", "high-contrast"),
+                ("auto  (detect from terminal background)", "auto"),
+                ("Cancel", None),
+            ]
+            chosen = await self._pick_menu(options, header=header, cancel_returns=None)
+            if chosen is None:
+                return
+        else:
+            if chosen not in _VALID:
+                c.print(
+                    f"[{palette.C_ERROR}]Unknown theme {chosen!r}. "
+                    f"Valid: dark, light, high-contrast, auto.[/{palette.C_ERROR}]"
+                )
+                return
+
+        # Apply: resolve auto → actual palette name, then configure.
+        palette_name = _resolve(str(chosen))
+        palette.configure_ui(theme=palette_name, accent=self.controller.config.ui.accent)
+
+        # Persist via the standard config-set path.
+        ok, msg = self.controller.set_setting("ui.theme", str(chosen))
+        if ok:
+            c.print(
+                f"[{palette.C_SUCCESS}]Theme set to {chosen!r}"
+                f"{' (→ ' + palette_name + ')' if chosen == 'auto' else ''}."
+                f"[/{palette.C_SUCCESS}]"
+            )
+        else:
+            c.print(f"[{palette.C_ERROR}]{msg}[/{palette.C_ERROR}]")
 
     def _maybe_autocheckpoint_hint(self) -> None:
         """After a turn that wrote a file, show the one-time /undo-unavailable
