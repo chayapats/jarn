@@ -174,7 +174,7 @@ def summarize_output(cmd: str, output: str, *, exit_code: int = 0) -> str:
             m = re.search(r"test result: \S+\. (.+)", output, re.MULTILINE)
             if m:
                 return m.group(1)
-        elif "go test" in cmd_lower or "go " in cmd_lower:
+        elif "go test" in cmd_lower:
             m = re.search(r"^(ok|FAIL)\s+\S+", output, re.MULTILINE)
             if m:
                 return m.group(0)
@@ -246,5 +246,6 @@ async def verify_after_edit(driver: SessionDriver, tool_name: str) -> Any | None
         "secs": float(secs),
     }
     if not ok and output:
-        verify_data["full_output"] = output
+        # Cap output to avoid attaching megabytes to NOTICE; tail-20k is fine for pager display.
+        verify_data["full_output"] = output[-20_000:]
     return Event(EventKind.NOTICE, data={"verify": verify_data})
