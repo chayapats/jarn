@@ -282,9 +282,11 @@ def _configure_key(
             )
             return result.reference
         except Exception as exc:  # noqa: BLE001
+            from jarn.config.secrets import redact_secrets
+
             console.print(
-                f"  [yellow]![/yellow] Browser login failed: {exc}. "
-                "Falling back to manual key entry."
+                f"  [yellow]![/yellow] Browser login failed: "
+                f"{redact_secrets(str(exc))}. Falling back to manual key entry."
             )
             # Fall through to keychain paste.
             method = "keychain"

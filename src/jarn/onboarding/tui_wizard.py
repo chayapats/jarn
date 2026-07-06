@@ -561,6 +561,7 @@ class SetupApp(App):
         """
         from rich.console import Console as RichConsole
 
+        from jarn.config.secrets import redact_secrets
         from jarn.onboarding.oauth import login_openrouter
 
         # Suspend the Textual app while the browser + blocking server run.
@@ -575,8 +576,8 @@ class SetupApp(App):
                 )
             except Exception as exc:  # noqa: BLE001
                 rc.print(
-                    f"  [yellow]![/yellow] Browser login failed: {exc}. "
-                    "Falling back to manual key entry."
+                    f"  [yellow]![/yellow] Browser login failed: "
+                    f"{redact_secrets(str(exc))}. Falling back to manual key entry."
                 )
                 self.answers["storage"] = "keychain"
                 await self._goto("key")

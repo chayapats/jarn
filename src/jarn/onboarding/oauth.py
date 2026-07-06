@@ -40,7 +40,6 @@ import base64
 import hashlib
 import secrets as _secrets_mod
 import string
-import threading
 import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -76,13 +75,16 @@ class LoginResult:
     """Result of a successful ``login_openrouter`` call."""
 
     reference: str
-    """Keychain or file reference — e.g. ``keychain:jarn/openrouter``."""
+    """Secret reference — e.g. ``keychain:jarn/openrouter`` or ``${ENV}``."""
 
     masked_key: str
     """Tail-masked representation for display — e.g. ``sk-…XXXX``."""
 
-    backend: Literal["keychain", "file"]
-    """Which backend stored the key."""
+    backend: str
+    """Where the key lives — ``keychain`` / ``file`` / ``env`` (from the reference)."""
+
+    changed: bool = True
+    """False when an existing key was kept (nothing to persist)."""
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +146,6 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         else:
             self.send_response(404)
             self.end_headers()
-        self.server._done_event.set()  # type: ignore[attr-defined]
 
     def log_message(self, fmt: str, *args: object) -> None:  # noqa: D102
         # Suppress the default stderr logging from BaseHTTPRequestHandler.
@@ -160,9 +161,8 @@ def _make_callback_server() -> tuple[HTTPServer, int]:
         The server instance and the port it is listening on.
     """
     server = HTTPServer(("127.0.0.1", 0), _CallbackHandler)
-    # Attach state the handler needs.
+    # Attach the box the handler drops the captured code into.
     server._code_box = {}  # type: ignore[attr-defined]
-    server._done_event = threading.Event()  # type: ignore[attr-defined]
     port = server.server_address[1]
     return server, port
 
@@ -270,6 +270,36 @@ def _resolve_existing(ref: str) -> str | None:
         return resolve(ref)
     except (SecretResolutionError, Exception):  # noqa: BLE001
         return None
+
+
+def _configured_openrouter_ref() -> str | None:
+    """Read ``providers.openrouter.api_key`` from the global config, if present.
+
+    Returns the raw reference string (``${ENV}`` / ``keychain:…`` / ``file:…``)
+    so the existing-key check honours **any** configured key source, not just the
+    keychain default.  Returns None when there is no config, no openrouter entry,
+    or the file cannot be parsed.
+    """
+    from jarn.config import paths
+
+    config_path = paths.global_config_path()
+    if not config_path.is_file():
+        return None
+    try:
+        from jarn.config.loader import _read_yaml
+
+        data = _read_yaml(config_path)
+    except Exception:  # noqa: BLE001 - a malformed config must not crash login
+        return None
+    providers = data.get("providers") or {}
+    entry = providers.get("openrouter") or {}
+    ref = entry.get("api_key")
+    return ref if isinstance(ref, str) and ref else None
+
+
+def _backend_for_ref(ref: str) -> str:
+    """Map a secret reference to a human backend label (``env``/``keychain``/``file``)."""
+    return key_source(ref)
 
 
 def _mask_key(raw: str) -> str:
@@ -394,15 +424,20 @@ def login_openrouter(
         else _module_wait_for_callback
     )
 
-    # -- check for existing key ------------------------------------------
-    existing_value = _resolve_existing(_OPENROUTER_REF)
+    # -- check for an existing key from ANY source --------------------------
+    # Honour the actual configured reference (${ENV} / file: / keychain:), not
+    # just the keychain default — otherwise a working ${ENV} config would get no
+    # replace/keep prompt and be silently clobbered.
+    existing_ref = _configured_openrouter_ref() or _OPENROUTER_REF
+    existing_value = _resolve_existing(existing_ref)
     if existing_value is not None:
-        decision = _prompt_fn(_OPENROUTER_REF)
+        decision = _prompt_fn(existing_ref)
         if decision == "keep":
             return LoginResult(
-                reference=_OPENROUTER_REF,
+                reference=existing_ref,
                 masked_key=_mask_key(existing_value),
-                backend="keychain",
+                backend=_backend_for_ref(existing_ref),
+                changed=False,
             )
         # "replace" — fall through to the full OAuth flow below.
 
@@ -422,12 +457,12 @@ def login_openrouter(
 
     _open(authorize_url)
 
+    # Always release the loopback socket — including on the 300 s timeout path.
     try:
         code = _wait_fn(server, timeout=_timeout)
-    except TimeoutError:
-        raise
-
-    stored = _exchange_and_store(code, verifier)
+        stored = _exchange_and_store(code, verifier)
+    finally:
+        server.server_close()
 
     raw_value = _resolve_existing(stored.reference) or ""
     masked = _mask_key(raw_value) if raw_value else f"{stored.reference[-4:]}"
@@ -436,6 +471,7 @@ def login_openrouter(
         reference=stored.reference,
         masked_key=masked,
         backend=stored.backend,
+        changed=True,
     )
 
 

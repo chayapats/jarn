@@ -557,23 +557,38 @@ def _cmd_login() -> int:
         console.print(f"[red]✗[/red] Login failed: {redact_secrets(str(exc))}")
         return 1
 
+    if not result.changed:
+        # Existing key kept — nothing to persist; don't rewrite the config.
+        console.print(
+            f"[green]✔[/green]  Keeping your existing key ([b]{result.reference}[/b])."
+        )
+        console.print(f"   Key tail: [dim]{result.masked_key}[/dim]")
+        return 0
+
     console.print(f"[green]✔[/green]  Logged in — key stored as [b]{result.reference}[/b]")
     console.print(f"   Key tail: [dim]{result.masked_key}[/dim]")
 
     # Write the reference into the OpenRouter provider in the global config.
-    _write_openrouter_key_ref(result.reference)
+    if _write_openrouter_key_ref(result.reference):
+        console.print(
+            "\n[green]✔[/green]  Config updated.  "
+            "Launch [b]jarn[/b] to start coding."
+        )
+        return 0
     console.print(
-        "\n[green]✔[/green]  Config updated.  "
-        "Launch [b]jarn[/b] to start coding."
+        f"\n[yellow]![/yellow]  The key is stored ([b]{result.reference}[/b]) but the "
+        "config was left untouched — set `providers.openrouter.api_key` manually."
     )
-    return 0
+    return 1
 
 
-def _write_openrouter_key_ref(reference: str) -> None:
+def _write_openrouter_key_ref(reference: str) -> bool:
     """Set ``providers.openrouter.api_key`` in the global config (non-destructively).
 
     If no global config exists yet, creates a minimal one.  Existing keys for
-    other providers are preserved.
+    other providers are preserved.  Returns True when the config was written;
+    returns False (after a stderr warning) when the existing config cannot be
+    parsed — refusing to replace a whole config with a single key.
     """
     import yaml
 
@@ -583,9 +598,16 @@ def _write_openrouter_key_ref(reference: str) -> None:
     if config_path.is_file():
         raw = config_path.read_text(encoding="utf-8")
         try:
-            data = yaml.safe_load(raw) or {}
-        except Exception:  # noqa: BLE001
-            data = {}
+            loaded = yaml.safe_load(raw)
+        except Exception:  # noqa: BLE001 - malformed YAML must not be silently wiped
+            print(
+                "warning: could not parse existing ~/.jarn/config.yaml; "
+                "refusing to overwrite it. Fix the file (or delete it) and re-run "
+                "`jarn login`.",
+                file=sys.stderr,
+            )
+            return False
+        data = loaded or {}
     else:
         paths.global_home().mkdir(parents=True, exist_ok=True)
         data = {}
@@ -603,6 +625,7 @@ def _write_openrouter_key_ref(reference: str) -> None:
         header + yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
+    return True
 
 
 def _trust_list(store: Any, *, as_json: bool) -> int:

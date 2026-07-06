@@ -255,3 +255,165 @@ def test_wizard_tui_openrouter_storage_shows_login_first(monkeypatch):
     assert first_key == "oauth", (
         f"First storage option for openrouter must be 'oauth', got {first_key!r}"
     )
+
+
+# ===========================================================================
+# Fix round 1 — socket lifecycle, existing-key from any source, config guard
+# ===========================================================================
+
+
+def _mock_ok_post(url: str, **kwargs):
+    req = httpx.Request("POST", url)
+    return httpx.Response(200, json={"key": "sk-or-v1-fresh1234567890abcdef"}, request=req)
+
+
+def _mock_keyring_set(op, service, account, value=None, *, timeout):
+    return True if op == "set" else None
+
+
+def test_login_closes_socket_on_success(monkeypatch):
+    """login_openrouter must close the loopback socket after a successful flow."""
+    from jarn.onboarding import oauth
+
+    captured: dict[str, object] = {}
+    real_make = oauth._make_callback_server
+
+    def _capturing_make():
+        server, port = real_make()
+        captured["server"] = server
+        return server, port
+
+    monkeypatch.setattr(oauth, "_make_callback_server", _capturing_make)
+    monkeypatch.setattr(oauth, "_resolve_existing", lambda ref: None)
+    monkeypatch.setattr("httpx.post", _mock_ok_post)
+    monkeypatch.setattr("jarn.config.secrets._keyring_call", _mock_keyring_set)
+
+    def _mock_wait(server, *, timeout: float = 300.0) -> str:
+        return "the-code"
+
+    result = oauth.login_openrouter(
+        open_browser=lambda url: None,
+        _wait_for_callback=_mock_wait,
+    )
+
+    assert result.reference == "keychain:jarn/openrouter"
+    server = captured["server"]
+    # A closed HTTPServer socket has fileno() == -1.
+    assert server.socket.fileno() == -1, "loopback socket must be closed after success"
+
+
+def test_login_closes_socket_on_timeout(monkeypatch):
+    """login_openrouter must close the loopback socket even when the wait times out."""
+    from jarn.onboarding import oauth
+
+    captured: dict[str, object] = {}
+    real_make = oauth._make_callback_server
+
+    def _capturing_make():
+        server, port = real_make()
+        captured["server"] = server
+        return server, port
+
+    monkeypatch.setattr(oauth, "_make_callback_server", _capturing_make)
+    monkeypatch.setattr(oauth, "_resolve_existing", lambda ref: None)
+
+    def _mock_wait(server, *, timeout: float = 300.0) -> str:
+        raise TimeoutError("no callback arrived")
+
+    with pytest.raises(TimeoutError):
+        oauth.login_openrouter(
+            open_browser=lambda url: None,
+            _wait_for_callback=_mock_wait,
+        )
+
+    server = captured["server"]
+    assert server.socket.fileno() == -1, "loopback socket must be closed after timeout"
+
+
+def test_login_env_key_prompts_and_keep_skips_browser(monkeypatch):
+    """An existing ${ENV} key (not keychain) must still trigger the replace/keep prompt.
+
+    keep → no browser opens, the ${ENV} reference is returned unchanged, backend
+    reflects the real source ('env'), and changed is False (nothing to write).
+    """
+    from jarn.config import paths
+    from jarn.onboarding import oauth
+
+    cfg = paths.global_config_path()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(
+        "providers:\n"
+        "  openrouter:\n"
+        "    type: openrouter\n"
+        "    api_key: ${OPENROUTER_API_KEY}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-fromenv1234567890abcd")
+
+    browser_calls: list[str] = []
+    prompted_refs: list[str] = []
+
+    def _prompt(ref: str):
+        prompted_refs.append(ref)
+        return "keep"
+
+    def _fail_fast_wait(server, *, timeout: float = 300.0) -> str:
+        # keep must short-circuit before the wait; if it doesn't, fail fast
+        # instead of blocking the suite for the full timeout.
+        raise AssertionError("keep must not reach the callback wait")
+
+    result = oauth.login_openrouter(
+        open_browser=browser_calls.append,
+        _prompt_replace_or_keep=_prompt,
+        _wait_for_callback=_fail_fast_wait,
+    )
+
+    assert prompted_refs == ["${OPENROUTER_API_KEY}"], (
+        "prompt must be shown against the actual configured reference"
+    )
+    assert browser_calls == [], "browser must not open when keeping an env key"
+    assert result.reference == "${OPENROUTER_API_KEY}"
+    assert result.backend == "env"
+    assert result.changed is False
+
+
+def test_cmd_login_skips_config_write_when_kept(monkeypatch):
+    """`jarn login` must not overwrite config when the user keeps an existing key."""
+    from jarn import cli
+    from jarn.onboarding.oauth import LoginResult
+
+    writes: list[str] = []
+    monkeypatch.setattr(
+        cli, "_write_openrouter_key_ref", lambda ref: writes.append(ref) or True
+    )
+    monkeypatch.setattr(
+        "jarn.onboarding.oauth.login_openrouter",
+        lambda: LoginResult(
+            reference="${OPENROUTER_API_KEY}",
+            masked_key="sk-…env",
+            backend="env",
+            changed=False,
+        ),
+    )
+
+    rc = cli._cmd_login()
+    assert rc == 0
+    assert writes == [], "config must not be rewritten when the key is kept"
+
+
+def test_write_openrouter_key_ref_refuses_on_malformed_config(monkeypatch, capsys):
+    """A malformed existing config must not be silently wiped — refuse and warn."""
+    from jarn import cli
+    from jarn.config import paths
+
+    cfg = paths.global_config_path()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    malformed = "providers: {openrouter: {api_key: 'unterminated\n"
+    cfg.write_text(malformed, encoding="utf-8")
+
+    result = cli._write_openrouter_key_ref("keychain:jarn/openrouter")
+
+    assert result is False, "must refuse to overwrite a config it cannot parse"
+    assert cfg.read_text(encoding="utf-8") == malformed, "malformed config must be untouched"
+    err = capsys.readouterr().err
+    assert "config" in err.lower(), "must warn on stderr about the unparseable config"
