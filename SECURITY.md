@@ -50,6 +50,15 @@ in your project directory when you approve them (or automatically in permissive 
   control; `jarn doctor` warns when it is non-default.
 - **Network:** `web_fetch` / `web_search` and MCP tools are gated through the permission
   engine. `web_fetch` blocks private/loopback/metadata addresses by default.
+- **`@git:` mentions:** the four supported subcommands (`status`, `diff`, `staged`,
+  `log`) run via a fixed, read-only argv allowlist (`git status --porcelain=v1 -b`,
+  `git diff`, `git diff --staged`, `git log --oneline -15`).  The subprocess is called
+  directly — **no shell interpolation**, no user-controlled arguments.  All output is
+  passed through `redact_secrets` before injection.  Unknown subcommands are left
+  verbatim; git errors produce an error block rather than exposing raw exceptions.
+- **`@url:` mentions:** rewritten to a `web_fetch` instruction at submit time — **no
+  pre-fetch occurs** in the REPL.  The agent's gated `web_fetch` tool (subject to the
+  permission engine and SSRF guard) performs the actual network request.
 
 ### What we do not guarantee in v0.4 alpha
 

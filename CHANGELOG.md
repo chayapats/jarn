@@ -7,6 +7,23 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **`@git:` and `@url:` rich mentions (T-2-9)** — two new submit-time mention kinds
+  that expand on Enter before the agent sees the message:
+  - **`@git:status|diff|staged|log`** — replaced by a fenced `<git-mention>` block
+    containing real git output.  Fixed read-only argv allowlist
+    (`--porcelain=v1 -b`, `diff`, `diff --staged`, `log --oneline -15`), direct
+    subprocess (no shell), 5 s timeout, cwd=project root, output tail-capped at
+    2 000 chars and passed through the central `redact_secrets` helper.  Unknown
+    subcommands (e.g. `@git:frobnicate`) are left verbatim.  Errors (not a repo,
+    timeout) produce an error-annotated block instead of crashing the submit.
+  - **`@url:<url>`** — pure text rewrite to
+    `fetch <url> with web_fetch and use its content`; no pre-fetch (network stays
+    agent-mediated and SSRF-guarded by the permission engine).
+  Tab completion suggests the four `@git:` subcommands; `@url:` is freeform
+  (registered in the resolver registry so it is not mis-routed to the file
+  resolver, but returns no keystroke candidates).  Expansion runs in a single pass
+  alongside paste-placeholder expansion at submit time.
+
 - **Word-level (intraline) diff emphasis (T-2-8)** — edit-approval diffs now
   highlight the exact characters that changed within a modified line, not just
   colour the whole line red/green.  Adjacent equal-count runs of deleted/added

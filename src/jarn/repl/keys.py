@@ -25,6 +25,17 @@ class KeysMixin:
             text = text.replace(token, full)
         return text
 
+    def _expand_mentions(self, text: str) -> str:
+        """Expand ``@git:X`` and ``@url:X`` mention tokens at submit time.
+
+        Called after ``_expand_pastes`` so paste-restored content is also
+        scanned for mention tokens (unusual but consistent).  Delegates to
+        ``expand_mentions`` with the project root from the controller.
+        """
+        from jarn.tui.completion import expand_mentions
+
+        return expand_mentions(text, project_root=self.controller.project_root)
+
     def _build_keys(self) -> KeyBindings:
         kb = KeyBindings()
         # Input/editing keys only apply when neither overlay (pager / config
@@ -87,6 +98,7 @@ class KeysMixin:
                     # Store (collapsed display, expanded payload) so the dequeued
                     # echo stays tidy while the agent still receives the full paste.
                     expanded = self._expand_pastes(stripped)
+                    expanded = self._expand_mentions(expanded)
                     self._pastes.clear()
                     self._input_queue.append(stripped, expanded)
                     self.console.print(f"[{palette.C_DIM}]» queued: {_rich_escape(stripped)}[/{palette.C_DIM}]")
@@ -108,6 +120,7 @@ class KeysMixin:
             # Echo the submitted line into the scrollback transcript (the
             # input buffer is cleared, so without this the message vanishes).
             send = self._expand_pastes(stripped)
+            send = self._expand_mentions(send)
             self._pastes.clear()
             if stripped.startswith("!"):
                 # Host shell escape — echo in red with a clear marker so it's
