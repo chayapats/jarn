@@ -160,6 +160,9 @@ class ContextConfig:
     project_context_tokens: int = 8192
 
 
+_VALID_INLINE_IMAGES: frozenset[str] = frozenset({"auto", "off"})
+
+
 @dataclass(slots=True)
 class ExecutionConfig:
     """Where tools run. ``local`` is the default; ``sandbox`` isolates execution
@@ -181,6 +184,12 @@ class ExecutionConfig:
     # so ``procps``/``pkill`` is present for in-container turn cancellation.
     docker_image: str = "python:3.12"
     multimodal: bool = True           # read_file auto-detects images/PDF/audio/video
+    # Inline @-mentioned images as native multimodal content blocks in the user
+    # message (base64), so weak vision models see the image without having to call
+    # read_file. ``auto`` (default) inlines images ≤ 5 MB; ``off`` keeps the old
+    # text-only @path behaviour. On a provider that rejects images, the front-end
+    # falls back to text-only for the rest of the session (auto behaves like off).
+    inline_images: str = "auto"       # auto | off
     # When ``backend: sandbox`` but the sandbox can't start, fall back to running
     # on the host. OFF by default: silently downgrading isolation is a footgun, so
     # we fail closed unless the user explicitly opts in.

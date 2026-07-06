@@ -771,6 +771,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 # — Ctrl+O works mid-turn, not only after the answer completes.
                 self._last_tool_outputs = []
                 self._title_hook("working")   # Set working title when agent turn starts
+                # T-3-7: scan the submitted text for @-mentioned images to inline as
+                # native content blocks (gated by execution.inline_images + the
+                # session fallback flag). Non-image / oversize mentions stay text.
+                images = repl_turn.select_inline_images(self.controller, text)
                 await repl_turn._run_turn(
                     self.console, self.controller, text, self._ask,
                     pick=self._pick_approval, view=self._view_full_diff,
@@ -781,6 +785,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                     todos_sink=self._on_todos_live,
                     title_hook=self._title_hook,
                     queue_sink=self._input_queue.append,
+                    images=images,
                 )
                 # Turn completed normally (not cancelled — CancelledError would
                 # have bypassed this line).  Fire the turn-end notification.

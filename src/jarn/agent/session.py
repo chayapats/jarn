@@ -94,6 +94,29 @@ SNAPSHOT_FAIL_NOTICE = (
 _DETACHED_SNAPSHOTS: set[asyncio.Task[Any]] = set()
 
 
+def _build_user_content(text: str, images: list[Path] | None) -> Any:
+    """Return the user-message ``content`` for a turn (T-3-7).
+
+    With no ``images`` (the common path), returns the plain ``text`` string —
+    byte-for-byte the pre-existing behaviour. With images, returns a multimodal
+    block list ``[{"type":"text", "text": text}, <image block>, …]`` where the
+    text (``@path`` intact) leads and each image is a langchain-core base64 image
+    block. Images that fail to encode are dropped; if none survive, we fall back to
+    the plain string so a turn is never sent empty."""
+    if not images:
+        return text
+    from jarn.agent.files import image_content_block
+
+    blocks: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    for path in images:
+        block = image_content_block(path)
+        if block is not None:
+            blocks.append(block)
+    if len(blocks) == 1:  # every image failed to encode → plain text
+        return text
+    return blocks
+
+
 @dataclass(slots=True)
 class SessionDriver:
     """Drives one conversation thread against a compiled deep agent."""
@@ -179,7 +202,13 @@ class SessionDriver:
     def _config(self) -> dict[str, Any]:
         return {"configurable": {"thread_id": self.thread_id}}
 
-    async def run_turn(self, user_input: str, *, resume: bool = False):
+    async def run_turn(
+        self,
+        user_input: str,
+        *,
+        resume: bool = False,
+        images: list[Path] | None = None,
+    ):
         """Async-generate :class:`Event`s for one user turn.
 
         Raises :class:`jarn.cost.BudgetExceeded` if the hard budget cap is hit
@@ -189,10 +218,18 @@ class SessionDriver:
         appending a new user message — used by the front-end's fallback retry,
         since LangGraph already checkpointed the user message before the (failed)
         model call. This prevents a duplicate human message in the thread.
+
+        ``images`` (T-3-7) is a list of image paths to inline as native multimodal
+        content blocks alongside the text. When provided (and not a ``resume``), the
+        user message ``content`` becomes ``[{"type":"text",…}, {"type":"image",…}]``
+        instead of a plain string; the original text (with its ``@path`` intact)
+        stays in the text block so the ``read_file`` fallback still works and
+        transcripts stay greppable. When absent, ``content`` is the plain string —
+        the pre-existing path, byte-for-byte unchanged.
         """
         self.tracker.check_or_raise()
 
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
         date_block = date_context()
         if self._last_date != date_block:
             messages.append({"role": "system", "content": date_block})
@@ -201,7 +238,9 @@ class SessionDriver:
         if resume:
             payload: Any = {"messages": messages}
         else:
-            messages.append({"role": "user", "content": user_input})
+            messages.append(
+                {"role": "user", "content": _build_user_content(user_input, images)}
+            )
             payload = {"messages": messages}
 
         # Emit the user prompt to the transcript before the model is called so a

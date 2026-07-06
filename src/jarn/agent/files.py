@@ -8,7 +8,10 @@ attempting a text diff on a binary write).
 
 from __future__ import annotations
 
+import base64
+import mimetypes
 from pathlib import Path
+from typing import Any
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 DOC_EXTS = {".pdf"}
@@ -34,3 +37,25 @@ def modality_of(path: str | Path) -> str:
     if ext in VIDEO_EXTS:
         return "video"
     return "text"
+
+
+def image_content_block(path: str | Path) -> dict[str, Any] | None:
+    """Encode ``path`` as a langchain-core v1 image content block.
+
+    Returns ``{"type": "image", "base64": <b64>, "mime_type": <mime>}`` — the same
+    shape DeepAgents' ``read_file`` emits for image reads (see
+    ``deepagents.middleware.filesystem``), so it reaches every provider that
+    already accepts read-file images. The MIME type is derived from the file
+    extension via :func:`mimetypes.guess_type`. Returns ``None`` (best-effort) when
+    the file can't be read, so a single bad path never aborts a turn.
+    """
+    try:
+        raw = Path(path).read_bytes()
+    except OSError:
+        return None
+    encoded = base64.standard_b64encode(raw).decode("ascii")
+    mime = (
+        mimetypes.guess_type("file" + Path(path).suffix)[0]
+        or "application/octet-stream"
+    )
+    return {"type": "image", "base64": encoded, "mime_type": mime}

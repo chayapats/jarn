@@ -284,6 +284,7 @@ class ExecutionConfigModel(_StrictModel):
     sandbox_provider: str = "langsmith"
     docker_image: str = "python:3.12"
     multimodal: bool = True
+    inline_images: str = "auto"
     allow_local_fallback: bool = False
     shell_escape_context: bool = True
     local_sandbox: str = "off"
@@ -313,6 +314,19 @@ class ExecutionConfigModel(_StrictModel):
         if raw not in valid:
             raise ConfigValidationError(
                 f"execution.local_sandbox must be one of {sorted(valid)} (got {raw!r})."
+            )
+        return raw
+
+    @field_validator("inline_images", mode="before")
+    @classmethod
+    def _inline_images(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_INLINE_IMAGES
+
+        raw = str(value)
+        if raw not in _VALID_INLINE_IMAGES:
+            raise ConfigValidationError(
+                f"execution.inline_images must be one of "
+                f"{sorted(_VALID_INLINE_IMAGES)} (got {raw!r})."
             )
         return raw
 
@@ -965,6 +979,7 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             sandbox_provider=model.execution.sandbox_provider,
             docker_image=model.execution.docker_image,
             multimodal=model.execution.multimodal,
+            inline_images=model.execution.inline_images,
             allow_local_fallback=model.execution.allow_local_fallback,
             shell_escape_context=model.execution.shell_escape_context,
             local_sandbox=model.execution.local_sandbox,
