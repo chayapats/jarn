@@ -4328,3 +4328,47 @@ async def test_diag_chain_round_reset_on_user_drain_only(tmp_path, monkeypatch):
     await asyncio.sleep(0)
     assert app.controller._diag_chain_round == 0
     app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_real_user_drain_drops_stale_internal_items(tmp_path, monkeypatch):
+    """When a real user item is drained, stale internal diagnostics items that
+    are already in the queue must be purged (not just the round counter reset).
+
+    Interleaving: turn A ends and appends internal I_A while user line U is
+    already queued → queue is [U, I_A].  Draining U must drop I_A so that
+    the stale diagnostics prompt does not run after U's turn.
+    """
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+
+    async def _noop_handle(text):
+        return None
+    monkeypatch.setattr(app, "_handle", _noop_handle)
+
+    # Simulate interleaving: user queued U first, then turn A appended I_A.
+    app.controller._diag_chain_round = 1
+    app._input_queue.append("user line U", "user line U")
+    app._input_queue.append("", "Diagnostics after your edits:\n…\nFix them.", internal=True)
+    assert len(app._input_queue) == 2
+
+    # Drain U (non-internal).
+    app._drain_queue()
+    await asyncio.sleep(0)
+
+    # Counter must be reset.
+    assert app.controller._diag_chain_round == 0
+    # Stale internal item I_A must have been purged from the queue.
+    assert len(app._input_queue) == 0, (
+        "stale internal diagnostics item was NOT dropped after real user drain"
+    )
+    app.controller.close()
