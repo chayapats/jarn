@@ -451,7 +451,7 @@ class CommandMixin:
 
     async def _confirm_rewind_restore(
         self, cut_index: int, turns: list[tuple[int, str]]
-    ):
+    ) -> bool | None:
         """`/rewind` second confirm: restore the working tree to the chosen turn too,
         or rewind the conversation only?
 
@@ -475,7 +475,8 @@ class CommandMixin:
         if ref is None:
             c.print(
                 f"[{palette.C_DIM}]No checkpoint captured for that turn "
-                f"(autocheckpoint may have been off, or the turn made no file edits) "
+                f"(autocheckpoint off, no edits that turn, or the thread was forked "
+                f"in an earlier session) "
                 f"— reverting the conversation only.[/{palette.C_DIM}]"
             )
             return False
@@ -483,7 +484,8 @@ class CommandMixin:
         stat = await asyncio.to_thread(cpm.diff_stat, ref.sha)
         if stat:
             c.print(
-                f"[{palette.C_DIM}]Files that would revert to this turn:"
+                f"[{palette.C_DIM}]Tracked changes vs that snapshot "
+                f"(untracked files created since will also be removed):"
                 f"[/{palette.C_DIM}]"
             )
             for line in stat[:10]:

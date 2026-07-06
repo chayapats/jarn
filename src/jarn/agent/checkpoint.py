@@ -94,7 +94,7 @@ class CheckpointRef:
 #: resolved back to the (thread, turn) that produced it. ``thread`` is a uuid4 hex
 #: (no spaces / brackets), ``turn`` a 0-based index. Old records lacking this tag
 #: simply never match — :meth:`find_for_turn` returns None (conversation-only).
-_TURN_META_RE = re.compile(r"\[jarn:thread=(?P<thread>[^\s\]]+) turn=(?P<turn>\d+)\]")
+_TURN_META_RE = re.compile(r"\[jarn:thread=(?P<thread>[^\s\]]+) turn=(?P<turn>\d+)\]$")
 
 
 def _turn_meta_suffix(thread_id: str | None, turn_index: int | None) -> str:
@@ -486,6 +486,12 @@ class CheckpointManager:
     #: beyond what already exists is needed.
     snapshot_notice_pending: bool = field(init=False, default=False, repr=False)
     snapshot_notice_shown: bool = field(init=False, default=False, repr=False)
+    # Maps forked_thread_id → (parent_thread_id, kept_turn_count); populated by
+    # register_thread_alias() when fork_to_turn succeeds so stacked rewinds can
+    # resolve snapshots against the parent thread they were originally tagged with.
+    _thread_aliases: dict[str, tuple[str, int]] = field(
+        init=False, default_factory=dict, repr=False
+    )
 
     def __post_init__(self) -> None:
         # Cache the repo check once at construction; no subprocess per-call.
@@ -665,6 +671,18 @@ class CheckpointManager:
 
     # -- /rewind slice 2: conversation ↔ file linkage -----------------------
 
+    def register_thread_alias(
+        self, child_id: str, parent_id: str, kept_turns: int
+    ) -> None:
+        """Record that ``child_id`` is a fork of ``parent_id`` keeping turns 0..kept_turns-1.
+
+        Called by :meth:`Controller.fork_to_turn` on success so that
+        :meth:`find_for_turn` can resolve snapshots for the forked thread against
+        the parent where they were actually tagged — enabling rewind-after-rewind to
+        restore files correctly within a session.  In-memory only (no persistence).
+        """
+        self._thread_aliases[child_id] = (parent_id, kept_turns)
+
     def find_for_turn(self, thread_id: str, turn_index: int) -> CheckpointRef | None:
         """Resolve the snapshot taken at the start of ``turn_index`` on ``thread_id``.
 
@@ -674,22 +692,38 @@ class CheckpointManager:
         covers old-format records, autocheckpoint-off sessions, a turn that made no
         file changes (deduped, so no distinct snapshot), and non-git dirs. Never
         raises: a missing match is a conversation-only fallback, not an error.
+
+        On a direct miss, walks the in-memory alias chain registered by
+        :meth:`register_thread_alias` so rewind-after-rewind within a session
+        resolves snapshots on the original thread. The walk is capped at 10 hops
+        to guard against accidental cycles.
         """
         if not self._is_repo:
             return None
-        for sha, subject in _iter_snapshot_records(self.repo_root):
-            m = _TURN_META_RE.search(subject)
-            if (
-                m is not None
-                and m.group("thread") == thread_id
-                and int(m.group("turn")) == turn_index
-            ):
-                return CheckpointRef(
-                    sha=sha,
-                    thread_id=thread_id,
-                    turn_index=turn_index,
-                    label=subject,
-                )
+        _MAX_HOPS = 10
+        candidate_id = thread_id
+        candidate_turn = turn_index
+        for _ in range(_MAX_HOPS + 1):
+            for sha, subject in _iter_snapshot_records(self.repo_root):
+                m = _TURN_META_RE.search(subject)
+                if (
+                    m is not None
+                    and m.group("thread") == candidate_id
+                    and int(m.group("turn")) == candidate_turn
+                ):
+                    return CheckpointRef(
+                        sha=sha,
+                        thread_id=thread_id,
+                        turn_index=turn_index,
+                        label=subject,
+                    )
+            alias = self._thread_aliases.get(candidate_id)
+            if alias is None:
+                break
+            parent_id, kept_turns = alias
+            if candidate_turn >= kept_turns:
+                break  # turn is out of range for the parent
+            candidate_id = parent_id
         return None
 
     def restore_to(self, sha: str) -> RestoreResult:
