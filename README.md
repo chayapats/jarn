@@ -145,6 +145,7 @@ cd your-project
 jarn init         # create a JARN.md project-context file (optional but recommended)
 jarn              # launch the TUI
 jarn doctor       # diagnose config / providers / keys / extensions at any time
+jarn bug          # assemble a redacted report + open a prefilled GitHub issue
 ```
 
 On first launch with no config, J.A.R.N. runs the setup wizard automatically.
@@ -435,10 +436,11 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1617 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1620 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)
+uv run jarn bug --dry-run    # write redacted bug report to ~/.jarn/bug-report.md
 ```
 
 ## License

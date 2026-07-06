@@ -185,6 +185,16 @@ def main(argv: list[str] | None = None) -> int:
         "catches the callback, and stores the API key in the OS keychain",
     )
 
+    p_bug = sub.add_parser(
+        "bug",
+        help="Assemble a redacted bug report and open a prefilled GitHub issue",
+    )
+    p_bug.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Write the report file without opening the browser",
+    )
+
     # --profile was removed in v0.6.0 (deprecated since v0.5.0). Without this
     # guard argparse reports a confusing subcommand "invalid choice" error for
     # `jarn --profile NAME`; fail fast and name the replacement instead.
@@ -246,6 +256,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_trust_hooks()
     if args.command == "login":
         return _cmd_login()
+    if args.command == "bug":
+        return _cmd_bug(dry_run=args.dry_run)
     return _cmd_launch(
         resume=args.resume,
         profile_override=preset_override,
@@ -521,6 +533,13 @@ def _cmd_trust_hooks() -> int:
         f"{paths.global_home() / GLOBAL_HOOKS_TRUST_MARKER} to re-trigger the gate."
     )
     return 0
+
+
+def _cmd_bug(*, dry_run: bool = False) -> int:
+    """Assemble a redacted bug report and (unless *dry_run*) open a GitHub issue."""
+    from jarn.bug_report import run_bug_report
+
+    return run_bug_report(dry_run=dry_run)
 
 
 def _cmd_login() -> int:

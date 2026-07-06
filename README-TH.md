@@ -99,6 +99,7 @@ cd your-project
 jarn init         # สร้างไฟล์ JARN.md สำหรับ project context (ไม่บังคับ แต่แนะนำ)
 jarn              # เปิด TUI
 jarn doctor       # ตรวจสอบ config / provider / key / extension ได้ตลอดเวลา
+jarn bug          # รวมรายงาน bug แบบ redacted + เปิดฟอร์ม GitHub issue แบบกรอกข้อมูลล่วงหน้า
 ```
 
 ถ้ายังไม่มี config เลย J.A.R.N. จะรัน setup wizard ให้อัตโนมัติในการเปิดครั้งแรก
@@ -277,7 +278,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1617 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1620 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)

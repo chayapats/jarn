@@ -502,3 +502,112 @@ def test_add_dir_flag_rejects_missing_dir(tmp_path, monkeypatch, capsys):
     code = main(["--add-dir", str(missing)])
     assert code == 1
     assert "--add-dir" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# T-4-3: jarn bug — redacted report + prefilled GitHub issue
+# ---------------------------------------------------------------------------
+
+
+def test_bug_dry_run_redacts(tmp_path, monkeypatch):
+    """jarn bug --dry-run writes bug-report.md; planted secret must not appear.
+
+    Plants a fake secret in both the log tail and the doctor output, runs
+    ``jarn bug --dry-run``, and asserts the secret is absent from the written
+    report (i.e. redact_secrets was applied to every included line).
+    """
+    import jarn.doctor.collect as dc
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+    from jarn.version import __version__
+
+    FAKE_SECRET = "sk-supersecretkey1234567890abcdef"
+
+    home = tmp_path / "jarnhome"
+    log_dir = home / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "jarn.log").write_text(
+        f"INFO normal log line\nDEBUG key={FAKE_SECRET} leak\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(paths, "global_home", lambda: home)
+
+    def fake_collect(diag, **kwargs):
+        diag["ok"] = True
+        diag["jarn_home"] = str(home)
+        diag["secret_field"] = f"api_key={FAKE_SECRET}"
+        return 0
+
+    monkeypatch.setattr(dc, "collect_doctor", fake_collect)
+
+    try:
+        code = cli_mod.main(["bug", "--dry-run"])
+    except SystemExit as e:
+        pytest.fail(f"'bug' subcommand not yet implemented (exit {e.code})")
+
+    assert code == 0
+
+    report_path = home / "bug-report.md"
+    assert report_path.is_file(), "bug-report.md was not written"
+
+    content = report_path.read_text(encoding="utf-8")
+
+    # Must contain version info
+    assert __version__ in content, f"Version {__version__!r} not found in report"
+    # Must contain platform section
+    assert "platform" in content.lower(), "No platform section in report"
+
+    # The planted secret MUST NOT appear anywhere in the report
+    assert FAKE_SECRET not in content, f"Secret leaked into report: {FAKE_SECRET!r}"
+
+
+def test_bug_opens_prefilled_issue(tmp_path, monkeypatch):
+    """jarn bug (no --dry-run) opens a prefilled GitHub issue URL.
+
+    Spies on webbrowser.open; asserts:
+    - URL targets chayapats/jarn issues/new
+    - decoded body is ≤ 6000 chars
+    - body mentions attaching the bug-report.md file
+    """
+    import webbrowser
+    from urllib.parse import parse_qs, urlparse
+
+    import jarn.doctor.collect as dc
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    home = tmp_path / "jarnhome"
+    log_dir = home / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "jarn.log").write_text("normal log line\n", encoding="utf-8")
+
+    monkeypatch.setattr(paths, "global_home", lambda: home)
+
+    def fake_collect(diag, **kwargs):
+        diag["ok"] = True
+        diag["jarn_home"] = str(home)
+        return 0
+
+    monkeypatch.setattr(dc, "collect_doctor", fake_collect)
+
+    opened_urls: list[str] = []
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened_urls.append(url) or True)
+
+    try:
+        code = cli_mod.main(["bug"])
+    except SystemExit as e:
+        pytest.fail(f"'bug' subcommand not yet implemented (exit {e.code})")
+
+    assert code == 0
+    assert len(opened_urls) == 1, "webbrowser.open was not called exactly once"
+
+    url = opened_urls[0]
+    assert "github.com/chayapats/jarn/issues/new" in url, f"Unexpected URL: {url!r}"
+
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    assert "body" in params, "URL has no 'body' parameter"
+    body = params["body"][0]
+    assert len(body) <= 6000, f"Body is too long: {len(body)} chars"
+    assert "bug-report.md" in body, "Body doesn't mention bug-report.md (attach pointer missing)"

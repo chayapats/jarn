@@ -4651,3 +4651,25 @@ async def test_add_dir_checkpoint_stays_primary_only(tmp_path, monkeypatch):
     assert added.resolve() in ctrl.engine.roots  # scope widened
     # …but the checkpoint manager still snapshots ONLY the primary root.
     assert ctrl.checkpoint_manager.repo_root == primary_cp_root
+
+
+# ---------------------------------------------------------------------------
+# T-4-3: crash handler mentions 'jarn bug'
+# ---------------------------------------------------------------------------
+
+
+def test_crash_line_mentions_bug_cmd():
+    """The crash-handler in repl/app.py ends with '— report: jarn bug'.
+
+    Static assertion: grep the source so the test fails immediately when
+    someone removes the pointer without updating the test.
+    """
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parent.parent / "src" / "jarn" / "repl" / "app.py"
+    ).read_text(encoding="utf-8")
+    assert "— report: jarn bug" in source, (
+        "Crash handler in repl/app.py must contain '— report: jarn bug' "
+        "(the em-dash pointer added by T-4-3)"
+    )

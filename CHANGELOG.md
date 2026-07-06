@@ -7,6 +7,18 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **`jarn bug` — crash report + GitHub issue pre-fill (T-4-3)** — running `jarn bug`
+  assembles a redacted bug report (`~/.jarn/bug-report.md`) containing the jarn version,
+  platform, `jarn doctor --json` output, and the last 50 log lines, then opens a
+  pre-filled `github.com/chayapats/jarn/issues/new` URL (body ≤ 6 000 chars, HEAD+TAIL
+  truncated with an attach-the-file pointer).  Every included line passes through the
+  central `redact_secrets` helper so no API key or token leaks into the report.  Use
+  `jarn bug --dry-run` to write the file without opening the browser.  The crash handler
+  in the REPL now appends `— report: jarn bug` to the "full traceback →
+  ~/.jarn/logs/jarn.log" line so the path to reporting is always visible after a crash.
+  Adds `.github/ISSUE_TEMPLATE/{bug,feature,config}.yml` and
+  `.github/PULL_REQUEST_TEMPLATE.md`.
+
 - **Update-available notice (T-4-2)** — at interactive launch a daemon thread
   checks PyPI for a newer `jarn-cli` release (2 s timeout, cached 24 h) and
   prints one dim line under the splash when a newer version exists.  The

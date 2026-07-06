@@ -832,7 +832,8 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             # ".../jarn.log" across a line on narrow / CI-width terminals).
             self.console.print(
                 f"[{palette.C_DIM}]full traceback → "
-                f"{paths.global_logs_dir() / 'jarn.log'}[/{palette.C_DIM}]",
+                f"{paths.global_logs_dir() / 'jarn.log'}"
+                f" — report: jarn bug[/{palette.C_DIM}]",
                 soft_wrap=True,
             )
         finally:
