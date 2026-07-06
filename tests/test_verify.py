@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from jarn.agent.verify import ProjectCapabilities, detect_capabilities
+from jarn.agent.verify import ProjectCapabilities, detect_capabilities, summarize_output
 
 
 def test_detect_python_project(tmp_path):
@@ -353,3 +353,30 @@ async def test_no_verify_after_cancel(tmp_path):
         async for _ in driver.run_turn("go"):
             pass
     assert ran == [], f"verify must not run after cancel; got calls={ran}"
+
+
+# ---------------------------------------------------------------------------
+# Adversarial unit tests for summarize_output (T-3-2)
+# ---------------------------------------------------------------------------
+
+
+def test_summarize_pytest_pass_and_fail_counts():
+    out = summarize_output("pytest", "2 failed, 5 passed in 3.2s", exit_code=1)
+    assert "2 failed" in out and "5 passed" in out
+
+
+def test_summarize_ansi_still_matches():
+    # ANSI codes don't prevent pattern matching; output includes both content and codes.
+    out = summarize_output("pytest", "\x1b[31m2 failed\x1b[0m in 3.2s", exit_code=1)
+    assert out  # never empty, never raises
+    assert "failed" in out  # Pattern matches despite ANSI codes
+
+
+def test_summarize_empty_output_fallback():
+    assert summarize_output("pytest", "", exit_code=0) == "exit 0"
+
+
+def test_summarize_never_raises_on_junk():
+    result = summarize_output(None, None, exit_code=None)  # type: ignore[arg-type]
+    assert result is not None
+    assert isinstance(result, str)

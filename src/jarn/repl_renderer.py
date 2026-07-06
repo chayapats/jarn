@@ -332,8 +332,7 @@ class TurnRenderer:
             self.console.print(
                 f"  [{_p.C_DIM}]⎿ verify: {cmd} [/{_p.C_DIM}]"
                 f"[{_p.C_ERROR}]✗[/{_p.C_ERROR}]"
-                f"[{_p.C_DIM}] {summary} · details[/{_p.C_DIM}]"
-                f" [{_p.C_DIM}]· ctrl+o[/{_p.C_DIM}]"
+                f"[{_p.C_DIM}] {summary} · details ctrl+o[/{_p.C_DIM}]"
             )
             if full_output:
                 self.tool_outputs.append(("verify", full_output))
