@@ -611,3 +611,60 @@ def test_bug_opens_prefilled_issue(tmp_path, monkeypatch):
     body = params["body"][0]
     assert len(body) <= 6000, f"Body is too long: {len(body)} chars"
     assert "bug-report.md" in body, "Body doesn't mention bug-report.md (attach pointer missing)"
+
+
+# ---------------------------------------------------------------------------
+# T-4-4: jarn completions {bash,zsh,fish} — anti-drift parity
+# ---------------------------------------------------------------------------
+
+
+def _build_parser():
+    """Return the real jarn ArgumentParser (same object used by main())."""
+    from jarn.cli import build_parser
+    return build_parser()
+
+
+def _introspect_parser(parser):
+    """Return (subcommands: set[str], long_flags: set[str]) from a parser."""
+    subcommands: set[str] = set()
+    long_flags: set[str] = set()
+
+    for action in parser._actions:
+        for opt in action.option_strings:
+            if opt.startswith("--") and opt != "--help":
+                long_flags.add(opt)
+
+    for action in parser._actions:
+        if hasattr(action, "_name_parser_map"):
+            for name, sub in action._name_parser_map.items():
+                subcommands.add(name)
+                for sub_action in sub._actions:
+                    for opt in sub_action.option_strings:
+                        if opt.startswith("--") and opt != "--help":
+                            long_flags.add(opt)
+
+    return subcommands, long_flags
+
+
+@pytest.mark.parametrize("shell", ["bash", "zsh", "fish"])
+def test_completions_cover_parser(shell: str) -> None:
+    """Emitted completion script must mention every subcommand and long flag.
+
+    Anti-drift: introspects the real parser so adding a future subcommand or
+    flag automatically makes this test enforce its inclusion.
+    """
+    from jarn.completions import emit_completions
+
+    parser = _build_parser()
+    subcommands, long_flags = _introspect_parser(parser)
+    script = emit_completions(shell, parser)
+
+    missing_subs = [cmd for cmd in subcommands if cmd not in script]
+    missing_flags = [flag for flag in long_flags if flag not in script]
+
+    assert not missing_subs, (
+        f"[{shell}] completions missing subcommands: {missing_subs}"
+    )
+    assert not missing_flags, (
+        f"[{shell}] completions missing long flags: {missing_flags}"
+    )

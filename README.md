@@ -148,6 +148,21 @@ jarn doctor       # diagnose config / providers / keys / extensions at any time
 jarn bug          # assemble a redacted report + open a prefilled GitHub issue
 ```
 
+**Shell completions (tab-complete subcommands and flags):**
+
+```bash
+# zsh — run once, then restart your shell
+jarn completions zsh > ~/.zfunc/_jarn
+# add to ~/.zshrc if not already: fpath=(~/.zfunc $fpath) && autoload -Uz compinit && compinit
+
+# bash — run once, then source or restart
+jarn completions bash > ~/.bash_completions/jarn.bash
+# add to ~/.bashrc: source ~/.bash_completions/jarn.bash
+
+# fish — run once
+jarn completions fish > ~/.config/fish/completions/jarn.fish
+```
+
 On first launch with no config, J.A.R.N. runs the setup wizard automatically.
 The OpenRouter option in the wizard also offers a one-click browser login.
 
@@ -436,7 +451,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1620 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1623 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

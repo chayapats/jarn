@@ -20,7 +20,13 @@ from typing import Any
 from jarn.version import __version__
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """Construct and return the top-level jarn ArgumentParser.
+
+    Factored out of ``main()`` so the same parser object can be introspected by
+    ``jarn completions`` and by the anti-drift test without duplicating the
+    subcommand/flag list.
+    """
     parser = argparse.ArgumentParser(
         prog="jarn", description="J.A.R.N. — Just A Reliable Nerd (coding agent TUI)"
     )
@@ -195,6 +201,22 @@ def main(argv: list[str] | None = None) -> int:
         help="Write the report file without opening the browser",
     )
 
+    p_completions = sub.add_parser(
+        "completions",
+        help="Emit a shell completion script for bash, zsh, or fish",
+    )
+    p_completions.add_argument(
+        "shell",
+        choices=["bash", "zsh", "fish"],
+        help="Target shell",
+    )
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+
     # --profile was removed in v0.6.0 (deprecated since v0.5.0). Without this
     # guard argparse reports a confusing subcommand "invalid choice" error for
     # `jarn --profile NAME`; fail fast and name the replacement instead.
@@ -258,6 +280,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_login()
     if args.command == "bug":
         return _cmd_bug(dry_run=args.dry_run)
+    if args.command == "completions":
+        return _cmd_completions(shell=args.shell, parser=parser)
     return _cmd_launch(
         resume=args.resume,
         profile_override=preset_override,
@@ -690,6 +714,14 @@ def _validate_add_dirs(raw: list[str] | None) -> tuple[list[Path], str | None]:
         if path not in roots:
             roots.append(path)
     return roots, None
+
+
+def _cmd_completions(*, shell: str, parser: argparse.ArgumentParser) -> int:
+    """Emit a shell completion script for the given shell."""
+    from jarn.completions import emit_completions
+
+    print(emit_completions(shell, parser))
+    return 0
 
 
 def _cmd_launch(
