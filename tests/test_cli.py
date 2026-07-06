@@ -849,8 +849,10 @@ def test_uninstall_confirm_flow(tmp_path, monkeypatch, capsys):
     # Keychain untouched.
     assert deleted_calls == [], f"delete_password was called despite declining: {deleted_calls}"
 
-    # Summary was printed (size + keychain + trust info).
+    # Summary was printed (path + size + keychain + trust info).
     out = capsys.readouterr().out
+    assert str(fake_home) in out, "summary did not show the home path being removed"
+    assert "B" in out, "summary did not show a size token (B/KB/MB/GB)"
     assert "keychain" in out.lower(), "summary did not mention keychain entries"
     assert "trust" in out.lower(), "summary did not mention trust-store entries"
 

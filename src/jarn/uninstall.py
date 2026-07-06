@@ -113,10 +113,13 @@ def run_uninstall(*, yes: bool = False, frozen: bool | None = None) -> int:
     n_trust = _trust_entry_count(home)
     size_str = _human_size(_dir_bytes(home))
 
+    # Echo the target of this destructive op UNCONDITIONALLY — even under --yes,
+    # and even with a non-default $JARN_HOME — so there is always a stdout trace
+    # of exactly which path was removed.
+    print(f"\nRemoving {home}  ({size_str})")
+
     if not yes:
-        # Print itemized summary and prompt for confirmation.
-        print("\nThis will permanently remove:")
-        print(f"  • {home}  ({size_str})")
+        # Itemized summary of the secret-bearing state + confirmation prompt.
         print(f"  • {n_keys} keychain entries  (jarn/<provider>)")
         print(f"  • {n_trust} trust-store entries")
         print()
