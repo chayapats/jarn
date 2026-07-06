@@ -350,3 +350,70 @@ def test_missing_schema_file_exit2(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     data = json.loads(out)
     assert data["error"]["kind"] == "usage"
+
+
+# ---------------------------------------------------------------------------
+# T-3-9: --add-dir multi-root workspaces
+# ---------------------------------------------------------------------------
+
+
+def test_add_dir_flag_repeatable(tmp_path, monkeypatch):
+    """``--add-dir`` is repeatable and every dir becomes an active root.
+
+    argparse ``action="append"`` collects each ``--add-dir``; launch resolves and
+    validates them and threads the whole set into the session (captured here via
+    the ``add_dirs`` kwarg handed to ``run_inline``)."""
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    gp = _make_headless_config(tmp_path)
+    root = tmp_path / "proj"
+    root.mkdir()
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: root)
+    monkeypatch.setattr(cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None))
+
+    d1 = tmp_path / "sibling-a"
+    d1.mkdir()
+    d2 = tmp_path / "sibling-b"
+    d2.mkdir()
+
+    captured: dict = {}
+
+    def _fake_run_inline(config, project_root, **kwargs):
+        captured["add_dirs"] = kwargs.get("add_dirs")
+        return 0
+
+    import jarn.repl as repl_mod
+
+    monkeypatch.setattr(repl_mod, "run_inline", _fake_run_inline)
+
+    code = main(["--add-dir", str(d1), "--add-dir", str(d2)])
+    assert code == 0
+    roots = captured["add_dirs"]
+    assert roots is not None
+    resolved = {str(p) for p in roots}
+    assert str(d1.resolve()) in resolved
+    assert str(d2.resolve()) in resolved
+
+
+def test_add_dir_flag_rejects_missing_dir(tmp_path, monkeypatch, capsys):
+    """``--add-dir`` pointing at a non-existent path fails fast (exit 1, stderr)."""
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    gp = _make_headless_config(tmp_path)
+    root = tmp_path / "proj"
+    root.mkdir()
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: root)
+    monkeypatch.setattr(cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None))
+
+    import jarn.repl as repl_mod
+
+    monkeypatch.setattr(repl_mod, "run_inline", lambda *a, **k: 0)
+
+    missing = tmp_path / "nope"
+    code = main(["--add-dir", str(missing)])
+    assert code == 1
+    assert "--add-dir" in capsys.readouterr().err

@@ -125,6 +125,74 @@ def test_symlink_inside_project_is_allowed(tmp_path):
     assert r.decision is Decision.ALLOW
 
 
+# -- T-3-9: --add-dir multi-root scope (security battery) -------------------
+
+
+def test_added_root_write_allowed(tmp_path):
+    """A write inside an ADDED root is in-scope (ALLOW) in auto-edit mode.
+
+    The engine generalizes scope from a single ``project_root`` to the primary
+    root PLUS a tuple of added ``roots``; a target under any of them is in-scope.
+    """
+    primary = tmp_path / "primary"
+    (primary / "src").mkdir(parents=True)
+    added = tmp_path / "sibling"
+    (added / "pkg").mkdir(parents=True)
+    eng = _engine(PermissionMode.AUTO_EDIT, project_root=primary, roots=(added,))
+    # In the primary root — still allowed.
+    assert eng.evaluate(
+        Action(ActionKind.WRITE, str(primary / "src" / "a.py"))
+    ).decision is Decision.ALLOW
+    # In the ADDED root — now allowed too.
+    assert eng.evaluate(
+        Action(ActionKind.WRITE, str(added / "pkg" / "b.py"))
+    ).decision is Decision.ALLOW
+
+
+def test_outside_all_roots_denied(tmp_path):
+    """A write outside the primary AND every added root is still out-of-scope."""
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    added = tmp_path / "sibling"
+    added.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    eng = _engine(PermissionMode.AUTO_EDIT, project_root=primary, roots=(added,))
+    r = eng.evaluate(Action(ActionKind.WRITE, str(outside / "x.py")))
+    assert r.decision is not Decision.ALLOW  # ASK (out-of-scope), unchanged
+    assert eng.evaluate(Action(ActionKind.WRITE, "/etc/hosts")).decision is Decision.ASK
+
+
+def test_added_root_symlink_escape(tmp_path):
+    """A symlink INSIDE an added root pointing OUTSIDE all roots is rejected.
+
+    THE critical security test: the per-root ``resolve()`` symlink discipline
+    must hold for added roots exactly as for the primary — following the symlink
+    resolves the target out of every root, so the write is denied (and flagged
+    dangerous), not allowed just because the textual path starts inside the root.
+    """
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    added = tmp_path / "sibling"
+    (added / "sub").mkdir(parents=True)
+    outside = tmp_path / "outside-target"
+    outside.mkdir()
+    link = added / "sub" / "escape"
+    link.symlink_to(outside, target_is_directory=True)
+    eng = _engine(PermissionMode.AUTO_EDIT, project_root=primary, roots=(added,))
+    r = eng.evaluate(Action(ActionKind.WRITE, str(link / "x.py")))
+    assert r.decision is not Decision.ALLOW
+    assert r.dangerous is True  # guard flagged the write-outside-scope
+    # A symlink inside the added root that stays inside it is fine.
+    real = added / "real"
+    real.mkdir()
+    alias = added / "sub" / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    assert eng.evaluate(
+        Action(ActionKind.WRITE, str(alias / "ok.py"))
+    ).decision is Decision.ALLOW
+
+
 def test_yolo_allows_safe_shell():
     eng = _engine(PermissionMode.YOLO)
     assert eng.evaluate(Action(ActionKind.SHELL, "npm test")).decision is Decision.ALLOW

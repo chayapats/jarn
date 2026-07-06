@@ -112,6 +112,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         group="Setup",
     ),
     CommandSpec(
+        "add-dir",
+        "Add a directory to this session's write scope (multi-root; approval-gated).",
+        "ui",
+        usage="<path>",
+        group="Setup",
+    ),
+    CommandSpec(
         "mcp",
         "Show configured MCP servers with per-server health and last error.",
         "core",
@@ -182,7 +189,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("quit", "Exit J.A.R.N.", "core", group="Session"),
 )
 
-_SPEC_BY_NAME: dict[str, CommandSpec] = {spec.name: spec for spec in COMMAND_SPECS}
+# Keyed by the normalized (hyphen→underscore) name so hyphenated commands like
+# ``add-dir`` resolve regardless of the caller's separator (``spec_by_name``
+# normalizes its query the same way).
+_SPEC_BY_NAME: dict[str, CommandSpec] = {
+    spec.name.replace("-", "_"): spec for spec in COMMAND_SPECS
+}
 
 _HELP_GROUP_ORDER: tuple[HelpGroup, ...] = ("Daily", "Setup", "Session")
 

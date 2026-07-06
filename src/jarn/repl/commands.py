@@ -157,6 +157,9 @@ class CommandMixin:
         if name == "key":
             await self._cmd_key(args)
             return
+        if name == "add-dir":
+            await self._cmd_add_dir(args)
+            return
         if name == "model" and args.strip() in ("refresh", "list"):
             await self._refresh_models()
             return
@@ -259,6 +262,55 @@ class CommandMixin:
         c.print(result.text)
         if result.rebuilt:
             self.controller.runtime = None
+
+    async def _cmd_add_dir(self, args: str) -> None:
+        """`/add-dir <path>`: add a directory to this session's write scope.
+
+        Security gating:
+        - REFUSED outright on an untrusted project (a scope-widening capability
+          must not be grantable to a repo whose config we don't trust) — no
+          prompt, no change.
+        - In ``ask`` mode it REQUIRES explicit approval before widening scope.
+          ``auto-edit``/``yolo`` add directly (the user already opted into the
+          looser mode); ``plan`` widens nothing that plan can act on.
+
+        The added root extends the engine's WRITE scope AND the backend FS guard
+        + sandbox bind/writable set (the runtime rebuilds on the next turn).
+        Checkpoint/undo and project context stay PRIMARY-ONLY — the success
+        message states that limitation explicitly.
+        """
+        from jarn.config.schema import PermissionMode
+
+        c = self.console
+        raw = args.strip()
+        if not raw:
+            c.print(
+                f"[{palette.C_DIM}]/add-dir <path> — add a directory to this "
+                f"session's write scope[/{palette.C_DIM}]"
+            )
+            return
+        if not self.controller.project_trusted:
+            c.print(
+                f"[{palette.C_ERROR}]/add-dir is refused on an untrusted project — "
+                f"run /trust here first (an untrusted repo may not widen the "
+                f"agent's write scope).[/{palette.C_ERROR}]"
+            )
+            return
+        if self.controller.config.permission_mode is PermissionMode.ASK:
+            answer = (
+                await self._ask(
+                    f"Add '{raw}' as a writable root for this session? [y/N]: "
+                )
+            ).strip().lower()
+            if answer not in ("y", "yes"):
+                c.print(
+                    f"[{palette.C_DIM}]/add-dir cancelled — scope unchanged."
+                    f"[/{palette.C_DIM}]"
+                )
+                return
+        ok, msg = self.controller.add_root(raw)
+        color = palette.C_SUCCESS if ok else palette.C_ERROR
+        c.print(f"[{color}]{_rich_escape(msg)}[/{color}]")
 
     # -- queue --------------------------------------------------------------
 

@@ -7,6 +7,21 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **`--add-dir` multi-root workspaces (T-3-9)** — the agent's filesystem write scope
+  generalizes from a single project root to a set of roots (primary first). Add extra
+  writable roots at launch with `jarn --add-dir <dir>` (repeatable; each must exist and
+  be a directory) or mid-session with the new `/add-dir <path>` command. A write is
+  in-scope when it resolves under **any** root, and the per-root `resolve()`
+  symlink-escape discipline holds for every added root exactly as for the primary. The
+  same roots set is propagated to the permission engine, the local virtual-mode FS
+  guard, the OS-sandbox writable allow-set, and the Docker bind mounts, so an
+  engine-allowed added-root write is also permitted at syscall time. `/add-dir` is
+  capability-gated: it requires approval in `ask` mode and is refused on an untrusted
+  project. Added roots widen the **write scope only** — project context (JARN.md) and
+  checkpoint/undo (`/undo`, `/rewind`) stay **primary-root only**, and `/add-dir` prints
+  that limitation when it adds a root. `jarn doctor` now lists all active roots. See
+  `docs/PERMISSIONS.md` and `SECURITY.md`.
+
 - **Direct image content blocks (T-3-7)** — an `@`-mentioned image is now inlined
   into your message as a native multimodal content block (base64), so weak vision
   models see the image directly instead of depending on them choosing to call

@@ -349,6 +349,7 @@ def build_runtime(
     extra_tools: list[Any] | None = None,
     system_prompt_override: str | None = None,
     response_format: Any | None = None,
+    extra_roots: list[Path] | None = None,
 ) -> JarnRuntime:
     """Build a ready-to-run :class:`JarnRuntime` from config.
 
@@ -453,7 +454,7 @@ def build_runtime(
         extra_gated, include_async=bool(config.async_subagents)
     )
 
-    backend = _make_backend(config, root)
+    backend = _make_backend(config, root, extra_roots=extra_roots)
 
     # Unify auto-compaction into a single in-graph summarization pass. Always
     # exclude deepagents' built-in SummarizationMiddleware (main model, fixed 85%

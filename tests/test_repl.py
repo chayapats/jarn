@@ -11,7 +11,13 @@ import pytest
 from rich.console import Console
 
 from jarn.agent.session import ApprovalReply, ApprovalRequest, Event, EventKind
-from jarn.config.schema import Config, ProviderConfig, ProviderType, RoutingConfig
+from jarn.config.schema import (
+    Config,
+    PermissionMode,
+    ProviderConfig,
+    ProviderType,
+    RoutingConfig,
+)
 from jarn.permissions import Action, ActionKind, Decision, PermissionResult, RememberScope
 from jarn.tui.controller import Controller
 
@@ -4415,3 +4421,78 @@ def test_subagent_prefix_render():
     r2.on_text("plain main answer")
     r2.finish()
     assert "plain main answer" in buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# T-3-9: /add-dir session-scoped multi-root command
+# ---------------------------------------------------------------------------
+
+
+class _AddDirStub:
+    """Minimal stand-in exposing exactly what ``CommandMixin._cmd_add_dir`` uses."""
+
+    def __init__(self, controller, ask):
+        self.controller = controller
+        self.console = Console(file=StringIO(), force_terminal=True, width=100)
+        self._ask = ask
+
+    @property
+    def output(self) -> str:
+        return self.console.file.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_add_dir_command_gated(tmp_path, monkeypatch):
+    """`/add-dir` requires approval in ask mode AND is refused on untrusted projects."""
+    from jarn.repl.commands import CommandMixin
+
+    added = tmp_path / "sibling"
+    added.mkdir()
+    resolved = added.resolve()
+
+    # --- Refused on an untrusted project (never widens scope, no prompt). -----
+    ctrl = _controller(tmp_path / "a", monkeypatch)
+    ctrl.project_trusted = False
+    ctrl.config.permission_mode = PermissionMode.ASK
+    stub = _AddDirStub(ctrl, _ask_returning("y"))
+    await CommandMixin._cmd_add_dir(stub, str(added))
+    assert resolved not in ctrl.engine.roots
+    assert "untrust" in stub.output.lower() or "trust" in stub.output.lower()
+
+    # --- Trusted + ask mode, approval DECLINED → scope unchanged. ------------
+    ctrl2 = _controller(tmp_path / "b", monkeypatch)
+    ctrl2.config.permission_mode = PermissionMode.ASK
+    stub2 = _AddDirStub(ctrl2, _ask_returning("n"))
+    await CommandMixin._cmd_add_dir(stub2, str(added))
+    assert resolved not in ctrl2.engine.roots
+    assert "cancel" in stub2.output.lower()
+
+    # --- Trusted + ask mode, approval GRANTED → root added + limitation shown. -
+    ctrl3 = _controller(tmp_path / "c", monkeypatch)
+    ctrl3.config.permission_mode = PermissionMode.ASK
+    stub3 = _AddDirStub(ctrl3, _ask_returning("y"))
+    await CommandMixin._cmd_add_dir(stub3, str(added))
+    assert resolved in ctrl3.engine.roots
+    # /add-dir must PRINT the checkpoint/undo primary-only limitation.
+    out = stub3.output.lower()
+    assert "checkpoint" in out or "undo" in out
+    assert "primary" in out or "not" in out
+
+
+@pytest.mark.asyncio
+async def test_add_dir_checkpoint_stays_primary_only(tmp_path, monkeypatch):
+    """Adding a root must NOT widen checkpoint/undo scope — it stays the primary root."""
+    from jarn.repl.commands import CommandMixin
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    ctrl.config.permission_mode = PermissionMode.AUTO_EDIT  # no approval prompt
+    primary_cp_root = ctrl.checkpoint_manager.repo_root
+
+    added = tmp_path / "sibling"
+    added.mkdir()
+    stub = _AddDirStub(ctrl, _ask_returning("y"))
+    await CommandMixin._cmd_add_dir(stub, str(added))
+
+    assert added.resolve() in ctrl.engine.roots  # scope widened
+    # …but the checkpoint manager still snapshots ONLY the primary root.
+    assert ctrl.checkpoint_manager.repo_root == primary_cp_root

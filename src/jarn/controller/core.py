@@ -61,10 +61,17 @@ class Controller:
         project_trusted: bool = True,
         system_prompt_override: str | None = None,
         response_format: Any | None = None,
+        extra_roots: list[Path] | None = None,
     ) -> None:
         self.config = config
         self.project_root = project_root
         self.project_trusted = project_trusted
+        # Added (secondary) roots from --add-dir / /add-dir. These widen the WRITE
+        # scope only — the engine, the backend FS guard, and the sandboxes all
+        # share this set (kept in sync in build_runtime). Context loading and
+        # checkpoint/undo stay PRIMARY-ONLY (project_root). Resolved once so the
+        # symlink-escape discipline and the scope check agree byte-for-byte.
+        self.extra_roots: list[Path] = self._resolve_extra_roots(extra_roots)
         # When set, build_runtime swaps J.A.R.N.'s assembled system prompt for
         # this string (eval-harness A/B of the harness prompt; see build_runtime).
         self.system_prompt_override = system_prompt_override
@@ -75,6 +82,7 @@ class Controller:
             mode=config.permission_mode,
             rules=config.permissions,
             project_root=project_root,
+            roots=tuple(self.extra_roots),
         )
         # Persist ALWAYS-scoped approvals to the project config so they survive
         # across processes (no-op outside a project).
@@ -144,6 +152,68 @@ class Controller:
         # drivers are recreated each turn and would reset a per-driver flag).
         self.inline_images_disabled: bool = False
 
+    # -- multi-root scope ---------------------------------------------------
+
+    @staticmethod
+    def _resolve_extra_roots(raw: list[Path] | None) -> list[Path]:
+        """Normalize added roots to resolved, de-duplicated ``Path`` objects.
+
+        Resolving here (once) is what keeps the engine's scope check, the backend
+        FS guard, and the sandboxes agreeing on the exact same paths — including
+        the symlink-escape realpath — with no per-layer drift.
+        """
+        out: list[Path] = []
+        for p in raw or []:
+            try:
+                resolved = Path(p).expanduser().resolve()
+            except (OSError, RuntimeError, ValueError):
+                continue
+            if resolved not in out:
+                out.append(resolved)
+        return out
+
+    def add_root(self, raw: str) -> tuple[bool, str]:
+        """Add a directory to the session's WRITE scope (``/add-dir`` core logic).
+
+        Refuses on an untrusted project (a scope-widening capability must not be
+        grantable to a repo whose config we don't trust). Validates the path
+        (exists, is a directory), de-dupes against the primary + existing roots,
+        then extends the engine's roots and drops the runtime so the next turn
+        rebuilds the backend (FS guard + sandbox) with the new root bound. Returns
+        ``(ok, message)``; the message always states the checkpoint/undo
+        primary-only limitation on success.
+        """
+        if not self.project_trusted:
+            return (
+                False,
+                "/add-dir is refused on an untrusted project — run /trust here "
+                "first (an untrusted repo may not widen the agent's write scope).",
+            )
+        try:
+            path = Path(raw).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError) as exc:
+            return False, f"/add-dir: cannot resolve {raw!r}: {exc}"
+        if not path.exists():
+            return False, f"/add-dir: {path} does not exist."
+        if not path.is_dir():
+            return False, f"/add-dir: {path} is not a directory."
+        primary = self.project_root.resolve() if self.project_root else None
+        if path == primary or path in self.extra_roots:
+            return False, f"/add-dir: {path} is already an active root."
+        self.extra_roots.append(path)
+        self.engine.roots = tuple(self.extra_roots)
+        # Rebuild the runtime on the next turn so the backend FS guard + sandbox
+        # bind/writable set pick up the new root (kept in sync with the engine).
+        self.runtime = None
+        return (
+            True,
+            f"Added {path} to this session's write scope "
+            f"({len(self.extra_roots) + (1 if primary else 0)} active roots). "
+            "Note: checkpoint/undo still snapshots the primary project root ONLY "
+            "— edits in added roots are NOT captured by /undo or /rewind, and "
+            "project context (JARN.md) is loaded from the primary root only.",
+        )
+
     # -- lifecycle ----------------------------------------------------------
 
     async def ensure_runtime(self) -> JarnRuntime:
@@ -175,6 +245,7 @@ class Controller:
                     extra_tools=tools,
                     system_prompt_override=self.system_prompt_override,
                     response_format=self.response_format,
+                    extra_roots=self.extra_roots,
                 )
             except AmbientKeyLeakError as exc:
                 self.health = "error"
@@ -204,6 +275,7 @@ class Controller:
                     extra_tools=tools,
                     system_prompt_override=self.system_prompt_override,
                     response_format=self.response_format,
+                    extra_roots=self.extra_roots,
                 )
         if not self._session_started:
             self._fire_lifecycle("session_start")
