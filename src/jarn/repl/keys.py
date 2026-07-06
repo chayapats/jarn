@@ -120,6 +120,9 @@ class KeysMixin:
             # Echo the submitted line into the scrollback transcript (the
             # input buffer is cleared, so without this the message vanishes).
             send = self._expand_pastes(stripped)
+            # Print feedback before expanding git mentions (slow git call can be lengthy).
+            if "@git:" in send:
+                self.console.print(f"[{palette.C_DIM}]expanding @git mention…[/{palette.C_DIM}]")
             send = self._expand_mentions(send)
             self._pastes.clear()
             if stripped.startswith("!"):

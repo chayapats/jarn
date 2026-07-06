@@ -3521,3 +3521,65 @@ def test_git_mention_multiple_tokens(tmp_path, monkeypatch):
     assert "@git:status" not in result
     assert "@git:log" not in result
     assert result.count("<git-mention") == 2
+
+
+def test_url_mention_trailing_punctuation():
+    """``@url:https://x.com.`` at sentence end strips the trailing period."""
+    from jarn.tui.completion import expand_mentions
+
+    result = expand_mentions("check @url:https://x.com.")
+    # The instruction should contain the URL without the trailing dot
+    assert "fetch https://x.com with web_fetch and use its content" in result
+    # But the sentence should still end with a period
+    assert result.endswith(".")
+
+
+def test_git_mention_trailing_comma_verbatim():
+    """``@git:status,`` with trailing comma is left verbatim (allowlist miss)."""
+    from jarn.tui.completion import expand_mentions
+
+    result = expand_mentions("@git:status,", project_root=None)
+    # Unknown subcommand (status, with comma) → left verbatim
+    assert "@git:status," in result
+
+
+@pytest.mark.asyncio
+async def test_git_mention_expansion_feedback(tmp_path, monkeypatch):
+    """When @git: is present in input, a feedback message is printed before expansion."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    submit = _submit_handler(app)
+
+    # Mock _handle so it doesn't actually run the turn.
+    async def _fake_handle(_):
+        pass
+    monkeypatch.setattr(app, "_handle", _fake_handle)
+
+    # Insert text with @git: and submit.
+    app.input.insert_text("check @git:status")
+    submit(event=None)
+
+    # The console should contain the feedback message.
+    out = app.console.file.getvalue()
+    assert "expanding @git mention" in out
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_git_mention_expansion_no_feedback_without_git(tmp_path, monkeypatch):
+    """Without @git: in input, the feedback message is not printed."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    submit = _submit_handler(app)
+
+    # Mock _handle so it doesn't actually run the turn.
+    async def _fake_handle(_):
+        pass
+    monkeypatch.setattr(app, "_handle", _fake_handle)
+
+    # Insert text without @git: and submit.
+    app.input.insert_text("hello world")
+    submit(event=None)
+
+    # The console should NOT contain the feedback message.
+    out = app.console.file.getvalue()
+    assert "expanding @git mention" not in out
+    app.controller.close()
