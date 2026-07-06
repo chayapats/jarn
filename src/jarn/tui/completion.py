@@ -566,7 +566,14 @@ def expand_mentions(text: str, project_root: Path | None = None) -> str:
         rest = m.group(2)
 
         if kind == "url":
-            return f"fetch {rest} with web_fetch and use its content"
+            # Strip trailing punctuation from the URL before building the instruction,
+            # then append it after so the user's sentence stays intact (e.g., "… content.").
+            stripped_punct = ""
+            while rest and rest[-1] in ".,;:!?)]>'\"":
+                stripped_punct = rest[-1] + stripped_punct
+                rest = rest[:-1]
+            instruction = f"fetch {rest} with web_fetch and use its content"
+            return instruction + stripped_punct
 
         # kind == "git"
         argv = _GIT_ALLOWLIST.get(rest)
