@@ -146,6 +146,40 @@ def test_input_queue_fifo_and_ops():
     assert q.clear() == 1
 
 
+def test_input_queue_drop_internal_only():
+    """drop_internal() removes only internal items, preserves user items in order,
+    and returns the count removed."""
+    q = InputQueue()
+    q.append("user-a", "payload-a")                          # user item
+    q.append("", "diag-1", internal=True)                   # internal
+    q.append("user-b", "payload-b")                         # user item
+    q.append("", "diag-2", internal=True)                   # internal
+
+    removed = q.drop_internal()
+
+    assert removed == 2
+    remaining = q.list()
+    assert len(remaining) == 2
+    assert remaining[0].display == "user-a"
+    assert remaining[0].internal is False
+    assert remaining[1].display == "user-b"
+    assert remaining[1].internal is False
+
+
+def test_input_queue_drop_internal_all_user_untouched():
+    """drop_internal() on an all-user queue returns 0 and leaves items intact."""
+    q = InputQueue()
+    q.append("a", "payload-a")
+    q.append("b", "payload-b")
+
+    removed = q.drop_internal()
+
+    assert removed == 0
+    assert len(q) == 2
+    assert q.pop_next().display == "a"
+    assert q.pop_next().display == "b"
+
+
 def test_toolbar_shows_queue_and_collapses_narrow():
     wide = render_toolbar(
         model="openrouter/claude",

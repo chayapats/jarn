@@ -151,6 +151,8 @@ class KeysMixin:
             # Real user input starts a fresh turn-chain: reset the diagnostics
             # auto-fix round counter (T-3-3 loop guard).
             self.controller._diag_chain_round = 0
+            # A real user line supersedes pending auto-diagnostics rounds.
+            self._input_queue.drop_internal()
             self._turn_start = time.monotonic()
             self._turn_stream_chars = 0
             self._turn_base_output = self.controller.tracker.total.output_tokens

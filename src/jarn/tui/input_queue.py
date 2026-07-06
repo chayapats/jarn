@@ -36,6 +36,16 @@ class InputQueue:
         self._items.clear()
         return n
 
+    def drop_internal(self) -> int:
+        """Remove all pending internal (e.g. diagnostics auto-fix) items; return count removed.
+
+        A real user input supersedes queued auto-diagnostics rounds — they must
+        not run against edits the new turn may already have fixed.
+        """
+        before = len(self._items)
+        self._items = [it for it in self._items if not it.internal]
+        return before - len(self._items)
+
     def cancel(self, index: int) -> QueuedLine | None:
         """Remove item at 1-based ``index``; returns removed line or ``None``."""
         if index < 1 or index > len(self._items):
