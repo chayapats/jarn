@@ -587,3 +587,89 @@ async def test_deferred_snapshot_failure_surfaces_on_fresh_driver() -> None:
     assert turn2[0].text == _SNAPSHOT_FAIL_TEXT
     assert any(e.kind is EventKind.DONE for e in turn1)
     assert any(e.kind is EventKind.DONE for e in turn2)
+
+
+# -- T-3-5: subagent progress labels in the stream ---------------------------
+#
+# Frozen fixture for the real ``astream(subgraphs=True)`` namespace shape,
+# determined by reading source (see task-3-5-report.md):
+#   * main-graph events carry namespace ``()``.
+#   * a delegated subagent's events carry ``("tools:<task_id>",)`` where
+#     ``<task_id>`` is a LangGraph checkpoint task id — a UUID-shaped hash
+#     (``hex[:8]-hex[8:12]-hex[12:16]-hex[16:20]-hex[20:32]``) computed by
+#     langgraph from (checkpoint_id, "tools", step, PUSH, send-idx). It is NOT
+#     the ``task`` tool_call_id and does not embed it, so the subagent NAME is
+#     captured from the ``task`` tool args at TOOL_START and correlated to the
+#     namespace by first-appearance (FIFO) order.
+_NS_A = ("tools:9f8e7d6c-1a2b-3c4d-5e6f-0a1b2c3d4e5f",)
+_NS_B = ("tools:1234abcd-5678-9012-3456-7890abcdef12",)
+
+
+class _NSAgent:
+    """Single-pass agent that yields explicit ``(namespace, mode, chunk)`` triples,
+    mimicking ``astream(subgraphs=True)``."""
+
+    def __init__(self, items: list) -> None:
+        self.items = items
+
+    async def astream(self, payload, config, stream_mode=None, **kwargs):
+        for item in self.items:
+            yield item
+
+
+def _ns_driver(agent) -> SessionDriver:
+    return SessionDriver(
+        agent=agent,
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="t",
+        main_model_ref="claude-opus-4-8",
+    )
+
+
+def _task_launch(*calls) -> dict:
+    """A main-graph ``updates`` chunk whose AI message launches ``task`` calls."""
+    msg = SimpleNamespace(tool_calls=[
+        {"name": "task", "args": {"subagent_type": name, "description": "go"},
+         "id": cid}
+        for name, cid in calls
+    ])
+    return {"model": {"messages": [msg]}}
+
+
+@pytest.mark.asyncio
+async def test_subagent_events_tagged():
+    """Events streamed from a task-subgraph carry ``data['agent'] == 'researcher'``."""
+    agent = _NSAgent([
+        ((), "updates", _task_launch(("researcher", "call_1"))),
+        (_NS_A, "messages", (_AIChunk("found the answer"),)),
+    ])
+    events = [ev async for ev in _ns_driver(agent).run_turn("go")]
+    tagged = [e for e in events if e.kind is EventKind.TEXT and e.text == "found the answer"]
+    assert tagged, "subagent text event missing"
+    assert tagged[0].data.get("agent") == "researcher"
+
+
+@pytest.mark.asyncio
+async def test_parallel_tags_independent():
+    """Two parallel ``task`` calls tag their subgraph events independently."""
+    agent = _NSAgent([
+        ((), "updates", _task_launch(("researcher", "c1"), ("coder", "c2"))),
+        (_NS_A, "messages", (_AIChunk("research result"),)),
+        (_NS_B, "messages", (_AIChunk("code result"),)),
+    ])
+    events = [ev async for ev in _ns_driver(agent).run_turn("go")]
+    by_text = {e.text: e for e in events if e.kind is EventKind.TEXT}
+    assert by_text["research result"].data.get("agent") == "researcher"
+    assert by_text["code result"].data.get("agent") == "coder"
+
+
+@pytest.mark.asyncio
+async def test_main_untagged():
+    """Main-graph events (namespace ``()``) carry no agent tag."""
+    agent = _NSAgent([
+        ((), "messages", (_AIChunk("main answer"),)),
+    ])
+    events = [ev async for ev in _ns_driver(agent).run_turn("go")]
+    texts = [e for e in events if e.kind is EventKind.TEXT]
+    assert texts and all(e.data.get("agent") is None for e in texts)
