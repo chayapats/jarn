@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from jarn.agent.builder import JarnRuntime, build_runtime
 from jarn.agent.checkpoint import CheckpointManager
@@ -59,6 +60,7 @@ class Controller:
         *,
         project_trusted: bool = True,
         system_prompt_override: str | None = None,
+        response_format: Any | None = None,
     ) -> None:
         self.config = config
         self.project_root = project_root
@@ -66,6 +68,9 @@ class Controller:
         # When set, build_runtime swaps J.A.R.N.'s assembled system prompt for
         # this string (eval-harness A/B of the harness prompt; see build_runtime).
         self.system_prompt_override = system_prompt_override
+        # When set, build_runtime passes this as response_format to create_deep_agent
+        # so the agent constrains its final answer to the given JSON schema.
+        self.response_format = response_format
         self.engine = PermissionEngine(
             mode=config.permission_mode,
             rules=config.permissions,
@@ -165,6 +170,7 @@ class Controller:
                     checkpointer=self._saver,
                     extra_tools=tools,
                     system_prompt_override=self.system_prompt_override,
+                    response_format=self.response_format,
                 )
             except AmbientKeyLeakError as exc:
                 self.health = "error"
@@ -193,6 +199,7 @@ class Controller:
                     checkpointer=self._saver,
                     extra_tools=tools,
                     system_prompt_override=self.system_prompt_override,
+                    response_format=self.response_format,
                 )
         if not self._session_started:
             self._fire_lifecycle("session_start")

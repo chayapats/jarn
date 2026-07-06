@@ -104,6 +104,17 @@ def main(argv: list[str] | None = None) -> int:
             "continues without a new user message."
         ),
     )
+    parser.add_argument(
+        "--output-schema",
+        dest="headless_output_schema",
+        metavar="FILE",
+        help=(
+            "With -p: path to a JSON Schema file. Constrains the agent's final "
+            "answer to the schema; the parsed object is returned as 'result' in "
+            "the --json envelope (exit 1 with kind 'schema' if the agent fails "
+            "to produce a conforming response)."
+        ),
+    )
 
     parser.epilog = (
         "Headless exit codes (jarn -p): 0 success, 1 generic error, "
@@ -169,6 +180,10 @@ def main(argv: list[str] | None = None) -> int:
 
     preset_override = args.preset
 
+    # --output-schema is headless-only: error if given without -p.
+    if args.headless_output_schema is not None and args.headless_prompt is None:
+        parser.error("--output-schema requires -p / --print")
+
     # Headless one-shot: dispatch before any TUI setup.
     if args.headless_prompt is not None:
         return _cmd_headless(
@@ -180,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
             cwd_override=args.headless_cwd,
             profile_override=preset_override,
             resume_session=args.headless_resume_session,
+            output_schema=args.headless_output_schema,
         )
 
     # Fix the macOS Caps Lock language-switch stray-character bug before any TUI
@@ -221,6 +237,7 @@ def _cmd_headless(
     cwd_override: str | None = None,
     profile_override: str | None = None,
     resume_session: str | None = None,
+    output_schema: str | None = None,
 ) -> int:
     """Run a single non-interactive agent turn and print the result.
 
@@ -307,6 +324,25 @@ def _cmd_headless(
             file=sys.stderr,
         )
 
+    # Load and parse the JSON schema file if --output-schema was given.
+    response_format: Any | None = None
+    if output_schema is not None:
+        import json as _json
+
+        from jarn.headless import HeadlessFailure, _emit_failure
+
+        schema_path = Path(output_schema)
+        try:
+            schema_dict = _json.loads(schema_path.read_bytes())
+        except (OSError, ValueError) as exc:
+            failure = HeadlessFailure(
+                "usage",
+                f"--output-schema: cannot read/parse {schema_path}: {exc}",
+                exit_code=2,
+            )
+            return _emit_failure(failure, as_json=as_json)
+        response_format = {"type": "json_schema", "schema": schema_dict}
+
     from jarn.headless import run_headless
 
     return run_headless(
@@ -317,6 +353,7 @@ def _cmd_headless(
         as_json=as_json,
         max_turns=max_turns,
         resume_session=resume_session,
+        response_format=response_format,
     )
 
 

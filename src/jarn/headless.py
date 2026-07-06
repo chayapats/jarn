@@ -49,8 +49,8 @@ _TIMEOUT_MSG_HINTS = (
 class HeadlessResult:
     """The outcome of a headless run."""
 
-    result: str
-    """The assistant's final text reply."""
+    result: Any
+    """The assistant's final text reply, or a parsed dict when ``--output-schema`` is used."""
     tokens: dict[str, Any] = field(default_factory=dict)
     """Per-model token counts (input/output/total), keyed by model ref."""
     cost: float = 0.0
@@ -187,6 +187,7 @@ async def _run_headless(
     max_turns: int = 1,
     system_prompt_override: str | None = None,
     resume_session: str | None = None,
+    response_format: Any | None = None,
 ) -> HeadlessResult:
     """Async core: build the runtime, run up to ``max_turns``, return results.
 
@@ -208,6 +209,7 @@ async def _run_headless(
     controller = Controller(
         config, project_root, project_trusted=project_trusted,
         system_prompt_override=system_prompt_override,
+        response_format=response_format,
     )
     try:
         ok, message = controller.validate()
@@ -264,6 +266,26 @@ async def _run_headless(
 
         reply_text = "".join(text_parts)
 
+        # When a schema was requested, extract the structured result from the
+        # agent's final graph state instead of using the free-text reply.
+        if response_format is not None:
+            rt = controller.runtime
+            assert rt is not None, "runtime must be set after ensure_runtime()"
+            state = await rt.agent.aget_state(
+                {"configurable": {"thread_id": controller.thread_id}}
+            )
+            structured = (getattr(state, "values", {}) or {}).get("structured_response")
+            if structured is None:
+                raise HeadlessFailure(
+                    "schema",
+                    "agent did not produce a structured response; "
+                    "the schema constraint was not satisfied",
+                    exit_code=EXIT_ERROR,
+                )
+            result_value: Any = structured
+        else:
+            result_value = reply_text
+
         tracker = controller.tracker
         tokens: dict[str, Any] = {}
         for ref, usage in tracker.per_model.items():
@@ -275,7 +297,7 @@ async def _run_headless(
         cost = tracker.total.cost_usd
 
         return HeadlessResult(
-            result=reply_text,
+            result=result_value,
             tokens=tokens,
             cost=cost,
             turns=turns_completed,
@@ -294,6 +316,7 @@ def run_headless(
     as_json: bool = False,
     max_turns: int = 1,
     resume_session: str | None = None,
+    response_format: Any | None = None,
 ) -> int:
     """Synchronous entry point called by the CLI.
 
@@ -318,6 +341,7 @@ def run_headless(
                 project_trusted=project_trusted,
                 max_turns=max_turns,
                 resume_session=resume_session,
+                response_format=response_format,
             )
         )
     except Exception as exc:  # noqa: BLE001
@@ -328,6 +352,9 @@ def run_headless(
     if as_json:
         print(json.dumps(_result_payload(result)))
     else:
-        print(result.result, end="" if result.result.endswith("\n") else "\n")
+        if isinstance(result.result, str):
+            print(result.result, end="" if result.result.endswith("\n") else "\n")
+        else:
+            print(json.dumps(result.result))
 
     return EXIT_SUCCESS

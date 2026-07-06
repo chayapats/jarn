@@ -288,3 +288,35 @@ def test_doctor_warns_custom_jarn_home(tmp_path, monkeypatch, capsys):
     assert data["jarn_home_overridden"] is True
     assert "jarn_home_warning" in data
     assert str(custom) in data["jarn_home_warning"]
+
+
+# ---------------------------------------------------------------------------
+# T-3-6: --output-schema headless structured output
+# ---------------------------------------------------------------------------
+
+
+def test_output_schema_requires_print(tmp_path, capsys):
+    """``--output-schema`` without ``-p`` must argparse-error (exit 2, stderr)."""
+    with pytest.raises(SystemExit) as exc:
+        main(["--output-schema", str(tmp_path / "schema.json")])
+    assert exc.value.code == 2
+
+
+def test_bad_schema_file_exit2(tmp_path, monkeypatch, capsys):
+    """``--output-schema`` pointing at an unreadable/non-JSON file exits 2 with kind: 'usage'."""
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    gp = _make_headless_config(tmp_path)
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
+    monkeypatch.setattr(cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None))
+
+    bad = tmp_path / "bad.txt"
+    bad.write_text("this is not valid json {{{", encoding="utf-8")
+
+    code = main(["-p", "hello", "--output-schema", str(bad), "--json"])
+    assert code == 2
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert data["error"]["kind"] == "usage"

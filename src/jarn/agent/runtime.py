@@ -348,6 +348,7 @@ def build_runtime(
     checkpointer: Any | None = None,
     extra_tools: list[Any] | None = None,
     system_prompt_override: str | None = None,
+    response_format: Any | None = None,
 ) -> JarnRuntime:
     """Build a ready-to-run :class:`JarnRuntime` from config.
 
@@ -506,6 +507,7 @@ def build_runtime(
         interrupt_on=interrupts or None,
         checkpointer=checkpointer,
         tools=tools or None,
+        response_format=response_format,
     )
 
     return JarnRuntime(

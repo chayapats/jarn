@@ -148,7 +148,21 @@ jarn -p "do X" --json                        # emit JSON: {result, tokens, cost,
 jarn -p "do X" --model anthropic/claude-opus-4-8  # override model for this run
 jarn -p "do X" --permission-mode auto-edit  # allow file writes without prompting
 jarn -p "do X" --cwd /path/to/project       # set working directory
+jarn -p "extract the version" --output-schema schema.json --json  # structured output
 ```
+
+**Structured output (`--output-schema`):** pass a JSON Schema file to constrain the
+agent's final answer. The parsed object replaces the free-text `result` field in the
+`--json` envelope, making CI parsing trivial:
+
+```bash
+jarn -p "list changed files as JSON" --output-schema files.schema.json --json \
+  | jq '.result.files[]'
+```
+
+Exit codes when `--output-schema` is used: `0` success (structured object in `result`);
+`1` with `error.kind: "schema"` if the agent fails to produce a conforming response;
+`2` with `error.kind: "usage"` if the schema file can't be read or parsed.
 
 **Fail-closed safety:** the default modes (`ask` / `plan`) refuse any tool that
 would normally prompt for approval and exit non-zero. Pass `--permission-mode
@@ -387,7 +401,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1560 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1564 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)
