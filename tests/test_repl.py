@@ -3620,3 +3620,51 @@ async def test_theme_command_switches_and_persists(tmp_path, monkeypatch):
     # Config updated
     assert app.controller.config.ui.theme == "light"
     app.controller.close()
+
+
+async def test_theme_auto_detection_runs_off_event_loop(tmp_path, monkeypatch):
+    """/theme auto must run termbg.detect off the event loop via asyncio.to_thread."""
+    import threading
+
+    from jarn.tui import palette, termbg
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    # Record the thread where detect() is called.
+    detect_threads: list[threading.Thread] = []
+
+    def fake_detect():
+        detect_threads.append(threading.current_thread())
+        return "light"
+
+    monkeypatch.setattr(termbg, "detect", fake_detect)
+
+    # Stub set_setting to capture calls and return success.
+    def _fake_set_setting(key: str, val: str) -> tuple[bool, str]:
+        app.controller.config.ui.theme = val
+        return True, f"saved {key} = {val}"
+
+    monkeypatch.setattr(app.controller, "set_setting", _fake_set_setting)
+
+    # Set theme to "auto" so detection will be triggered.
+    app.controller.config.ui.theme = "auto"
+    palette.configure_ui(theme="dark")
+
+    # Run /theme auto — this should trigger detection off-loop.
+    await app._command("theme", "auto")
+
+    # Verify detect was called at least once.
+    assert detect_threads, "termbg.detect must be called when resolving 'auto' theme"
+
+    # Get the event loop thread.
+    event_loop_thread = threading.current_thread()
+
+    # Verify at least one call happened off the event loop thread.
+    off_loop_calls = [t for t in detect_threads if t != event_loop_thread]
+    assert off_loop_calls, (
+        f"termbg.detect must be called off the event loop. "
+        f"Event loop thread: {event_loop_thread.name}, "
+        f"detect call threads: {[t.name for t in detect_threads]}"
+    )
+
+    app.controller.close()

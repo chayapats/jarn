@@ -558,7 +558,7 @@ class CommandMixin:
         if chosen is None:
             # Open the arrow-key picker.
             current = self.controller.config.ui.theme
-            resolved = _resolve(current)
+            resolved = await asyncio.to_thread(_resolve, current)
             if current == "auto":
                 header = (
                     f"Pick theme (currently: auto → {resolved}) · "
@@ -585,7 +585,7 @@ class CommandMixin:
                 return
 
         # Apply: resolve auto → actual palette name, then configure.
-        palette_name = _resolve(str(chosen))
+        palette_name = await asyncio.to_thread(_resolve, str(chosen))
         palette.configure_ui(theme=palette_name, accent=self.controller.config.ui.accent)
 
         # Persist via the standard config-set path.
