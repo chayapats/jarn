@@ -239,6 +239,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/config` | View or edit settings: /config, /config get <key>, /config set <key> <value> (persists). |
 | `/model [/ref\|refresh]` | Show or switch the active model; /model refresh re-queries local endpoints. |
 | `/mode [plan\|ask\|auto-edit\|yolo]` | Show or switch the permission mode (plan/ask/auto-edit/yolo). |
+| `/theme [dark\|light\|high-contrast\|auto]` | Show or switch the color theme (dark/light/high-contrast/auto). |
 | `/sandbox [on\|off]` | Show or toggle the execution backend (local/sandbox). |
 | `/key [<key>]` | Set or replace the API key for the current provider (stored in the keychain). |
 | `/preset [<preset-name>]` | Show or apply a preset — a shortcut that sets mode + sandbox at once. |
@@ -369,7 +370,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1472 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1483 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

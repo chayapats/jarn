@@ -407,7 +407,14 @@ observability:
 
 # ── UI ───────────────────────────────────────────────────────────────────
 ui:
-  theme: dark              # dark | light | high-contrast
+  theme: dark              # dark | light | high-contrast | auto
+                           #   auto — detect light/dark from the terminal background
+                           #          via OSC 11 at startup (100 ms timeout; falls
+                           #          back to dark when the terminal does not reply,
+                           #          or when stdin/stdout are not a tty). The
+                           #          resolved theme is shown in the /theme picker.
+                           #          Change at runtime with /theme auto or
+                           #          /config set ui.theme auto.
   accent: cyan             # brand accent for splash + toolbar (cyan|blue|teal|…)
   # Set NO_COLOR=1 in the environment for plain/unstyled toolbar labels.
   notify: bell             # off | bell | desktop | both

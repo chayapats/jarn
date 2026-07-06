@@ -168,6 +168,7 @@ Reply ของ assistant render เป็น **Markdown** (heading, list, code 
 | `/config` | ดูหรือแก้ settings: /config, /config get <key>, /config set <key> <value> (เซฟถาวร) |
 | `/model [/ref\|refresh]` | ดูหรือเปลี่ยน model ที่ใช้งานอยู่; /model refresh re-query local endpoint |
 | `/mode [plan\|ask\|auto-edit\|yolo]` | ดูหรือเปลี่ยน permission mode (plan/ask/auto-edit/yolo) |
+| `/theme [dark\|light\|high-contrast\|auto]` | ดูหรือเปลี่ยน color theme (dark/light/high-contrast/auto) |
 | `/sandbox [on\|off]` | ดูหรือ toggle execution backend (local/sandbox) |
 | `/key [<key>]` | ตั้งหรือเปลี่ยน API key ของ provider ปัจจุบัน (เก็บใน keychain) |
 | `/preset [<preset-name>]` | ดูหรือ apply preset — shortcut ที่ตั้ง mode + sandbox พร้อมกัน |
@@ -252,7 +253,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1472 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1483 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)

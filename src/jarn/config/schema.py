@@ -298,7 +298,7 @@ _VALID_NOTIFY_VALUES: frozenset[str] = frozenset({"off", "bell", "desktop", "bot
 
 @dataclass(slots=True)
 class UIConfig:
-    theme: str = "dark"           # dark | light | high-contrast
+    theme: str = "dark"           # dark | light | high-contrast | auto
     accent: str = "cyan"          # brand accent
     splash: str = "compact"       # full | compact | off
     #: Max diff lines shown inline in a write/edit approval prompt before the

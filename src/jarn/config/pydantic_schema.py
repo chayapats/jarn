@@ -558,6 +558,9 @@ class ObservabilityConfigModel(_StrictModel):
         return raw
 
 
+_VALID_THEME_VALUES: frozenset[str] = frozenset({"dark", "light", "high-contrast", "auto"})
+
+
 class UIConfigModel(_StrictModel):
     theme: str = "dark"
     accent: str = "cyan"
@@ -566,6 +569,16 @@ class UIConfigModel(_StrictModel):
     notify: str = "bell"
     notify_min_secs: int = 10
     terminal_title: bool = True
+
+    @field_validator("theme", mode="before")
+    @classmethod
+    def _theme(cls, value: Any) -> str:
+        raw = str(value)
+        if raw not in _VALID_THEME_VALUES:
+            raise ConfigValidationError(
+                f"ui.theme must be one of {sorted(_VALID_THEME_VALUES)} (got {raw!r})."
+            )
+        return raw
 
     @field_validator("splash", mode="before")
     @classmethod
