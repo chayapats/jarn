@@ -128,13 +128,24 @@ def handle_update_chunk(
                 # A ``task`` launch names the subagent it spawns (in its args); record
                 # that name — in call order — so the subagent's later subgraph events
                 # can be correlated back to it (see _agent_for_namespace).
-                if name == "task":
+                # Only the main graph (namespace == ()) launches top-level subagents;
+                # nested task launches from inside a subgraph must not pollute the FIFO.
+                if name == "task" and not namespace:
                     sub = str(
                         args.get("subagent_type") or args.get("subagent")
                         or args.get("name") or ""
                     ).strip()
                     if sub:
-                        driver._subagent_pending.append(sub)
+                        # Dedup by call id: stream_mode=["messages","updates"] +
+                        # subgraphs=True can re-emit the same TOOL_START chunk;
+                        # a duplicate append would shift the FIFO and mislabel
+                        # later subagents. Fall back to appending when call has no id
+                        # (shouldn't happen for a real tool call, but be safe).
+                        call_id = call.get("id")
+                        if call_id is None or call_id not in driver._subagent_seen_calls:
+                            driver._subagent_pending.append(sub)
+                            if call_id is not None:
+                                driver._subagent_seen_calls.add(call_id)
                 if name in ("write_file", "edit_file"):
                     driver._last_edit_target = str(
                         args.get("file_path") or args.get("path")
