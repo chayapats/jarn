@@ -2,6 +2,7 @@
 
 Subcommands:
     jarn            launch the TUI (runs setup first if unconfigured)
+    jarn login      log in to OpenRouter via OAuth PKCE (browser → keychain)
     jarn setup      (re)run the onboarding wizard
     jarn init       create a JARN.md project context file
     jarn doctor     diagnose configuration / providers / keys / extensions
@@ -178,6 +179,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Record a one-time accept to run global lifecycle hooks "
         "(enables `hook_global_require_trust: true`)",
     )
+    sub.add_parser(
+        "login",
+        help="Log in to OpenRouter via OAuth PKCE — opens your browser, "
+        "catches the callback, and stores the API key in the OS keychain",
+    )
 
     # --profile was removed in v0.6.0 (deprecated since v0.5.0). Without this
     # guard argparse reports a confusing subcommand "invalid choice" error for
@@ -238,6 +244,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_trust(path=args.path, remove=args.remove, as_json=args.json)
     if args.command == "trust-hooks":
         return _cmd_trust_hooks()
+    if args.command == "login":
+        return _cmd_login()
     return _cmd_launch(
         resume=args.resume,
         profile_override=preset_override,
@@ -513,6 +521,88 @@ def _cmd_trust_hooks() -> int:
         f"{paths.global_home() / GLOBAL_HOOKS_TRUST_MARKER} to re-trigger the gate."
     )
     return 0
+
+
+def _cmd_login() -> int:
+    """Run the OpenRouter OAuth PKCE login flow.
+
+    Opens the browser, waits for the OAuth callback on a loopback listener,
+    exchanges the code for an API key, and stores it in the OS keychain.
+    The raw key is never printed; only the masked tail and the reference are shown.
+    Falls back gracefully when the browser cannot be opened (SSH / headless).
+    """
+    from rich.console import Console
+
+    from jarn.config.secrets import redact_secrets
+    from jarn.onboarding.oauth import LoginResult, login_openrouter
+
+    console = Console()
+    console.print(
+        "\n[b cyan]OpenRouter login[/b cyan]  "
+        "[dim]— Opens your browser; close it here with Ctrl+C to abort.[/dim]\n"
+    )
+
+    try:
+        result: LoginResult = login_openrouter()
+    except TimeoutError as exc:
+        console.print(f"[red]✗[/red] Timed out: {exc}")
+        console.print(
+            "[dim]Run `jarn setup` to configure a key manually.[/dim]"
+        )
+        return 1
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Aborted.[/yellow]")
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]✗[/red] Login failed: {redact_secrets(str(exc))}")
+        return 1
+
+    console.print(f"[green]✔[/green]  Logged in — key stored as [b]{result.reference}[/b]")
+    console.print(f"   Key tail: [dim]{result.masked_key}[/dim]")
+
+    # Write the reference into the OpenRouter provider in the global config.
+    _write_openrouter_key_ref(result.reference)
+    console.print(
+        "\n[green]✔[/green]  Config updated.  "
+        "Launch [b]jarn[/b] to start coding."
+    )
+    return 0
+
+
+def _write_openrouter_key_ref(reference: str) -> None:
+    """Set ``providers.openrouter.api_key`` in the global config (non-destructively).
+
+    If no global config exists yet, creates a minimal one.  Existing keys for
+    other providers are preserved.
+    """
+    import yaml
+
+    from jarn.config import paths
+
+    config_path = paths.global_config_path()
+    if config_path.is_file():
+        raw = config_path.read_text(encoding="utf-8")
+        try:
+            data = yaml.safe_load(raw) or {}
+        except Exception:  # noqa: BLE001
+            data = {}
+    else:
+        paths.global_home().mkdir(parents=True, exist_ok=True)
+        data = {}
+
+    providers = data.setdefault("providers", {})
+    or_entry = providers.setdefault("openrouter", {"type": "openrouter"})
+    or_entry["api_key"] = reference
+
+    header = (
+        "# J.A.R.N. configuration.\n"
+        "# API keys are referenced, never inlined:\n"
+        "#   keychain:jarn/<provider>  -> read from the OS keychain\n"
+    )
+    config_path.write_text(
+        header + yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
 
 
 def _trust_list(store: Any, *, as_json: bool) -> int:

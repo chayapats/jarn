@@ -7,6 +7,16 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **`jarn login` — OpenRouter OAuth PKCE (T-4-1)** — one-command login that opens
+  your browser, catches the OAuth callback on a one-shot loopback listener
+  (`127.0.0.1:<random-port>/callback`), exchanges the PKCE code for an API key, and
+  stores it in the OS keychain.  The raw key never appears in `config.yaml` — only the
+  opaque reference (`keychain:jarn/openrouter`) is stored.  `jarn setup` (TUI wizard)
+  also offers "Log in with browser (recommended)" as the first option on the OpenRouter
+  key screen.  SSH/headless fallback: prints the authorize URL and falls back to manual
+  key paste.  `jarn doctor` now shows the key source (env / keychain / file) for each
+  provider.  See `SECURITY.md` for the PKCE + loopback threat model.
+
 - **`--add-dir` multi-root workspaces (T-3-9)** — the agent's filesystem write scope
   generalizes from a single project root to a set of roots (primary first). Add extra
   writable roots at launch with `jarn --add-dir <dir>` (repeatable; each must exist and

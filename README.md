@@ -129,6 +129,16 @@ would load (including shadowed or skipped files).
 
 ## Quick start
 
+**With OpenRouter (recommended — one browser click, no manual key handling):**
+
+```bash
+jarn login        # opens browser → authorize → key stored in OS keychain
+cd your-project
+jarn              # launch the TUI (runs setup if still needed)
+```
+
+**Or configure manually:**
+
 ```bash
 jarn setup        # first-run wizard: pick a provider, store your API key, choose defaults
 cd your-project
@@ -138,6 +148,7 @@ jarn doctor       # diagnose config / providers / keys / extensions at any time
 ```
 
 On first launch with no config, J.A.R.N. runs the setup wizard automatically.
+The OpenRouter option in the wizard also offers a one-click browser login.
 
 ## Non-interactive / scripting
 
@@ -419,7 +430,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1591 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1598 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

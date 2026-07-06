@@ -70,6 +70,16 @@ in your project directory when you approve them (or automatically in permissive 
 - **`@url:` mentions:** rewritten to a `web_fetch` instruction at submit time — **no
   pre-fetch occurs** in the REPL.  The agent's gated `web_fetch` tool (subject to the
   permission engine and SSRF guard) performs the actual network request.
+- **`jarn login` (OpenRouter OAuth PKCE):** when you run `jarn login`, a one-shot HTTP
+  server is bound to `127.0.0.1:<random-free-port>` for up to 300 seconds.  It serves
+  a single `/callback` endpoint and exits as soon as the authorization code arrives (or
+  times out).  Security properties: (a) bound to loopback only — no LAN exposure;
+  (b) no client secret is used (public-client PKCE — RFC 7636 S256); (c) the
+  authorization code and PKCE verifier are memory-only and never logged or stored;
+  (d) the raw API key received from OpenRouter is passed directly to `store_secret` and
+  is never written to `config.yaml` — only the opaque reference (`keychain:jarn/openrouter`)
+  is persisted; (e) no secret value appears in the authorize URL (only the PKCE
+  challenge is sent); (f) all printed output passes through `redact_secrets`.
 
 ### Filesystem write scope (`--add-dir` multi-root)
 
