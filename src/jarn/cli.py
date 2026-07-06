@@ -117,8 +117,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser.epilog = (
-        "Headless exit codes (jarn -p): 0 success, 1 generic error, "
-        "2 approval refused or budget hard-stop, 124 timeout."
+        "Headless exit codes (jarn -p): 0 success, "
+        "1 generic error or schema validation failure (--output-schema), "
+        "2 approval refused, budget hard-stop, or usage error (bad/missing schema file), "
+        "124 timeout."
     )
 
     sub = parser.add_subparsers(dest="command")
