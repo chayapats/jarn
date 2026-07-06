@@ -7,6 +7,14 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **Update-available notice (T-4-2)** — at interactive launch a daemon thread
+  checks PyPI for a newer `jarn-cli` release (2 s timeout, cached 24 h) and
+  prints one dim line under the splash when a newer version exists.  The
+  notice adapts to the distribution: frozen binary → `npm i -g jarn-cli`;
+  pip install → `pip install -U jarn`.  Skipped automatically under the
+  `offline` preset, headless (`jarn -p`), or when `updates.check: false` in
+  config.  Silent on all network / parse failures.
+
 - **`jarn login` — OpenRouter OAuth PKCE (T-4-1)** — one-command login that opens
   your browser, catches the OAuth callback on a one-shot loopback listener
   (`127.0.0.1:<random-port>/callback`), exchanges the PKCE code for an API key, and

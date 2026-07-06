@@ -126,6 +126,9 @@ SETTINGS: tuple[Setting, ...] = (
        "Minimum turn length before a turn-end notification fires (0 = always)."),
     _s("ui.terminal_title", "bool", "Appearance", "Terminal title",
        "Update the terminal-tab title to show idle / working / approval states via OSC 2."),
+    # ── Updates ──
+    _s("updates.check", "bool", "Updates", "Update check",
+       "Check PyPI for a newer jarn release at startup (cached 24 h; skipped when offline)."),
 )
 
 _BY_KEY: dict[str, Setting] = {s.key: s for s in SETTINGS}

@@ -90,8 +90,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         project_trusted: bool = True,
         detected_theme: str | None = None,
         add_dirs: list[Path] | None = None,
+        preset_name: str | None = None,
     ) -> None:
         self.config = config
+        self._preset_name = preset_name
         # Terminal background resolved ONCE at startup (light/dark) when
         # ui.theme is "auto"; a runtime `/theme auto` reuses this instead of
         # re-probing (a runtime OSC-11 probe races prompt_toolkit's input reader).
@@ -235,6 +237,11 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 f"[{palette.C_NOTICE}]jarn trust[/{palette.C_NOTICE}]"
                 f"[{palette.C_DIM}] to unlock.[/{palette.C_DIM}]"
             )
+        # Background update-available check — never blocks the first prompt.
+        from jarn.update_check import maybe_start_update_check
+        maybe_start_update_check(
+            self.config, c, preset_name=self._preset_name
+        )
         self._warm_pricing_catalog()
         await self._ensure_extensions()
         self.app = self._build_app()

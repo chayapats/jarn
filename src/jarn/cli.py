@@ -718,7 +718,7 @@ def _cmd_launch(
     from jarn.config.profiles import resolve_effective_profile
 
     try:
-        resolve_effective_profile(
+        effective_preset = resolve_effective_profile(
             cfg, project_trusted=trusted, cli_profile=profile_override
         )
     except ConfigError as exc:
@@ -729,7 +729,12 @@ def _cmd_launch(
     from jarn.repl import run_inline
 
     return run_inline(
-        cfg, root, resume=resume, project_trusted=trusted, add_dirs=extra_roots
+        cfg,
+        root,
+        resume=resume,
+        project_trusted=trusted,
+        add_dirs=extra_roots,
+        preset_name=effective_preset,
     )
 
 

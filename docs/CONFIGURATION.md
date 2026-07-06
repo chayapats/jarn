@@ -770,4 +770,37 @@ figure is incomplete rather than wrong.
 
 ---
 
+## Update-available notice (`updates`)
+
+```yaml
+updates:
+  check: true   # check PyPI for a newer release at startup (cached 24 h)
+```
+
+At interactive launch a daemon thread GETs `https://pypi.org/pypi/jarn/json`
+(2 s timeout) and prints **one dim line** under the splash when a newer release
+is available:
+
+```
+⬆ v0.8.1 available — npm i -g jarn-cli (changelog: https://github.com/deepagents/jarn/releases)
+```
+
+The install command adapts automatically: frozen binary → `npm i -g jarn-cli`;
+pip install → `pip install -U jarn`.
+
+The result is cached in `~/.jarn/update-check.json` for 24 h so the check
+never runs twice in a day.  The check is **automatically skipped** when:
+
+- `updates.check: false` in config
+- The `offline` preset is active (`jarn --preset offline`)
+- Running headless (`jarn -p …`)
+
+Network failures are silent — the check never blocks or crashes startup.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `updates.check` | bool | `true` | Enable the startup update-available check |
+
+---
+
 **Related docs:** [PERMISSIONS.md](PERMISSIONS.md) · [EXTENDING.md](EXTENDING.md) · [ARCHITECTURE.md](ARCHITECTURE.md) · [← docs index](README.md)

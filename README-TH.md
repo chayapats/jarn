@@ -247,6 +247,8 @@ JARN.md                  per-project context, โหลดเข้า system pr
 
 API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${ENV_VAR}` หรือ `keychain:jarn/<provider>` Project config ถูกกั้นด้วย **trust prompt** (ดูด้านบน) ดูรายละเอียดทั้งหมดที่ [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
 
+ตอน startup jarn จะตรวจสอบ PyPI อย่างเงียบๆ ว่ามี release ใหม่หรือไม่ และแสดง 1 บรรทัดเบาๆ ใต้ splash เมื่อมีเวอร์ชันใหม่ (cache 24 ชม. — ข้ามอัตโนมัติเมื่อใช้ `offline` preset หรือ headless mode) ปิดได้ด้วย `updates.check: false` ใน `~/.jarn/config.yaml`
+
 ## การขยาย (Extending)
 
 วางไฟล์ใน `~/.jarn/{skills,commands,agents}` (global) หรือ `.jarn/{...}` (project):
@@ -275,7 +277,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1603 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1615 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)

@@ -67,6 +67,7 @@ def run_inline(
     resume: bool = False,
     project_trusted: bool = True,
     add_dirs: list[Path] | None = None,
+    preset_name: str | None = None,
 ) -> int:
     """CLI entry point for native inline mode."""
     from jarn.tui.keyfix import apply_repl_keyfix
@@ -88,6 +89,7 @@ def run_inline(
                 project_trusted=project_trusted,
                 detected_theme=detected_theme,
                 add_dirs=add_dirs,
+                preset_name=preset_name,
             ).run()
         )
     return 0

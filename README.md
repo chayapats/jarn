@@ -367,6 +367,11 @@ API keys are **referenced, never inlined** — `${ENV_VAR}` or `keychain:jarn/<p
 Project config is gated by a **trust prompt** (see above). See
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full reference.
 
+At startup jarn quietly checks PyPI for a newer release and prints one dim
+line under the splash when an upgrade is available (cached 24 h; skipped under
+the `offline` preset or when running headless). Disable with
+`updates.check: false` in `~/.jarn/config.yaml`.
+
 ## Extending
 
 Drop files into `~/.jarn/{skills,commands,agents}` (global) or `.jarn/{...}` (project):
@@ -430,7 +435,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1603 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1615 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)
