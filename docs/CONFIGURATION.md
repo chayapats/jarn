@@ -782,7 +782,7 @@ At interactive launch a daemon thread GETs `https://pypi.org/pypi/jarn/json`
 is available:
 
 ```
-⬆ v0.8.1 available — npm i -g jarn-cli (changelog: https://github.com/deepagents/jarn/releases)
+⬆ v0.8.1 available — npm i -g jarn-cli (changelog: https://github.com/chayapats/jarn/releases)
 ```
 
 The install command adapts automatically: frozen binary → `npm i -g jarn-cli`;

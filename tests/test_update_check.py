@@ -197,3 +197,30 @@ def test_non_frozen_uses_pip_command(tmp_path: Path) -> None:
     assert notice is not None
     assert "pip install -U jarn" in notice, f"expected pip command in: {notice!r}"
     assert "npm" not in notice
+
+
+# ---------------------------------------------------------------------------
+# No-notice contract — same or older installed version → None (strict `>`)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "current,latest",
+    [
+        ("0.8.1", "0.5.0"),   # installed is NEWER than PyPI → no notice
+        ("0.8.1", "0.8.1"),   # equal → no notice (strict greater-than)
+    ],
+    ids=["older-on-pypi", "equal"],
+)
+def test_same_or_older_version_no_notice(
+    current: str, latest: str, tmp_path: Path
+) -> None:
+    """Same or older PyPI version → notice is None (pins the strict `>` compare)."""
+    from jarn.update_check import _do_update_check
+
+    notice = _do_update_check(
+        home_dir=tmp_path,
+        current_version=current,
+        _fetch=lambda: _make_pypi_response(latest),
+    )
+
+    assert notice is None, f"expected no notice for {latest} vs {current}, got {notice!r}"

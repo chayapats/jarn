@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 _PYPI_URL = "https://pypi.org/pypi/jarn/json"
 _CACHE_SECS: float = 24.0 * 3600.0
 _TIMEOUT: float = 2.0
-_CHANGELOG_URL = "https://github.com/deepagents/jarn/releases"
+_CHANGELOG_URL = "https://github.com/chayapats/jarn/releases"
 
 
 def _get_install_cmd(frozen: bool | None = None) -> str:
