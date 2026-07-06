@@ -163,7 +163,10 @@ async def _run_turn(
                     event.kind is EventKind.APPROVAL
                     and event.text.startswith(("blocked", "rejected"))
                 ):
-                    renderer.on_notice(f"[{palette.C_NOTICE}]{event.text}[/{palette.C_NOTICE}]")
+                    if event.kind is EventKind.NOTICE and event.data.get("verify"):
+                        renderer.on_verify_badge(event.data["verify"])
+                    else:
+                        renderer.on_notice(f"[{palette.C_NOTICE}]{event.text}[/{palette.C_NOTICE}]")
                     produced = True
                 elif event.kind is EventKind.APPROVAL:
                     produced = True  # a tool was authorized → has a side effect

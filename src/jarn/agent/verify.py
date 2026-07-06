@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time as _time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -157,10 +158,41 @@ def primary_test_command(project_root: Path | None) -> str | None:
     return caps.test[0] if caps.test else None
 
 
+def summarize_output(cmd: str, output: str, *, exit_code: int = 0) -> str:
+    """Extract a one-line summary from command output.
+
+    Returns a short human-readable status string. Never raises — falls back to
+    ``"exit {exit_code}"`` on any parse error.
+    """
+    try:
+        cmd_lower = cmd.lower()
+        if "pytest" in cmd_lower:
+            m = re.search(r"\d+ (?:passed|failed).*", output)
+            if m:
+                return m.group(0)
+        elif "cargo" in cmd_lower:
+            m = re.search(r"test result: \S+\. (.+)", output, re.MULTILINE)
+            if m:
+                return m.group(1)
+        elif "go test" in cmd_lower or "go " in cmd_lower:
+            m = re.search(r"^(ok|FAIL)\s+\S+", output, re.MULTILINE)
+            if m:
+                return m.group(0)
+        elif any(x in cmd_lower for x in ("npm", "pnpm", "yarn", "bun")):
+            m = re.search(r"Tests:\s+(.+)", output, re.MULTILINE)
+            if m:
+                return m.group(1)
+        return f"exit {exit_code}"
+    except Exception:  # noqa: BLE001
+        return f"exit {exit_code}"
+
+
 async def verify_after_edit(driver: SessionDriver, tool_name: str) -> Any | None:
     """Apply the configured verify gate after a write/edit tool completes.
 
     Returns a :class:`~jarn.agent.events.Event` NOTICE to yield, or ``None``.
+    Structured events (``data={"verify": ...}``) are emitted for suggest/auto paths;
+    error/skip paths emit text-only NOTICEs so the badge renderer ignores them.
     """
     from jarn.agent.events import Event, EventKind
     from jarn.permissions import Action, ActionKind, Decision
@@ -176,7 +208,7 @@ async def verify_after_edit(driver: SessionDriver, tool_name: str) -> Any | None
     if gate == "suggest":
         return Event(
             EventKind.NOTICE,
-            text=f"verify: detected test command: `{cmd}`",
+            data={"verify": {"cmd": cmd, "mode": "suggest"}},
         )
 
     # auto — run when permissions allow.
@@ -198,13 +230,21 @@ async def verify_after_edit(driver: SessionDriver, tool_name: str) -> Any | None
             text=f"verify: no execution backend for `{cmd}`",
         )
 
+    t0 = _time.monotonic()
     resp = await asyncio.to_thread(executor, cmd)
+    secs = round(_time.monotonic() - t0, 1)
+
     exit_code = int(getattr(resp, "exit_code", 1))
     output = (getattr(resp, "output", "") or "").strip()
-    status = "passed" if exit_code == 0 else f"failed (exit {exit_code})"
-    text = f"verify: `{cmd}` {status}"
-    if output:
-        last = output.splitlines()[-1]
-        if last:
-            text += f" — {last}"
-    return Event(EventKind.NOTICE, text=text)
+    ok = exit_code == 0
+    summary = summarize_output(cmd, output, exit_code=exit_code)
+
+    verify_data: dict[str, Any] = {
+        "cmd": cmd,
+        "ok": ok,
+        "summary": summary,
+        "secs": float(secs),
+    }
+    if not ok and output:
+        verify_data["full_output"] = output
+    return Event(EventKind.NOTICE, data={"verify": verify_data})

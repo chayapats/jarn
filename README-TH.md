@@ -29,7 +29,7 @@ J.A.R.N. คือ terminal coding agent ที่ออกแบบในแน
 
 ## ทำไมต้องเลือก J.A.R.N.?
 
-- **Reliable by design** — flow แบบ plan → act → verify ฝังอยู่ใน system prompt พร้อม self-verification loop ที่รัน build/test/lint ของโปรเจกต์ก่อนรายงานว่าเสร็จ
+- **Reliable by design** — flow แบบ plan → act → verify ฝังอยู่ใน system prompt พร้อม self-verification loop ที่รัน build/test/lint ของโปรเจกต์ก่อนรายงานว่าเสร็จ completion badge `` ⎿ verified: pytest ✓ 214 passed · 3.2s `` ยืนยันผลลัพธ์จริง ไม่ใช่แค่คาดเดา (`verify.gate: auto`)
 - **ปลอดภัยเป็นค่าเริ่มต้น** — ระบบ permission หลายชั้น (coarse mode + fine-grained rules) คั่นกลางทุก file write และ shell command โดยมี *danger-guard* ที่ยืนยันการกระทำร้ายแรงเสมอ — แม้แต่ใน YOLO mode
 - **เลือก model เองได้ (Bring your own model)** — รองรับ 13 provider (OpenRouter, Anthropic, OpenAI, Google, Mistral, Groq, DeepSeek, Together, Fireworks, xAI, Ollama, LM Studio, และ generic OpenAI-compatible endpoint) พร้อม per-task routing ให้ subagent ใช้ model ที่ถูกกว่าได้
 - **รู้ต้นทุนและ context ตลอดเวลา** — ติดตาม token/cost แบบ live (พร้อม breakdown ราย tool) และ budget ต่อ session ที่แจ้งเตือนหรือหยุดอัตโนมัติได้; มี context-% gauge และ throughput การ generate แบบ live (tok/s) ที่ทำงานกับ local model (LM Studio / Ollama) ด้วย ไม่ใช่แค่ cloud model ที่มีราคา
@@ -253,7 +253,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1525 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1530 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)

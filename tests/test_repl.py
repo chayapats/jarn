@@ -4191,3 +4191,64 @@ def test_git_mention_argv_disables_color(tmp_path, monkeypatch):
         assert argv[:3] == ["git", "-c", "color.ui=false"], (
             f"expected color-disabled git argv, got {argv!r}"
         )
+
+
+def test_verify_badge_render_pass():
+    """Pass badge: shows verified:, cmd, ✓, summary, timing, ⎿."""
+    from io import StringIO
+
+    from jarn.repl_renderer import TurnRenderer
+
+    console = Console(file=StringIO(), width=80)
+    r = TurnRenderer(console, live_sink=lambda _s: None, spinner=False)
+    r.on_verify_badge({"cmd": "pytest", "ok": True, "summary": "214 passed", "secs": 3.2})
+    out = console.file.getvalue()
+    assert "verified:" in out
+    assert "pytest" in out
+    assert "✓" in out
+    assert "214 passed" in out
+    assert "3.2s" in out
+    assert "⎿" in out
+
+
+def test_verify_badge_render_fail_with_pager():
+    """Fail badge: shows verify:, cmd, ✗, summary, ctrl+o, ⎿; stores full_output in tool_sink."""
+    from io import StringIO
+
+    from jarn.repl_renderer import TurnRenderer
+
+    sink: list = []
+    console = Console(file=StringIO(), width=80)
+    r = TurnRenderer(console, live_sink=lambda _s: None, spinner=False, tool_sink=sink)
+    r.on_verify_badge({
+        "cmd": "pytest",
+        "ok": False,
+        "summary": "2 failed",
+        "secs": 1.5,
+        "full_output": "FAILED test_foo\n2 failed",
+    })
+    out = console.file.getvalue()
+    assert "verify:" in out
+    assert "pytest" in out
+    assert "✗" in out
+    assert "2 failed" in out
+    assert "ctrl+o" in out
+    assert "⎿" in out
+    assert sink == [("verify", "FAILED test_foo\n2 failed")]
+
+
+def test_verify_badge_render_suggest():
+    """Suggest badge: shows verify:, cmd, confirm, verify.gate: auto, ⎿."""
+    from io import StringIO
+
+    from jarn.repl_renderer import TurnRenderer
+
+    console = Console(file=StringIO(), width=80)
+    r = TurnRenderer(console, live_sink=lambda _s: None, spinner=False)
+    r.on_verify_badge({"cmd": "pytest", "mode": "suggest"})
+    out = console.file.getvalue()
+    assert "verify:" in out
+    assert "pytest" in out
+    assert "confirm" in out
+    assert "verify.gate: auto" in out
+    assert "⎿" in out

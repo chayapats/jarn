@@ -298,6 +298,46 @@ class TurnRenderer:
         self._sep("notice")
         self.console.print(markup)
 
+    def on_verify_badge(self, verify_data: dict) -> None:
+        """Render the structured verify result as a badge line."""
+        from jarn.tui import palette as _p
+
+        self._commit_reasoning()
+        self._commit_text()
+        self._unspin()
+        self._refresh_width()
+
+        cmd = esc(verify_data.get("cmd", ""))
+        mode = verify_data.get("mode")
+
+        if mode == "suggest":
+            self.console.print(
+                f"  [{_p.C_DIM}]⎿ verify: run {cmd} to confirm "
+                f"(verify.gate: auto to automate)[/{_p.C_DIM}]"
+            )
+            return
+
+        ok = verify_data.get("ok")
+        summary = esc(verify_data.get("summary", ""))
+        secs: float = float(verify_data.get("secs", 0.0))
+        full_output: str = verify_data.get("full_output", "")
+
+        if ok:
+            self.console.print(
+                f"  [{_p.C_DIM}]⎿ verified: {cmd} [/{_p.C_DIM}]"
+                f"[{_p.C_SUCCESS}]✓[/{_p.C_SUCCESS}]"
+                f"[{_p.C_DIM}] {summary} · {secs:.1f}s[/{_p.C_DIM}]"
+            )
+        else:
+            self.console.print(
+                f"  [{_p.C_DIM}]⎿ verify: {cmd} [/{_p.C_DIM}]"
+                f"[{_p.C_ERROR}]✗[/{_p.C_ERROR}]"
+                f"[{_p.C_DIM}] {summary} · details[/{_p.C_DIM}]"
+                f" [{_p.C_DIM}]· ctrl+o[/{_p.C_DIM}]"
+            )
+            if full_output:
+                self.tool_outputs.append(("verify", full_output))
+
     def finish(self) -> None:
         self._commit_reasoning()
         self._commit_text()
