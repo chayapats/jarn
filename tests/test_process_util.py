@@ -11,6 +11,8 @@ import os
 import signal
 import subprocess
 
+import pytest
+
 from jarn.agent import process_util
 
 
@@ -69,6 +71,9 @@ def test_windows_swallows_dead_pid(monkeypatch):
     process_util.terminate_process_group(4242, grace_secs=3)
 
 
+@pytest.mark.skipif(
+    os.name != "posix", reason="os.getpgid/os.killpg/signal.SIGKILL are POSIX-only"
+)
 def test_posix_immediate_sigkill_without_grace(monkeypatch):
     monkeypatch.setattr(os, "name", "posix")
     monkeypatch.setattr(process_util.os, "getpgid", lambda pid: pid)
