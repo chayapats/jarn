@@ -3,7 +3,7 @@
 **Date:** 2026-07-07  
 **Branch:** `improve/wave-4-launch`  
 **Author:** Claude (spike) — Owner decision required  
-**Status:** AWAITING GO/NO-GO
+**Status:** DECIDED — **NO-GO** (owner, 2026-07-07). Stage 2 (the native port) is DEFERRED; Windows users continue via WSL / `pip install jarn`. This spec + the §6 Stage-2 checklist remain ready to execute if/when Windows-native is revisited. The spike recommendation was GO-with-conditions (Stage-2 = L); the owner opted to defer given the L effort + permanent Windows-specific maintenance vs. current WSL/pip coverage.
 
 ---
 
