@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from prompt_toolkit.application import Application
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import ANSI, HTML
@@ -28,7 +29,11 @@ from prompt_toolkit.layout.containers import (
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
-from prompt_toolkit.layout.processors import BeforeInput
+from prompt_toolkit.layout.processors import (
+    AppendAutoSuggestion,
+    BeforeInput,
+    Transformation,
+)
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from rich.console import Console
@@ -38,7 +43,7 @@ from rich.markup import escape as _rich_escape
 from jarn.config.schema import Config
 from jarn.extensibility.commands import completion_catalog, parse_input
 from jarn.repl import turn as repl_turn
-from jarn.repl.commands import CommandMixin
+from jarn.repl.commands import CommandMixin, format_todos
 from jarn.repl.completer import _ShellEscapeLexer, _SlashFileCompleter
 from jarn.repl.keys import KeysMixin
 from jarn.repl.overlays import OverlayMixin
@@ -49,11 +54,30 @@ from jarn.tui.completion import CompletionProvider
 from jarn.tui.controller import Controller
 from jarn.tui.input_queue import InputQueue
 from jarn.tui.logo import SHORTCUT_HINT, splash, splash_compact
+from jarn.tui.notify import notify, set_title
 from jarn.tui.toolbar import render_toolbar
 from jarn.version import __version__
 
 if TYPE_CHECKING:
     from jarn.config.settings import ConfigPanel
+
+#: Max body lines of the LIVE plan checklist above the input, so a long plan can't
+#: push the input/toolbar off-screen (the committed end-of-turn render is uncapped).
+_LIVE_TODOS_CAP = 8
+
+
+class _GhostAutoSuggestion(AppendAutoSuggestion):
+    """AppendAutoSuggestion that hides ghost text when the completion dropdown is open.
+
+    prompt_toolkit renders the CompletionsMenu float and the AppendAutoSuggestion
+    processor independently; without this override both would appear simultaneously.
+    Subclassing and returning an empty Transformation when complete_state is set
+    keeps the accept-key rule (dropdown wins) consistent with the visual state."""
+
+    def apply_transformation(self, ti):  # type: ignore[override]
+        if ti.buffer_control.buffer.complete_state is not None:
+            return Transformation(ti.fragments)
+        return super().apply_transformation(ti)
 
 
 class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
@@ -64,11 +88,18 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         *,
         resume: bool = False,
         project_trusted: bool = True,
+        detected_theme: str | None = None,
     ) -> None:
         self.config = config
+        # Terminal background resolved ONCE at startup (light/dark) when
+        # ui.theme is "auto"; a runtime `/theme auto` reuses this instead of
+        # re-probing (a runtime OSC-11 probe races prompt_toolkit's input reader).
+        self._detected_theme = detected_theme
         self.controller = Controller(
             config, project_root, project_trusted=project_trusted
         )
+        # Derive project name once (used in OSC 2 title strings).
+        self._proj_name: str = project_root.name if project_root is not None else "jarn"
         # force_terminal so Rich still emits colour through prompt_toolkit's
         # patch_stdout proxy (which isn't a real TTY). Cap the width to a readable
         # measure (~100 cols) so prose/markdown wrap nicely on wide terminals
@@ -84,9 +115,12 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             completer=_SlashFileCompleter(self._completer),
             complete_while_typing=True,
             history=FileHistory(str(hist)),
+            auto_suggest=AutoSuggestFromHistory(),
         )
         self._kb = self._build_keys()
         self._armed = False                       # ctrl+c double-press to exit
+        self._last_esc_ts: float | None = None    # Esc-Esc chord: timestamp of last idle Esc
+        self._hinted: bool = False                # empty-Enter hint shown once per session
         self._last_tool_outputs: list[tuple[str, str]] = []  # for Ctrl+O expand
         self._turn_task: asyncio.Task | None = None
         self._pastes: dict[str, str] = {}          # collapsed token -> full paste
@@ -104,6 +138,13 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         # char (e.g. "y"/"a" → allow, "n"/"d" → deny) to the option value it
         # resolves to. None for every other picker, so letter keys type normally.
         self._menu_fastkeys: dict[str, object] | None = None
+        # History picker filter: non-None while the Ctrl+R picker is open.
+        # Empty string = filter active but no chars typed yet.  Set by
+        # _history_picker; updated by _history_type_filter / _history_backspace_filter.
+        self._menu_filter: str | None = None
+        # Full unfiltered list of (display-label, full-text) for the history
+        # picker, held here so the key handler can recompute matches on every char.
+        self._history_all_options: list[tuple[str, str]] = []
         self._stream_text = ""                    # in-progress region above input
         # Cache for the live markdown->ANSI render: _stream_control runs on every
         # prompt_toolkit redraw (refresh_interval + invalidate per delta), so cache
@@ -124,6 +165,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self._flash_until = 0.0
         self._expanded = False                     # pager overlay open?
         self._last_todos_sig: str | None = None    # de-dupe the todo checklist
+        # Live plan checklist shown above the input DURING a turn (updated in place
+        # on each write_todos; None = nothing to show). Cleared at turn end, where
+        # the committed _render_todos replaces it — see _on_todos_live.
+        self._live_todos: list[dict] | None = None
         self._pager_buffer = Buffer(read_only=True)
         self._pager_window: Window | None = None
         #: Resolved when the pager closes — lets an approval prompt block on the
@@ -189,6 +234,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self._warm_pricing_catalog()
         await self._ensure_extensions()
         self.app = self._build_app()
+        self._title_hook("idle")   # Set idle title on app start
         try:
             # patch_stdout routes all printed output above the pinned input, into
             # the terminal's native scrollback — the Claude-Code layout.
@@ -201,6 +247,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 await self.app.run_async()
         finally:
             await self.controller.aclose()
+            self._title_hook("quit")   # Reset terminal title to plain "jarn" on exit
 
     async def _ensure_extensions(self) -> None:
         """Load skills/commands/MCP before the first turn so /skills and custom
@@ -255,7 +302,13 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         prompt = Window(
             BufferControl(
                 self.input,
-                input_processors=[BeforeInput("› ", style="bold")],
+                input_processors=[
+                    BeforeInput("› ", style="bold"),
+                    # Ghost autosuggest: renders the upcoming suggestion suffix in
+                    # a dim colour after the cursor.  Hidden when the completion
+                    # dropdown is open so both UI layers never appear together.
+                    _GhostAutoSuggestion(style=f"fg:{palette.C_DIM}"),
+                ],
                 lexer=_ShellEscapeLexer(),
             ),
             height=Dimension(min=1, max=10), wrap_lines=True, dont_extend_height=True,
@@ -310,6 +363,27 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             refresh_interval=0.2,  # animate the thinking spinner / elapsed timer
             output=output,
         )
+
+    def _title_isatty(self) -> bool:
+        """Whether the app's output stream is a TTY — monkeypatchable in tests."""
+        f = self.console.file
+        return bool(getattr(f, "isatty", lambda: False)())
+
+    def _title_hook(self, state: str) -> None:
+        """Emit an OSC 2 terminal title for the given lifecycle state.
+
+        States: ``"working"`` (✳), ``"approval"`` (⏸), ``"idle"``, ``"quit"``.
+        Respects ``ui.terminal_title`` and the TTY guard in :func:`set_title`.
+        """
+        if state == "working":
+            text = f"✳ jarn — {self._proj_name}"
+        elif state == "approval":
+            text = f"⏸ jarn — {self._proj_name}"
+        elif state == "idle":
+            text = f"jarn — {self._proj_name}"
+        elif state == "quit":
+            text = "jarn"
+        set_title(text, settings=self.config.ui, write=self.console.file.write, isatty=self._title_isatty)
 
     def _busy(self) -> bool:
         return self._turn_task is not None and not self._turn_task.done()
@@ -395,11 +469,19 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         return Dimension(min=0, max=max(4, rows - 4))
 
     def _stream_control(self):
-        """Region above the input: in-progress text, an animated thinking
-        indicator while the model works, a transient flash (mode change, etc.),
-        else nothing."""
-        if self._menu_future is not None and self._menu_options:
+        """Region above the input: the live plan checklist (when a turn has written
+        todos), in-progress text, an animated thinking indicator while the model
+        works, a transient flash (mode change, etc.), else nothing."""
+        # Render the menu whenever a picker is active — even with zero options: a
+        # history filter (``_menu_filter is not None``) that matched nothing must
+        # still show its "(no matches)" modal, not collapse into an invisible one.
+        if self._menu_future is not None and (
+            self._menu_options or self._menu_filter is not None
+        ):
             return self._menu_html()
+        # The live todos block is a turn-time thing: only composed while busy, and
+        # only above the prose/thinking body — never over a picker/_ask prompt.
+        todos = self._live_todos_ansi() if self._busy() else ""
         if self._stream_text:
             if self._busy():
                 # The streamed assistant prose renders LIVE as one growing
@@ -419,15 +501,67 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 )
                 # Drop the leading blank line when the buffer is still empty (pure
                 # newlines streamed before the first real prose) — show just the footer.
-                return ANSI(f"{rendered}\n{footer}" if rendered else footer)
+                body = f"{rendered}\n{footer}" if rendered else footer
+                # Checklist ABOVE the streaming prose, so prose keeps flowing below.
+                return ANSI(f"{todos}\n{body}" if todos else body)
             # Not busy: a picker / _ask prompt lives here as PLAIN text — never
             # markdown-rendered (it isn't markdown and must show verbatim).
             return self._stream_text
         if self._busy():
+            # No prose yet — show the checklist above the animated thinking line.
+            if todos:
+                return ANSI(f"{todos}\n{self._thinking_ansi()}")
             return self._thinking_line()
         if self._flash_html is not None and time.monotonic() < self._flash_until:
             return self._flash_html
         return ""
+
+    async def _on_todos_live(self) -> None:
+        """On a ``write_todos`` completion: pull the current plan checklist and show
+        it live above the input, re-rendering in place as items flip. A state read
+        must never kill the turn, so failures degrade to leaving the block as-is.
+        Cleared at turn end by _render_todos (the committed render replaces it)."""
+        try:
+            todos = await self.controller.todos()
+        except Exception:  # noqa: BLE001 — a live-region refresh must not break the turn
+            return
+        self._live_todos = todos or None
+        if self.app is not None:
+            self.app.invalidate()
+
+    def _live_todos_ansi(self) -> str:
+        """Render the live plan checklist (capped) to an ANSI string for the region,
+        or ``""`` when there is nothing to show. Width is refreshed at render time so
+        the block wraps to the CURRENT terminal (same discipline as the prose)."""
+        if not self._live_todos:
+            return ""
+        width = _current_width()
+        self.console.width = width
+        lines = format_todos(self._live_todos, width, cap=_LIVE_TODOS_CAP)
+        buf = io.StringIO()
+        cap = Console(force_terminal=True, width=width, file=buf)
+        cap.print("\n".join(lines), end="")
+        return buf.getvalue().rstrip("\n")
+
+    def _thinking_ansi(self) -> str:
+        """The animated thinking line rendered to ANSI, for composing BELOW the live
+        todos block (the plain-HTML _thinking_line can't be concatenated with the
+        ANSI checklist in a single control value)."""
+        start = self._turn_start or time.monotonic()
+        elapsed = int(time.monotonic() - start)
+        frame = palette.SPINNER_FRAMES[int(time.monotonic() * 5) % len(palette.SPINNER_FRAMES)]
+        word = self._thinking_word or "Working"
+        text = f"{word}… ({elapsed}s · {self._gen_stat()} · esc to interrupt)"
+        width = _current_width()
+        self.console.width = width
+        buf = io.StringIO()
+        cap = Console(force_terminal=True, width=width, file=buf)
+        cap.print(
+            f"[{palette.C_TOOL}]{frame}[/{palette.C_TOOL}] "
+            f"[{palette.C_DIM}]{_rich_escape(text)}[/{palette.C_DIM}]",
+            end="",
+        )
+        return buf.getvalue().rstrip("\n")
 
     def _flash(self, html: HTML, secs: float = 2.0) -> None:
         """Show a transient one-line message above the input (auto-clears) — used
@@ -444,6 +578,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self._stream_is_reasoning = False
         self._last_tool_outputs = []
         self._last_todos_sig = None
+        self._live_todos = None
         if self.app is not None:
             self.app.invalidate()
         f = self.console.file
@@ -467,9 +602,21 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 )
             else:
                 lines.append(f'<style fg="{palette.C_DIM}">  {_esc(label)}</style>')
-        lines.append(
-            f'<style fg="{palette.C_DIM}">↑/↓ select · Enter confirm</style>'
-        )
+        # Footer: when history filter is active show filter-specific hints;
+        # otherwise show the standard approval-menu nav hint.
+        if self._menu_filter is not None:
+            if not self._menu_options:
+                lines.append(
+                    f'<style fg="{palette.C_DIM}">(no matches) · Backspace to clear</style>'
+                )
+            else:
+                lines.append(
+                    f'<style fg="{palette.C_DIM}">↑/↓ · Enter prefill · Backspace · Esc cancel</style>'
+                )
+        else:
+            lines.append(
+                f'<style fg="{palette.C_DIM}">↑/↓ select · Enter confirm</style>'
+            )
         return HTML("\n".join(lines))
 
     def _gen_stat(self) -> str:
@@ -615,6 +762,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 # Reset + pass the list as a sink so tool outputs accumulate LIVE
                 # — Ctrl+O works mid-turn, not only after the answer completes.
                 self._last_tool_outputs = []
+                self._title_hook("working")   # Set working title when agent turn starts
                 await repl_turn._run_turn(
                     self.console, self.controller, text, self._ask,
                     pick=self._pick_approval, view=self._view_full_diff,
@@ -622,11 +770,28 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                     live_sink=self._set_stream, spinner=False,
                     tool_sink=self._last_tool_outputs,
                     token_sink=self._count_stream_chars,
+                    todos_sink=self._on_todos_live,
+                    title_hook=self._title_hook,
+                )
+                # Turn completed normally (not cancelled — CancelledError would
+                # have bypassed this line).  Fire the turn-end notification.
+                _elapsed = (
+                    time.monotonic() - self._turn_start
+                    if self._turn_start is not None
+                    else 0.0
+                )
+                notify(
+                    "turn_done",
+                    self.config.ui,
+                    elapsed=_elapsed,
+                    write=self.console.file.write,
                 )
                 await self._render_todos()
                 self._maybe_autocheckpoint_hint()
         except asyncio.CancelledError:
-            self.console.print(f"\n[{palette.C_DIM}]interrupted[/{palette.C_DIM}]")
+            # renderer.cancel() already printed "cancelled" for agent turns;
+            # for command/shell turns (no renderer) the cancel is silent.
+            pass
         except Exception as exc:  # noqa: BLE001
             # The TUI must not print a traceback (it corrupts the display), so log
             # the full one to the file logger and point the user at it — an
@@ -648,7 +813,11 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         finally:
             self._turn_task = None
             self._turn_start = None
+            self._title_hook("idle")   # Restore idle title for all exit paths (success / cancel / error)
             self._set_stream("")
+            # Drop the live checklist on EVERY exit (cancel/error included, where
+            # _render_todos never runs) so no stale block lingers above the input.
+            self._live_todos = None
             if self.app is not None:
                 self.app.invalidate()
             self._drain_queue()

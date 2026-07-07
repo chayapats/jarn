@@ -299,6 +299,112 @@ class OverlayMixin:
         if self.app is not None:
             self.app.invalidate()
 
+    # -- Ctrl+R history picker (T-2-4) ----------------------------------------
+
+    @staticmethod
+    def _history_entry_label(text: str) -> str:
+        """Display label for a history entry: first line + '…' for multiline."""
+        if "\n" in text:
+            return text.split("\n", 1)[0] + "…"
+        return text
+
+    def _history_type_filter(self, char: str) -> None:
+        """Append a printable char to the history picker filter and re-render."""
+        if self._menu_filter is None:
+            return
+        self._menu_filter += char
+        self._update_history_filter()
+
+    def _history_backspace_filter(self) -> None:
+        """Delete the last char from the history picker filter and re-render."""
+        if self._menu_filter:
+            self._menu_filter = self._menu_filter[:-1]
+            self._update_history_filter()
+
+    def _update_history_filter(self) -> None:
+        """Recompute visible picker options from the current filter string."""
+        filt = self._menu_filter.lower() if self._menu_filter else ""
+        total = len(self._history_all_options)
+        visible: list[tuple[str, str]] = [
+            (label, val)
+            for label, val in self._history_all_options
+            if filt in label.lower() or filt in val.lower()
+        ]
+        self._menu_options = cast(list[tuple[str, object]], visible)
+        self._menu_index = 0
+        n = len(visible)
+        if self._menu_filter:
+            self._menu_header = (
+                f"History ({n}/{total}) · filter: {self._menu_filter}"
+                f" · Backspace delete · Esc cancel"
+            )
+        else:
+            self._menu_header = (
+                f"History ({n}/{total}) · type to filter · ↑/↓ · Enter prefill · Esc cancel"
+            )
+        if self.app is not None:
+            self.app.invalidate()
+
+    async def _history_picker(self) -> None:
+        """Ctrl+R: arrow-key history picker with live type-to-filter.
+
+        Opens a menu over the most recent 50 **unique** history entries
+        (newest first, deduplicating by recency).  Multiline entries show as
+        first-line + '…' in the list but prefill the **full** text.
+
+        Enter prefills the input buffer (does NOT submit).
+        Esc cancels and leaves the input unchanged."""
+        # Build the unique newest-first list (cap at 50).
+        raw = list(self.input.history.get_strings())
+        seen: set[str] = set()
+        unique: list[str] = []
+        for entry in reversed(raw):   # reversed → iterate newest-first
+            if entry and entry not in seen:
+                seen.add(entry)
+                unique.append(entry)
+        all_entries = unique[:50]
+
+        if not all_entries:
+            return  # nothing in history yet
+
+        # Store the full labelled list so the key handler can re-filter.
+        self._history_all_options = [
+            (self._history_entry_label(e), e) for e in all_entries
+        ]
+        total = len(all_entries)
+
+        # Initialise picker state.
+        self._menu_filter = ""    # "" = filter mode active, no chars typed
+        self._menu_options = cast(list[tuple[str, object]], list(self._history_all_options))
+        self._menu_index = 0
+        self._menu_header = (
+            f"History ({total}/{total}) · type to filter · ↑/↓ · Enter prefill · Esc cancel"
+        )
+        self._menu_cancel = None
+        self._menu_fastkeys = None
+        self._menu_future = asyncio.get_running_loop().create_future()
+        if self.app is not None:
+            self.app.invalidate()
+
+        try:
+            result = await self._menu_future
+        finally:
+            self._menu_future = None
+            self._menu_options = []
+            self._menu_header = ""
+            self._menu_cancel = None
+            self._menu_fastkeys = None
+            self._menu_filter = None
+            self._history_all_options = []
+            self._set_stream("")
+
+        if result is not None:
+            # Prefill the input with the full selected text (do NOT submit).
+            self.input.reset()
+            self.input.insert_text(str(result))
+            if self.app is not None:
+                self.app.invalidate()
+
     def _pager_header(self) -> HTML:
         base = (' <b>full output</b> '
                 '<style fg="#7c8f94">— ↑/↓ PgUp/PgDn scroll · Ctrl+O / q / Esc close</style>')

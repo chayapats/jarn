@@ -361,3 +361,90 @@ async def test_wizard_model_step_degrades_to_manual_when_unreachable(tmp_path, m
             await pilot.press("enter")
             await pilot.pause()
     assert app.answers["model"] == "ollama/my-local-model"
+
+
+def test_blank_line_rhythm():
+    """Spy-based test: _sep emits 0 blanks for same-kind (text→text) and 1+ for
+    kind transitions (reasoning→text).  Goes RED under the old _sep logic.
+
+    OLD _sep: ``if not (_prev == "tool" and kind == "tool"): console.print()``
+        → always emits a blank for text→text (non-tool→non-tool always fires)
+    NEW _sep: ``if _prev != kind: console.print()``
+        → suppresses the blank when the kind does not change
+
+    Rationale: exactly one separator blank belongs between committed blocks of
+    DIFFERENT kinds; consecutive same-kind commits get none.  No production path
+    commits same-kind text consecutively, so the same-kind suppression only
+    removes the spurious extra blank the old rule emitted.  The spy counts
+    ``console.print()`` calls with NO arguments (the blank-line signal) directly,
+    since a blank line is not distinguishable in StringIO buffer content.
+    """
+    from io import StringIO
+
+    from rich.console import Console
+
+    from jarn.repl_renderer import TurnRenderer
+
+    def _renderer_with_spy():
+        c = Console(file=StringIO(), width=80)
+        calls: list[tuple] = []
+        orig = c.print
+        def spy(*args, **kwargs):  # noqa: E306
+            calls.append(args)
+            orig(*args, **kwargs)
+        c.print = spy  # type: ignore[method-assign]
+        return TurnRenderer(c, spinner=False), calls
+
+    # ── A: text → text ───────────────────────────────────────────────────────
+    # _sep("text") fires for first commit (prev=None → blank expected).
+    # _sep("text") fires for second commit: NEW → no blank; OLD → blank.
+    r_a, calls_a = _renderer_with_spy()
+    r_a.on_text("first para\n\n")
+    mark_a = len(calls_a)          # snapshot after first commit
+    r_a.on_text("second para\n\n")
+    r_a.finish()
+
+    blanks_between = sum(1 for a in calls_a[mark_a:] if a == ())
+    assert blanks_between == 0, (
+        f"text→text: 0 separator blanks expected between commits, "
+        f"got {blanks_between}. Old _sep() always emitted 1 here (regression)."
+    )
+
+    # ── B: reasoning → text (transition blank must fire) ────────────────────
+    # on_text triggers _commit_reasoning (_sep("reasoning"), prev=None → 1 blank)
+    # then _flush_stable (_sep("text"), prev="reasoning" → 1 transition blank).
+    r_b, calls_b = _renderer_with_spy()
+    r_b.on_reasoning("thinking…")
+    mark_b = len(calls_b)         # snapshot after on_reasoning (no sep fired yet)
+    r_b.on_text("answer\n\n")
+    r_b.finish()
+
+    blanks_in_transition = sum(1 for a in calls_b[mark_b:] if a == ())
+    assert blanks_in_transition >= 1, (
+        f"reasoning→text: at least 1 transition blank expected, "
+        f"got {blanks_in_transition}"
+    )
+
+
+def test_no_color_styled_fg():
+    """With NO_COLOR active, styled_fg returns plain text for both bold and non-bold."""
+    import os
+
+    from jarn.tui.palette import styled_fg
+
+    old = os.environ.get("NO_COLOR")
+    try:
+        os.environ["NO_COLOR"] = "1"
+        plain = styled_fg("#ff0000", "hello")
+        bold_plain = styled_fg("#ff0000", "hello", bold=True)
+    finally:
+        if old is None:
+            os.environ.pop("NO_COLOR", None)
+        else:
+            os.environ["NO_COLOR"] = old
+
+    assert plain == "hello"
+    assert bold_plain == "hello"
+    # No HTML markup or ANSI escapes leak through
+    assert "<style" not in bold_plain
+    assert "<b>" not in bold_plain

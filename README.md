@@ -27,7 +27,7 @@ doing anything risky, and never claims success on a guess.
 It runs entirely in your terminal (a Web UI is on the roadmap, post-launch). Notable
 capabilities: **AGENTS.md / CLAUDE.md interop** (works out-of-the-box beside other
 agents), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcripts**,
-**`!` shell escape**, **OS-level execution sandbox** (macOS `sandbox-exec` / Linux
+**`!` shell escape** (output fed into the next agent turn as context), **OS-level execution sandbox** (macOS `sandbox-exec` / Linux
 `bwrap`) and **Docker container backend** (`execution.backend: docker`), **presets**
 (`/preset`, `jarn --preset`) that set mode + sandbox at once, with an untrusted floor,
 **auto-checkpoint + `/undo` / `/redo`**, **repo map** (`/map`), a **wiki knowledge
@@ -170,9 +170,30 @@ preview appear inline.
 ```
 
 - **Type** a message and press **Enter** to send (**Shift+Enter** / **Ctrl+J** for a newline).
-- Start a line with **`/`** for a command (see below). **`@`** references a file path.
+- Start a line with **`/`** for a command (see below). **`@`** references a file path or a
+  rich mention:
+  - **`@<path>`** — file or directory (default; bare `@`).
+  - **`@folder:<frag>`** — directories only.
+  - **`@symbol:<name>`** — repo-map symbol (function / class).
+  - **`@git:status|diff|staged|log`** — on submit, replaced by a fenced block of real
+    read-only git output (`--porcelain=v1 -b`, `diff`, `diff --staged`,
+    `log --oneline -15`). Fixed argv allowlist, no shell, 5 s timeout. Output is
+    secret-redacted before injection.
+  - **`@url:<url>`** — rewrites to `fetch <url> with web_fetch and use its content`
+    at submit time; no pre-fetch (network stays agent-mediated and SSRF-guarded).
 - **↑ / ↓** navigate input history.
-- **Tab** accepts the highlighted completion (`/command` or `@file`).
+- **Tab** accepts the highlighted completion (`/command` or `@file`). Completion uses a
+  **two-tier fuzzy engine**: exact-prefix matches appear first (unchanged predictability),
+  followed by subsequence fuzzy matches — so `/cmit` finds `/commit` and `@pyprjct`
+  finds `pyproject.toml`.
+- **Ghost autosuggest:** as you type, the most recent matching history entry appears
+  as dim ghost text after the cursor (fish/zsh-style). Press **→ (Right arrow)** or
+  **Ctrl+E** at the end of the line to accept the full suggestion. The ghost is hidden
+  while the completion dropdown is open; Right arrow navigates normally mid-line.
+- **Ctrl+R** opens a **reverse-history picker**: an arrow-key overlay over the 50 most
+  recent unique history entries with live type-to-filter. Press **↑/↓** to navigate,
+  **Enter** to prefill the input (does not submit), **Esc** to cancel. Works even
+  while a turn is running.
 - **Shift+Tab** cycles the permission mode (plan → ask → auto-edit → yolo); the new
   mode flashes on the input border and stays in the status bar.
 - **Ctrl+O** (or **`/expand`**) opens the last turn's full tool output in the pager.
@@ -180,11 +201,25 @@ preview appear inline.
   `.jarn/pastes/` and inserted as an `@path` the agent reads on send.
   Supported on **macOS** (PNG/TIFF/JPEG), **Linux** (Wayland `wl-paste` or X11
   `xclip`), and **Windows** (PowerShell); images over 10 MB are rejected.
+- **Esc Esc** (two Esc presses within 500 ms, idle, empty input) opens the **`/rewind`
+  picker** — same chord as Claude Code. The first Esc still clears non-empty input;
+  only the second Esc on an already-empty buffer fires the picker.
 - **Esc** cancels the running turn. **Ctrl+C** cancels a turn / clears the input,
   and **twice in a row** exits (Claude Code-style). **Ctrl+Q** also quits.
 - **Copy text:** the terminal owns selection — just **drag to select and ⌘C**
   (or your terminal's copy), and scroll with your terminal's native scrollback,
   exactly like Claude Code.
+- **Notifications:** when a turn takes longer than `ui.notify_min_secs` (default 10 s),
+  jarn emits a terminal **bell** (`\a`). Set `ui.notify: desktop` for a native OS
+  notification (macOS / Linux), `both` for bell + desktop, or `off` to silence all
+  notifications. Approval prompts always ring regardless of elapsed time.
+- **Terminal tab title:** jarn sets the terminal-tab title via OSC 2 to show the current
+  state — `jarn — <project>` (idle), `✳ jarn — <project>` (working), `⏸ jarn — <project>`
+  (waiting for approval). Set `ui.terminal_title: false` to disable.
+- **Live plan checklist:** when the agent plans, a `⏺ Todos` checklist appears above the
+  input and updates **in place** as items flip (✔ done / ◐ in progress / ☐ pending),
+  Claude Code-style, with the streaming reply below it. A long plan is capped (overflow
+  collapses to `… +N more`); the full list is committed to scrollback at turn end.
 
 Assistant replies render as **Markdown** (headings, lists, syntax-highlighted code).
 
@@ -204,6 +239,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/config` | View or edit settings: /config, /config get <key>, /config set <key> <value> (persists). |
 | `/model [/ref\|refresh]` | Show or switch the active model; /model refresh re-queries local endpoints. |
 | `/mode [plan\|ask\|auto-edit\|yolo]` | Show or switch the permission mode (plan/ask/auto-edit/yolo). |
+| `/theme [dark\|light\|high-contrast\|auto]` | Show or switch the color theme (dark/light/high-contrast/auto). |
 | `/sandbox [on\|off]` | Show or toggle the execution backend (local/sandbox). |
 | `/key [<key>]` | Set or replace the API key for the current provider (stored in the keychain). |
 | `/preset [<preset-name>]` | Show or apply a preset — a shortcut that sets mode + sandbox at once. |
@@ -297,6 +333,25 @@ See [docs/EXTENDING.md](docs/EXTENDING.md) ([quick start](docs/EXTENDING.md#quic
 
 ## Troubleshooting
 
+### Esc Esc rewind feels slow or doesn't register
+
+Terminals encode many keys as ESC-prefixed byte sequences (e.g. arrow keys start
+with `\x1b[`). To tell a lone Esc from the start of a sequence, prompt_toolkit
+waits a short time (~100 ms) after seeing `\x1b` before delivering it as a bare
+Esc keystroke. This is inherent to how terminals work — not a jarn bug — and means
+the Esc-Esc chord has a slight delay on the first press. The 500 ms window is
+generous enough that a normal double-tap still registers.
+
+If the chord never fires, check that neither the **terminal** nor **tmux/screen** is
+eating the second `\x1b` (some multiplexers bind Esc for their own prefix key).
+
+### Terminal ignores OSC 2 title updates
+
+Some terminal emulators do not support OSC 2 (`\x1b]2;…\x07`) or suppress it by default.
+jarn's tab-title feature is silently no-op in those environments — no visible side-effect
+occurs. If you see stray escape characters in your output, set `ui.terminal_title: false`
+in `~/.jarn/config.yaml` to disable the feature entirely.
+
 ### Caps Lock inserts a stray `a` (macOS)
 
 On macOS, when Caps Lock is set to switch input source, some terminal apps that
@@ -315,7 +370,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1416 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1504 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

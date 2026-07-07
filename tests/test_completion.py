@@ -288,3 +288,168 @@ def test_cache_refreshes_when_directory_changes(tmp_path):
 
     labels = [c.label for c in provider.complete("@")]
     assert "@two.txt" in labels
+
+
+# ---------------------------------------------------------------------------
+# T-2-5: Fuzzy completion tier
+# ---------------------------------------------------------------------------
+
+
+def test_fuzzy_command(tmp_path):
+    """/cmit → /commit via fuzzy subsequence matching (c-m-i-t in order)."""
+    provider = CompletionProvider(
+        command_catalog={
+            "commit": "Commit changes",
+            "comment": "Add a comment",
+            "clear": "Clear screen",
+        },
+        project_root=tmp_path,
+    )
+    labels = [c.label for c in provider.complete("/cmit")]
+    assert "/commit" in labels
+
+
+def test_fuzzy_file(tmp_path):
+    """@pyproj → pyproject.toml via fuzzy subsequence matching."""
+    (tmp_path / "pyproject.toml").write_text("x", encoding="utf-8")
+    (tmp_path / "setup.cfg").write_text("x", encoding="utf-8")
+    provider = CompletionProvider(command_catalog={}, project_root=tmp_path)
+    labels = [c.label for c in provider.complete("@pyprjct")]
+    assert "@pyproject.toml" in labels
+
+
+def test_prefix_ranks_first(tmp_path):
+    """Prefix matches (tier 1) always precede fuzzy-only matches (tier 2)."""
+    provider = CompletionProvider(
+        command_catalog={
+            "model": "Show or switch model",
+            "mode": "Show or switch mode",
+            "memory": "Long-term memory",  # 'mo' is a subsequence but NOT a prefix
+        },
+        project_root=tmp_path,
+    )
+    cands = provider.complete("/mo")
+    labels = [c.label for c in cands]
+    # tier 1: mode and model are prefix matches → must be present
+    assert "/model" in labels and "/mode" in labels
+    # tier 2: 'mo' is a subsequence of 'memory' (m..o) → also present after fuzzy
+    assert "/memory" in labels
+    # tier 1 entries must precede tier 2 entries
+    assert labels.index("/memory") > max(labels.index("/model"), labels.index("/mode"))
+
+
+def test_no_match_empty(tmp_path):
+    """A query with no subsequence match returns nothing (empty list)."""
+    provider = CompletionProvider(
+        command_catalog={"help": "Show help"},
+        project_root=tmp_path,
+    )
+    # 'xyz' contains no characters present in 'help' in order
+    assert provider.complete("/xyz") == []
+
+
+def test_fuzzy_rank_word_boundary_bonus():
+    """Word-boundary matches score higher than mid-word matches."""
+    from jarn.tui.completion import fuzzy_rank
+
+    # "cm": "common" has 'c' at word boundary (pos 0) → higher score
+    # "decimal" has 'c' mid-word (pos 2) → lower score
+    result = fuzzy_rank("cm", ["decimal", "common"])
+    assert result[0] == "common"
+
+
+def test_fuzzy_rank_gap_penalty_ordering():
+    """Fewer gaps → higher score → ranked first."""
+    from jarn.tui.completion import fuzzy_rank
+
+    # "ac" in "abcdef": a(0)→c(2), 1-char gap
+    # "ac" in "axxxxxc": a(0)→c(6), 5-char gap
+    result = fuzzy_rank("ac", ["axxxxxc", "abcdef"])
+    assert result[0] == "abcdef"
+
+
+# ---------------------------------------------------------------------------
+# T-2-9: @git: and @url: mentions
+# ---------------------------------------------------------------------------
+
+
+def test_git_mention_completion(tmp_path):
+    """``@git:`` completes all 4 read-only subcommands."""
+    cands = _provider(tmp_path).complete("@git:")
+    labels = [c.label for c in cands]
+    assert "@git:status" in labels
+    assert "@git:diff" in labels
+    assert "@git:staged" in labels
+    assert "@git:log" in labels
+    assert all(c.kind == "git" for c in cands)
+
+
+def test_git_mention_completion_prefix_filter(tmp_path):
+    """``@git:st`` should complete to ``@git:status`` only (prefix filter)."""
+    cands = _provider(tmp_path).complete("@git:st")
+    labels = [c.label for c in cands]
+    assert "@git:status" in labels
+    assert "@git:diff" not in labels
+
+
+def test_git_mention_completion_replacement(tmp_path):
+    """Chosen completion replaces the mention token while preserving the prefix."""
+    cands = _provider(tmp_path).complete("look at @git:")
+    status = next(c for c in cands if c.label == "@git:status")
+    assert status.replacement == "look at @git:status"
+
+
+# ---------------------------------------------------------------------------
+# Wave-2 final review: completion cap must never truncate tier-1 prefix matches
+# ---------------------------------------------------------------------------
+
+
+def test_bare_slash_lists_all_registry_commands(tmp_path):
+    """Browsing with a bare ``/`` must list EVERY registered command.
+
+    The combined tier1+tier2 ``_CAP`` regressed browsing: a bare ``/`` is a pure
+    prefix match of the empty string, so all commands are tier-1 — none may be
+    dropped by the fuzzy cap.
+    """
+    from jarn.extensibility.commands import completion_catalog
+
+    catalog = completion_catalog()
+    assert len(catalog) > 10, "precondition: more registry commands than _CAP"
+    provider = CompletionProvider(command_catalog=catalog, project_root=tmp_path)
+    cands = provider.complete("/")
+    labels = {c.label for c in cands}
+    assert len(cands) == len(catalog), (
+        f"bare / must list all {len(catalog)} commands, got {len(cands)}"
+    )
+    for name in catalog:
+        assert f"/{name}" in labels, f"/{name} missing from bare-/ browse list"
+
+
+def test_prefix_tier_never_truncated(tmp_path):
+    """≥ ``_CAP`` prefix matches must ALL be returned with zero fuzzy padding —
+    the cap only bounds tier-2 fuzzy extras, never tier-1 prefix matches."""
+    from jarn.tui.completion import _CAP
+
+    n = _CAP + 5
+    catalog = {f"x{i:02d}": f"cmd {i}" for i in range(n)}
+    provider = CompletionProvider(command_catalog=catalog, project_root=tmp_path)
+    cands = provider.complete("/x")
+    labels = [c.label for c in cands]
+    assert len(cands) == n, f"expected all {n} prefix matches, got {len(cands)}"
+    assert set(labels) == {f"/x{i:02d}" for i in range(n)}
+
+
+def test_command_args_prefix_tier_never_truncated(tmp_path):
+    """The same no-truncate rule holds for ``/cmd <arg>`` completion: ≥ ``_CAP``
+    argument choices sharing a prefix all complete (parallel to _commands)."""
+    from jarn.tui.completion import _CAP
+
+    n = _CAP + 5
+    refs = [f"openrouter/model-{i:02d}" for i in range(n)]
+    provider = CompletionProvider(
+        command_catalog={"model": "switch model"},
+        project_root=tmp_path,
+        model_refs=refs,
+    )
+    cands = provider.complete("/model openrouter/model-")
+    assert len(cands) == n, f"expected all {n} prefix matches, got {len(cands)}"

@@ -149,6 +149,10 @@ class ExecutionConfig:
     # on the host. OFF by default: silently downgrading isolation is a footgun, so
     # we fail closed unless the user explicitly opts in.
     allow_local_fallback: bool = False
+    # When True (default), output from ``! <cmd>`` shell-escape commands is
+    # captured and fed into the next agent turn's context so the agent sees what
+    # the user ran.  Set to False to disable the injection.
+    shell_escape_context: bool = True
 
     # OS-level kernel-enforced sandbox for the local shell backend.
     # ``off``     — no OS sandbox (default; current behaviour preserved exactly).
@@ -289,16 +293,30 @@ class ObservabilityConfig:
 
 _VALID_SPLASH_VALUES: frozenset[str] = frozenset({"full", "compact", "off"})
 
+_VALID_NOTIFY_VALUES: frozenset[str] = frozenset({"off", "bell", "desktop", "both"})
+
 
 @dataclass(slots=True)
 class UIConfig:
-    theme: str = "dark"           # dark | light | high-contrast
+    theme: str = "dark"           # dark | light | high-contrast | auto
     accent: str = "cyan"          # brand accent
     splash: str = "compact"       # full | compact | off
     #: Max diff lines shown inline in a write/edit approval prompt before the
     #: rest collapses to a "… (+N more lines)" footer. Over-cap diffs offer a
     #: [v] view-full-diff option that opens the complete diff in the pager.
     approval_diff_lines: int = 40
+    #: Notification mode when a long turn finishes or an approval is needed.
+    #: ``off``     — silent (no bell, no desktop notification).
+    #: ``bell``    — (default) emit a terminal BEL character (\a).
+    #: ``desktop`` — fire a native OS notification (macOS osascript / Linux notify-send).
+    #: ``both``    — BEL + desktop notification.
+    notify: str = "bell"
+    #: Minimum elapsed seconds before a turn-end notification fires.
+    #: Approval notifications always fire regardless of elapsed time.
+    notify_min_secs: int = 10
+    #: Update the terminal-tab title via OSC 2 to show idle / working / approval
+    #: states. Disabled when False or when stdout is not a tty.
+    terminal_title: bool = True
 
 
 @dataclass(slots=True)

@@ -23,6 +23,7 @@ from jarn.repl.auth_errors import _friendly_auth_error, _provider_hint
 from jarn.repl_renderer import TurnRenderer
 from jarn.tui import palette
 from jarn.tui.controller import Controller
+from jarn.tui.notify import notify
 
 if TYPE_CHECKING:
     from rich.text import Text
@@ -61,11 +62,15 @@ async def _run_turn(
     spinner: bool = True,
     tool_sink: list[tuple[str, str]] | None = None,
     token_sink: Callable[[str], None] | None = None,
+    todos_sink: Callable[[], Awaitable[None]] | None = None,
+    title_hook: Callable[[str], None] | None = None,
 ) -> list[tuple[str, str]]:
     """Stream a turn; return the turn's expandable ``(tool, full output)`` pairs.
 
     If ``tool_sink`` is given, tool outputs are appended to it live (so a pager
-    can read them mid-turn)."""
+    can read them mid-turn). If ``todos_sink`` is given, it is awaited on every
+    ``write_todos`` tool completion so the front-end can refresh the live plan
+    checklist in place as the agent flips items."""
     try:
         await controller.ensure_runtime()
     except Exception as exc:  # noqa: BLE001
@@ -100,7 +105,12 @@ async def _run_turn(
     turn_text = controller.enrich_turn_input(text)
 
     async def approver(req: ApprovalRequest) -> ApprovalReply:
-        return await _approve(console, controller, req, ask=ask, pick=pick, view=view, edit=edit)
+        if title_hook is not None:
+            title_hook("approval")
+        result = await _approve(console, controller, req, ask=ask, pick=pick, view=view, edit=edit)
+        if title_hook is not None:
+            title_hook("working")
+        return result
 
     renderer = TurnRenderer(
         console, lambda: controller.tracker.total.total_tokens,
@@ -144,6 +154,10 @@ async def _run_turn(
                         event.data.get("full", ""),
                         tool_call_id=event.data.get("tool_call_id"),
                     )
+                    # Refresh the live plan checklist the moment a todo write lands,
+                    # so it re-renders in place mid-turn (not only after the turn).
+                    if todos_sink is not None and event.text == "write_todos":
+                        await todos_sink()
                     produced = True
                 elif event.kind is EventKind.NOTICE or (
                     event.kind is EventKind.APPROVAL
@@ -200,8 +214,13 @@ async def _run_turn(
                     f"[{palette.C_ERROR}]{pending_error.text}[/{palette.C_ERROR}]"
                 )
             break
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError) as _exc:
         renderer.cancel()
+        # Re-raise asyncio cancellations so the event loop knows the task was
+        # cancelled.  KeyboardInterrupt is NOT re-raised: the turn function
+        # absorbs it and returns normally, letting the REPL keep running.
+        if isinstance(_exc, asyncio.CancelledError):
+            raise
     finally:
         renderer.finish()
 
@@ -290,6 +309,9 @@ async def _approve(
     view: Callable[[str], Awaitable[None]] | None = None,
     edit: Callable[[ApprovalRequest], Awaitable[ApprovalReply | None]] | None = None,
 ) -> ApprovalReply:
+    # Fire the approval notification before the prompt renders.  elapsed=0
+    # because the threshold check is skipped for "needs_approval" events.
+    notify("needs_approval", controller.config.ui, elapsed=0.0, write=console.file.write)
     if request.plan is not None:
         return await _approve_plan(console, controller, request, ask=ask, pick=pick)
     if request.suggested_memory is not None:
