@@ -1,0 +1,51 @@
+name: Bug Report
+description: File a bug report for jarn
+title: "Bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Run `jarn bug` to auto-assemble a redacted report and pre-fill this form.
+        Please attach `~/.jarn/bug-report.md` for the full diagnostic output.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected to happen.
+      placeholder: "When I do X, Y happens. I expected Z."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps that reliably trigger the issue.
+      placeholder: |
+        1. Run `jarn ...`
+        2. Type `...`
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment (from `jarn bug --dry-run`)
+      description: |
+        Paste the **Environment** section from `~/.jarn/bug-report.md`
+        (run `jarn bug --dry-run` to generate it without opening the browser).
+      render: markdown
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: Paste relevant lines from the log section of the bug report.
+      render: text
+    validations:
+      required: false

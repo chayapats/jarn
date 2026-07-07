@@ -490,6 +490,15 @@ ui:
                            # Silently suppressed when stdout is not a TTY. Set false
                            # to disable entirely (e.g. if your terminal ignores OSC 2
                            # and you see stray escape sequences).
+  steering: true           # mid-turn steering: while a turn is running, promote a
+                           # queued line INTO the live turn with the [s] fastkey (on
+                           # the » queued echo) or /queue steer <n>. The steer is
+                           # appended as a new user message and the agent sees it
+                           # before its next tool call — steering re-runs only the
+                           # in-flight model step (one extra model call); completed
+                           # tool results are never re-run. If the turn ends first it runs as the
+                           # next turn (never lost). Set false to hide the [s]
+                           # affordance and make /queue steer decline politely.
 
 # ── Git safety (auto-checkpoint + /undo /redo) ────────────────────────────────
 git:
@@ -767,6 +776,39 @@ it with `~/.jarn/pricing.yaml`:
 
 Unknown models are counted as `$0` and flagged as *unpriced* in `/cost` so you know the
 figure is incomplete rather than wrong.
+
+---
+
+## Update-available notice (`updates`)
+
+```yaml
+updates:
+  check: true   # check PyPI for a newer release at startup (cached 24 h)
+```
+
+At interactive launch a daemon thread GETs `https://pypi.org/pypi/jarn/json`
+(2 s timeout) and prints **one dim line** under the splash when a newer release
+is available:
+
+```
+⬆ v0.8.1 available — npm i -g jarn-cli (changelog: https://github.com/chayapats/jarn/releases)
+```
+
+The install command adapts automatically: frozen binary → `npm i -g jarn-cli`;
+pip install → `pip install -U jarn`.
+
+The result is cached in `~/.jarn/update-check.json` for 24 h so the check
+never runs twice in a day.  The check is **automatically skipped** when:
+
+- `updates.check: false` in config
+- The `offline` preset is active (`jarn --preset offline`)
+- Running headless (`jarn -p …`)
+
+Network failures are silent — the check never blocks or crashes startup.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `updates.check` | bool | `true` | Enable the startup update-available check |
 
 ---
 

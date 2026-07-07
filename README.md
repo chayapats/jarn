@@ -15,6 +15,10 @@ A TUI-first coding agent harness built on [DeepAgents](https://github.com/langch
 
 **English** · [ภาษาไทย](README-TH.md)
 
+![jarn demo](docs/assets/demo.gif)
+
+[![evals](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/chayapats/jarn/eval-results/evals/badge.json)](https://github.com/chayapats/jarn/blob/eval-results/evals/latest.json)
+
 </div>
 
 ---
@@ -130,7 +134,31 @@ settings stripped, or run `jarn trust <path>` after reviewing the repo. Use
 `jarn doctor` to see which skills, commands, subagents, hooks, and MCP servers
 would load (including shadowed or skipped files).
 
+## Uninstall
+
+To fully remove all J.A.R.N. state (config, secrets, trust store, sessions) and
+OS keychain entries:
+
+```bash
+jarn uninstall          # shows an itemized summary, then prompts for confirmation
+jarn uninstall --yes    # skip the prompt
+```
+
+`jarn uninstall` removes **only** `~/.jarn` (global state) — it never touches
+project-local `.jarn/` directories. After removal it prints the package-manager
+uninstall line (`npm uninstall -g jarn-cli` or `pip uninstall jarn`).
+
 ## Quick start
+
+**With OpenRouter (recommended — one browser click, no manual key handling):**
+
+```bash
+jarn login        # opens browser → authorize → key stored in OS keychain
+cd your-project
+jarn              # launch the TUI (runs setup if still needed)
+```
+
+**Or configure manually:**
 
 ```bash
 jarn setup        # first-run wizard: pick a provider, store your API key, choose defaults
@@ -138,9 +166,26 @@ cd your-project
 jarn init         # create a JARN.md project-context file (optional but recommended)
 jarn              # launch the TUI
 jarn doctor       # diagnose config / providers / keys / extensions at any time
+jarn bug          # assemble a redacted report + open a prefilled GitHub issue
+```
+
+**Shell completions (tab-complete subcommands and flags):**
+
+```bash
+# zsh — run once, then restart your shell
+jarn completions zsh > ~/.zfunc/_jarn
+# add to ~/.zshrc if not already: fpath=(~/.zfunc $fpath) && autoload -Uz compinit && compinit
+
+# bash — run once, then source or restart
+jarn completions bash > ~/.bash_completions/jarn.bash
+# add to ~/.bashrc: source ~/.bash_completions/jarn.bash
+
+# fish — run once
+jarn completions fish > ~/.config/fish/completions/jarn.fish
 ```
 
 On first launch with no config, J.A.R.N. runs the setup wizard automatically.
+The OpenRouter option in the wizard also offers a one-click browser login.
 
 ## Non-interactive / scripting
 
@@ -171,6 +216,30 @@ Exit codes when `--output-schema` is used: `0` success (structured object in `re
 would normally prompt for approval and exit non-zero. Pass `--permission-mode
 auto-edit` or `yolo` to allow unattended tool use — the danger-guard still
 blocks catastrophic commands in every mode.
+
+## In CI
+
+J.A.R.N. ships a [GitHub Actions composite action](action/action.yml) so you
+can run it in any workflow — PR review, issue-fix bots, nightly audits.
+
+```yaml
+- uses: chayapats/jarn/action@main
+  with:
+    prompt: "Review this diff: …"
+    preset: "review-only"     # read-only; use 'ci' for write-enabled runs
+    max_turns: "5"
+    api_key: ${{ secrets.OPENROUTER_API_KEY }}
+```
+
+**Outputs:** `result`, `cost_usd`, `turns`.
+
+**Docker note:** the default `ci` preset requires Docker (ubuntu runners have
+it). For docker-less runners (macOS/Windows) use `preset: trusted-repo` with
+`permission_mode: auto-edit` — see [docs/GITHUB_ACTION.md](docs/GITHUB_ACTION.md).
+
+Example workflows: [PR review bot](examples/github/pr-review.yml) ·
+[Issue-fix bot](examples/github/issue-fix.yml).
+Full docs: [docs/GITHUB_ACTION.md](docs/GITHUB_ACTION.md).
 
 ## The interface: native inline
 
@@ -281,6 +350,17 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 `queue N`); manage them with `/queue`, `/queue clear`, `/queue cancel <n>`, or
 `/queue move <from> <to>`.
 
+**Mid-turn steering.** Don't want to wait for the queued line to run next turn?
+Steer it **into** the running turn: press **`[s]`** (steer now) on the freshly
+queued line, or run `/queue steer <n>` to promote line _n_. The steer is appended
+to the conversation as a new user message and the agent sees it **before its next
+tool call** — great for course-correcting a long refactor ("actually, use
+`pathlib`") without cancelling and re-prompting. Steering re-runs only the
+in-flight model step with your guidance (one extra model call); completed tool
+results are never re-run, so it never strands a tool call mid-flight. If the turn happens to finish first, the steer
+runs as the next turn (never lost). Disable with `ui.steering: false` (hides the
+`[s]` affordance; `/queue steer` then declines politely).
+
 ### Built-in commands
 
 | Command | Description |
@@ -307,7 +387,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/mcp [status] [--refresh]` | Show configured MCP servers with per-server health and last error. |
 | `/trust` | Trust this project root and lift the untrusted review-only floor. |
 | `/add-dir <path>` | Add a directory to this session's write scope (multi-root; approval-gated). |
-| `/queue [clear\|cancel <n>\|move <from> <to>]` | Show or manage queued input lines (while a turn is running). |
+| `/queue [clear\|cancel <n>\|move <from> <to>\|steer <n>]` | Show or manage queued input lines (while a turn is running). |
 | `/undo` | Revert the last agent turn's file changes. |
 | `/redo` | Re-apply the last undone agent turn's file changes. |
 | `/abort` | Cancel the running turn and roll back its file changes. |
@@ -358,6 +438,11 @@ JARN.md                  per-project context, auto-loaded into the system prompt
 API keys are **referenced, never inlined** — `${ENV_VAR}` or `keychain:jarn/<provider>`.
 Project config is gated by a **trust prompt** (see above). See
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full reference.
+
+At startup jarn quietly checks PyPI for a newer release and prints one dim
+line under the splash when an upgrade is available (cached 24 h; skipped under
+the `offline` preset or when running headless). Disable with
+`updates.check: false` in `~/.jarn/config.yaml`.
 
 ## Extending
 
@@ -422,10 +507,11 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1595 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1673 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)
+uv run jarn bug --dry-run    # write redacted bug report to ~/.jarn/bug-report.md
 ```
 
 ## License

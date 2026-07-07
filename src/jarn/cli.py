@@ -2,6 +2,7 @@
 
 Subcommands:
     jarn            launch the TUI (runs setup first if unconfigured)
+    jarn login      log in to OpenRouter via OAuth PKCE (browser → keychain)
     jarn setup      (re)run the onboarding wizard
     jarn init       create a JARN.md project context file
     jarn doctor     diagnose configuration / providers / keys / extensions
@@ -19,7 +20,13 @@ from typing import Any
 from jarn.version import __version__
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """Construct and return the top-level jarn ArgumentParser.
+
+    Factored out of ``main()`` so the same parser object can be introspected by
+    ``jarn completions`` and by the anti-drift test without duplicating the
+    subcommand/flag list.
+    """
     parser = argparse.ArgumentParser(
         prog="jarn", description="J.A.R.N. — Just A Reliable Nerd (coding agent TUI)"
     )
@@ -178,6 +185,48 @@ def main(argv: list[str] | None = None) -> int:
         help="Record a one-time accept to run global lifecycle hooks "
         "(enables `hook_global_require_trust: true`)",
     )
+    sub.add_parser(
+        "login",
+        help="Log in to OpenRouter via OAuth PKCE — opens your browser, "
+        "catches the callback, and stores the API key in the OS keychain",
+    )
+
+    p_uninstall = sub.add_parser(
+        "uninstall",
+        help="Remove global ~/.jarn state and OS keychain entries, then print "
+        "the package-manager uninstall command",
+    )
+    p_uninstall.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the itemized confirmation prompt",
+    )
+
+    p_bug = sub.add_parser(
+        "bug",
+        help="Assemble a redacted bug report and open a prefilled GitHub issue",
+    )
+    p_bug.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Write the report file without opening the browser",
+    )
+
+    p_completions = sub.add_parser(
+        "completions",
+        help="Emit a shell completion script for bash, zsh, or fish",
+    )
+    p_completions.add_argument(
+        "shell",
+        choices=["bash", "zsh", "fish"],
+        help="Target shell",
+    )
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
 
     # --profile was removed in v0.6.0 (deprecated since v0.5.0). Without this
     # guard argparse reports a confusing subcommand "invalid choice" error for
@@ -238,6 +287,14 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_trust(path=args.path, remove=args.remove, as_json=args.json)
     if args.command == "trust-hooks":
         return _cmd_trust_hooks()
+    if args.command == "login":
+        return _cmd_login()
+    if args.command == "uninstall":
+        return _cmd_uninstall(yes=args.yes)
+    if args.command == "bug":
+        return _cmd_bug(dry_run=args.dry_run)
+    if args.command == "completions":
+        return _cmd_completions(shell=args.shell, parser=parser)
     return _cmd_launch(
         resume=args.resume,
         profile_override=preset_override,
@@ -330,23 +387,21 @@ def _cmd_headless(
     if model_override:
         cfg.routing.main = model_override
         cfg.default_model = model_override
-    if permission_mode_override:
-        cfg.permission_mode = PermissionMode(permission_mode_override)
 
     # Expand the effective preset (CLI > config) and clamp untrusted. A preset
-    # sets the trust-relevant knobs (incl. the mode), so warn when both were
-    # supplied rather than silently dropping --mode.
-    if profile_override and permission_mode_override:
-        print(
-            f"warning: --preset {profile_override} overrides "
-            f"--mode {permission_mode_override} for trust-relevant settings.",
-            file=sys.stderr,
-        )
+    # sets the trust-relevant knobs including the mode, but an EXPLICIT
+    # --permission-mode must win over the preset's default mode (explicit >
+    # preset > config default) — so it is threaded into the resolver rather than
+    # set before and stomped by apply_profile. The preset still governs the other
+    # knobs (sandbox/network/web).
     from jarn.config.profiles import resolve_effective_profile
 
     try:
         resolve_effective_profile(
-            cfg, project_trusted=trusted, cli_profile=profile_override
+            cfg,
+            project_trusted=trusted,
+            cli_profile=profile_override,
+            cli_permission_mode=permission_mode_override,
         )
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -515,6 +570,125 @@ def _cmd_trust_hooks() -> int:
     return 0
 
 
+def _cmd_bug(*, dry_run: bool = False) -> int:
+    """Assemble a redacted bug report and (unless *dry_run*) open a GitHub issue."""
+    from jarn.bug_report import run_bug_report
+
+    return run_bug_report(dry_run=dry_run)
+
+
+def _cmd_login() -> int:
+    """Run the OpenRouter OAuth PKCE login flow.
+
+    Opens the browser, waits for the OAuth callback on a loopback listener,
+    exchanges the code for an API key, and stores it in the OS keychain.
+    The raw key is never printed; only the masked tail and the reference are shown.
+    Falls back gracefully when the browser cannot be opened (SSH / headless).
+    """
+    from rich.console import Console
+
+    from jarn.config.secrets import redact_secrets
+    from jarn.onboarding.oauth import LoginResult, login_openrouter
+
+    console = Console()
+    console.print(
+        "\n[b cyan]OpenRouter login[/b cyan]  "
+        "[dim]— Opens your browser; close it here with Ctrl+C to abort.[/dim]\n"
+    )
+
+    try:
+        result: LoginResult = login_openrouter()
+    except TimeoutError as exc:
+        console.print(f"[red]✗[/red] Timed out: {exc}")
+        console.print(
+            "[dim]Run `jarn setup` to configure a key manually.[/dim]"
+        )
+        return 1
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Aborted.[/yellow]")
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]✗[/red] Login failed: {redact_secrets(str(exc))}")
+        return 1
+
+    if not result.changed:
+        # Existing key kept — nothing to persist; don't rewrite the config.
+        console.print(
+            f"[green]✔[/green]  Keeping your existing key ([b]{result.reference}[/b])."
+        )
+        console.print(f"   Key tail: [dim]{result.masked_key}[/dim]")
+        return 0
+
+    console.print(f"[green]✔[/green]  Logged in — key stored as [b]{result.reference}[/b]")
+    console.print(f"   Key tail: [dim]{result.masked_key}[/dim]")
+
+    # Write the reference into the OpenRouter provider in the global config.
+    if _write_openrouter_key_ref(result.reference):
+        console.print(
+            "\n[green]✔[/green]  Config updated.  "
+            "Launch [b]jarn[/b] to start coding."
+        )
+        return 0
+    console.print(
+        f"\n[yellow]![/yellow]  The key is stored ([b]{result.reference}[/b]) but the "
+        "config was left untouched — set `providers.openrouter.api_key` manually."
+    )
+    return 1
+
+
+def _cmd_uninstall(*, yes: bool = False) -> int:
+    """Remove global ~/.jarn state and OS keychain entries."""
+    from jarn.uninstall import run_uninstall
+
+    return run_uninstall(yes=yes)
+
+
+def _write_openrouter_key_ref(reference: str) -> bool:
+    """Set ``providers.openrouter.api_key`` in the global config (non-destructively).
+
+    If no global config exists yet, creates a minimal one.  Existing keys for
+    other providers are preserved.  Returns True when the config was written;
+    returns False (after a stderr warning) when the existing config cannot be
+    parsed — refusing to replace a whole config with a single key.
+    """
+    import yaml
+
+    from jarn.config import paths
+
+    config_path = paths.global_config_path()
+    if config_path.is_file():
+        raw = config_path.read_text(encoding="utf-8")
+        try:
+            loaded = yaml.safe_load(raw)
+        except Exception:  # noqa: BLE001 - malformed YAML must not be silently wiped
+            print(
+                "warning: could not parse existing ~/.jarn/config.yaml; "
+                "refusing to overwrite it. Fix the file (or delete it) and re-run "
+                "`jarn login`.",
+                file=sys.stderr,
+            )
+            return False
+        data = loaded or {}
+    else:
+        paths.global_home().mkdir(parents=True, exist_ok=True)
+        data = {}
+
+    providers = data.setdefault("providers", {})
+    or_entry = providers.setdefault("openrouter", {"type": "openrouter"})
+    or_entry["api_key"] = reference
+
+    header = (
+        "# J.A.R.N. configuration.\n"
+        "# API keys are referenced, never inlined:\n"
+        "#   keychain:jarn/<provider>  -> read from the OS keychain\n"
+    )
+    config_path.write_text(
+        header + yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    return True
+
+
 def _trust_list(store: Any, *, as_json: bool) -> int:
     entries = store.entries()
 
@@ -558,6 +732,14 @@ def _validate_add_dirs(raw: list[str] | None) -> tuple[list[Path], str | None]:
         if path not in roots:
             roots.append(path)
     return roots, None
+
+
+def _cmd_completions(*, shell: str, parser: argparse.ArgumentParser) -> int:
+    """Emit a shell completion script for the given shell."""
+    from jarn.completions import emit_completions
+
+    print(emit_completions(shell, parser))
+    return 0
 
 
 def _cmd_launch(
@@ -605,7 +787,7 @@ def _cmd_launch(
     from jarn.config.profiles import resolve_effective_profile
 
     try:
-        resolve_effective_profile(
+        effective_preset = resolve_effective_profile(
             cfg, project_trusted=trusted, cli_profile=profile_override
         )
     except ConfigError as exc:
@@ -616,7 +798,12 @@ def _cmd_launch(
     from jarn.repl import run_inline
 
     return run_inline(
-        cfg, root, resume=resume, project_trusted=trusted, add_dirs=extra_roots
+        cfg,
+        root,
+        resume=resume,
+        project_trusted=trusted,
+        add_dirs=extra_roots,
+        preset_name=effective_preset,
     )
 
 

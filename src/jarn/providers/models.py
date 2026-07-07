@@ -12,7 +12,9 @@ right backend and injecting ``api_key`` / ``base_url``. Built models are cached.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -281,6 +283,192 @@ def remote_context_window(provider: ProviderConfig, model_id: str) -> int | None
     return None
 
 
+# ---------------------------------------------------------------------------
+# Demo provider — canned responses for deterministic VHS recordings.
+# Gated EXCLUSIVELY behind the JARN_DEMO=1 environment variable.  This must
+# never be reachable through the normal config system or any config key so it
+# cannot accidentally activate in a real user session.
+# ---------------------------------------------------------------------------
+
+#: Profile name used for the canned-response demo provider.
+DEMO_PROFILE: str = "demo"
+
+#: The file the demo tape edits (matches the tape prompt "add input validation
+#: to server.py"). Kept as a relative name so the recorder can run in a scratch
+#: dir; the demo model only needs it for the canned tool-call args.
+_DEMO_TARGET_FILE = "server.py"
+
+#: The validated ``server.py`` the demo "writes" — the content of the money-shot
+#: diff. Deterministic so the recorded GIF is reproducible.
+_DEMO_SERVER_PY = '''\
+from pydantic import BaseModel, field_validator
+
+
+class CreateItem(BaseModel):
+    name: str
+    price: float
+
+    @field_validator("price")
+    @classmethod
+    def price_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("price must be positive")
+        return v
+'''
+
+#: Prose replies returned by the demo model, in order (see ``_demo_messages``).
+#: Crafted to match the money-shot tape: plan approval → streamed diff (driven by
+#: the write_file tool call below) → verified badge → /cost.
+_DEMO_CANNED_RESPONSES: tuple[str, ...] = (
+    (
+        "Here is my plan:\n"
+        "1. Add a typed `pydantic` request model to `server.py`.\n"
+        "2. Reject invalid input automatically (422) via a field validator.\n"
+        "3. Keep the change minimal and self-contained.\n\n"
+        "Shall I proceed?"
+    ),
+    "Applying the change to `server.py`…",
+    "✓ verified — `server.py` updated, 4 tests passing (0.3 s).",
+    "Total cost this session: $0.00 (demo mode — no real API calls made).",
+)
+
+
+def _demo_messages() -> list[Any]:
+    """Build the ordered script the demo model replays, one message per turn.
+
+    The money-shot DIFF is driven by a real ``write_file`` **tool call** (not
+    prose), so the recorded session shows a genuine diff panel.  Returned as
+    ``AIMessage`` objects; ``Any`` in the signature avoids importing langchain at
+    module import time (kept lazy like the rest of the factory).
+    """
+    from langchain_core.messages import AIMessage
+
+    plan, applying, verified, cost = _DEMO_CANNED_RESPONSES
+    return [
+        # 1. Plan (plan-mode approval step in the tape).
+        AIMessage(content=plan),
+        # 2. The DIFF: a real write_file tool call the front-end renders as a diff.
+        AIMessage(
+            content=applying,
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "args": {
+                        "file_path": _DEMO_TARGET_FILE,
+                        "content": _DEMO_SERVER_PY,
+                    },
+                    "id": "demo_write_1",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        # 3. Verified badge (T-3-2) after the edit + self-verify.
+        AIMessage(content=verified),
+        # 4. Closing summary (the tape then runs /cost, a slash command).
+        AIMessage(content=cost),
+    ]
+
+
+def is_demo_active() -> bool:
+    """Return ``True`` iff the ``JARN_DEMO=1`` env-var gate is open.
+
+    This is the **only** check used to decide whether demo mode is available.
+    No config key, no fallback path.
+    """
+    return os.environ.get("JARN_DEMO") == "1"
+
+
+def demo_provider_config() -> ProviderConfig | None:
+    """Return a synthetic :class:`ProviderConfig` for the canned-response demo model.
+
+    Returns ``None`` — and therefore makes the demo model **completely
+    unreachable** — whenever ``JARN_DEMO`` is not set to ``"1"``.
+
+    The returned config uses ``ProviderType.OPENAI_COMPATIBLE`` as its
+    internal type tag so the factory can identify it without adding a new
+    ``ProviderType`` enum value to the config schema.  No real API key or
+    endpoint is needed or used.
+
+    Security invariant (also verified by ``test_demo_provider_gated``):
+      • ``JARN_DEMO=1``  → returns a :class:`ProviderConfig` (demo available)
+      • env unset / not "1" → returns ``None``  (demo never reachable)
+    """
+    if not is_demo_active():
+        return None
+    return ProviderConfig(type=ProviderType.OPENAI_COMPATIBLE)
+
+
+def build_demo_model() -> BaseChatModel:
+    """Construct the canned-response chat model used when ``JARN_DEMO=1``.
+
+    A tiny :class:`~langchain_core.language_models.fake_chat_models.GenericFakeChatModel`
+    subclass that (a) **ignores** ``bind_tools`` (deepagents/langgraph calls it —
+    the stock fake would raise ``NotImplementedError``) and (b) streams the
+    scripted ``_demo_messages`` including a real ``write_file`` tool call, so the
+    session runs with **no network and no API key**.
+
+    Callers must gate on :func:`is_demo_active` first — this builder itself does
+    not check the env var (so it stays unit-testable), but the only production
+    call sites (:meth:`ModelFactory.build` / :meth:`ModelFactory.build_main`) do.
+    """
+    import re
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessageChunk
+    from langchain_core.messages.tool import tool_call_chunk
+    from langchain_core.outputs import ChatGenerationChunk
+
+    class _DemoChatModel(GenericFakeChatModel):  # type: ignore[misc]
+        @property
+        def _llm_type(self) -> str:
+            return "jarn-demo-canned"
+
+        def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+            # The demo replays a fixed script; tool schemas are irrelevant. Return
+            # self so deepagents/langgraph can bind without NotImplementedError.
+            return self
+
+        def _stream(  # type: ignore[override]
+            self,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ) -> Any:
+            # GenericFakeChatModel._stream drops ``.tool_calls`` (it only streams
+            # additional_kwargs). Re-implement so the money-shot tool call reaches
+            # the graph on the streaming path as well as invoke().
+            result = self._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            msg = result.generations[0].message
+            content = msg.content if isinstance(msg.content, str) else ""
+            if content:
+                for token in re.split(r"(\s)", content):
+                    chunk = ChatGenerationChunk(
+                        message=AIMessageChunk(content=token, id=msg.id)
+                    )
+                    if run_manager:
+                        run_manager.on_llm_new_token(token, chunk=chunk)
+                    yield chunk
+            tool_calls = getattr(msg, "tool_calls", None) or []
+            if tool_calls:
+                tool_call_chunks = [
+                    tool_call_chunk(
+                        name=tc["name"],
+                        args=json.dumps(tc.get("args", {})),
+                        id=tc.get("id"),
+                        index=idx,
+                    )
+                    for idx, tc in enumerate(tool_calls)
+                ]
+                yield ChatGenerationChunk(
+                    message=AIMessageChunk(
+                        content="", id=msg.id, tool_call_chunks=tool_call_chunks
+                    )
+                )
+
+    return _DemoChatModel(messages=iter(_demo_messages()))
+
+
 # Providers served through ChatOpenAI (model_provider="openai") + a base_url.
 _OPENAI_COMPATIBLE = {
     ProviderType.OPENAI,
@@ -311,8 +499,28 @@ class ModelFactory:
     default_max_retries: int = 2
     _cache: dict[str, Any] = field(default_factory=dict)
 
+    #: Cache key for the canned demo model (JARN_DEMO=1).
+    _DEMO_CACHE_KEY = "__jarn_demo__"
+
+    def _demo_model(self) -> BaseChatModel:
+        """Return (and cache) the canned demo model — no provider/key needed.
+
+        A single instance is cached so successive turns advance through the same
+        scripted message iterator (plan → diff → verified → cost).
+        """
+        cached = self._cache.get(self._DEMO_CACHE_KEY)
+        if cached is None:
+            cached = build_demo_model()
+            self._cache[self._DEMO_CACHE_KEY] = cached
+        return cached
+
     def build(self, ref: str) -> BaseChatModel:
         """Build (or return cached) chat model for a fully/partly-qualified ref."""
+        # JARN_DEMO=1: bypass real provider resolution entirely (no key, no
+        # endpoint) and return the canned demo model. Gated ONLY by the env var
+        # (see is_demo_active); never reachable in a normal user session.
+        if is_demo_active():
+            return self._demo_model()
         parsed = parse_model_ref(ref, default_profile=self.config.default_profile)
         cache_key = parsed.qualified
         if cache_key in self._cache:
@@ -328,6 +536,10 @@ class ModelFactory:
         return model
 
     def build_main(self) -> BaseChatModel:
+        # Demo mode needs no configured model — short-circuit before resolving the
+        # ref so an empty/keyless config still yields the canned model.
+        if is_demo_active():
+            return self._demo_model()
         ref = self.config.resolved_main_model()
         if not ref:
             raise ModelResolutionError("No main model configured (routing.main/default_model).")

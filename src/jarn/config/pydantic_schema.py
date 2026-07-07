@@ -35,6 +35,7 @@ from jarn.config.schema import (
     SearchProviderType,
     TracingConfig,
     UIConfig,
+    UpdatesConfig,
     VerifyConfig,
     WikiConfig,
 )
@@ -585,6 +586,7 @@ class UIConfigModel(_StrictModel):
     notify: str = "bell"
     notify_min_secs: int = 10
     terminal_title: bool = True
+    steering: bool = True
 
     @field_validator("theme", mode="before")
     @classmethod
@@ -634,6 +636,11 @@ class UIConfigModel(_StrictModel):
     @classmethod
     def _terminal_title(cls, value: Any) -> bool:
         return _normalize_bool(value, "ui.terminal_title")
+
+    @field_validator("steering", mode="before")
+    @classmethod
+    def _steering(cls, value: Any) -> bool:
+        return _normalize_bool(value, "ui.steering")
 
 
 class CompatConfigModel(_StrictModel):
@@ -790,6 +797,15 @@ class SearchConfigModel(_StrictModel):
         return value
 
 
+class UpdatesConfigModel(_StrictModel):
+    check: bool = True
+
+    @field_validator("check", mode="before")
+    @classmethod
+    def _check(cls, value: Any) -> bool:
+        return _normalize_bool(value, "updates.check")
+
+
 class ConfigModel(_StrictModel):
     config_version: int = CURRENT_CONFIG_VERSION
     default_profile: str = "openrouter"
@@ -817,6 +833,7 @@ class ConfigModel(_StrictModel):
     verify: VerifyConfigModel = Field(default_factory=VerifyConfigModel)
     pricing: PricingConfigModel = Field(default_factory=PricingConfigModel)
     search: SearchConfigModel = Field(default_factory=SearchConfigModel)
+    updates: UpdatesConfigModel = Field(default_factory=UpdatesConfigModel)
 
     @field_validator("permission_mode", mode="before")
     @classmethod
@@ -1047,6 +1064,7 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             notify=model.ui.notify,
             notify_min_secs=model.ui.notify_min_secs,
             terminal_title=model.ui.terminal_title,
+            steering=model.ui.steering,
         ),
         compat=CompatConfig(
             context_files=list(model.compat.context_files),
@@ -1069,4 +1087,5 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             provider=model.search.provider,
             api_key=model.search.api_key,
         ),
+        updates=UpdatesConfig(check=model.updates.check),
     )

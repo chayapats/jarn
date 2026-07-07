@@ -90,8 +90,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         project_trusted: bool = True,
         detected_theme: str | None = None,
         add_dirs: list[Path] | None = None,
+        preset_name: str | None = None,
     ) -> None:
         self.config = config
+        self._preset_name = preset_name
         # Terminal background resolved ONCE at startup (light/dark) when
         # ui.theme is "auto"; a runtime `/theme auto` reuses this instead of
         # re-probing (a runtime OSC-11 probe races prompt_toolkit's input reader).
@@ -130,6 +132,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self._pastes: dict[str, str] = {}          # collapsed token -> full paste
         self._paste_n = 0
         self._input_queue = InputQueue()
+        # [s] steer fastkey arm-window: monotonic deadline until which an empty-buffer
+        # 's' promotes the last queued line. Opened briefly on each `» queued` echo so a
+        # fresh message starting with 's' typed LATER is never swallowed (T-4-6 / I5).
+        self._steer_armed_until: float = 0.0
         self._resume_task: asyncio.Task | None = None
         self._line_future: asyncio.Future | None = None       # app-native asks
         self._yolo_confirm_inflight = False    # de-dupe rapid Shift+Tab→yolo presses
@@ -235,6 +241,11 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 f"[{palette.C_NOTICE}]jarn trust[/{palette.C_NOTICE}]"
                 f"[{palette.C_DIM}] to unlock.[/{palette.C_DIM}]"
             )
+        # Background update-available check — never blocks the first prompt.
+        from jarn.update_check import maybe_start_update_check
+        maybe_start_update_check(
+            self.config, c, preset_name=self._preset_name
+        )
         self._warm_pricing_catalog()
         await self._ensure_extensions()
         self.app = self._build_app()
@@ -406,6 +417,9 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         turn-start checkpoint exists)."""
         if self._turn_task is not None:
             self._turn_task.cancel()
+        # Cancelling means "stop and drop pending work": discard any unapplied steer
+        # so it does not resurface as the next turn via _drain_queue (T-4-6).
+        self.controller._steer_slot = None
         killed = self.controller.terminate_shells()
         if killed:
             self.console.print(f"[{palette.C_DIM}]stopped {killed} running command(s)[/{palette.C_DIM}]")
@@ -738,9 +752,79 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
 
         asyncio.create_task(_job())
 
+    def _steer_key_armed(self) -> bool:
+        """Predicate for the ``[s]`` steer fastkey (extracted so it is testable).
+
+        True only when a steer is unambiguous: neither overlay is open, a turn is
+        busy, the input buffer is EMPTY, steering is enabled, at least one
+        NON-internal line is queued (internal diagnostics rounds are never
+        steerable — I5), no picker/ask overlay owns the keyboard, AND we are still
+        within the short arm window opened by the last ``» queued`` echo. The window
+        is what stops a fresh message starting with ``s`` (typed later, with an
+        empty buffer) from being swallowed as a steer instead of typed."""
+        return (
+            not self._expanded
+            and not self._config_open
+            and self._busy()
+            and not self.input.text
+            and self.controller.config.ui.steering
+            and self._input_queue.user_count() > 0
+            and time.monotonic() < self._steer_armed_until
+            and (self._menu_future is None or self._menu_future.done())
+            and (self._line_future is None or self._line_future.done())
+        )
+
+    def _steer_most_recent(self) -> None:
+        """[s] fastkey: steer the MOST recently queued NON-internal line into the
+        running turn.
+
+        Pops the last user ``QueuedLine`` off the queue (internal diagnostics
+        rounds are skipped — never steered), writes its payload into the single
+        steer slot (the driver injects it at the next settled tool boundary), and
+        echoes ``› (steered) …``. No-op when steering is off, no turn is running, or
+        no user line is queued."""
+        if not self.controller.config.ui.steering or not self._busy():
+            return
+        line = self._input_queue.cancel_user(self._input_queue.user_count())  # last user item
+        if line is None:
+            return
+        self.controller._steer_slot = line.payload
+        self.console.print(
+            f"[{palette.C_DIM}]› (steered) {_rich_escape(line.display)}[/{palette.C_DIM}]"
+        )
+        if self.app is not None:
+            self.app.invalidate()
+
+    def _steer_index(self, n: int) -> tuple[bool, str]:
+        """`/queue steer <n>`: route the 1-based queued line into the steer slot.
+
+        Returns ``(ok, message)``. Refuses politely when steering is disabled and
+        reports an out-of-range index without touching the queue or the slot."""
+        if not self.controller.config.ui.steering:
+            return (
+                False,
+                "steering is disabled — set ui.steering: true (or /config) to enable it.",
+            )
+        line = self._input_queue.cancel_user(n)
+        if line is None:
+            return (False, f"No item at {n}.")
+        self.controller._steer_slot = line.payload
+        return (True, f"› (steered) {line.display}")
+
     def _drain_queue(self) -> None:
         """Start the next queued line as a new turn (mirrors the submit path)."""
         if not self._busy():
+            # A steer the (now-ended) turn never consumed (model finished before a
+            # settled boundary) runs as the next normal turn — never lost (spec §3).
+            leftover = self.controller._pop_steer_slot()
+            if leftover is not None:
+                self._turn_start = time.monotonic()
+                self._turn_stream_chars = 0
+                self._turn_base_output = self.controller.tracker.total.output_tokens
+                self._turn_base_input = self.controller.tracker.total.input_tokens
+                self._first_token_at = None
+                self._turn_task = asyncio.create_task(self._handle(leftover))
+                return
             item = self._input_queue.pop_next()
             if item is None:
                 return
@@ -825,7 +909,8 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             # ".../jarn.log" across a line on narrow / CI-width terminals).
             self.console.print(
                 f"[{palette.C_DIM}]full traceback → "
-                f"{paths.global_logs_dir() / 'jarn.log'}[/{palette.C_DIM}]",
+                f"{paths.global_logs_dir() / 'jarn.log'}"
+                f" — report: jarn bug[/{palette.C_DIM}]",
                 soft_wrap=True,
             )
         finally:

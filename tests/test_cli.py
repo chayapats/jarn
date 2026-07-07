@@ -502,3 +502,464 @@ def test_add_dir_flag_rejects_missing_dir(tmp_path, monkeypatch, capsys):
     code = main(["--add-dir", str(missing)])
     assert code == 1
     assert "--add-dir" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# T-4-3: jarn bug — redacted report + prefilled GitHub issue
+# ---------------------------------------------------------------------------
+
+
+def test_bug_dry_run_redacts(tmp_path, monkeypatch):
+    """jarn bug --dry-run writes bug-report.md; planted secret must not appear.
+
+    Plants a fake secret in both the log tail and the doctor output, runs
+    ``jarn bug --dry-run``, and asserts the secret is absent from the written
+    report (i.e. redact_secrets was applied to every included line).
+    """
+    import jarn.doctor.collect as dc
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+    from jarn.version import __version__
+
+    FAKE_SECRET = "sk-supersecretkey1234567890abcdef"
+
+    home = tmp_path / "jarnhome"
+    log_dir = home / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "jarn.log").write_text(
+        f"INFO normal log line\nDEBUG key={FAKE_SECRET} leak\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(paths, "global_home", lambda: home)
+
+    def fake_collect(diag, **kwargs):
+        diag["ok"] = True
+        diag["jarn_home"] = str(home)
+        diag["secret_field"] = f"api_key={FAKE_SECRET}"
+        return 0
+
+    monkeypatch.setattr(dc, "collect_doctor", fake_collect)
+
+    try:
+        code = cli_mod.main(["bug", "--dry-run"])
+    except SystemExit as e:
+        pytest.fail(f"'bug' subcommand not yet implemented (exit {e.code})")
+
+    assert code == 0
+
+    report_path = home / "bug-report.md"
+    assert report_path.is_file(), "bug-report.md was not written"
+
+    content = report_path.read_text(encoding="utf-8")
+
+    # Must contain version info
+    assert __version__ in content, f"Version {__version__!r} not found in report"
+    # Must contain platform section
+    assert "platform" in content.lower(), "No platform section in report"
+
+    # The planted secret MUST NOT appear anywhere in the report
+    assert FAKE_SECRET not in content, f"Secret leaked into report: {FAKE_SECRET!r}"
+
+
+def test_bug_opens_prefilled_issue(tmp_path, monkeypatch):
+    """jarn bug (no --dry-run) opens a prefilled GitHub issue URL.
+
+    Spies on webbrowser.open; asserts:
+    - URL targets chayapats/jarn issues/new
+    - decoded body is ≤ 6000 chars
+    - body mentions attaching the bug-report.md file
+    """
+    import webbrowser
+    from urllib.parse import parse_qs, urlparse
+
+    import jarn.doctor.collect as dc
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    home = tmp_path / "jarnhome"
+    log_dir = home / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "jarn.log").write_text("normal log line\n", encoding="utf-8")
+
+    monkeypatch.setattr(paths, "global_home", lambda: home)
+
+    def fake_collect(diag, **kwargs):
+        diag["ok"] = True
+        diag["jarn_home"] = str(home)
+        return 0
+
+    monkeypatch.setattr(dc, "collect_doctor", fake_collect)
+
+    opened_urls: list[str] = []
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened_urls.append(url) or True)
+
+    try:
+        code = cli_mod.main(["bug"])
+    except SystemExit as e:
+        pytest.fail(f"'bug' subcommand not yet implemented (exit {e.code})")
+
+    assert code == 0
+    assert len(opened_urls) == 1, "webbrowser.open was not called exactly once"
+
+    url = opened_urls[0]
+    assert "github.com/chayapats/jarn/issues/new" in url, f"Unexpected URL: {url!r}"
+
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    assert "body" in params, "URL has no 'body' parameter"
+    body = params["body"][0]
+    assert len(body) <= 6000, f"Body is too long: {len(body)} chars"
+    assert "bug-report.md" in body, "Body doesn't mention bug-report.md (attach pointer missing)"
+
+
+def test_truncate_body_head_tail_elision_bound(monkeypatch):
+    """T-4-3 M4: the HEAD+TAIL elision path must keep the body within the cap.
+
+    Regression guard for the ``available == 0`` off-by-one (M1): the guard was
+    ``if available < 0`` so at ``available == 0`` (a pathologically small cap)
+    ``head`` and ``tail`` are both 0 and ``body[-0:]`` == ``body[0:]`` returns the
+    WHOLE body — blowing past the cap. Forcing ``available == 0`` exercises exactly
+    that branch."""
+    from jarn import bug_report
+
+    # Pick a cap equal to the two fixed notes so available == 0 exactly.
+    cap = len(bug_report._ATTACH_NOTE) + len(bug_report._ELISION)
+    monkeypatch.setattr(bug_report, "_BODY_MAX_CHARS", cap)
+
+    body = "X" * (cap * 5)  # long enough to force the elision path
+    result = bug_report._truncate_body(body)
+
+    assert len(result) <= cap, (
+        f"truncated body {len(result)} exceeds cap {cap} "
+        "(available==0 returned the whole body)"
+    )
+
+
+def test_truncate_body_normal_elision_stays_under_cap():
+    """The elision path under the real 6000-char cap keeps the body bounded and
+    still appends the attach pointer."""
+    from jarn import bug_report
+
+    body = "Y" * 20000
+    result = bug_report._truncate_body(body)
+    assert len(result) <= bug_report._BODY_MAX_CHARS
+    assert "bug-report.md" in result
+
+
+# ---------------------------------------------------------------------------
+# T-4-4: jarn completions {bash,zsh,fish} — anti-drift parity
+# ---------------------------------------------------------------------------
+
+
+def _build_parser():
+    """Return the real jarn ArgumentParser (same object used by main())."""
+    from jarn.cli import build_parser
+    return build_parser()
+
+
+def _introspect_parser(parser):
+    """Return (subcommands: set[str], long_flags: set[str]) from a parser."""
+    subcommands: set[str] = set()
+    long_flags: set[str] = set()
+
+    for action in parser._actions:
+        for opt in action.option_strings:
+            if opt.startswith("--") and opt != "--help":
+                long_flags.add(opt)
+
+    for action in parser._actions:
+        if hasattr(action, "_name_parser_map"):
+            for name, sub in action._name_parser_map.items():
+                subcommands.add(name)
+                for sub_action in sub._actions:
+                    for opt in sub_action.option_strings:
+                        if opt.startswith("--") and opt != "--help":
+                            long_flags.add(opt)
+
+    return subcommands, long_flags
+
+
+@pytest.mark.parametrize("shell", ["bash", "zsh", "fish"])
+def test_completions_cover_parser(shell: str) -> None:
+    """Emitted script must carry a REAL completion declaration for every
+    subcommand and long flag the parser defines.
+
+    Anti-drift: introspects the real parser so adding a future subcommand or
+    flag automatically makes this test enforce its inclusion. The per-shell
+    match targets the actual declaration (not merely the string appearing
+    somewhere), so dropping a flag's real `-l`/`-W`/spec entry fails the test.
+    """
+    from jarn.completions import emit_completions
+
+    parser = _build_parser()
+    subcommands, long_flags = _introspect_parser(parser)
+    script = emit_completions(shell, parser)
+
+    missing_subs = [cmd for cmd in subcommands if cmd not in script]
+    assert not missing_subs, (
+        f"[{shell}] completions missing subcommands: {missing_subs}"
+    )
+
+    if shell == "fish":
+        # Honest: the real `complete ... -l <name>` DECLARATION must exist —
+        # not just the flag string buried in a description.
+        missing_flags = [
+            f for f in long_flags if f"-l {f.lstrip('-')}" not in script
+        ]
+    else:
+        # bash: `-W "… --flag …"`; zsh: `'--flag[…]'` — the flag itself appears
+        # in the real completion spec.
+        missing_flags = [f for f in long_flags if f not in script]
+
+    assert not missing_flags, (
+        f"[{shell}] completions missing long-flag declarations: {missing_flags}"
+    )
+
+
+def test_completions_zsh_arguments_is_single_continued_call() -> None:
+    """The zsh `_arguments -C` block must be ONE continued command.
+
+    Every flag-spec line (and `'1:command:->subcommand'`) must end with a `\\`
+    line-continuation so the specs flow into the same `_arguments` call and
+    `$state` is reachable. Without the continuations, only the first spec is
+    seen, `'1:command:->subcommand'` is orphaned, `$state` is never set, and the
+    whole `case $state in` block is dead — subcommand + per-sub completion break.
+    """
+    from jarn.completions import emit_completions
+
+    parser = _build_parser()
+    script = emit_completions("zsh", parser)
+    lines = script.splitlines()
+
+    start = next(i for i, ln in enumerate(lines) if "_arguments -C" in ln)
+    end = next(i for i, ln in enumerate(lines) if "'*::args:->args'" in ln)
+    assert end > start, "malformed zsh _arguments block"
+
+    # Every line from `_arguments -C` up to the last spec must continue with `\`.
+    for i in range(start, end):
+        assert lines[i].rstrip().endswith("\\"), (
+            f"zsh _arguments line not continued (orphans the rest): {lines[i]!r}"
+        )
+    # The final spec terminates the call (no dangling continuation).
+    assert not lines[end].rstrip().endswith("\\")
+
+
+@pytest.mark.parametrize("shell", ["zsh", "fish"])
+def test_completions_use_real_help_not_flag_names(shell: str) -> None:
+    """Descriptions come from argparse help, never from the flag string itself.
+
+    A flag used as its own description (`-d '--resume'` / `'--resume[--resume …]'`)
+    is ugly and hollow. Assert real help text surfaces and no flag-as-description
+    slips through.
+    """
+    from jarn.completions import emit_completions
+
+    parser = _build_parser()
+    script = emit_completions(shell, parser)
+
+    if shell == "fish":
+        assert "-d '--" not in script, "fish uses a flag string as its description"
+    else:  # zsh
+        assert "[--" not in script, "zsh uses a flag string as its description"
+
+    # A real help string must appear (setup --force: 'Overwrite …').
+    assert "Overwrite" in script
+
+
+# ---------------------------------------------------------------------------
+# T-4-5 — jarn uninstall
+# ---------------------------------------------------------------------------
+
+
+def test_uninstall_removes_home_and_keys(tmp_path, monkeypatch, capsys):
+    """jarn uninstall --yes removes ~/.jarn and calls delete_password for every provider.
+
+    Uses a fake global home (tmp_path subdir) and monkeypatched keyring so the
+    real ~/.jarn and the real keychain are never touched.
+    """
+    import keyring
+
+    from jarn.config import paths
+    from jarn.config.defaults import ALL_PROVIDERS
+
+    # Build a fake global home with some content.
+    fake_home = tmp_path / "fake_jarn_home"
+    fake_home.mkdir()
+    (fake_home / "config.yaml").write_text("key: val\n", encoding="utf-8")
+    (fake_home / "secrets").mkdir()
+    (fake_home / "secrets" / "dummy.txt").write_text("secret", encoding="utf-8")
+
+    monkeypatch.setattr(paths, "global_home", lambda: fake_home)
+
+    deleted_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(keyring, "delete_password", lambda s, a: deleted_calls.append((s, a)))
+
+    assert main(["uninstall", "--yes"]) == 0
+
+    # Global home is gone.
+    assert not fake_home.exists(), "global home was not removed"
+
+    # delete_password called for every provider candidate.
+    for provider in ALL_PROVIDERS:
+        assert ("jarn", provider) in deleted_calls, (
+            f"delete_password not called for provider {provider!r}"
+        )
+
+
+def test_uninstall_spares_projects(tmp_path, monkeypatch):
+    """jarn uninstall --yes removes only ~/.jarn — project-local .jarn/ dirs are untouched.
+
+    The implementation must remove ONLY paths.global_home() and never enumerate
+    or touch project-local .jarn/ directories that live under a project root.
+    """
+    import keyring
+
+    from jarn.config import paths
+
+    # Fake global home.
+    fake_home = tmp_path / "global_jarn"
+    fake_home.mkdir()
+
+    # A separate project root with its own .jarn/.
+    project_root = tmp_path / "myproject"
+    project_root.mkdir()
+    project_jarn = project_root / ".jarn"
+    project_jarn.mkdir()
+    (project_jarn / "config.yaml").write_text("project: true\n", encoding="utf-8")
+
+    monkeypatch.setattr(paths, "global_home", lambda: fake_home)
+    monkeypatch.setattr(keyring, "delete_password", lambda s, a: None)
+
+    assert main(["uninstall", "--yes"]) == 0
+
+    # Global home removed.
+    assert not fake_home.exists(), "global home was not removed"
+
+    # Project-local .jarn/ is untouched.
+    assert project_jarn.exists(), "project .jarn/ was incorrectly removed"
+    assert (project_jarn / "config.yaml").is_file(), "project config was lost"
+
+
+def test_uninstall_confirm_flow(tmp_path, monkeypatch, capsys):
+    """Without --yes an itemized summary is shown; declining aborts with everything intact.
+
+    Verifies: (1) the summary mentions dir size, keychain entries, and trust
+    entries; (2) a 'n' answer leaves the home dir AND keychain untouched (no
+    delete_password calls, no shutil.rmtree call).
+    """
+    import keyring
+
+    from jarn.config import paths
+
+    # Fake global home with a trust.yaml containing 2 entries.
+    fake_home = tmp_path / "fake_jarn_home"
+    fake_home.mkdir()
+    (fake_home / "config.yaml").write_text("key: val\n", encoding="utf-8")
+
+    import yaml
+
+    (fake_home / "trust.yaml").write_text(
+        yaml.safe_dump({"/projects/alpha": "aabbcc", "/projects/beta": "ddeeff"}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(paths, "global_home", lambda: fake_home)
+
+    deleted_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(keyring, "delete_password", lambda s, a: deleted_calls.append((s, a)))
+
+    # Decline the confirmation prompt.
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+    result = main(["uninstall"])
+
+    # Aborted → non-zero exit.
+    assert result != 0, "declining should return a non-zero exit code"
+
+    # Global home is INTACT.
+    assert fake_home.exists(), "home dir was removed despite declining"
+
+    # Keychain untouched.
+    assert deleted_calls == [], f"delete_password was called despite declining: {deleted_calls}"
+
+    # Summary was printed (path + size + keychain + trust info).
+    out = capsys.readouterr().out
+    assert str(fake_home) in out, "summary did not show the home path being removed"
+    assert "B" in out, "summary did not show a size token (B/KB/MB/GB)"
+    assert "keychain" in out.lower(), "summary did not mention keychain entries"
+    assert "trust" in out.lower(), "summary did not mention trust-store entries"
+
+
+def test_uninstall_channel_hint(tmp_path, monkeypatch, capsys):
+    """Final message uses 'npm' when sys.frozen is truthy, 'pip' when it is not.
+
+    sys.frozen is injected via monkeypatch so we can test both branches in one
+    test without touching the actual process state persistently.
+    """
+    import sys
+
+    import keyring
+
+    from jarn.config import paths
+
+    monkeypatch.setattr(keyring, "delete_password", lambda s, a: None)
+
+    # --- pip branch: sys.frozen is absent ---
+    if hasattr(sys, "frozen"):
+        monkeypatch.delattr(sys, "frozen")
+    fake_home_pip = tmp_path / "jarn_home_pip"
+    fake_home_pip.mkdir()
+    monkeypatch.setattr(paths, "global_home", lambda: fake_home_pip)
+
+    assert main(["uninstall", "--yes"]) == 0
+    out_pip = capsys.readouterr().out
+    assert "pip" in out_pip, f"expected 'pip' in output, got: {out_pip!r}"
+    assert "npm" not in out_pip, f"'npm' should not appear in pip-branch output: {out_pip!r}"
+
+    # --- npm branch: sys.frozen is True ---
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    fake_home_npm = tmp_path / "jarn_home_npm"
+    fake_home_npm.mkdir()
+    monkeypatch.setattr(paths, "global_home", lambda: fake_home_npm)
+
+    assert main(["uninstall", "--yes"]) == 0
+    out_npm = capsys.readouterr().out
+    assert "npm" in out_npm, f"expected 'npm' in output, got: {out_npm!r}"
+
+
+# ---------------------------------------------------------------------------
+# T-4-8 — Demo provider gating (JARN_DEMO=1)
+# ---------------------------------------------------------------------------
+
+
+def test_demo_provider_gated(monkeypatch):
+    """JARN_DEMO=1 makes the canned demo provider available; unset means it is NOT.
+
+    Security invariant: the demo canned-response model must never activate in a
+    real user session.  The only gate is the ``JARN_DEMO=1`` environment variable —
+    no config key, no fallback.  This test is the machine-checkable proof of that
+    contract.
+    """
+    from jarn.config.defaults import DEFAULT_MODELS
+    from jarn.providers.models import DEMO_PROFILE, demo_provider_config
+
+    # --- JARN_DEMO=1: canned provider is available ---
+    monkeypatch.setenv("JARN_DEMO", "1")
+    cfg = demo_provider_config()
+    assert cfg is not None, (
+        "demo_provider_config() must return a ProviderConfig when JARN_DEMO=1"
+    )
+
+    # --- env unset: canned provider must not be available ---
+    monkeypatch.delenv("JARN_DEMO", raising=False)
+    cfg_unset = demo_provider_config()
+    assert cfg_unset is None, (
+        "demo_provider_config() must return None when JARN_DEMO is not set"
+    )
+
+    # The demo profile must never appear in the normal DEFAULT_MODELS registry,
+    # so it cannot accidentally become the default for any provider resolution.
+    assert DEMO_PROFILE not in DEFAULT_MODELS, (
+        f"DEMO_PROFILE {DEMO_PROFILE!r} must not be registered in DEFAULT_MODELS"
+    )

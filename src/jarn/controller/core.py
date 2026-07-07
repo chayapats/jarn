@@ -151,6 +151,12 @@ class Controller:
         # like `off` for the rest of the session (session-lifetime, not per-turn —
         # drivers are recreated each turn and would reset a per-driver flag).
         self.inline_images_disabled: bool = False
+        # T-4-6 mid-turn steering: a single pending-steer slot the REPL writes (via
+        # [s] / /queue steer) and each per-turn SessionDriver pulls at a settled
+        # boundary. Controller-held (not per-driver) so it survives across the
+        # drivers minted per turn/retry; single-shot (cleared on pull) so a steer is
+        # never double-applied across a model-rotation retry.
+        self._steer_slot: str | None = None
 
     # -- multi-root scope ---------------------------------------------------
 
@@ -551,6 +557,18 @@ class Controller:
         except Exception:  # noqa: BLE001 - best-effort cleanup
             return 0
 
+    def _pop_steer_slot(self) -> str | None:
+        """Return the pending steer text and clear the slot (single-shot pull).
+
+        Wired as each per-turn :class:`SessionDriver`'s ``steer_source`` so the
+        driver reads the slot at a settled boundary; the REPL writes it at any time
+        via ``[s]`` / ``/queue steer``. Clearing on read is what prevents a steer
+        from being applied twice across a model-rotation retry (each retry builds a
+        fresh driver, but the slot is emptied the first time it is consumed)."""
+        text = self._steer_slot
+        self._steer_slot = None
+        return text
+
     def make_driver(self, approver: Approver) -> SessionDriver:
         assert self.runtime is not None, "call ensure_runtime() first"
         transcript = None
@@ -580,6 +598,7 @@ class Controller:
             diagnostics_max_rounds=self.config.verify.diagnostics_max_rounds,
             diagnostics_ts=self.config.verify.diagnostics_ts,
             _diag_round=self._diag_chain_round,
+            steer_source=self._pop_steer_slot,
         )
         # Retain for settle_snapshot: the /undo, /redo, and /abort paths await this
         # driver's pending turn-start snapshot before mutating the checkpoint stack.

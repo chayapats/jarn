@@ -454,3 +454,64 @@ def test_remote_context_window_unreachable_returns_none():
 
     with patch("httpx.get", _boom):
         assert remote_context_window(prov, "qwen") is None
+
+
+# ---------------------------------------------------------------------------
+# T-4-8 (fix round 1) — the JARN_DEMO canned model is WIRED into the build path
+# ---------------------------------------------------------------------------
+
+
+def test_demo_mode_wires_canned_model_into_build(monkeypatch):
+    """JARN_DEMO=1 makes ``build_main()`` return the canned demo model with NO
+    real provider config and NO API key, and it yields a canned response with no
+    network.  Env unset: ``build_main()`` does NOT return the fake — it raises
+    (no model configured), proving the fake is never silently substituted.
+
+    This is the wiring proof: the reviewer found the demo functions had zero
+    callers in the build path (dead code).  This test consumes the wiring.
+    """
+    from langchain_core.messages import HumanMessage
+
+    from jarn.providers.models import ModelFactory, ModelResolutionError
+
+    # A config with NO providers and NO configured model: a real build must fail.
+    cfg = Config(providers={}, routing=RoutingConfig())
+
+    # --- env unset: no fake substitution; build_main raises (nothing configured) ---
+    monkeypatch.delenv("JARN_DEMO", raising=False)
+    with pytest.raises(ModelResolutionError):
+        ModelFactory(cfg).build_main()
+
+    # --- JARN_DEMO=1: canned model returned despite empty config / no API key ---
+    monkeypatch.setenv("JARN_DEMO", "1")
+    model = ModelFactory(cfg).build_main()
+    assert model._llm_type == "jarn-demo-canned", (
+        "build_main() must return the canned demo model when JARN_DEMO=1"
+    )
+    # It yields a canned response with NO network and NO API key.
+    reply = model.invoke([HumanMessage(content="add input validation to server.py")])
+    assert reply.content, "demo model must return non-empty canned content"
+
+
+def test_demo_model_bind_tools_is_noop_and_survives(monkeypatch):
+    """The demo model must tolerate ``bind_tools`` (deepagents/langgraph calls it)
+    — a raw GenericFakeChatModel raises NotImplementedError there."""
+    monkeypatch.setenv("JARN_DEMO", "1")
+    cfg = Config(providers={}, routing=RoutingConfig())
+    model = ModelFactory(cfg).build_main()
+    bound = model.bind_tools([])  # must not raise
+    assert bound is not None
+
+
+def test_demo_money_shot_has_edit_tool_call():
+    """The scripted demo must drive the money-shot DIFF via a write_file/edit_file
+    tool call (not just prose), so the recorded GIF shows a real diff."""
+    from jarn.providers.models import _demo_messages
+
+    msgs = _demo_messages()
+    tool_calls = [
+        tc for m in msgs for tc in (getattr(m, "tool_calls", None) or [])
+    ]
+    assert any(
+        tc["name"] in ("write_file", "edit_file") for tc in tool_calls
+    ), "the demo script must include a write_file/edit_file tool call for the diff step"

@@ -29,6 +29,7 @@ from jarn.config.defaults import (
     PROVIDER_ENV_VARS,
 )
 from jarn.config.secrets import file_fallback_notice, store_secret
+from jarn.onboarding.oauth import LoginResult, login_openrouter
 from jarn.onboarding.providers import provider_hint
 from jarn.providers import strip_profile
 from jarn.tui.logo import TAGLINE, WORDMARK
@@ -257,9 +258,39 @@ def _configure_key(
         return f"${{{env_var}}}"
 
     console.print(f"\nHow should J.A.R.N. read your [b]{profile}[/b] API key?")
+
+    if profile == "openrouter":
+        choices = ["oauth", "env", "keychain"]
+        default_storage = "oauth"
+        console.print("  oauth      — Log in with browser (recommended)")
+        console.print(f"  env        — Read from ${env_var}")
+        console.print("  keychain   — Paste it now → store in the OS keychain")
+    else:
+        choices = ["env", "keychain"]
+        default_storage = "env"
+
     method = Prompt.ask(
-        "  storage", choices=["env", "keychain"], default="env"
+        "  storage", choices=choices, default=default_storage
     )
+
+    if method == "oauth":
+        console.print("  Opening your browser for OpenRouter login…")
+        try:
+            result: LoginResult = login_openrouter()
+            console.print(
+                f"  [green]✔[/green] Logged in — key stored as {result.reference}"
+            )
+            return result.reference
+        except Exception as exc:  # noqa: BLE001
+            from jarn.config.secrets import redact_secrets
+
+            console.print(
+                f"  [yellow]![/yellow] Browser login failed: "
+                f"{redact_secrets(str(exc))}. Falling back to manual key entry."
+            )
+            # Fall through to keychain paste.
+            method = "keychain"
+
     if method == "env":
         console.print(f"  [dim]J.A.R.N. will read it from ${env_var}.[/dim]")
         return f"${{{env_var}}}"

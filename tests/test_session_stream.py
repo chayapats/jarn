@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Overwrite
 
 from jarn.agent.session import EventKind, SessionDriver
@@ -751,3 +752,461 @@ async def test_duplicate_task_launch_not_double_counted():
     assert by_text["B output"].data.get("agent") == "B", (
         f"expected 'B', got {by_text['B output'].data.get('agent')!r} (duplicate shifted FIFO?)"
     )
+
+
+# -- T-4-6: mid-turn steering (cooperative checkpoint) -----------------------
+#
+# The driver injects a steer as a HumanMessage via aupdate_state ONLY at a
+# *settled* main-graph tool boundary (last checkpointed message is not an
+# AIMessage with unfulfilled tool_calls). These fixtures model the real
+# two-mode split (model-node updates carry a pending AIMessage(tool_calls);
+# tool RESULTS land later as messages-mode ToolMessages + a tool-node updates
+# super-step) so the settled-boundary gate can be exercised without a real graph.
+
+
+def _steer_once(text: str):
+    """A steer_source lambda: returns ``text`` on the first call, ``None`` after
+    (mirrors how the driver pulls once per boundary until a steer appears)."""
+    state = {"n": 0}
+
+    def _src() -> str | None:
+        state["n"] += 1
+        return text if state["n"] == 1 else None
+
+    return _src
+
+
+def _assert_tool_result_adjacency(messages: list) -> None:
+    """Provider-acceptability invariant: every ``AIMessage.tool_calls[i].id`` is
+    immediately followed by a ``ToolMessage`` with the matching ``tool_call_id`` —
+    no orphaned ``tool_use`` and no message (e.g. a steer HumanMessage) between a
+    ``tool_use`` and its ``tool_result``."""
+    for i, m in enumerate(messages):
+        if getattr(m, "type", "") == "ai" and getattr(m, "tool_calls", None):
+            expected = [c["id"] for c in m.tool_calls]
+            following = messages[i + 1 : i + 1 + len(expected)]
+            assert all(getattr(x, "type", "") == "tool" for x in following), (
+                f"a non-tool message follows tool_use ids {expected}: {following}"
+            )
+            got = [getattr(x, "tool_call_id", None) for x in following]
+            assert got == expected, (
+                f"tool_use ids {expected} not immediately followed by results {got}"
+            )
+
+
+class _SteerAgent:
+    """T1 fixture: yields ONE settled (text-only) main-graph updates super-step on
+    call 1, then a tool-call super-step on the resume. Records state ops in order."""
+
+    def __init__(self) -> None:
+        self.ops: list[tuple[str, object]] = []
+        self.calls = 0
+
+    def astream(self, payload, config, *, stream_mode=None, subgraphs=False):
+        self.ops.append(("astream", payload))
+        self.calls += 1
+        call = self.calls
+
+        async def _gen():
+            if call == 1:
+                yield ((), "updates", {"model": {"messages": [AIMessage(content="thinking…")]}})
+            else:
+                tool_ai = AIMessage(
+                    content="",
+                    tool_calls=[{"name": "read_file", "id": "c2", "args": {"file_path": "x"}}],
+                )
+                yield ((), "updates", {"model": {"messages": [tool_ai]}})
+
+        return _gen()
+
+    async def aget_state(self, config):
+        # Last message is a text-only AIMessage (no tool_calls) → settled.
+        return SimpleNamespace(values={"messages": [AIMessage(content="thinking…")]})
+
+    async def aupdate_state(self, config, values):
+        self.ops.append(("update", values))
+
+
+@pytest.mark.asyncio
+async def test_steer_seen_before_next_tool():
+    """T1: a steer set at a settled boundary is appended as a HumanMessage BETWEEN
+    the two streams (append then resume with payload=None), and its NOTICE precedes
+    the next super-step's tool call. One DONE closes the (single) turn."""
+    agent = _SteerAgent()
+    driver = _ns_driver(agent)
+    driver.steer_source = _steer_once("use pytest not unittest")
+
+    events = [ev async for ev in driver.run_turn("write a test")]
+
+    # append happens BETWEEN the two astream calls; resume payload is None.
+    assert [op[0] for op in agent.ops] == ["astream", "update", "astream"]
+    assert agent.ops[2][1] is None
+    appended = agent.ops[1][1]["messages"][0]
+    assert appended.type == "human"
+    assert appended.content == "use pytest not unittest"
+
+    # steer NOTICE (data['steer']) lands BEFORE the next tool call.
+    steer_idx = next(
+        i for i, e in enumerate(events)
+        if e.kind is EventKind.NOTICE and e.data.get("steer")
+    )
+    tool_idx = next(
+        i for i, e in enumerate(events)
+        if e.kind is EventKind.TOOL_START and e.text == "read_file"
+    )
+    assert steer_idx < tool_idx
+    assert sum(1 for e in events if e.kind is EventKind.DONE) == 1
+
+
+# NOTE: the T1-companion "steer WHILE a tool call is pending" regression guard is
+# ``test_steer_real_checkpointer_adjacency_invariant`` (below), driven by the REAL
+# AsyncSqliteSaver. A fake agent cannot model aclose()-rollback + resume (a fake has
+# no pending writes, so it would report a settled boundary that the real
+# checkpointer does not), which is precisely how a fixture-based version would give
+# false confidence while the real Critical slipped through — so the guard is the
+# real-checkpointer test, not a fixture.
+
+
+@pytest.mark.asyncio
+async def test_abort_during_applied_steer():
+    """T2: cancelling the turn right after a steer was applied (mid-resume) must not
+    raise and must emit no DONE; the HumanMessage append is durable."""
+    import asyncio
+
+    class _SteerThenHang:
+        def __init__(self) -> None:
+            self.updated = None
+            self.calls = 0
+
+        def astream(self, payload, config, *, stream_mode=None, subgraphs=False):
+            self.calls += 1
+            call = self.calls
+
+            async def _gen():
+                if call == 1:
+                    yield ((), "updates", {"model": {"messages": [AIMessage(content="thinking")]}})
+                else:
+                    await asyncio.sleep(10)
+                    yield ((), "messages", (AIMessage(content="never"),))
+
+            return _gen()
+
+        async def aget_state(self, config):
+            return SimpleNamespace(values={"messages": [AIMessage(content="thinking")]})
+
+        async def aupdate_state(self, config, values):
+            self.updated = values
+
+    agent = _SteerThenHang()
+    driver = _ns_driver(agent)
+    driver.steer_source = _steer_once("actually use pathlib")
+
+    agen = driver.run_turn("go")
+    first = await agen.__anext__()  # the applied-steer NOTICE
+    assert first.kind is EventKind.NOTICE and first.data.get("steer")
+    await agen.aclose()  # cancel mid-resume — must not raise
+
+    assert agent.updated is not None
+    assert agent.updated["messages"][0].content == "actually use pathlib"
+
+
+@pytest.mark.asyncio
+async def test_abort_before_steer_boundary_writes_nothing():
+    """T2-companion: cancelling before the first (settled) boundary — steer never
+    applied — writes nothing to state."""
+    import asyncio
+    import contextlib
+
+    class _HangFirst:
+        def __init__(self) -> None:
+            self.updated = None
+
+        def astream(self, payload, config, *, stream_mode=None, subgraphs=False):
+            async def _gen():
+                await asyncio.sleep(10)
+                yield ((), "updates", {"model": {"messages": [AIMessage(content="x")]}})
+
+            return _gen()
+
+        async def aget_state(self, config):
+            return SimpleNamespace(values={"messages": []})
+
+        async def aupdate_state(self, config, values):
+            self.updated = values
+
+    agent = _HangFirst()
+    driver = _ns_driver(agent)
+    driver.steer_source = _steer_once("late")
+
+    agen = driver.run_turn("go")
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(agen.__anext__(), timeout=0.1)
+    await agen.aclose()
+
+    assert agent.updated is None
+
+
+@pytest.mark.asyncio
+async def test_no_steer_source_is_byte_identical():
+    """A driver with steer_source=None never calls aget_state/aupdate_state for
+    steering — the existing stream path is unchanged."""
+    agent = _SteerAgent()  # has state methods, but steer_source stays None
+    driver = _ns_driver(agent)
+
+    events = [ev async for ev in driver.run_turn("go")]
+
+    # No state append occurred (no steer wired).
+    assert not any(op[0] == "update" for op in agent.ops)
+    assert any(e.kind is EventKind.DONE for e in events)
+
+
+@pytest.mark.asyncio
+async def test_steer_not_consumed_at_subagent_boundary():
+    """A steer targets the MAIN graph only (spec §4): a subagent-subgraph updates
+    boundary (namespace != ()) must NOT consume/inject the steer — it is held for
+    the next MAIN-graph boundary."""
+
+    class _SubThenMain:
+        def __init__(self) -> None:
+            self.ops: list[tuple[str, object]] = []
+
+        def astream(self, payload, config, *, stream_mode=None, subgraphs=False):
+            self.ops.append(("astream", payload))
+            first = len(self.ops) == 1
+
+            async def _gen():
+                if first:
+                    # a subagent (subgraph) model boundary comes FIRST …
+                    yield (_NS_A, "updates", {"model": {"messages": [AIMessage(content="sub")]}})
+                    # … then a MAIN-graph model boundary.
+                    yield ((), "updates", {"model": {"messages": [AIMessage(content="main")]}})
+                else:
+                    yield ((), "messages", (AIMessage(content="done"),))
+
+            return _gen()
+
+        async def aget_state(self, config):
+            return SimpleNamespace(values={"messages": [AIMessage(content="main")]})
+
+        async def aupdate_state(self, config, values):
+            self.ops.append(("update", values))
+
+    agent = _SubThenMain()
+    driver = _ns_driver(agent)
+    driver.steer_source = _steer_once("steer the orchestrator")
+
+    events = [ev async for ev in driver.run_turn("go")]
+
+    # exactly one steer, injected at the MAIN boundary (append is between the two
+    # astream calls — never at the subagent boundary within call 1).
+    assert [op[0] for op in agent.ops] == ["astream", "update", "astream"]
+    assert agent.ops[1][1]["messages"][0].content == "steer the orchestrator"
+    assert sum(1 for e in events if e.kind is EventKind.NOTICE and e.data.get("steer")) == 1
+    assert sum(1 for e in events if e.kind is EventKind.DONE) == 1
+
+
+@pytest.mark.asyncio
+async def test_steer_transcript_ordering():
+    """T3: the steer is recorded in the display transcript as '(steered) …' at the
+    point it was injected — after the turn's prompt and before the next tool call."""
+
+    class _Transcript:
+        def __init__(self) -> None:
+            self.rows: list[tuple[str, str]] = []
+
+        def write_user(self, text, *, ts=None) -> None:
+            self.rows.append(("user", text))
+
+        def write_assistant(self, text, *, ts=None) -> None:
+            self.rows.append(("assistant", text))
+
+        def write_tool(self, name, *, ts=None, args=None, result=None) -> None:
+            self.rows.append(("tool", name))
+
+    agent = _SteerAgent()
+    driver = _ns_driver(agent)
+    driver.transcript = _Transcript()
+    driver.steer_source = _steer_once("switch to pathlib")
+
+    _ = [ev async for ev in driver.run_turn("write a test")]
+
+    rows = driver.transcript.rows
+    assert rows[0] == ("user", "write a test")  # the turn prompt leads
+    steer_row = next(
+        i for i, r in enumerate(rows) if r == ("user", "(steered) switch to pathlib")
+    )
+    tool_row = next(i for i, r in enumerate(rows) if r == ("tool", "read_file"))
+    assert steer_row < tool_row
+
+
+class _SteerAfterTextAgent:
+    """T-4-6 M1 fixture: call 1 STREAMS assistant text, then hits a model-step
+    boundary (AIMessage with tool_calls) where a steer is injected; call 2 streams
+    the real (re-run) answer. Models the abandoned-partial-text scenario."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def astream(self, payload, config, *, stream_mode=None, subgraphs=False):
+        self.calls += 1
+        call = self.calls
+
+        async def _gen():
+            if call == 1:
+                # Assistant streams a partial reply (accumulates into _turn_text)…
+                yield ((), "messages", (_AIChunk("abandoned reply "),))
+                # …then a model-step boundary carrying tool_calls → steer fires here,
+                # rolling this super-step back (its text is discarded from state).
+                yield ((), "updates", {"model": {"messages": [AIMessage(
+                    content="abandoned reply ",
+                    tool_calls=[{"name": "read_file", "id": "c1", "args": {"file_path": "x"}}],
+                )]}})
+            else:
+                # Re-run after the steer: the real answer.
+                yield ((), "messages", (_AIChunk("final answer"),))
+                yield ((), "updates", {"model": {"messages": [AIMessage(content="final answer")]}})
+
+        return _gen()
+
+    async def aget_state(self, config):
+        # Settled boundary (text-only AIMessage) so the steer is injected.
+        return SimpleNamespace(values={"messages": [AIMessage(content="prior")]})
+
+    async def aupdate_state(self, config, values):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_steer_does_not_double_emit_discarded_text():
+    """T-4-6 M1: a steer that interrupts a text-streaming model step must NOT leave
+    the discarded partial text in _turn_text — otherwise the transcript's single
+    assistant line double-emits the abandoned reply concatenated with the re-run
+    reply. State is correct (the rolled-back text isn't in `messages`); this pins
+    transcript fidelity."""
+
+    class _Transcript:
+        def __init__(self) -> None:
+            self.rows: list[tuple[str, str]] = []
+
+        def write_user(self, text, *, ts=None) -> None:
+            self.rows.append(("user", text))
+
+        def write_assistant(self, text, *, ts=None) -> None:
+            self.rows.append(("assistant", text))
+
+        def write_tool(self, name, *, ts=None, args=None, result=None) -> None:
+            self.rows.append(("tool", name))
+
+    agent = _SteerAfterTextAgent()
+    driver = _ns_driver(agent)
+    driver.transcript = _Transcript()
+    driver.steer_source = _steer_once("do it differently")
+
+    _ = [ev async for ev in driver.run_turn("go")]
+
+    assistant_rows = [text for kind, text in driver.transcript.rows if kind == "assistant"]
+    assert assistant_rows, "expected a flushed assistant transcript line"
+    joined = "".join(assistant_rows)
+    # The abandoned (rolled-back) prefix must NOT appear in the transcript.
+    assert "abandoned reply" not in joined, (
+        f"discarded model-step text leaked into the transcript: {assistant_rows!r}"
+    )
+    assert "final answer" in joined
+
+
+# -- T-4-6: real-checkpointer integration (spec §6 risk 1 — the TOP risk) ----
+#
+# The fixture tests above use fake agents; they cannot prove the tool_use/
+# tool_result adjacency invariant against the REAL AsyncSqliteSaver. This builds
+# a trivial model→tools→model graph on a temp state.sqlite, steers DURING the
+# pending tool round, and asserts every AIMessage.tool_calls[i].id is immediately
+# followed by a ToolMessage — no HumanMessage ever separates them — plus a clean
+# resume. This is the exact defect the design review caught in the first draft.
+
+
+@pytest.mark.asyncio
+async def test_steer_real_checkpointer_adjacency_invariant(tmp_path):
+    from langgraph.graph import END, START, MessagesState, StateGraph
+
+    from jarn.memory import create_async_checkpointer
+
+    async def _model(state):
+        # First model call → a tool round; once a tool round exists → final answer.
+        already = any(
+            getattr(m, "type", "") == "ai" and getattr(m, "tool_calls", None)
+            for m in state["messages"]
+        )
+        if not already:
+            return {"messages": [AIMessage(
+                content="",
+                tool_calls=[{"name": "read_file", "id": "c1", "args": {"path": "x"}}],
+            )]}
+        return {"messages": [AIMessage(content="done")]}
+
+    def _route(state):
+        last = state["messages"][-1]
+        if getattr(last, "type", "") == "ai" and getattr(last, "tool_calls", None):
+            return "tools"
+        return END
+
+    async def _tools(state):
+        last = state["messages"][-1]
+        return {"messages": [
+            ToolMessage(content="file contents", tool_call_id=tc["id"], name=tc["name"])
+            for tc in last.tool_calls
+        ]}
+
+    g = StateGraph(MessagesState)
+    g.add_node("model", _model)
+    g.add_node("tools", _tools)
+    g.add_edge(START, "model")
+    g.add_conditional_edges("model", _route, {"tools": "tools", END: END})
+    g.add_edge("tools", "model")
+    saver, saver_cm = await create_async_checkpointer(tmp_path / "state.sqlite")
+    agent = g.compile(checkpointer=saver)
+
+    # steer_source returns None on the FIRST pull (model-node boundary, committed
+    # settled) and the steer on the SECOND (tool-node boundary, committed ends in a
+    # PENDING AIMessage(tool_calls)) — so the steer is pulled DURING the pending
+    # round and must be HELD until the ToolMessage commits.
+    pulls = {"n": 0}
+
+    def _src():
+        pulls["n"] += 1
+        return "stop, use the other file" if pulls["n"] == 2 else None
+
+    driver = SessionDriver(
+        agent=agent,
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="itest",
+        main_model_ref="fake",
+    )
+    driver.steer_source = _src
+
+    try:
+        events = [ev async for ev in driver.run_turn("read the file")]
+
+        # a single steer NOTICE, a single DONE (one turn, clean resume — no orphan).
+        assert sum(1 for e in events if e.kind is EventKind.NOTICE and e.data.get("steer")) == 1
+        assert sum(1 for e in events if e.kind is EventKind.DONE) == 1
+
+        state = await agent.aget_state(driver._config())
+        messages = state.values["messages"]
+        # THE invariant: no HumanMessage between a tool_use and its tool_result.
+        _assert_tool_result_adjacency(messages)
+        # the steer landed AFTER the completed tool round (deferred from the pending
+        # boundary), as a real HumanMessage on the thread.
+        steers = [m for m in messages
+                  if getattr(m, "type", "") == "human" and "other file" in str(m.content)]
+        assert len(steers) == 1
+        types = [m.type for m in messages]
+        # …read_file(ai tool_calls) → tool result → steer → final answer
+        assert types.count("tool") == 1
+        tool_pos = types.index("tool")
+        steer_pos = next(i for i, m in enumerate(messages)
+                         if getattr(m, "type", "") == "human" and "other file" in str(m.content))
+        assert tool_pos < steer_pos  # steer applied only after the tool result landed
+    finally:
+        if saver_cm is not None:
+            await saver_cm.__aexit__(None, None, None)

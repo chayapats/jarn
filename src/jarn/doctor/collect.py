@@ -99,6 +99,10 @@ def collect_doctor(
     providers: list[dict] = []
     for name, prov in cfg.providers.items():
         entry: dict[str, Any] = {"name": name, "type": prov.type.value}
+        # Show the key source (env / keychain / file) — never the raw value.
+        from jarn.onboarding.oauth import key_source as _key_source
+
+        entry["key_source"] = _key_source(prov.api_key)
         try:
             resolve(prov.api_key)
             entry["key_state"] = "key ok"

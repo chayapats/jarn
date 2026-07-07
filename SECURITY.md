@@ -70,6 +70,27 @@ in your project directory when you approve them (or automatically in permissive 
 - **`@url:` mentions:** rewritten to a `web_fetch` instruction at submit time — **no
   pre-fetch occurs** in the REPL.  The agent's gated `web_fetch` tool (subject to the
   permission engine and SSRF guard) performs the actual network request.
+- **`jarn login` (OpenRouter OAuth PKCE):** when you run `jarn login`, a one-shot HTTP
+  server is bound to `127.0.0.1:<random-free-port>` for up to 300 seconds.  It serves
+  a single `/callback` endpoint and exits as soon as the authorization code arrives (or
+  times out).  Security properties: (a) bound to loopback only — no LAN exposure;
+  (b) no client secret is used (public-client PKCE — RFC 7636 S256); (c) the
+  authorization code and PKCE verifier are memory-only and never logged or stored;
+  (d) the raw API key received from OpenRouter is passed directly to `store_secret` and
+  is never written to `config.yaml` — only the opaque reference (`keychain:jarn/openrouter`)
+  is persisted; (e) no secret value appears in the authorize URL (only the PKCE
+  challenge is sent); (f) all printed output passes through `redact_secrets`.
+
+### GitHub Actions issue-fix bot (actor-allowlist requirement)
+
+The `examples/github/issue-fix.yml` workflow runs J.A.R.N. in `yolo` mode and
+pushes commits to a new branch when triggered by an issue comment containing
+`@jarn`.  Because any user can comment on a public issue, this workflow **must**
+gate on `github.event.comment.author_association`.  The example restricts
+execution to `OWNER`, `MEMBER` (org members), and `COLLABORATOR`.  Removing or
+weakening this guard lets arbitrary GitHub users execute code in your CI
+environment and push branches to your repository.  Review the trust model in
+[docs/GITHUB_ACTION.md](docs/GITHUB_ACTION.md) before enabling.
 
 ### Filesystem write scope (`--add-dir` multi-root)
 
@@ -131,6 +152,9 @@ not on the host in `yolo`. We do not claim the pattern set is complete.
 3. Stay in `ask` or `plan` mode for untrusted codebases.
 4. Set `execution.allow_local_fallback: false` if you require sandbox-or-nothing.
 5. Keep `~/.jarn` permissions tight (`chmod 700 ~/.jarn`).
+6. **To fully remove all jarn keys and state** (e.g. when leaving a machine or trial):
+   run `jarn uninstall` — it removes `~/.jarn` and deletes every `jarn/<provider>`
+   OS keychain entry after an itemized confirmation prompt.
 
 ## Dependency security
 

@@ -7,6 +7,14 @@ from pathlib import Path
 
 import yaml
 
+ACTION_YML = Path(__file__).resolve().parent.parent / "action" / "action.yml"
+PR_REVIEW_YML = (
+    Path(__file__).resolve().parent.parent / "examples" / "github" / "pr-review.yml"
+)
+ISSUE_FIX_YML = (
+    Path(__file__).resolve().parent.parent / "examples" / "github" / "issue-fix.yml"
+)
+
 REPO = Path(__file__).resolve().parent.parent
 CI_YML = REPO / ".github" / "workflows" / "ci.yml"
 RELEASE_YML = REPO / ".github" / "workflows" / "release.yml"
@@ -134,3 +142,65 @@ def test_nightly_eval_workflow_exists() -> None:
     assert "secrets.NIGHTLY_EVAL_ENABLED" in gate["env"]["NIGHTLY_EVAL_ENABLED"]
     run_lines = _run_lines(NIGHTLY_YML, "eval")
     assert any("scripts/eval.py" in line for line in run_lines)
+
+
+# ---------------------------------------------------------------------------
+# T-4-7: GitHub Action + PR bot
+# ---------------------------------------------------------------------------
+
+
+def test_action_yaml_valid() -> None:
+    """action/action.yml parses as valid YAML, has required inputs, and pins
+    jarn-cli at the correct major.minor matching version.py."""
+    from jarn.version import __version__
+
+    assert ACTION_YML.exists(), "action/action.yml must exist"
+    doc = yaml.safe_load(ACTION_YML.read_text())
+
+    # Must be a composite action with the required inputs.
+    inputs = doc.get("inputs", {})
+    assert "prompt" in inputs, "action must declare a 'prompt' input"
+    assert inputs["prompt"].get("required") is True, "'prompt' input must be required"
+    assert "api_key" in inputs, "action must declare an 'api_key' input"
+    assert inputs["api_key"].get("required") is True, "'api_key' input must be required"
+
+    # Pinned jarn-cli version must match version.py major.minor (anti-drift guard).
+    major, minor = __version__.split(".")[:2]
+    expected_pin = f"jarn-cli@{major}.{minor}"
+    # Walk all run steps in the composite action.
+    steps = doc.get("runs", {}).get("steps", [])
+    install_step = next(
+        (s for s in steps if isinstance(s, dict) and "run" in s and "npm i" in s["run"]),
+        None,
+    )
+    assert install_step is not None, "action must have an npm install step"
+    assert expected_pin in install_step["run"], (
+        f"action must pin '{expected_pin}' — got: {install_step['run']!r}"
+    )
+
+
+def test_example_workflows_parse() -> None:
+    """pr-review.yml and issue-fix.yml parse as valid YAML, each has a
+    permissions block, and each references secrets.* (hygiene guard)."""
+    for path in (PR_REVIEW_YML, ISSUE_FIX_YML):
+        assert path.exists(), f"{path.name} must exist"
+        doc = yaml.safe_load(path.read_text())
+        raw = path.read_text()
+
+        # Must have a permissions block somewhere in the workflow.
+        assert "permissions" in doc or "permissions" in raw, (
+            f"{path.name} must declare a permissions block"
+        )
+
+        # Must reference secrets.* — never a literal key.
+        assert "secrets." in raw, (
+            f"{path.name} must source API keys from secrets.* (hygiene guard)"
+        )
+
+    # The issue-fix bot grants write access on a comment trigger, so it MUST
+    # keep an actor gate — guard against a refactor silently dropping it.
+    issue_fix_raw = ISSUE_FIX_YML.read_text()
+    assert "author_association" in issue_fix_raw, (
+        "issue-fix.yml must gate on github.event.comment.author_association "
+        "(actor allowlist) so arbitrary users cannot trigger the write-access bot"
+    )

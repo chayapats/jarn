@@ -366,8 +366,20 @@ class CommandMixin:
             else:
                 c.print(f"[{palette.C_NOTICE}]Moved item {fr} → {to}.[/{palette.C_NOTICE}]")
             return
+        if sub == "steer" and len(parts) >= 2:
+            # Mid-turn steering (T-4-6): route the 1-based line into the steer slot
+            # so the running turn sees it before its next tool call.
+            try:
+                idx = int(parts[1])
+            except ValueError:
+                c.print(f"[{palette.C_ERROR}]Usage: /queue steer <n>[/{palette.C_ERROR}]")
+                return
+            ok, msg = self._steer_index(idx)
+            color = palette.C_NOTICE if ok else palette.C_ERROR
+            c.print(f"[{color}]{_rich_escape(msg)}[/{color}]")
+            return
         c.print(
-            f"[{palette.C_ERROR}]Usage: /queue [clear|cancel <n>|move <from> <to>]"
+            f"[{palette.C_ERROR}]Usage: /queue [clear|cancel <n>|move <from> <to>|steer <n>]"
             f"[/{palette.C_ERROR}]"
         )
 

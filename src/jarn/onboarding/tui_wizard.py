@@ -54,6 +54,12 @@ _STORAGE = [
     ("env", "Read from an environment variable (recommended)"),
     ("keychain", "Paste it now → store in the OS keychain"),
 ]
+#: Storage options shown when the provider is OpenRouter — OAuth first.
+_OPENROUTER_STORAGE = [
+    ("oauth", "Log in with browser (recommended)"),
+    ("env", "Read from an environment variable"),
+    ("keychain", "Paste it now → store in the OS keychain"),
+]
 
 
 _PROVIDER_HINTS = {p: provider_hint(p) for p in ALL_PROVIDERS}
@@ -177,6 +183,12 @@ class SetupApp(App):
     def _next_after_storage(self, storage: str) -> str:
         if storage == "keychain":
             return "key"
+        if storage == "oauth":
+            # oauth: key_ref was already set by _handle_oauth_storage;
+            # if it resolved successfully we skip the key step.
+            if self._key_ref_resolves(self.answers.get("key_ref")):
+                return self._next_after_key()
+            return "key"
         # env storage: only continue when the ${ENV} reference actually
         # resolves; otherwise capture a key now so onboarding can't "succeed"
         # while leaving the first turn doomed to fail.
@@ -254,7 +266,15 @@ class SetupApp(App):
             env_label = f"Read from ${env} [green](found in your environment)[/green]"
         else:
             env_label = f"Read from ${env} — set it before launching"
-        items = [("env", env_label), _STORAGE[1]]
+        if prov == "openrouter":
+            # OpenRouter: offer OAuth first, then env, then keychain.
+            items = [
+                ("oauth", "Log in with browser (recommended)"),
+                ("env", env_label),
+                _OPENROUTER_STORAGE[2],  # ("keychain", ...)
+            ]
+        else:
+            items = [("env", env_label), _STORAGE[1]]
         await self._set(f"How should J.A.R.N. read your {prov} API key?",
                         self._option_list(items, self.answers.get("storage")))
 
@@ -443,6 +463,9 @@ class SetupApp(App):
             self.answers["storage"] = key
             if key == "env":
                 self._set_env_key_ref()
+            elif key == "oauth":
+                await self._handle_oauth_storage()
+                return
             await self._goto(self._next_after_storage(key))
         elif step == "model":
             if key == "__manual__":
@@ -528,6 +551,39 @@ class SetupApp(App):
         prov = self.answers["provider"]
         env = PROVIDER_ENV_VARS.get(prov, f"{prov.upper()}_API_KEY")
         self.answers["key_ref"] = f"${{{env}}}"
+
+    async def _handle_oauth_storage(self) -> None:
+        """Launch the OpenRouter OAuth flow from within the TUI wizard.
+
+        Exits the Textual app momentarily to open the browser and run the
+        loopback callback server (blocking), then returns to finish setup.
+        If the flow fails, falls back to the manual key-paste step.
+        """
+        from rich.console import Console as RichConsole
+
+        from jarn.config.secrets import redact_secrets
+        from jarn.onboarding.oauth import login_openrouter
+
+        # Suspend the Textual app while the browser + blocking server run.
+        with self.suspend():
+            rc = RichConsole()
+            rc.print("  Opening your browser for OpenRouter login…")
+            try:
+                result = login_openrouter()
+                self.answers["key_ref"] = result.reference
+                rc.print(
+                    f"  [green]✔[/green] Logged in — key stored as {result.reference}"
+                )
+            except Exception as exc:  # noqa: BLE001
+                rc.print(
+                    f"  [yellow]![/yellow] Browser login failed: "
+                    f"{redact_secrets(str(exc))}. Falling back to manual key entry."
+                )
+                self.answers["storage"] = "keychain"
+                await self._goto("key")
+                return
+
+        await self._goto(self._next_after_storage("oauth"))
 
     def _finish(self) -> None:
         a = self.answers

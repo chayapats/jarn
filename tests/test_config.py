@@ -51,6 +51,23 @@ def test_ui_approval_diff_lines_parsed(tmp_path):
     assert cfg.ui.approval_diff_lines == 12
 
 
+def test_ui_steering_default_true(tmp_path):
+    """Mid-turn steering (T-4-6) is on by default."""
+    cfg = load_config(
+        global_path=tmp_path / "missing-global.yaml",
+        project_path=tmp_path / "missing-project.yaml",
+    )
+    assert cfg.ui.steering is True
+
+
+def test_ui_steering_parsed_false(tmp_path):
+    """ui.steering: false round-trips through the pydantic validator + dataclass."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"ui": {"steering": False}})
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.ui.steering is False
+
+
 def test_global_loaded(tmp_path):
     gp = tmp_path / "g.yaml"
     _write(gp, {"default_profile": "anthropic", "permission_mode": "yolo"})

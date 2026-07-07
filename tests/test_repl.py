@@ -4651,3 +4651,283 @@ async def test_add_dir_checkpoint_stays_primary_only(tmp_path, monkeypatch):
     assert added.resolve() in ctrl.engine.roots  # scope widened
     # …but the checkpoint manager still snapshots ONLY the primary root.
     assert ctrl.checkpoint_manager.repo_root == primary_cp_root
+
+
+# ---------------------------------------------------------------------------
+# T-4-3: crash handler mentions 'jarn bug'
+# ---------------------------------------------------------------------------
+
+
+def test_crash_line_mentions_bug_cmd():
+    """The crash-handler in repl/app.py ends with '— report: jarn bug'.
+
+    Static assertion: grep the source so the test fails immediately when
+    someone removes the pointer without updating the test.
+    """
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parent.parent / "src" / "jarn" / "repl" / "app.py"
+    ).read_text(encoding="utf-8")
+    assert "— report: jarn bug" in source, (
+        "Crash handler in repl/app.py must contain '— report: jarn bug' "
+        "(the em-dash pointer added by T-4-3)"
+    )
+
+
+# -- T-4-6: mid-turn steering — REPL wiring ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_make_driver_wires_steer_source(tmp_path, monkeypatch):
+    """make_driver threads the controller's pull-slot as the driver's steer_source;
+    a slot set by the REPL flows through and the pull is single-shot."""
+    from types import SimpleNamespace
+
+    app = _inline_app(tmp_path, monkeypatch)
+    ctrl = app.controller
+    ctrl.runtime = SimpleNamespace(
+        agent=object(), main_model_ref="x", known_model_refs=(), backend=None,
+    )
+
+    async def _approve(_req):
+        return ApprovalReply(approved=True)
+
+    driver = ctrl.make_driver(_approve)
+    assert driver.steer_source is not None
+    ctrl._steer_slot = "use pathlib"
+    assert driver.steer_source() == "use pathlib"
+    assert ctrl._steer_slot is None  # single-shot pull (never double-applies)
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_cmd_queue_steer_promotes_to_slot(tmp_path, monkeypatch):
+    """`/queue steer <n>` removes the 1-based line from the queue and routes its
+    payload into the steer slot."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.console = Console(file=StringIO(), force_terminal=True, width=100)
+    app._input_queue.append("first", "first-payload")
+    app._input_queue.append("second", "second-payload")
+
+    await app._cmd_queue("steer 1")
+
+    assert app.controller._steer_slot == "first-payload"
+    assert len(app._input_queue) == 1
+    assert app._input_queue.list()[0].display == "second"
+    assert "steered" in app.console.file.getvalue()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_cmd_queue_steer_out_of_range(tmp_path, monkeypatch):
+    """An out-of-range `/queue steer <n>` errors and leaves the queue + slot alone."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.console = Console(file=StringIO(), force_terminal=True, width=100)
+    app._input_queue.append("only", "only-payload")
+
+    await app._cmd_queue("steer 5")
+
+    assert app.controller._steer_slot is None
+    assert len(app._input_queue) == 1
+    assert "No item" in app.console.file.getvalue()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_cmd_queue_steer_disabled_errors_politely(tmp_path, monkeypatch):
+    """With ui.steering false, `/queue steer` refuses politely and touches nothing."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.console = Console(file=StringIO(), force_terminal=True, width=100)
+    app.controller.config.ui.steering = False
+    app._input_queue.append("x", "x-payload")
+
+    await app._cmd_queue("steer 1")
+
+    assert app.controller._steer_slot is None
+    assert len(app._input_queue) == 1  # not consumed
+    assert "disabled" in app.console.file.getvalue().lower()
+    app.controller.close()
+
+
+def test_steer_most_recent_promotes_last(tmp_path, monkeypatch):
+    """[s] steers the MOST recently queued line: pops it, sets the slot, echoes."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.console = Console(file=StringIO(), force_terminal=True, width=100)
+    app._input_queue.append("older", "older-payload")
+    app._input_queue.append("newest", "newest-payload")
+    # Pretend a turn is running so the busy guard passes.
+    app._turn_task = _DoneTask()
+
+    app._steer_most_recent()
+
+    assert app.controller._steer_slot == "newest-payload"
+    assert [i.display for i in app._input_queue.list()] == ["older"]
+    assert "steered" in app.console.file.getvalue()
+    app.controller.close()
+
+
+def test_steer_most_recent_noop_when_idle(tmp_path, monkeypatch):
+    """[s] is a no-op when no turn is running (idle → the line just stays queued)."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app._input_queue.append("x", "x-payload")
+    # _turn_task is None → not busy.
+    app._steer_most_recent()
+    assert app.controller._steer_slot is None
+    assert len(app._input_queue) == 1
+    app.controller.close()
+
+
+def test_steer_most_recent_noop_when_disabled(tmp_path, monkeypatch):
+    """[s] is a no-op when ui.steering is off, even while busy."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.controller.config.ui.steering = False
+    app._input_queue.append("x", "x-payload")
+    app._turn_task = _NeverTask()
+    app._steer_most_recent()
+    assert app.controller._steer_slot is None
+    assert len(app._input_queue) == 1
+    app.controller.close()
+
+
+# -- I5: [s] must never steer an INTERNAL (diagnostics) queue item -----------
+
+
+def test_input_queue_user_count_excludes_internal():
+    """InputQueue.user_count / user_items / cancel_user ignore internal items."""
+    from jarn.tui.input_queue import InputQueue
+
+    q = InputQueue()
+    q.append("user line", "user-payload")
+    q.append("", "diagnostics auto-fix payload", internal=True)
+    assert len(q) == 2
+    assert q.user_count() == 1
+    assert [i.display for i in q.user_items()] == ["user line"]
+    # cancel_user(1) removes the 1st NON-internal item, leaving the internal one.
+    removed = q.cancel_user(1)
+    assert removed is not None and removed.display == "user line"
+    assert q.user_count() == 0
+    assert len(q) == 1  # internal item still present
+    # No more user items → cancel_user is a safe no-op.
+    assert q.cancel_user(1) is None
+
+
+def test_steer_most_recent_skips_internal_item(tmp_path, monkeypatch):
+    """[s] steers the last NON-internal line, never an internal diagnostics item —
+    even when the internal item is the most recently queued (T-4-6 × T-3-3 / I5)."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.console = Console(file=StringIO(), force_terminal=True, width=100)
+    app._input_queue.append("real user line", "user-payload")
+    # An internal diagnostics round queued AFTER the user line (the LAST item).
+    app._input_queue.append("", "Diagnostics after your edits:\n…\nFix them.", internal=True)
+    app._turn_task = _DoneTask()  # busy
+
+    app._steer_most_recent()
+
+    # The user line is steered — NOT the internal payload.
+    assert app.controller._steer_slot == "user-payload"
+    # The internal item is left untouched in the queue.
+    remaining = app._input_queue.list()
+    assert len(remaining) == 1 and remaining[0].internal is True
+    app.controller.close()
+
+
+def test_steer_most_recent_noop_with_only_internal(tmp_path, monkeypatch):
+    """With ONLY an internal item queued, [s] steers nothing (no internal leak)."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.console = Console(file=StringIO(), force_terminal=True, width=100)
+    app._input_queue.append("", "internal diagnostics payload", internal=True)
+    app._turn_task = _DoneTask()
+
+    app._steer_most_recent()
+
+    assert app.controller._steer_slot is None
+    assert len(app._input_queue) == 1  # internal item untouched
+    app.controller.close()
+
+
+def test_steer_key_armed_ignores_internal_only_queue(tmp_path, monkeypatch):
+    """The [s] fastkey predicate is False when only internal items are queued
+    (so a diagnostics round mid-turn never arms [s])."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.controller.config.ui.steering = True
+    app._turn_task = _DoneTask()  # busy
+    app._steer_armed_until = _time_now() + 100  # window wide open
+    app._input_queue.append("", "internal payload", internal=True)
+    assert app._steer_key_armed() is False
+
+
+def test_steer_key_armed_word_initial_s_not_swallowed_after_window(tmp_path, monkeypatch):
+    """I5 word-initial-'s' trap: [s] is armed only for a short window after the
+    `» queued` echo. Once the window expires, the predicate is False so typing a
+    fresh message starting with 's' ("stop", "show me") is routed to the buffer,
+    not swallowed as a steer."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.controller.config.ui.steering = True
+    app._turn_task = _DoneTask()  # busy
+    app._input_queue.append("earlier line", "earlier-payload")
+
+    # Within the arm window → armed.
+    app._steer_armed_until = _time_now() + 100
+    assert app._steer_key_armed() is True
+
+    # Window expired → NOT armed (the 's' keypress types normally).
+    app._steer_armed_until = _time_now() - 1
+    assert app._steer_key_armed() is False
+    app.controller.close()
+
+
+def _time_now() -> float:
+    import time
+    return time.monotonic()
+
+
+@pytest.mark.asyncio
+async def test_leftover_steer_becomes_next_turn(tmp_path, monkeypatch):
+    """A steer slot the (now-ended) turn never consumed runs as the next normal
+    turn via _drain_queue — never lost (spec §3 no-loss fallback)."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.controller._steer_slot = "leftover steer"
+
+    seen: list[str] = []
+
+    async def _fake_handle(text):
+        seen.append(text)
+
+    app._handle = _fake_handle  # type: ignore[assignment]
+    app._turn_task = None  # not busy → drain runs
+
+    app._drain_queue()
+    await asyncio.sleep(0)  # let the created task run
+
+    assert seen == ["leftover steer"]
+    assert app.controller._steer_slot is None  # consumed
+    app.controller.close()
+
+
+def test_cancel_turn_clears_steer_slot(tmp_path, monkeypatch):
+    """_cancel_turn discards any pending steer so it does not resurface as the
+    next turn (spec §3 abort window — REPL-level slot clear in InlineApp).
+    The slot clear is unconditional (not guarded by turn_task) so a sync test
+    with _turn_task=None is sufficient and is the simplest proof of the clear."""
+    app = _inline_app(tmp_path, monkeypatch)
+    # Pre-condition: a steer is pending in the slot.
+    app.controller._steer_slot = "pending guidance"
+    # No in-flight task; the slot-clear path is unconditional — runs regardless.
+    app._turn_task = None
+
+    app._cancel_turn(note_edits=False)
+
+    assert app.controller._steer_slot is None
+    app.controller.close()
+
+
+class _DoneTask:
+    """A stand-in asyncio task that reports NOT done (so _busy() is True)."""
+
+    def done(self) -> bool:
+        return False
+
+
+class _NeverTask(_DoneTask):
+    pass

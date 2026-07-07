@@ -383,6 +383,12 @@ class UIConfig:
     #: Update the terminal-tab title via OSC 2 to show idle / working / approval
     #: states. Disabled when False or when stdout is not a tty.
     terminal_title: bool = True
+    #: Mid-turn steering (T-4-6): while a turn is running, promote a queued line into
+    #: the live turn with the ``[s]`` fastkey or ``/queue steer <n>`` — the agent
+    #: sees it as a new user message before its next tool call (injected only at a
+    #: settled tool boundary). When False, the ``[s] steer now`` affordance is hidden
+    #: and ``/queue steer`` errors politely.
+    steering: bool = True
 
 
 @dataclass(slots=True)
@@ -455,6 +461,22 @@ class CompatConfig:
 
 
 @dataclass(slots=True)
+class UpdatesConfig:
+    """Background update-available check.
+
+    ``check`` (default ``True``) — at interactive launch, a daemon thread
+    checks ``https://pypi.org/pypi/jarn/json`` (2 s timeout) and prints one
+    dim line under the splash when a newer release exists.  The result is
+    cached in ``~/.jarn/update-check.json`` for 24 h so the check never runs
+    twice in a day.  Set to ``False`` to disable entirely; the check is also
+    skipped automatically when the ``offline`` preset is active or when
+    running headless (``jarn -p``).
+    """
+
+    check: bool = True
+
+
+@dataclass(slots=True)
 class Config:
     """The fully-merged configuration handed to the rest of the application."""
 
@@ -496,6 +518,7 @@ class Config:
     verify: VerifyConfig = field(default_factory=VerifyConfig)
     pricing: PricingConfig = field(default_factory=PricingConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
+    updates: UpdatesConfig = field(default_factory=UpdatesConfig)
 
     def resolved_main_model(self) -> str | None:
         """The model used for the top-level agent loop."""

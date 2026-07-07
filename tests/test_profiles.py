@@ -123,6 +123,50 @@ def test_no_profile_returns_none(base_config):
     assert effective is None
 
 
+def test_explicit_permission_mode_beats_preset_default(base_config):
+    """I3: an EXPLICIT --permission-mode overrides the preset's default mode
+    (explicit > preset > config default). The docker-less action recipe passes
+    ``preset: trusted-repo`` (default mode ask) + ``permission_mode: auto-edit``;
+    the explicit mode must win so headless writes are not fail-closed to ask."""
+    cfg = _fresh(base_config)
+    effective = resolve_effective_profile(
+        cfg,
+        project_trusted=True,
+        cli_profile="trusted-repo",
+        cli_permission_mode="auto-edit",
+    )
+    assert effective == "trusted-repo"
+    # The explicit mode wins over the preset's ask default…
+    assert cfg.permission_mode == PermissionMode.AUTO_EDIT
+    # …while the preset still governs the other trust-relevant knobs.
+    assert cfg.execution.local_sandbox == "off"
+    assert cfg.execution.sandbox_allow_network is True
+    assert cfg.policy.web_tools is True
+
+
+def test_explicit_permission_mode_without_preset(base_config):
+    """An explicit mode with no preset simply sets the mode (explicit > config)."""
+    cfg = _fresh(base_config)
+    resolve_effective_profile(
+        cfg, project_trusted=True, cli_permission_mode="yolo"
+    )
+    assert cfg.permission_mode == PermissionMode.YOLO
+
+
+def test_explicit_permission_mode_still_clamped_when_untrusted(base_config):
+    """The untrusted floor beats an explicit mode too — an untrusted project is
+    pinned to plan regardless of --permission-mode."""
+    cfg = _fresh(base_config)
+    effective = resolve_effective_profile(
+        cfg,
+        project_trusted=False,
+        cli_profile="trusted-repo",
+        cli_permission_mode="yolo",
+    )
+    assert effective == UNTRUSTED_FLOOR_PROFILE == "review-only"
+    assert cfg.permission_mode == PermissionMode.PLAN
+
+
 def test_untrusted_floor_forces_review_only(base_config):
     cfg = _fresh(base_config)
     # Even when the CLI asks for the most permissive profile (ci/yolo)…

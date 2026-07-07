@@ -5,9 +5,128 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-07-07
-
 ### Added
+
+- **Public eval story — nightly badge + regression gate (T-4-9)** — "Reliable"
+  now has a public number.  `scripts/eval.py` gains `--summary <path>` (writes
+  `{pass, fail, total, model, cost}` JSON) and `--compare <baseline>` (exits
+  non-zero when regression > 1 task; ≤ 1 is tolerated as a flaky-model
+  allowance). `scripts/eval-badge.py` converts a summary JSON into a shields.io
+  ENDPOINT JSON (`{"schemaVersion":1,"label":"evals","message":"4/4
+  nightly","color":"green"}`). `evals/baseline.json` is now committed in summary
+  format (un-gitignored; current file is a placeholder — refresh with a real
+  nightly run before relying on the regression gate). The nightly workflow
+  (`.github/workflows/nightly.yml`) is extended: it runs the live smoke suite
+  against the pinned `openrouter/deepseek/deepseek-chat` model (API key from the
+  `EVAL_API_KEY` secret scoped to the `nightly-eval` GitHub environment), writes
+  `evals/nightly/<date>.json` + `evals/latest.json` + `evals/badge.json`, commits
+  those to the dedicated **`eval-results`** branch (keeps `main` clean), and on a
+  >1-task regression opens/updates a pinned issue (label `nightly-regression`) —
+  CI stays green (`continue-on-error: true`). A `workflow_dispatch` input
+  `force_regression: true` exercises the pinned-issue path without spending
+  tokens. README badge added: `![evals](https://img.shields.io/endpoint?url=…)`.
+  Verified by `tests/test_eval_harness.py::test_summary_json_shape` and
+  `::test_compare_regression_exit_code` (deterministic, no live model).
+
+- **Demo assets + community files (T-4-8)** — reproducible demo tape
+  (`demo.tape`, charmbracelet/vhs) scripts the money shot: launch → task →
+  plan approval → streamed diff → verified badge (T-3-2) → `/cost`.  The tape
+  sets `JARN_DEMO=1`, which makes `ModelFactory.build_main()`/`build()` return a
+  canned-response chat model (`build_demo_model()` in
+  `src/jarn/providers/models.py`) that bypasses real provider resolution — no
+  API key, no endpoint, no network — and replays a scripted plan → `write_file`
+  tool-call diff → verified badge → cost across successive turns, so the
+  recording is fully deterministic.  Gated ONLY by the env var (`is_demo_active`,
+  `demo_provider_config`); the demo model is never reachable in a normal user
+  session.  Verified by `tests/test_cli.py::test_demo_provider_gated` (the gate)
+  and `tests/test_providers_extra.py::test_demo_mode_wires_canned_model_into_build`
+  (the wiring is consumed) — security invariant: demo mode cannot activate unless
+  `JARN_DEMO=1` is explicitly set.
+  `scripts/record-demo.sh` checks `vhs`/`gifsicle`, records, and optimizes
+  (target < 3 MB).  Community files added: `CODE_OF_CONDUCT.md` (Contributor
+  Covenant 2.1) and root `CONTRIBUTING.md` (pointer to `docs/CONTRIBUTING.md`).
+  README.md + README-TH.md embed `docs/assets/demo.gif` under the logo.
+  **PRE-TAG manual DoD item**: run `./scripts/record-demo.sh` to produce the
+  GIF and commit it before tagging the release — the reference 404s until then.
+
+- **GitHub Action + PR/issue-fix bots (T-4-7)** — J.A.R.N. now ships a
+  composite GitHub Actions action (`action/action.yml`) that runs jarn headless
+  in CI.  Inputs: `prompt` (required), `api_key` (required, from `secrets.*`),
+  `model`, `permission_mode` (default `auto-edit`), `max_turns` (default `15`),
+  `preset` (default `ci`).  Outputs: `result`, `cost_usd`, `turns`.  Two
+  ready-to-use example workflows are included: a PR review bot
+  (`examples/github/pr-review.yml`) that posts a sticky comment on every PR,
+  and an issue-fix bot (`examples/github/issue-fix.yml`) triggered by `@jarn`
+  in an issue comment, guarded by an actor-allowlist (`author_association`
+  OWNER/MEMBER/COLLABORATOR).  A pinned `actionlint` CI job lints all three
+  YAML files on every push/PR.  See [docs/GITHUB_ACTION.md](docs/GITHUB_ACTION.md).
+
+- **Mid-turn steering — inject guidance into a running turn (T-4-6)** — while a turn
+  is running you can now steer it instead of waiting for the next turn: press **`[s]`**
+  (steer now) on a freshly `» queued` line, or run `/queue steer <n>`, to promote that
+  line **into** the live turn.  The steer is appended to the conversation as a new user
+  message and the agent sees it **before its next tool call** — course-correct a long
+  refactor ("actually, use `pathlib`") without cancelling and re-prompting.  It is a
+  cooperative checkpoint: the driver stops the model stream at a **settled tool boundary**
+  (never between a `tool_use` and its `tool_result`), appends the message via
+  `aupdate_state` on the same thread, and resumes — steering re-runs only the in-flight
+  model step with your guidance (one extra model call); completed tool results are never
+  re-run, one turn's cost accounting is preserved, and a steer never strands a tool call.  Only the
+  main graph is steered (never a subagent).  If the turn finishes before the steer lands,
+  it runs as the next turn (never lost); cancelling/aborting discards an unapplied steer.
+  Gated by the new `ui.steering` config key (default `true`); set it `false` to hide the
+  `[s]` affordance and make `/queue steer` decline politely.
+
+- **`jarn uninstall` — full removal of global state and keychain entries (T-4-5)** —
+  running `jarn uninstall` prints an itemized summary (global `~/.jarn` dir size,
+  number of keychain candidates, trust-store entry count) and asks for confirmation
+  before deleting anything.  `--yes` skips the prompt.  Only `~/.jarn` (global state)
+  is removed — project-local `.jarn/` directories are never touched.  Keychain entries
+  for all known providers (`jarn/<provider>`) are deleted via `keyring.delete_password`;
+  missing entries and backend errors are silently tolerated so a single absent entry
+  cannot abort the whole run.  The final message prints the matching package-manager
+  command (`npm uninstall -g jarn-cli` for frozen/npm installs, `pip uninstall jarn`
+  for Python installs).
+
+- **`jarn completions {bash,zsh,fish}` — shell tab-completion (T-4-4)** — running
+  `jarn completions bash|zsh|fish` emits a shell-specific completion script to stdout.
+  The script is generated by introspecting the real argparse parser, so completions
+  automatically cover every subcommand and `--` flag — they can never drift behind the
+  CLI.  Install one-liners: `jarn completions zsh > ~/.zfunc/_jarn` (zsh),
+  `jarn completions bash > ~/.bash_completions/jarn.bash` (bash), or
+  `jarn completions fish > ~/.config/fish/completions/jarn.fish` (fish).  An
+  anti-drift parametrized test (`test_completions_cover_parser[bash|zsh|fish]`) enforces
+  that every current subcommand and long flag appears in each emitted script.
+
+- **`jarn bug` — crash report + GitHub issue pre-fill (T-4-3)** — running `jarn bug`
+  assembles a redacted bug report (`~/.jarn/bug-report.md`) containing the jarn version,
+  platform, `jarn doctor --json` output, and the last 50 log lines, then opens a
+  pre-filled `github.com/chayapats/jarn/issues/new` URL (body ≤ 6 000 chars, HEAD+TAIL
+  truncated with an attach-the-file pointer).  Every included line passes through the
+  central `redact_secrets` helper so no API key or token leaks into the report.  Use
+  `jarn bug --dry-run` to write the file without opening the browser.  The crash handler
+  in the REPL now appends `— report: jarn bug` to the "full traceback →
+  ~/.jarn/logs/jarn.log" line so the path to reporting is always visible after a crash.
+  Adds `.github/ISSUE_TEMPLATE/{bug,feature,config}.yml` and
+  `.github/PULL_REQUEST_TEMPLATE.md`.
+
+- **Update-available notice (T-4-2)** — at interactive launch a daemon thread
+  checks PyPI for a newer `jarn-cli` release (2 s timeout, cached 24 h) and
+  prints one dim line under the splash when a newer version exists.  The
+  notice adapts to the distribution: frozen binary → `npm i -g jarn-cli`;
+  pip install → `pip install -U jarn`.  Skipped automatically under the
+  `offline` preset, headless (`jarn -p`), or when `updates.check: false` in
+  config.  Silent on all network / parse failures.
+
+- **`jarn login` — OpenRouter OAuth PKCE (T-4-1)** — one-command login that opens
+  your browser, catches the OAuth callback on a one-shot loopback listener
+  (`127.0.0.1:<random-port>/callback`), exchanges the PKCE code for an API key, and
+  stores it in the OS keychain.  The raw key never appears in `config.yaml` — only the
+  opaque reference (`keychain:jarn/openrouter`) is stored.  `jarn setup` (TUI wizard)
+  also offers "Log in with browser (recommended)" as the first option on the OpenRouter
+  key screen.  SSH/headless fallback: prints the authorize URL and falls back to manual
+  key paste.  `jarn doctor` now shows the key source (env / keychain / file) for each
+  provider.  See `SECURITY.md` for the PKCE + loopback threat model.
 
 - **`--add-dir` multi-root workspaces (T-3-9)** — the agent's filesystem write scope
   generalizes from a single project root to a set of roots (primary first). Add extra
@@ -114,11 +233,6 @@ All notable changes to J.A.R.N. are documented here. Format follows
   picker shows no extra confirm and behaves exactly as slice 1. New public API:
   `CheckpointManager.find_for_turn` / `restore_to` / `diff_stat` /
   `has_uncheckpointed_changes`; `Controller.fork_to_turn(..., restore_files=)`.
-
-## [0.6.0] - 2026-07-07
-
-### Added
-
 - **`/theme` command + terminal background auto-detection (T-2-10)** — new
   `/theme [dark|light|high-contrast|auto]` command: bare `/theme` opens an
   arrow-key picker (↑/↓ + Enter; Esc cancel) showing the four options with the

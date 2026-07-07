@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time as _time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,7 @@ from jarn.agent.stream_handlers import (
     _provider_of_ref,
     _tool_summary,
     _unpack_stream_item,
+    chunk_has_ai_message,
     classify_error,
     handle_message_chunk,
     handle_update_chunk,
@@ -153,6 +155,13 @@ class SessionDriver:
     #: Accumulates assistant TEXT chunks for the current turn so a single
     #: ``assistant`` event is written per turn rather than one per streaming token.
     _turn_text: str = ""
+    #: Snapshot of ``_turn_text`` at the last COMMITTED super-step boundary. On a
+    #: mid-turn steer, the in-flight model super-step is rolled back by ``aclose()``
+    #: and its streamed text will be re-generated on resume, so ``_turn_text`` is
+    #: truncated back to this snapshot — otherwise the single flushed transcript
+    #: line double-emits the abandoned reply concatenated with the re-run reply
+    #: (T-4-6 M1). State is unaffected; this is transcript/live fidelity only.
+    _committed_turn_text: str = ""
     #: Post-edit verify gate: ``off`` | ``suggest`` | ``auto`` (from config).
     verify_gate: str = "off"
     #: Project root for capability detection (``None`` disables verify).
@@ -198,6 +207,16 @@ class SessionDriver:
     #: end for a no-mutation turn), reaped/detached in ``run_turn``'s cleanup.
     #: ``None`` when idle.
     _snapshot_task: asyncio.Task[Any] | None = field(default=None, repr=False)
+    #: T-4-6 mid-turn steering. A *pull* source of the next pending steer text:
+    #: returns the queued steer (and clears it) or ``None``. The driver consumes it
+    #: only at a SETTLED main-graph tool boundary (see ``_steer_boundary_settled``),
+    #: never whenever the key is pressed — so a steer never strands a ``tool_use``.
+    #: ``None`` disables steering (the pre-existing stream path is byte-identical).
+    steer_source: Callable[[], str | None] | None = None
+    #: A steer pulled from ``steer_source`` but not yet injected (held across a
+    #: pending tool round until the round's ``ToolMessage``s land). ``None`` when
+    #: nothing is held. Reset naturally on injection.
+    _pending_steer: str | None = field(default=None, repr=False)
 
     def _config(self) -> dict[str, Any]:
         return {"configurable": {"thread_id": self.thread_id}}
@@ -248,6 +267,7 @@ class SessionDriver:
         if self.transcript is not None and not resume:
             self.transcript.write_user(user_input, ts=_time.time())
         self._turn_text = ""
+        self._committed_turn_text = ""
         self._verify_dirty = False
         self._edited_paths = set()
         # Fresh subagent-tagging state each turn (correlation is per-turn only).
@@ -313,14 +333,20 @@ class SessionDriver:
         """
         while True:
             interrupts: list[Any] = []
+            # Set True only when a steer was injected this pass, so the loop
+            # re-enters astream(None) without emitting DONE / resolving interrupts.
+            steered = False
             try:
                 # subgraphs=True so output from delegated subagents (the `task`
                 # tool) is also streamed back — otherwise nested subagent replies
                 # never surface and the turn looks like it produced no answer.
-                async for item in self.agent.astream(
+                # Bind the generator (rather than iterating the call inline) so a
+                # mid-turn steer can ``aclose()`` it cleanly at a settled boundary.
+                agen = self.agent.astream(
                     payload, self._config(),
                     stream_mode=["messages", "updates"], subgraphs=True,
-                ):
+                )
+                async for item in agen:
                     namespace, mode, chunk = _unpack_stream_item(item)
                     if mode is None:
                         continue
@@ -364,6 +390,70 @@ class SessionDriver:
                             )
                             return
                     elif mode == "updates":
+                        # T-4-6 mid-turn steering. Inject a pending steer at a SETTLED
+                        # main-graph MODEL-step boundary, checked BEFORE surfacing this
+                        # chunk's (about-to-be-discarded) tool starts. Guards, all
+                        # load-bearing and verified against the real AsyncSqliteSaver
+                        # (see task report — this is the exact Critical the design
+                        # review flagged):
+                        #  * ``not namespace`` — MAIN graph only, never a subagent
+                        #    subgraph (a steer targets the orchestrator).
+                        #  * ``chunk_has_ai_message`` — a MODEL step only. ``aclose()``
+                        #    rolls the in-flight super-step back to the last durable
+                        #    checkpoint: at a model step that lands on the prior round's
+                        #    ToolMessages (settled); at a tool step it lands on a
+                        #    pending AIMessage(tool_calls) (unsettled) and re-closing
+                        #    there would livelock. So we only ever break at a model
+                        #    step and skip tool steps — every completed tool round is
+                        #    preserved; only the in-flight model call is re-run with
+                        #    the steer in state.
+                        #  * ``_steer_boundary_settled()`` — read the committed
+                        #    checkpoint AFTER aclose (a mid-stream read races the
+                        #    running graph and over-reports) and confirm it does not
+                        #    end in a pending AIMessage(tool_calls); appending there
+                        #    would split a tool_use/tool_result pair → next call 400s.
+                        # We pull once and HOLD (``_pending_steer``) across skipped
+                        # tool steps until a settled model boundary.
+                        if self.steer_source is not None and not namespace:
+                            if self._pending_steer is None:
+                                self._pending_steer = self.steer_source()
+                            if self._pending_steer and chunk_has_ai_message(chunk):
+                                # Stop the stream FIRST so the committed checkpoint is
+                                # stable, then confirm it is a settled boundary.
+                                await agen.aclose()
+                                # ``aclose()`` rolled the in-flight model super-step
+                                # back; its streamed text (already in ``_turn_text``)
+                                # will be re-generated on resume, so truncate back to
+                                # the last committed snapshot — else the flushed
+                                # transcript line double-emits it (T-4-6 M1).
+                                self._turn_text = self._committed_turn_text
+                                if await self._steer_boundary_settled():
+                                    from langchain_core.messages import HumanMessage
+
+                                    steer = self._pending_steer
+                                    await self.agent.aupdate_state(
+                                        self._config(),
+                                        {"messages": [HumanMessage(content=steer)]},
+                                    )
+                                    self._pending_steer = None
+                                    if self.transcript is not None:
+                                        self.transcript.write_user(
+                                            f"(steered) {steer}", ts=_time.time()
+                                        )
+                                    yield Event(
+                                        EventKind.NOTICE,
+                                        text=f"(steered) {steer}",
+                                        data={"steer": True},
+                                    )
+                                # Whether we injected or (rare race) found the
+                                # committed checkpoint still unsettled, resume from
+                                # the checkpoint: an injected steer is now in state; an
+                                # un-injected one is HELD and re-checked at the next
+                                # model boundary (skipping the intervening tool step),
+                                # so it can never strand a tool_use.
+                                payload = None
+                                steered = True
+                                break
                         for ev in self._handle_update_chunk(chunk, interrupts, namespace):
                             # Write tool-start events incrementally.
                             if ev.kind is EventKind.TOOL_START and self.transcript is not None:
@@ -373,6 +463,12 @@ class SessionDriver:
                                     args=ev.data.get("args"),
                                 )
                             yield ev
+                        # This super-step's output is committed and will survive a
+                        # future steer's rollback, so its accumulated text is durable:
+                        # advance the committed snapshot (T-4-6 M1). MAIN graph only —
+                        # a subagent subgraph boundary never anchors the main turn's text.
+                        if not namespace:
+                            self._committed_turn_text = self._turn_text
             except Exception as exc:  # noqa: BLE001 - surface to UI, don't crash
                 # Tag retryable provider failures (rate-limit/timeout/5xx/etc.)
                 # so the front-end can transparently fall back to another model
@@ -385,6 +481,12 @@ class SessionDriver:
                     data["provider"] = _provider_of_ref(self.main_model_ref)
                 yield Event(EventKind.ERROR, text=str(exc), data=data)
                 return
+
+            # A steer pass resumes straight into astream(None) — it must not emit
+            # DONE nor run interrupt resolution; the model runs its next super-step
+            # having seen the steer as the last human message in state.
+            if steered:
+                continue
 
             if not interrupts:
                 # Deferred verify: run exactly once after all edits in the turn,
@@ -462,6 +564,58 @@ class SessionDriver:
             notice = self._pending_snapshot_notice()
             if notice is not None:
                 yield notice
+
+    async def _steer_boundary_settled(self) -> bool:
+        """Whether the thread is at a SETTLED tool boundary — safe to append a steer
+        (T-4-6). Returns ``False`` iff the last message is an ``AIMessage`` with
+        unfulfilled ``tool_calls`` (a pending tool round): a HumanMessage appended
+        there would split a ``tool_use`` from its ``tool_result`` and the next model
+        call would 400. A text-only ``AIMessage`` (``tool_calls == []``), a trailing
+        ``ToolMessage``, a ``HumanMessage``, or an empty thread are all settled.
+
+        Reads the latest **committed** checkpoint via ``aget_state_history`` rather
+        than ``aget_state``. This is load-bearing and was proven against the real
+        ``AsyncSqliteSaver`` (see task report): mid-stream, ``aget_state`` applies the
+        just-streamed super-step's *pending* writes on top of the checkpoint, so a
+        tool round that has only STREAMED (``updates`` chunk emitted) — but not yet
+        committed — looks settled, while ``aupdate_state`` / a resume actually branch
+        from the last *committed* checkpoint (still the pending pre-tool round) and
+        strand the ``tool_use``. The committed checkpoint reflects what the append +
+        resume will truly branch from, so gating on it keeps the invariant.
+
+        A fake agent without ``aget_state_history`` (tests) falls back to
+        ``aget_state`` (whose view IS the committed state — fakes have no pending
+        writes); one lacking both is treated as settled so fixtures can drive it. A
+        best-effort read that raises is treated as settled (never wedges the turn)."""
+        history = getattr(self.agent, "aget_state_history", None)
+        if history is not None:
+            try:
+                async for snap in history(self._config(), limit=1):
+                    messages = (getattr(snap, "values", {}) or {}).get("messages", []) or []
+                    return self._messages_settled(messages)
+                return True  # no committed checkpoint yet → settled
+            except Exception:  # noqa: BLE001 - fall back to aget_state on any read error
+                pass
+        get_state = getattr(self.agent, "aget_state", None)
+        if get_state is None:
+            return True
+        try:
+            state = await get_state(self._config())
+        except Exception:  # noqa: BLE001 - best-effort; a read error must not wedge the turn
+            return True
+        messages = (getattr(state, "values", {}) or {}).get("messages", []) or []
+        return self._messages_settled(messages)
+
+    @staticmethod
+    def _messages_settled(messages: list[Any]) -> bool:
+        """A message list is a settled steer boundary unless it ends in an
+        ``AIMessage`` whose ``tool_calls`` are still awaiting their ``ToolMessage``s."""
+        if not messages:
+            return True
+        last = messages[-1]
+        return not (
+            getattr(last, "type", "") == "ai" and getattr(last, "tool_calls", None)
+        )
 
     # -- checkpoint snapshot lifecycle --------------------------------------
 

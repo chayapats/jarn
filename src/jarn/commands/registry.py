@@ -169,7 +169,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "queue",
         "Show or manage queued input lines (while a turn is running).",
         "ui",
-        usage="[clear|cancel <n>|move <from> <to>]",
+        usage="[clear|cancel <n>|move <from> <to>|steer <n>]",
         group="Session",
     ),
     CommandSpec(
