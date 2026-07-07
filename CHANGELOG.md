@@ -5,6 +5,8 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-07
+
 ### Added
 
 - **`/theme` command + terminal background auto-detection (T-2-10)** — new
