@@ -283,6 +283,7 @@ class ExecutionConfigModel(_StrictModel):
     docker_image: str = "python:3.12"
     multimodal: bool = True
     allow_local_fallback: bool = False
+    shell_escape_context: bool = True
     local_sandbox: str = "off"
     sandbox_allow_network: bool = True
     sandbox_writable: list[str] = Field(default_factory=list)
@@ -314,7 +315,8 @@ class ExecutionConfigModel(_StrictModel):
         return raw
 
     @field_validator(
-        "background", "multimodal", "allow_local_fallback", "sandbox_allow_network",
+        "background", "multimodal", "allow_local_fallback", "shell_escape_context",
+        "sandbox_allow_network",
         mode="before",
     )
     @classmethod
@@ -556,11 +558,27 @@ class ObservabilityConfigModel(_StrictModel):
         return raw
 
 
+_VALID_THEME_VALUES: frozenset[str] = frozenset({"dark", "light", "high-contrast", "auto"})
+
+
 class UIConfigModel(_StrictModel):
     theme: str = "dark"
     accent: str = "cyan"
     splash: str = "compact"
     approval_diff_lines: int = 40
+    notify: str = "bell"
+    notify_min_secs: int = 10
+    terminal_title: bool = True
+
+    @field_validator("theme", mode="before")
+    @classmethod
+    def _theme(cls, value: Any) -> str:
+        raw = str(value)
+        if raw not in _VALID_THEME_VALUES:
+            raise ConfigValidationError(
+                f"ui.theme must be one of {sorted(_VALID_THEME_VALUES)} (got {raw!r})."
+            )
+        return raw
 
     @field_validator("splash", mode="before")
     @classmethod
@@ -573,6 +591,33 @@ class UIConfigModel(_StrictModel):
                 f"ui.splash must be one of {sorted(_VALID_SPLASH_VALUES)} (got {raw!r})."
             )
         return raw
+
+    @field_validator("notify", mode="before")
+    @classmethod
+    def _notify(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_NOTIFY_VALUES
+
+        raw = str(value)
+        if raw not in _VALID_NOTIFY_VALUES:
+            raise ConfigValidationError(
+                f"ui.notify must be one of {sorted(_VALID_NOTIFY_VALUES)} (got {raw!r})."
+            )
+        return raw
+
+    @field_validator("notify_min_secs", mode="before")
+    @classmethod
+    def _notify_min_secs(cls, value: Any) -> int:
+        raw = _coerce_int(value, "ui.notify_min_secs")
+        if raw < 0:
+            raise ConfigValidationError(
+                f"ui.notify_min_secs must be >= 0 (got {raw})."
+            )
+        return raw
+
+    @field_validator("terminal_title", mode="before")
+    @classmethod
+    def _terminal_title(cls, value: Any) -> bool:
+        return _normalize_bool(value, "ui.terminal_title")
 
 
 class CompatConfigModel(_StrictModel):
@@ -858,6 +903,7 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             docker_image=model.execution.docker_image,
             multimodal=model.execution.multimodal,
             allow_local_fallback=model.execution.allow_local_fallback,
+            shell_escape_context=model.execution.shell_escape_context,
             local_sandbox=model.execution.local_sandbox,
             sandbox_allow_network=model.execution.sandbox_allow_network,
             sandbox_writable=list(model.execution.sandbox_writable),
@@ -920,6 +966,9 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             accent=model.ui.accent,
             splash=model.ui.splash,
             approval_diff_lines=model.ui.approval_diff_lines,
+            notify=model.ui.notify,
+            notify_min_secs=model.ui.notify_min_secs,
+            terminal_title=model.ui.terminal_title,
         ),
         compat=CompatConfig(
             context_files=list(model.compat.context_files),

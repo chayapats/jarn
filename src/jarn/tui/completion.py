@@ -5,24 +5,26 @@ renders the returned candidates and applies the chosen replacement.
 
 ``@`` mentions are extensible via a small resolver registry.  A bare ``@frag``
 completes file paths (the common case, unchanged); an explicit ``@kind:frag``
-routes to a registered resolver.  The shipped kinds are local and synchronous:
+routes to a registered resolver.  The shipped kinds are:
 
   * ``@frag``          → file/dir paths (FileMentionResolver, kind "file")
   * ``@folder:frag``   → directories only (FolderMentionResolver, kind "folder")
   * ``@symbol:frag``   → symbols from the repo map (SymbolMentionResolver,
                          kind "symbol"); replacement is the agent-readable
                          ``@<rel>:<symbol>`` token.
-
-These are completion-only authoring aids: they insert a precise token that the
-agent resolves with its existing read tools; nothing is pre-expanded into the
-prompt.  TODO(rich-at-mentions): later slices add ``@git`` (sync), then content
-pre-expansion on submit, then ``@url`` / ``@docs`` (async fetch + cache) — each
-needs a different (non-per-keystroke / async) surface, so they are out of scope
-here.
+  * ``@git:subcmd``    → completes status/diff/staged/log; at submit time
+                         ``expand_mentions`` runs the real command and injects
+                         the output as a ``<git-mention>`` block
+                         (GitMentionResolver, kind "git").
+  * ``@url:<url>``     → no keystroke completions (freeform URL); at submit time
+                         ``expand_mentions`` rewrites to a web_fetch instruction
+                         (UrlMentionResolver, kind "url").
 """
 
 from __future__ import annotations
 
+import re
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,6 +40,77 @@ _MODE_CHOICES = ("plan", "ask", "auto-edit", "yolo")
 # keystrokes in the same directory reuses one scan instead of re-running
 # ``iterdir()`` per character.
 _DIR_CACHE_TTL = 1.0
+
+# Characters that mark the start of a new "word" inside a candidate string.
+# A query character matching right after one of these (or at position 0) earns
+# the word-boundary bonus in the fuzzy scorer.
+_WB: frozenset[str] = frozenset("-_./ ")
+
+# Maximum number of candidates returned by the two-tier pipeline (tier 1 prefix
+# matches + tier 2 fuzzy-only matches combined).
+_CAP: int = 10
+
+
+# ---------------------------------------------------------------------------
+# Fuzzy scoring helpers
+# ---------------------------------------------------------------------------
+
+
+def _fuzzy_score(query: str, candidate: str) -> float | None:
+    """Score ``query`` as a subsequence match inside ``candidate``.
+
+    Returns a float score when every character of ``query`` appears in
+    ``candidate`` in order (case-insensitive), or ``None`` when the match
+    fails.  Higher is better.
+
+    Scoring per matched character:
+      * +3  — word-boundary hit: position 0 or preceded by a char in ``_WB``
+      * +1  — adjacent-run continuation (matched at ``prev_ci + 1``)
+      * −0.1 × gap — otherwise, proportional to skipped candidate characters
+    """
+    q = query.lower()
+    c = candidate.lower()
+    score = 0.0
+    qi = 0
+    prev_ci: int | None = None
+
+    for ci, ch in enumerate(c):
+        if qi >= len(q):
+            break
+        if ch == q[qi]:
+            is_wb = ci == 0 or c[ci - 1] in _WB
+            if is_wb:
+                score += 3.0
+            elif prev_ci is not None and ci == prev_ci + 1:
+                score += 1.0  # adjacent run
+            else:
+                gap = ci - (prev_ci + 1 if prev_ci is not None else 0)
+                score -= 0.1 * gap
+            prev_ci = ci
+            qi += 1
+
+    return score if qi == len(q) else None
+
+
+def fuzzy_rank(query: str, candidates: list[str]) -> list[str]:
+    """Return the subset of ``candidates`` that match ``query`` as a subsequence.
+
+    Results are sorted best-first: highest score first, ties broken
+    alphabetically.  Pure and side-effect-free — safe to call on every
+    keystroke over the already-listed candidates (typically ≤ a few hundred).
+
+    ``query`` is matched case-insensitively.  An empty ``query`` returns all
+    candidates in their original order (no filtering, no reranking).
+    """
+    if not query:
+        return list(candidates)
+    scored: list[tuple[float, str, str]] = []
+    for cand in candidates:
+        s = _fuzzy_score(query, cand)
+        if s is not None:
+            scored.append((s, cand.lower(), cand))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    return [t[2] for t in scored]
 
 
 @dataclass(slots=True, frozen=True)
@@ -131,19 +204,34 @@ class CompletionProvider:
         return _FILE_RESOLVER.resolve(self, prefix_text, frag, root)
 
     def _commands(self, prefix: str) -> list[Completion]:
-        prefix = prefix.lower()
-        out: list[Completion] = []
+        prefix_cf = prefix.lower()
+
+        # Tier 1 — prefix matches, sorted alphabetically (original behaviour).
+        tier1: list[str] = []
+        tier1_set: set[str] = set()
         for name in sorted(self.command_catalog):
-            if name.lower().startswith(prefix):
-                out.append(
-                    Completion(
-                        f"/{name}",
-                        f"/{name} ",
-                        "command",
-                        description=self.command_catalog.get(name, ""),
-                    )
-                )
-        return out
+            if name.lower().startswith(prefix_cf):
+                tier1.append(name)
+                tier1_set.add(name)
+
+        # Tier 2 — fuzzy matches not already in tier 1, ranked by score.
+        # NEVER cap tier 1 (prefix/browse matches must all show — bare ``/`` lists
+        # every command); the cap bounds only the tier-2 fuzzy extras. When
+        # len(tier1) >= _CAP, ``slots`` is 0 so fuzzy adds nothing and tier1 stays
+        # complete.
+        remaining = [n for n in self.command_catalog if n not in tier1_set]
+        slots = max(0, _CAP - len(tier1))
+        tier2 = fuzzy_rank(prefix, remaining)[:slots]
+
+        return [
+            Completion(
+                f"/{name}",
+                f"/{name} ",
+                "command",
+                description=self.command_catalog.get(name, ""),
+            )
+            for name in tier1 + tier2
+        ]
 
     def _command_args(self, cmd: str, frag: str, prefix: str) -> list[Completion]:
         """Complete the argument fragment after ``/cmd ``."""
@@ -170,18 +258,27 @@ class CompletionProvider:
             return []
 
         frag_cf = frag.casefold()
-        out: list[Completion] = []
-        for choice in sorted(choices, key=str.casefold):
-            if not choice.casefold().startswith(frag_cf):
-                continue
-            out.append(
-                Completion(
-                    choice,
-                    f"{prefix}{choice}",
-                    "argument",
-                )
-            )
-        return out
+        sorted_choices = sorted(choices, key=str.casefold)
+
+        # Tier 1 — case-insensitive prefix matches (original sorted order).
+        tier1: list[str] = []
+        tier1_set: set[str] = set()
+        for choice in sorted_choices:
+            if choice.casefold().startswith(frag_cf):
+                tier1.append(choice)
+                tier1_set.add(choice)
+
+        # Tier 2 — fuzzy matches not already in tier 1, ranked by score.
+        # Never cap tier 1 (prefix matches all show); the cap bounds only the
+        # tier-2 fuzzy extras (parallel to _commands).
+        remaining = [c for c in sorted_choices if c not in tier1_set]
+        slots = max(0, _CAP - len(tier1))
+        tier2 = fuzzy_rank(frag, remaining)[:slots]
+
+        return [
+            Completion(choice, f"{prefix}{choice}", "argument")
+            for choice in tier1 + tier2
+        ]
 
     def _listing(self, search_dir: Path) -> tuple[Path, ...] | None:
         """Return the sorted entries of ``search_dir``, reusing a brief cache.
@@ -251,20 +348,43 @@ def _walk_entries(
     if entries is None:
         return []
 
-    out: list[Completion] = []
-    for entry in entries:
+    name_prefix_cf = name_prefix.lower()
+
+    def _is_visible(entry: Path) -> bool:
+        """Return True when the entry passes dotfile and dirs-only filters."""
         if dirs_only and not entry.is_dir():
+            return False
+        return not (entry.name.startswith(".") and not name_prefix.startswith("."))
+
+    # Tier 1 — prefix matches (same filter and order as the original code).
+    tier1: list[Path] = []
+    tier1_names: set[str] = set()
+    for entry in entries:
+        if not _is_visible(entry):
             continue
-        if entry.name.startswith(".") and not name_prefix.startswith("."):
-            continue
-        if not entry.name.lower().startswith(name_prefix.lower()):
-            continue
+        if entry.name.lower().startswith(name_prefix_cf):
+            tier1.append(entry)
+            tier1_names.add(entry.name)
+
+    # Tier 2 — fuzzy matches on the name segment, not already in tier 1.
+    # Only apply when the user typed a non-empty name fragment; an empty
+    # fragment (bare ``@``) already lists everything via tier 1.
+    tier2: list[Path] = []
+    if name_prefix:
+        pool = [e for e in entries if _is_visible(e) and e.name not in tier1_names]
+        ranked_names = fuzzy_rank(name_prefix, [e.name for e in pool])
+        name_to_entry = {e.name: e for e in pool}
+        tier2 = [name_to_entry[n] for n in ranked_names if n in name_to_entry]
+
+    cap = provider.max_files
+    out: list[Completion] = []
+    for entry in tier1 + tier2:
+        if len(out) >= cap:
+            break
         rel_str = entry.relative_to(root).as_posix()
         suffix = "/" if entry.is_dir() else ""
         replacement = f"{prefix_text}@{rel_str}{suffix}"
         out.append(Completion(f"@{rel_str}{suffix}", replacement, kind))
-        if len(out) >= provider.max_files:
-            break
     return out
 
 
@@ -318,21 +438,187 @@ class SymbolMentionResolver:
             # for at least one character (same as how unknown prefixes return []).
             return []
         frag_cf = frag.casefold()
-        matches = [
-            ref for ref in build_symbol_index(root)
-            if ref.name.casefold().startswith(frag_cf)
-        ]
-        # Sort deterministically (by name, then file, then container) BEFORE the
-        # cap — otherwise the max_files cut drops matches in arbitrary
-        # git-ls-files order, silently hiding symbols for a common prefix.
-        matches.sort(key=lambda r: (r.name.casefold(), r.rel, r.container))
+        all_refs = list(build_symbol_index(root))
+
+        # Tier 1 — case-insensitive prefix matches, sorted deterministically
+        # (by name, then file, then container) BEFORE the cap — otherwise the
+        # max_files cut drops matches in arbitrary git-ls-files order.
+        tier1 = sorted(
+            [r for r in all_refs if r.name.casefold().startswith(frag_cf)],
+            key=lambda r: (r.name.casefold(), r.rel, r.container),
+        )
+        tier1_names_cf = frozenset(r.name.casefold() for r in tier1)
+
+        # Tier 2 — fuzzy matches on symbol names not already covered by tier 1.
+        tier2_pool = [r for r in all_refs if r.name.casefold() not in tier1_names_cf]
+        unique_names = list(dict.fromkeys(r.name for r in tier2_pool))
+        ranked_names = fuzzy_rank(frag, unique_names)
+        rank_idx = {n.casefold(): i for i, n in enumerate(ranked_names)}
+        tier2 = sorted(
+            [r for r in tier2_pool if r.name.casefold() in rank_idx],
+            key=lambda r: (rank_idx[r.name.casefold()], r.name.casefold(), r.rel, r.container),
+        )
+
         out: list[Completion] = []
-        for ref in matches[: provider.max_files]:
+        for ref in (tier1 + tier2)[: provider.max_files]:
             qualified = f"{ref.container}.{ref.name}" if ref.container else ref.name
             label = f"@{ref.rel}:{qualified}"
             replacement = f"{prefix_text}@{ref.rel}:{ref.name}"
             out.append(Completion(label, replacement, self.kind, description=ref.rel))
         return out
+
+
+@dataclass(slots=True, frozen=True)
+class GitMentionResolver:
+    """``@git:subcmd`` → completes the 4 read-only subcommands.
+
+    Completion-time: returns the known subcommands filtered by the typed
+    fragment.  At submit time ``expand_mentions`` runs the real git command
+    and replaces the token with the output (see the module-level function).
+    """
+
+    kind: str = "git"
+
+    def resolve(
+        self, provider: CompletionProvider, prefix_text: str, frag: str, root: Path
+    ) -> list[Completion]:
+        frag_cf = frag.casefold()
+        out: list[Completion] = []
+        for subcmd in sorted(_GIT_ALLOWLIST):
+            if not frag or subcmd.casefold().startswith(frag_cf):
+                out.append(
+                    Completion(
+                        f"@git:{subcmd}",
+                        f"{prefix_text}@git:{subcmd}",
+                        self.kind,
+                        # Skip argv[0] ("git") AND the injected color-off flags so
+                        # the menu description stays clean ("git status …").
+                        description=(
+                            "git "
+                            + " ".join(_GIT_ALLOWLIST[subcmd][1 + len(_GIT_COLOR_OFF):])
+                        ),
+                    )
+                )
+        return out
+
+
+@dataclass(slots=True, frozen=True)
+class UrlMentionResolver:
+    """``@url:<url>`` → no keystroke completions (freeform URL).
+
+    Registers under kind ``"url"`` so the prefix is recognised by the routing
+    layer rather than falling through to the file resolver.  Expansion to
+    ``fetch <url> with web_fetch and use its content`` happens at submit time
+    via ``expand_mentions``; no network call is made during completion
+    (stays agent-mediated + SSRF-guarded).
+    """
+
+    kind: str = "url"
+
+    def resolve(
+        self, provider: CompletionProvider, prefix_text: str, frag: str, root: Path
+    ) -> list[Completion]:
+        # Freeform — no keystroke completions.
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Fixed read-only argv allowlist for @git: expansion
+# ---------------------------------------------------------------------------
+
+#: Injected right after ``git`` in every allowlist argv so a user's
+#: ``color.ui = always`` config can't bleed ANSI escape codes into the payload
+#: the agent reads.
+_GIT_COLOR_OFF: tuple[str, ...] = ("-c", "color.ui=false")
+
+#: Subcommands exposed via ``@git:``; each maps to a fixed, read-only argv
+#: (no shell, no user-supplied arguments).
+_GIT_ALLOWLIST: dict[str, list[str]] = {
+    "status": ["git", *_GIT_COLOR_OFF, "status", "--porcelain=v1", "-b"],
+    "diff": ["git", *_GIT_COLOR_OFF, "diff"],
+    "staged": ["git", *_GIT_COLOR_OFF, "diff", "--staged"],
+    "log": ["git", *_GIT_COLOR_OFF, "log", "--oneline", "-15"],
+}
+
+_GIT_TIMEOUT: int = 5          # seconds
+_GIT_MAX_CHARS: int = 2_000    # tail-truncate to this many chars
+
+#: Regex matching ``@git:<subcmd>`` and ``@url:<rest>`` tokens; both are
+#: whitespace-terminated (``\S+``) so they survive mid-sentence placement.
+_MENTION_EXPAND_RE: re.Pattern[str] = re.compile(r"@(git|url):(\S+)")
+
+
+def expand_mentions(text: str, project_root: Path | None = None) -> str:
+    """Expand ``@git:X`` and ``@url:X`` tokens at submit time.
+
+    ``@git:X`` — runs the fixed read-only argv for subcommand X, wraps the
+    output in a ``<git-mention X (exit N)>…</git-mention>`` block, and passes
+    the output through the central secret-redaction helper.  Unknown subcommands
+    (not in ``_GIT_ALLOWLIST``) are left verbatim.  The subprocess is called
+    directly (no shell), cwd=project_root, 5 s timeout, output tail-capped at
+    2 000 chars.
+
+    ``@url:https://…`` — pure text rewrite to
+    ``fetch <url> with web_fetch and use its content``; no network call is made
+    here (the agent performs the fetch via its own gated web_fetch tool).
+
+    Tokens are whitespace-delimited (``@kind:\\S+``), consistent with the
+    completion-engine tokenizer.  Multiple mentions in one message all expand
+    in a single pass.  Expansion does not recurse into paste tokens or code
+    fences already present in the text (expansion is a flat regex substitution;
+    it will not match inside previously-expanded ``<git-mention>`` blocks
+    because those blocks do not start with ``@``).
+    """
+    from jarn.config.secrets import redact_secrets  # local import to keep module light
+
+    def _replace(m: re.Match[str]) -> str:
+        kind = m.group(1)
+        rest = m.group(2)
+
+        if kind == "url":
+            # Strip trailing punctuation from the URL before building the instruction,
+            # then append it after so the user's sentence stays intact (e.g., "… content.").
+            stripped_punct = ""
+            while rest and rest[-1] in ".,;:!?)]>'\"":
+                stripped_punct = rest[-1] + stripped_punct
+                rest = rest[:-1]
+            instruction = f"fetch {rest} with web_fetch and use its content"
+            return instruction + stripped_punct
+
+        # kind == "git"
+        argv = _GIT_ALLOWLIST.get(rest)
+        if argv is None:
+            return m.group(0)  # unknown subcommand → left verbatim
+
+        cwd = str(project_root) if project_root is not None else None
+        try:
+            proc = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=_GIT_TIMEOUT,
+                cwd=cwd,
+            )
+            exit_code = proc.returncode
+            output = (proc.stdout or "") + (proc.stderr or "")
+            if len(output) > _GIT_MAX_CHARS:
+                output = output[-_GIT_MAX_CHARS:]
+            output = redact_secrets(output)
+            return f"<git-mention {rest} (exit {exit_code})>\n{output}</git-mention>"
+        except subprocess.TimeoutExpired:
+            return (
+                f"<git-mention {rest} (error: timed out after {_GIT_TIMEOUT}s)>\n"
+                f"git {rest}: timed out after {_GIT_TIMEOUT}s\n"
+                "</git-mention>"
+            )
+        except Exception as exc:  # noqa: BLE001
+            return (
+                f"<git-mention {rest} (error: {exc})>\n"
+                f"git {rest}: {exc}\n"
+                "</git-mention>"
+            )
+
+    return _MENTION_EXPAND_RE.sub(_replace, text)
 
 
 #: The default resolver for a bare ``@frag`` token.
@@ -344,9 +630,11 @@ def _build_registry(*resolvers: MentionResolver) -> dict[str, MentionResolver]:
 
 
 #: Registry of explicit ``@kind:`` mention resolvers, keyed by each resolver's
-#: ``kind``.  Additive — new kinds (e.g. ``@git`` in a later slice) register
-#: here without touching routing or the bare-``@`` file path.
+#: ``kind``.  Additive — new kinds register here without touching routing or
+#: the bare-``@`` file path.
 _RESOLVERS: dict[str, MentionResolver] = _build_registry(
     FolderMentionResolver(),
     SymbolMentionResolver(),
+    GitMentionResolver(),
+    UrlMentionResolver(),
 )

@@ -15,6 +15,71 @@ from jarn.repl import turn as repl_turn
 from jarn.repl.turn import _apply_mode_ref, _apply_model_ref
 from jarn.tui import palette
 
+#: Plan-checklist glyphs — the SINGLE source shared by the live in-turn region
+#: (``app._live_todos_ansi``) and the committed end-of-turn render
+#: (``_render_todos``) so the styling never drifts between the two.
+_TODO_GLYPHS = {
+    "completed": "[#3ee07a]✔[/#3ee07a]",
+    "in_progress": "[#22d3ee]◐[/#22d3ee]",
+    "pending": "[#7c8f94]☐[/#7c8f94]",
+}
+
+
+def _todo_item_line(todo: dict, truncate: int | None) -> str:
+    """One Rich-markup checklist line: ``  <glyph> <content>`` (completed dimmed).
+
+    ``truncate`` (the live region's terminal width) bounds the content to a single
+    line so a long todo can't wrap and blow the height budget; ``None`` (committed
+    render) leaves it to wrap freely, preserving the pre-existing behaviour."""
+    status = todo.get("status", "pending")
+    glyph = _TODO_GLYPHS.get(status, _TODO_GLYPHS["pending"])
+    content = str(todo.get("content", ""))
+    if truncate is not None:
+        limit = max(8, truncate - 4)  # 2-space indent + glyph + space
+        if len(content) > limit:
+            content = content[: limit - 1] + "…"
+    content = _rich_escape(content)
+    if status == "completed":
+        content = f"[{palette.C_DIM}]{content}[/{palette.C_DIM}]"
+    return f"  {glyph} {content}"
+
+
+def format_todos(todos: list[dict], width: int, *, cap: int | None = None) -> list[str]:
+    """Render a plan checklist to Rich-markup lines: ``["⏺ Todos", <item>, …]``.
+
+    Shared by BOTH the live in-turn region and the committed end-of-turn render so
+    glyphs and layout stay identical.
+
+    ``cap`` (live region only) bounds the body to ``cap`` lines so a long plan
+    can't push the input off-screen: completed items collapse to one ``✔ N done``
+    summary, the in-progress + upcoming items fill the remaining budget, and any
+    overflow is elided behind a ``… +N more`` line. ``cap is None`` (committed
+    render) shows every item, unwrapped, exactly as before.
+    """
+    header = f"[{palette.C_TOOL}]⏺[/{palette.C_TOOL}] [bold]Todos[/bold]"
+    lines = [header]
+    trunc = width if cap is not None else None
+    if cap is None or len(todos) <= cap:
+        lines.extend(_todo_item_line(t, trunc) for t in todos)
+        return lines
+    # Windowed live block: keep it focused on what is happening *now*.
+    done = [t for t in todos if t.get("status") == "completed"]
+    tail = [t for t in todos if t.get("status") != "completed"]  # in-progress + pending
+    budget = cap
+    if done:
+        lines.append(
+            f"  {_TODO_GLYPHS['completed']} [{palette.C_DIM}]{len(done)} done[/{palette.C_DIM}]"
+        )
+        budget -= 1
+    if len(tail) > budget:
+        show = max(1, budget - 1)  # reserve a line for the "… +N more" summary
+        lines.extend(_todo_item_line(t, trunc) for t in tail[:show])
+        hidden = len(tail) - show
+        lines.append(f"  [{palette.C_DIM}]… +{hidden} more[/{palette.C_DIM}]")
+    else:
+        lines.extend(_todo_item_line(t, trunc) for t in tail)
+    return lines
+
 
 class CommandMixin:
     """Slash-command dispatch and REPL-only command handlers."""
@@ -37,6 +102,7 @@ class CommandMixin:
                 live_sink=self._set_stream, spinner=False,
                 tool_sink=self._last_tool_outputs,
                 token_sink=self._count_stream_chars,
+                todos_sink=self._on_todos_live,
             )
             await self._render_todos()
             self._maybe_autocheckpoint_hint()
@@ -93,6 +159,9 @@ class CommandMixin:
             return
         if name == "model" and args.strip() in ("refresh", "list"):
             await self._refresh_models()
+            return
+        if name == "theme":
+            await self._cmd_theme(args)
             return
         if name in ("model", "mode") and not args.strip():
             await self._pick_model_or_mode(name)
@@ -151,6 +220,7 @@ class CommandMixin:
             live_sink=self._set_stream, spinner=False,
             tool_sink=self._last_tool_outputs,
             token_sink=self._count_stream_chars,
+            todos_sink=self._on_todos_live,
         )
         await self._render_todos()
         self._maybe_autocheckpoint_hint()
@@ -283,6 +353,8 @@ class CommandMixin:
         typed while a turn is running is queued and only runs once that turn
         (and any HITL interrupt) has settled — no fork of a hanging thread.
         """
+        if self._menu_future is not None and not self._menu_future.done():
+            return
         c = self.console
         try:
             turns = await self.controller.human_turns()
@@ -355,6 +427,7 @@ class CommandMixin:
             live_sink=self._set_stream, spinner=False,
             tool_sink=self._last_tool_outputs,
             token_sink=self._count_stream_chars,
+            todos_sink=self._on_todos_live,
         )
         await self._render_todos()
         self._maybe_autocheckpoint_hint()
@@ -454,6 +527,79 @@ class CommandMixin:
             first = text.splitlines()[0] if text else ""
             self.console.print(f"  [{palette.C_DIM}]⎿ {_rich_escape(first[:80])}[/{palette.C_DIM}]")
 
+    async def _cmd_theme(self, args: str) -> None:
+        """`/theme [dark|light|high-contrast|auto]`: switch the color theme.
+
+        With no argument: opens an arrow-key picker listing all four options;
+        the title shows which theme is currently resolved (for ``auto``, the
+        detected light/dark value is shown in parentheses).
+        With an argument: applies directly (same as ``/config set ui.theme``).
+
+        Applying a theme:
+        1. Re-runs ``palette.configure_ui`` so the toolbar/live region picks up
+           the new colors immediately (already-committed scrollback stays as-is).
+        2. Persists ``ui.theme`` via ``controller.set_setting`` so the choice
+           survives a restart.
+        """
+        c = self.console
+        _VALID = ("dark", "light", "high-contrast", "auto")
+
+        # Resolve "auto" to an actual palette name for display / apply.  The
+        # terminal-background detection runs ONCE at startup (while we still own
+        # the tty) and is cached on the app as ``_detected_theme``; probing again
+        # at runtime would race prompt_toolkit's input reader (junk keystrokes +
+        # wrong fallback), so /theme reuses the cached value instead.
+        def _resolve(name: str) -> str:
+            if name == "auto":
+                return self._detected_theme or "dark"
+            return name
+
+        chosen: str | None = args.strip().lower() if args.strip() else None
+
+        if chosen is None:
+            # Open the arrow-key picker.
+            current = self.controller.config.ui.theme
+            resolved = _resolve(current)
+            if current == "auto":
+                header = (
+                    f"Pick theme (currently: auto → {resolved} (detected at startup)) · "
+                    "↑/↓ · Enter · Esc cancel"
+                )
+            else:
+                header = f"Pick theme (currently: {current}) · ↑/↓ · Enter · Esc cancel"
+            options: list[tuple[str, str | None]] = [
+                ("dark", "dark"),
+                ("light", "light"),
+                ("high-contrast", "high-contrast"),
+                ("auto  (detect from terminal background)", "auto"),
+                ("Cancel", None),
+            ]
+            chosen = await self._pick_menu(options, header=header, cancel_returns=None)
+            if chosen is None:
+                return
+        else:
+            if chosen not in _VALID:
+                c.print(
+                    f"[{palette.C_ERROR}]Unknown theme {chosen!r}. "
+                    f"Valid: dark, light, high-contrast, auto.[/{palette.C_ERROR}]"
+                )
+                return
+
+        # Apply: resolve auto → actual palette name (cached, sync), then configure.
+        palette_name = _resolve(str(chosen))
+        palette.configure_ui(theme=palette_name, accent=self.controller.config.ui.accent)
+
+        # Persist via the standard config-set path.
+        ok, msg = self.controller.set_setting("ui.theme", str(chosen))
+        if ok:
+            c.print(
+                f"[{palette.C_SUCCESS}]Theme set to {chosen!r}"
+                f"{' (→ ' + palette_name + ')' if chosen == 'auto' else ''}."
+                f"[/{palette.C_SUCCESS}]"
+            )
+        else:
+            c.print(f"[{palette.C_ERROR}]{msg}[/{palette.C_ERROR}]")
+
     def _maybe_autocheckpoint_hint(self) -> None:
         """After a turn that wrote a file, show the one-time /undo-unavailable
         hint when autocheckpoint is off (no-op otherwise; self-gates per session)."""
@@ -464,23 +610,18 @@ class CommandMixin:
 
     async def _render_todos(self) -> None:
         """Print the current plan checklist into scrollback after a turn, de-duped
-        so an unchanged list is never reprinted."""
+        so an unchanged list is never reprinted. This committed render REPLACES the
+        transient live block, so the live todos are cleared here (even when there is
+        nothing new to commit) — no duplicate lingering checklist."""
+        self._live_todos = None
         todos = await self.controller.todos()
         sig = repr([(t.get("content"), t.get("status")) for t in todos])
         if not todos or sig == self._last_todos_sig:
             return
         self._last_todos_sig = sig
-        glyphs = {"completed": "[#3ee07a]✔[/#3ee07a]",
-                  "in_progress": "[#22d3ee]◐[/#22d3ee]",
-                  "pending": "[#7c8f94]☐[/#7c8f94]"}
         self.console.print()
-        self.console.print(f"[{palette.C_TOOL}]⏺[/{palette.C_TOOL}] [bold]Todos[/bold]")
-        for t in todos:
-            status = t.get("status", "pending")
-            g = glyphs.get(status, glyphs["pending"])
-            content = _rich_escape(str(t.get("content", "")))
-            body = f"[{palette.C_DIM}]{content}[/{palette.C_DIM}]" if status == "completed" else content
-            self.console.print(f"  {g} {body}")
+        for line in format_todos(todos, self.console.width):
+            self.console.print(line)
 
     async def _shell_escape(self, command: str) -> None:
         """Run a ``! <cmd>`` shell escape directly — no agent round-trip, no tokens.
@@ -490,6 +631,11 @@ class CommandMixin:
         is printed to the scrollback console.  Reuses
         :class:`~jarn.agent.local_backend.CancellableLocalShellBackend` so
         truncation and Esc/cancel behaviour match the agent's Bash tool.
+
+        When ``execution.shell_escape_context`` is on (default), the tail of the
+        output (last 50 lines / 2,000 chars, whichever is smaller) is also
+        secret-redacted and stored on the controller so the next agent turn sees
+        what the user ran (see :meth:`Controller.enrich_turn_input`).
         """
         c = self.console
         if not command:
@@ -508,5 +654,22 @@ class CommandMixin:
         backend = CancellableLocalShellBackend(str(cwd))
         # execute is blocking; offload to a thread so the event-loop stays live
         # (Esc can still fire while the command runs).
-        response = await asyncio.to_thread(backend.execute, command)
+        try:
+            response = await asyncio.to_thread(backend.execute, command)
+        except asyncio.CancelledError:
+            # Esc/cancel hit while the shell command was running.  Print feedback
+            # (the renderer owns "cancelled" for agent turns; the shell path has no
+            # renderer, so we own the message here) then re-raise so the event-loop
+            # sees the cancellation.
+            c.print(f"[{palette.C_DIM}]interrupted[/{palette.C_DIM}]")
+            raise
         c.print(response.output)
+        if self.controller.config.execution.shell_escape_context:
+            raw = response.output or ""
+            lines = raw.splitlines()[-50:]
+            tail = "\n".join(lines)[-2000:]
+            from jarn.config.secrets import redact_secrets
+            from jarn.controller.core import ShellNote
+            self.controller.pending_shell_context.append(
+                ShellNote(cmd=command, exit_code=response.exit_code, tail=redact_secrets(tail))
+            )

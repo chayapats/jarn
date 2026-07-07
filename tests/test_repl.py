@@ -494,6 +494,46 @@ def test_inline_expanded_text(tmp_path, monkeypatch):
     app.controller.close()
 
 
+@pytest.mark.asyncio
+async def test_single_stop_message(tmp_path, monkeypatch):
+    """Cancelling an agent turn yields exactly one stop message — renderer owns it."""
+    from jarn.repl.turn import _run_turn as _rt
+
+    ctrl = _controller(tmp_path, monkeypatch)
+
+    async def _noop_runtime() -> None:
+        return None
+
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+
+    async def _slow_stream():
+        yield Event(EventKind.TEXT, "starting…")
+        await asyncio.sleep(10)  # long wait — will be cancelled here
+
+    class _SlowDriver:
+        def run_turn(self, text, *, resume=False):
+            return _slow_stream()
+
+    monkeypatch.setattr(ctrl, "make_driver", lambda approver: _SlowDriver())
+
+    console = Console(file=StringIO(), width=80)
+
+    task = asyncio.create_task(
+        _rt(console, ctrl, "hi", _ask_returning(""), live_sink=lambda s: None, spinner=False)
+    )
+    await asyncio.sleep(0.05)  # let the turn start
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    out = console.file.getvalue()
+    stop_words = ["cancelled", "interrupted"]
+    count = sum(out.count(w) for w in stop_words)
+    assert count == 1, f"expected 1 stop message, got {count}: {out!r}"
+    assert "cancelled" in out, f"renderer should own the cancel message: {out!r}"
+    ctrl.close()
+
+
 def test_tool_sink_accumulates_live():
     """Tool outputs append to a provided sink as they arrive (mid-turn Ctrl+O)."""
     from jarn.repl_renderer import TurnRenderer as _TurnRenderer
@@ -1384,6 +1424,136 @@ def test_stream_control_empty_buffer_has_no_leading_blank_line(tmp_path, monkeyp
     app.controller.close()
 
 
+def test_todos_capped_in_live_region(tmp_path, monkeypatch):
+    """A long plan (20 todos) is capped in the live region to a bounded block —
+    at most 8 body lines plus a "… +N more" summary — so it can't push the input
+    and toolbar off-screen.  The committed end-of-turn render still shows all 20."""
+    from jarn import repl
+    from jarn.repl.commands import format_todos
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+
+    todos = (
+        [{"content": f"done step {i}", "status": "completed"} for i in range(3)]
+        + [{"content": "active step", "status": "in_progress"}]
+        + [{"content": f"pending step {i}", "status": "pending"} for i in range(16)]
+    )  # 20 items total
+
+    # Pure formatter: the live cap bounds the body to <= 8 lines (+ header).
+    capped = format_todos(todos, 80, cap=8)
+    body = capped[1:]                                # drop the "⏺ Todos" header
+    assert len(body) <= 8
+    assert any("more" in line for line in body)      # elision summary present
+    assert any("active step" in line for line in capped)   # active item stays visible
+    # Not every pending item is shown — some are elided behind "… +N more".
+    assert not all(f"pending step {i}" in "".join(capped) for i in range(16))
+
+    # The committed render (no cap) still shows the whole list.
+    full = format_todos(todos, 80)
+    assert all(any(f"pending step {i}" in line for line in full) for i in range(16))
+
+    # And through the live region itself (busy + live todos stored).
+    monkeypatch.setattr(app, "_busy", lambda: True)
+    app._live_todos = todos
+    rendered = app._stream_control().value
+    assert "more" in rendered
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_todos_update_live(tmp_path, monkeypatch):
+    """A write_todos TOOL_END mid-turn shows the checklist LIVE above the input
+    (◐ on the in-progress item); a second write_todos updates it IN PLACE with no
+    scrollback commit between; the final checklist commits once at turn end and
+    clears the live block."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(app.controller, "ensure_runtime", _noop_runtime)
+
+    first = [
+        {"content": "parse input", "status": "in_progress"},
+        {"content": "write output", "status": "pending"},
+    ]
+    second = [
+        {"content": "parse input", "status": "completed"},
+        {"content": "write output", "status": "in_progress"},
+    ]
+    # Two sink calls (one per write_todos) + one end-of-turn commit read.
+    todos_queue = [first, second, second]
+
+    async def _fake_todos():
+        return todos_queue.pop(0)
+    monkeypatch.setattr(app.controller, "todos", _fake_todos)
+
+    # The live region only composes while a turn is in flight.
+    monkeypatch.setattr(app, "_busy", lambda: True)
+
+    # Snapshot the live region right after each write_todos update.
+    snaps: list[str] = []
+
+    async def _rec_sink():
+        await app._on_todos_live()
+        snaps.append(app._stream_control().value)
+
+    events = [
+        Event(EventKind.TOOL_START, "write_todos", {"args": {}}),
+        Event(EventKind.TOOL_END, "write_todos", {"summary": "2 todos"}),
+        Event(EventKind.TEXT, "working through the plan"),
+        Event(EventKind.TOOL_START, "read_file", {"args": {"path": "x"}}),
+        Event(EventKind.TOOL_END, "read_file", {"summary": "1 line"}),   # must NOT trigger the sink
+        Event(EventKind.TOOL_START, "write_todos", {"args": {}}),
+        Event(EventKind.TOOL_END, "write_todos", {"summary": "2 todos"}),
+        Event(EventKind.DONE),
+    ]
+    monkeypatch.setattr(app.controller, "make_driver", lambda approver: _FakeDriver(events))
+
+    console = Console(file=StringIO(), width=80)
+    app.console = console
+    await repl._run_turn(
+        console, app.controller, "hi", _ask_returning(""),
+        live_sink=app._set_stream, token_sink=app._count_stream_chars,
+        todos_sink=_rec_sink,
+    )
+
+    # Sink fired exactly twice — once per write_todos, never for read_file.
+    assert len(snaps) == 2
+    # First update: both items shown with ◐ on the in-progress "parse input".
+    assert "◐" in snaps[0] and "parse input" in snaps[0]
+    # Second update in place: "parse input" now ✔, ◐ moved to "write output".
+    assert "✔" in snaps[1] and "◐" in snaps[1] and "write output" in snaps[1]
+    # No committed "⏺ Todos" block landed in scrollback DURING the turn.
+    assert "Todos" not in console.file.getvalue()
+
+    # Prose streams BELOW the todos block in the live region.
+    app._live_todos = second
+    app._set_stream("here is some prose")
+    composed = app._stream_control().value
+    assert composed.index("write output") < composed.index("here is some prose")
+
+    # Turn end: the committed render lands once and clears the live block.
+    await app._render_todos()
+    committed = console.file.getvalue()
+    assert "Todos" in committed
+    assert app._live_todos is None
+    app.controller.close()
+
+
 @pytest.mark.asyncio
 async def test_pick_model_qualifies_vendor_prefixed_ref(tmp_path, monkeypatch):
     """A custom ref whose first segment isn't a configured provider profile is
@@ -1562,7 +1732,7 @@ def test_pastes_cleared_after_expand(tmp_path, monkeypatch):
         routing=RoutingConfig(main="openrouter/m"),
     )
     app = repl.InlineApp(cfg, root)
-    token = "[Pasted #1: 5 lines]"
+    token = "[Pasted text #1 +5 lines]"
     app._pastes[token] = "line one\nline two\nline three"
     expanded = app._expand_pastes(token)
     app._pastes.clear()
@@ -1612,6 +1782,54 @@ async def test_shell_escape_bare_bang_prints_hint(tmp_path, monkeypatch):
     await app._shell_escape("")
     out = buf.getvalue()
     assert "!" in out  # hint mentions the ! prefix
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_shell_escape_cancel_prints_interrupted(tmp_path, monkeypatch):
+    """Cancelling a running ! command prints exactly one 'interrupted' line.
+
+    Before the fix _shell_escape let CancelledError propagate silently; the
+    _handle except block just passed.  After the fix _shell_escape catches
+    CancelledError, prints the dim 'interrupted' line, and re-raises so the
+    event-loop still knows the task was cancelled.
+
+    Also confirms the agent-turn path is unaffected: test_single_stop_message
+    verifies that path still prints exactly one 'cancelled' (renderer-owned).
+    """
+    import asyncio as _asyncio
+
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    buf = StringIO()
+    app.console = Console(file=buf, width=80)
+
+    # Patch asyncio.to_thread so the shell backend "blocks" via a slow coroutine —
+    # this makes Esc/cancel hit exactly the await point in _shell_escape.
+    async def _slow_to_thread(fn, *args, **kwargs):  # noqa: ARG001
+        await _asyncio.sleep(10)
+
+    monkeypatch.setattr("asyncio.to_thread", _slow_to_thread)
+
+    task = _asyncio.create_task(app._shell_escape("sleep 10"))
+    await _asyncio.sleep(0.05)   # let the task reach the blocking await
+    task.cancel()
+    with contextlib.suppress(_asyncio.CancelledError):
+        await task
+
+    out = buf.getvalue()
+    assert "interrupted" in out, f"expected 'interrupted' in output, got: {out!r}"
+    count = out.count("interrupted")
+    assert count == 1, f"expected exactly 1 'interrupted', got {count}: {out!r}"
     app.controller.close()
 
 
@@ -2496,3 +2714,1258 @@ def test_commit_width_tracks_resize(monkeypatch):
         lambda *_a, **_k: os.terminal_size((0, 24)),
     )
     assert _current_width() == 1, f"expected 1 (floor guard for 0 cols), got {_current_width()}"
+
+
+# ── T-2-1: Turn-end + approval notifications (bell / desktop) ──────────────
+
+
+def _make_notify_app(tmp_path, monkeypatch, *, notify="bell", notify_min_secs=10):
+    """InlineApp with configurable ui.notify / ui.notify_min_secs for T-2-1 tests."""
+    from jarn import repl
+    from jarn.config.schema import Config, ProviderConfig, ProviderType, RoutingConfig, UIConfig
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+        ui=UIConfig(notify=notify, notify_min_secs=notify_min_secs),
+    )
+    app = repl.InlineApp(cfg, root)
+    app.console = Console(file=StringIO(), width=80)
+    return app
+
+
+def _stub_agent_turn(app, monkeypatch):
+    """Stub controller so _handle's agent-turn branch completes immediately."""
+
+    async def _noop_runtime():
+        return None
+
+    monkeypatch.setattr(app.controller, "ensure_runtime", _noop_runtime)
+    events = [Event(EventKind.TEXT, "done"), Event(EventKind.DONE)]
+    monkeypatch.setattr(app.controller, "make_driver", lambda approver: _FakeDriver(events))
+
+
+@pytest.mark.asyncio
+async def test_bell_on_long_turn(tmp_path, monkeypatch):
+    """A turn that exceeds notify_min_secs emits exactly one BEL to the console."""
+    import time
+
+    app = _make_notify_app(tmp_path, monkeypatch, notify="bell", notify_min_secs=10)
+    _stub_agent_turn(app, monkeypatch)
+
+    # Fake turn start 15 seconds in the past so elapsed > 10.
+    app._turn_start = time.monotonic() - 15.0
+
+    await app._handle("write me a test")
+
+    out = app.console.file.getvalue()
+    assert out.count("\a") == 1, f"expected exactly 1 BEL, got {out.count(chr(7))!r}"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_no_bell_fast_turn(tmp_path, monkeypatch):
+    """A turn that completes before notify_min_secs emits no BEL."""
+    import time
+
+    app = _make_notify_app(tmp_path, monkeypatch, notify="bell", notify_min_secs=10)
+    _stub_agent_turn(app, monkeypatch)
+
+    # Turn started only 2 seconds ago — under the 10-second threshold.
+    app._turn_start = time.monotonic() - 2.0
+
+    await app._handle("quick question")
+
+    out = app.console.file.getvalue()
+    assert "\a" not in out, "fast turn must not emit BEL"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_bell_on_approval(tmp_path, monkeypatch):
+    """An approval prompt emits one BEL regardless of elapsed time."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    ctrl.config.ui.notify = "bell"
+    console = Console(file=StringIO(), width=80)
+
+    request = ApprovalRequest(
+        action=Action(ActionKind.SHELL, "npm test"),
+        result=PermissionResult(Decision.ASK, "ask mode"),
+    )
+    await repl._approve(console, ctrl, request, ask=_ask_returning("r"))
+
+    out = console.file.getvalue()
+    assert "\a" in out, "approval prompt must emit BEL"
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_notify_off_silent(tmp_path, monkeypatch):
+    """With ui.notify: off, neither a long turn nor an approval emits BEL."""
+    import time
+
+    from jarn import repl
+    from jarn.config.schema import Config, ProviderConfig, ProviderType, RoutingConfig, UIConfig
+    from jarn.tui.controller import Controller
+
+    # Long-turn path (app._handle).
+    app = _make_notify_app(tmp_path, monkeypatch, notify="off", notify_min_secs=0)
+    _stub_agent_turn(app, monkeypatch)
+    app._turn_start = time.monotonic() - 20.0
+    await app._handle("test")
+    assert "\a" not in app.console.file.getvalue(), "notify:off must suppress turn BEL"
+    app.controller.close()
+
+    # Approval path (_approve) — use a separate project root to avoid directory conflict.
+    root2 = tmp_path / "proj2"
+    (root2 / ".jarn").mkdir(parents=True)
+    cfg2 = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+        ui=UIConfig(notify="off"),
+    )
+    ctrl2 = Controller(cfg2, root2)
+    console2 = Console(file=StringIO(), width=80)
+    request2 = ApprovalRequest(
+        action=Action(ActionKind.SHELL, "ls"),
+        result=PermissionResult(Decision.ASK, "ask mode"),
+    )
+    await repl._approve(console2, ctrl2, request2, ask=_ask_returning("r"))
+    assert "\a" not in console2.file.getvalue(), "notify:off must suppress approval BEL"
+    ctrl2.close()
+
+
+def test_desktop_notify_no_subprocess_when_binary_missing(tmp_path, monkeypatch):
+    """Desktop mode spawns no subprocess when the notification binary is absent."""
+    import subprocess
+
+    from jarn.config.schema import UIConfig
+    from jarn.tui.notify import notify
+
+    spawned: list = []
+
+    def _fake_popen(cmd, **kwargs):
+        spawned.append(cmd)
+
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+    # Patch shutil.which so every binary lookup returns None (nothing installed).
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    settings = UIConfig(notify="desktop", notify_min_secs=0)
+    # Should not raise, and must not have called Popen.
+    notify("turn_done", settings, elapsed=20.0, write=lambda s: None)
+    assert spawned == [], f"expected no Popen calls, got {spawned}"
+
+
+@pytest.mark.asyncio
+async def test_bell_on_plan_approval(tmp_path, monkeypatch):
+    """A plan-type approval prompt emits one BEL regardless of elapsed time."""
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    ctrl.config.ui.notify = "bell"
+    console = Console(file=StringIO(), width=80)
+
+    request = ApprovalRequest(
+        action=Action(ActionKind.SHELL, "npm test"),
+        result=PermissionResult(Decision.ASK, "ask mode"),
+        plan="Step 1: analyze\nStep 2: execute",
+    )
+    await repl._approve(console, ctrl, request, ask=_ask_returning("r"))
+
+    out = console.file.getvalue()
+    assert "\a" in out, "plan approval prompt must emit BEL"
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_notify_min_secs_zero_always_notifies(tmp_path, monkeypatch):
+    """With ui.notify_min_secs=0, a fast turn (elapsed ~0) still emits the turn-end BEL."""
+    import time
+
+    app = _make_notify_app(tmp_path, monkeypatch, notify="bell", notify_min_secs=0)
+    _stub_agent_turn(app, monkeypatch)
+
+    # Turn started just now — elapsed is ~0, but with notify_min_secs=0 it should still notify.
+    app._turn_start = time.monotonic()
+
+    await app._handle("fast question")
+
+    out = app.console.file.getvalue()
+    assert out.count("\a") == 1, f"expected exactly 1 BEL, got {out.count(chr(7))!r}"
+    app.controller.close()
+
+
+# ── T-2-2: Terminal-title state via OSC 2 ──────────────────────────────────
+
+
+def _extract_osc2(text: str) -> list[str]:
+    """Extract OSC 2 title contents from escape-sequence text."""
+    import re
+
+    return re.findall(r"\x1b\]2;(.*?)\x07", text)
+
+
+def _make_title_app(tmp_path, monkeypatch, *, terminal_title: bool = True):
+    """InlineApp with configurable ui.terminal_title for T-2-2 tests."""
+    from jarn import repl
+    from jarn.config.schema import Config, ProviderConfig, ProviderType, RoutingConfig, UIConfig
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+        ui=UIConfig(terminal_title=terminal_title),
+    )
+    app = repl.InlineApp(cfg, root)
+    app.console = Console(file=StringIO(), width=80)
+    return app
+
+
+@pytest.mark.asyncio
+async def test_title_sequences_over_turn_lifecycle(tmp_path, monkeypatch):
+    """OSC 2 title sequences follow the full turn lifecycle:
+    working on turn start, ⏸ on approval, working on approval resolve, idle on finish.
+    Quit emits plain 'jarn'. Disabled and non-tty variants emit nothing.
+    """
+    from jarn.agent.session import ApprovalReply
+    from jarn.permissions import Action, ActionKind, Decision, PermissionResult
+
+    app = _make_title_app(tmp_path, monkeypatch)
+    # Fake a TTY so set_title actually emits sequences.
+    monkeypatch.setattr(app, "_title_isatty", lambda: True)
+
+    proj = app.controller.project_root.name  # "proj"
+
+    async def _noop_runtime():
+        return None
+
+    monkeypatch.setattr(app.controller, "ensure_runtime", _noop_runtime)
+
+    # Fake driver: emits text, triggers one approval, then finishes.
+    _approval_req = ApprovalRequest(
+        action=Action(ActionKind.SHELL, "npm test"),
+        result=PermissionResult(Decision.ASK, "ask mode"),
+    )
+
+    def _make_driver(approver):
+        class _Driver:
+            async def run_turn(self, text, *, resume=False):
+                yield Event(EventKind.TEXT, "before approval")
+                await approver(_approval_req)
+                yield Event(EventKind.TEXT, "after approval")
+                yield Event(EventKind.DONE)
+
+        return _Driver()
+
+    monkeypatch.setattr(app.controller, "make_driver", _make_driver)
+
+    # Auto-approve so the approval prompt resolves immediately.
+    async def _auto_approve(options):
+        return next(v for _, v in options if isinstance(v, ApprovalReply) and v.approved)
+
+    monkeypatch.setattr(app, "_pick_approval", _auto_approve)
+
+    await app._handle("do something")
+
+    seqs = _extract_osc2(app.console.file.getvalue())
+    assert len(seqs) >= 4, f"expected ≥4 OSC 2 sequences, got: {seqs!r}"
+    assert seqs[0] == f"✳ jarn — {proj}", (
+        f"turn start must set working title, got {seqs[0]!r}"
+    )
+    assert seqs[1] == f"⏸ jarn — {proj}", (
+        f"approval must set pause title, got {seqs[1]!r}"
+    )
+    assert seqs[2] == f"✳ jarn — {proj}", (
+        f"after approval must restore working, got {seqs[2]!r}"
+    )
+    assert seqs[3] == f"jarn — {proj}", (
+        f"turn finish must set idle title, got {seqs[3]!r}"
+    )
+
+    # Quit resets to plain "jarn" (no project suffix).
+    app.console = Console(file=StringIO(), width=80)
+    app._title_hook("quit")
+    quit_seqs = _extract_osc2(app.console.file.getvalue())
+    assert quit_seqs == ["jarn"], f"quit must emit plain 'jarn', got {quit_seqs!r}"
+
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_title_disabled_emits_nothing(tmp_path, monkeypatch):
+    """With ui.terminal_title: false no OSC 2 sequences are emitted."""
+    app = _make_title_app(tmp_path, monkeypatch, terminal_title=False)
+    monkeypatch.setattr(app, "_title_isatty", lambda: True)
+    _stub_agent_turn(app, monkeypatch)
+    await app._handle("hi")
+    assert "\x1b]2;" not in app.console.file.getvalue(), (
+        "terminal_title:false must suppress OSC 2 sequences"
+    )
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_title_non_tty_emits_nothing(tmp_path, monkeypatch):
+    """When isatty returns False no OSC 2 sequences are emitted (even when enabled)."""
+    app = _make_title_app(tmp_path, monkeypatch)
+    # _title_isatty NOT patched — StringIO.isatty() returns False
+    _stub_agent_turn(app, monkeypatch)
+    await app._handle("hi")
+    assert "\x1b]2;" not in app.console.file.getvalue(), (
+        "non-tty must suppress OSC 2 sequences"
+    )
+    app.controller.close()
+
+
+# ---------------------------------------------------------------------------
+# T-2-4 — ghost autosuggest + Ctrl+R history picker
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_autosuggest_ghost(tmp_path, monkeypatch):
+    """Buffer has AutoSuggestFromHistory; history 'fix the tests' → suggestion
+    ' the tests'; Right-arrow at end (with suggestion visible) accepts it.
+    (Async so complete_while_typing has a running loop to schedule on.)"""
+    from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+    from prompt_toolkit.document import Document
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    # The buffer must be configured with AutoSuggestFromHistory.
+    assert isinstance(app.input.auto_suggest, AutoSuggestFromHistory)
+
+    # Populate history with a known entry.
+    app.input.history.append_string("fix the tests")
+
+    # Set the buffer text directly (avoids needing a running event loop for
+    # insert_text which triggers the async autosuggest coroutine).
+    app.input.set_document(Document("fix", 3), bypass_readonly=False)
+    assert app.input.text == "fix" and app.input.cursor_position == 3
+
+    # AutoSuggest must propose " the tests".
+    suggestion = app.input.auto_suggest.get_suggestion(app.input, app.input.document)
+    assert suggestion is not None, "no suggestion — history population failed"
+    assert suggestion.text == " the tests"
+
+    # Simulate the suggestion being active on the buffer (as the app would set it).
+    app.input.suggestion = suggestion
+
+    # Find the Right-arrow handler and call it (cursor is at end of "fix").
+    right_handler = next(
+        (b.handler for b in app._kb.bindings
+         if getattr(b.handler, "__name__", "") == "_right"),
+        None,
+    )
+    assert right_handler is not None, "no _right key binding found"
+    right_handler(_KeyEvent(""))
+
+    assert app.input.text == "fix the tests", (
+        f"expected 'fix the tests' after accepting suggestion, got {app.input.text!r}"
+    )
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_ctrl_r_history_picker_filters_and_prefills(tmp_path, monkeypatch):
+    """Ctrl+R opens a deduped history picker (newest first); typing filters entries;
+    Enter prefills the input buffer with the full selected text (no submit)."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    # Populate history oldest-first; "run tests" appears twice → keep most recent.
+    for entry in ["fix the tests", "run tests", "run tests"]:
+        app.input.history.append_string(entry)
+
+    # Launch the history picker directly as a task (Ctrl+R binding does the same).
+    task = asyncio.create_task(app._history_picker())
+    await asyncio.sleep(0)  # let the picker install the future and state
+
+    # Picker must be open.
+    assert app._menu_future is not None and not app._menu_future.done()
+    assert app._menu_filter == ""  # filter mode active, no chars yet
+
+    # Deduped entries newest-first: "run tests" (most recent) then "fix the tests".
+    assert len(app._menu_options) == 2
+    labels = [label for label, _ in app._menu_options]
+    assert labels[0] == "run tests", f"expected newest first, got {labels}"
+    assert labels[1] == "fix the tests"
+
+    # Header must include total count.
+    assert "2" in app._menu_header, f"no count in header: {app._menu_header!r}"
+
+    # Typing "fix" routes through the fastkey/filter handler → filters entries.
+    any_handler = next(
+        (b.handler for b in app._kb.bindings
+         if getattr(b.handler, "__name__", "") == "_menu_fastkey"),
+        None,
+    )
+    assert any_handler is not None, "no _menu_fastkey binding found"
+    for ch in "fix":
+        any_handler(_KeyEvent(ch))
+
+    # Only "fix the tests" should remain.
+    assert len(app._menu_options) == 1, (
+        f"expected 1 filtered option, got {[lbl for lbl, _ in app._menu_options]}"
+    )
+    assert app._menu_options[0][0] == "fix the tests"
+    assert "1" in app._menu_header, f"count not updated in header: {app._menu_header!r}"
+
+    # Confirm selection: resolve the future with the selected value.
+    selected_value = app._menu_options[0][1]
+    app._menu_future.set_result(selected_value)
+    await task  # let _history_picker clean up and prefill the input
+
+    # Input buffer must be prefilled with the full selected text, not submitted.
+    assert app.input.text == "fix the tests", (
+        f"expected 'fix the tests' prefilled, got {app.input.text!r}"
+    )
+    assert not app._busy(), "Ctrl+R prefill must not start a turn"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_history_picker_zero_match_nav_no_crash(tmp_path, monkeypatch):
+    """Up/Down with zero filter matches must not raise ZeroDivisionError.
+
+    Repro path: Ctrl+R → type gibberish → zero matches → press ↑ or ↓ → crash.
+    Fix: guard added to both _up and _down picker branches."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.input.history.append_string("hello world")
+    app.input.history.append_string("goodbye world")
+
+    task = asyncio.create_task(app._history_picker())
+    await asyncio.sleep(0)
+
+    assert app._menu_future is not None and not app._menu_future.done()
+    assert len(app._menu_options) == 2
+
+    # Type gibberish to drive zero matches through the real filter handler.
+    any_handler = next(
+        b.handler for b in app._kb.bindings
+        if getattr(b.handler, "__name__", "") == "_menu_fastkey"
+    )
+    for ch in "zzz":
+        any_handler(_KeyEvent(ch))
+    assert len(app._menu_options) == 0, "expected zero matches after filtering"
+
+    # Find Up/Down handlers (the real keystroke path).
+    up_handler = next(
+        b.handler for b in app._kb.bindings
+        if getattr(b.handler, "__name__", "") == "_up"
+    )
+    down_handler = next(
+        b.handler for b in app._kb.bindings
+        if getattr(b.handler, "__name__", "") == "_down"
+    )
+
+    # These must NOT crash (ZeroDivisionError was: (index ± 1) % 0).
+    up_handler(_KeyEvent(""))    # was: ZeroDivisionError
+    down_handler(_KeyEvent(""))  # was: ZeroDivisionError
+    assert app._menu_index == 0  # index must stay sane
+
+    # Clear the filter via backspace — options should return.
+    backspace_handler = next(
+        b.handler for b in app._kb.bindings
+        if getattr(b.handler, "__name__", "") == "_backspace"
+    )
+    for _ in range(3):
+        backspace_handler(_KeyEvent(""))
+    assert len(app._menu_options) == 2, "options should return after clearing filter"
+
+    # Nav works again after options are restored.
+    up_handler(_KeyEvent(""))
+    assert app._menu_index == 1  # wrapped: (0 - 1) % 2 == 1
+
+    app._menu_future.set_result(None)
+    await task
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_history_picker_enter_prefills_without_echo(tmp_path, monkeypatch):
+    """History-picker Enter must prefill the input but NOT echo '› label' to console.
+
+    The echo is intentional for approval-style pickers; this test asserts the gate
+    suppresses it for the history picker (identified by _menu_filter being not None)
+    while leaving approval-picker echo intact."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.input.history.append_string("git status")
+
+    task = asyncio.create_task(app._history_picker())
+    await asyncio.sleep(0)
+    assert app._menu_future is not None and not app._menu_future.done()
+    assert len(app._menu_options) == 1
+
+    # Find and invoke the real _submit key handler (not a direct future resolution).
+    submit_handler = next(
+        b.handler for b in app._kb.bindings
+        if getattr(b.handler, "__name__", "") == "_submit"
+    )
+    submit_handler(_KeyEvent(""))
+    await task
+
+    # Buffer must be prefilled with the full text.
+    assert app.input.text == "git status", f"got {app.input.text!r}"
+
+    # Console must NOT contain the › echo for the history entry.
+    output = app.console.file.getvalue()
+    assert "› git status" not in output, (
+        f"history picker must not echo label; console: {output!r}"
+    )
+
+    # --- Approval-style picker MUST still echo (gate must not silence it) ---
+    app.console = Console(file=StringIO(), width=80)  # fresh console
+    options: list[tuple[str, object]] = [("Allow once", "allow"), ("Deny", "deny")]
+    pick_task = asyncio.create_task(app._pick_menu(options, header="Test"))
+    await asyncio.sleep(0)
+
+    submit_handler(_KeyEvent(""))  # Enter → selects first option "Allow once"
+    result = await pick_task
+
+    assert result == "allow"
+    approval_output = app.console.file.getvalue()
+    assert "›" in approval_output, (
+        f"approval picker must still echo label; console: {approval_output!r}"
+    )
+    app.controller.close()
+
+
+# -- T-2-6: Esc-Esc rewind chord + empty-Enter hint ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_double_esc_opens_rewind(tmp_path, monkeypatch):
+    """Two Esc presses ≤0.5 s apart, idle, empty input → opens the rewind picker."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    rewind_called: list[bool] = []
+
+    async def _fake_rewind() -> None:
+        rewind_called.append(True)
+
+    monkeypatch.setattr(app, "_rewind_picker", _fake_rewind)
+    handler = _esc_handler(app)
+
+    # First Esc: idle, empty buffer — should arm the chord.
+    assert app.input.text == ""
+    handler(event=None)
+    assert app._last_esc_ts is not None, "first idle Esc must arm _last_esc_ts"
+
+    # Second Esc within 500 ms, still idle, still empty → fire rewind.
+    handler(event=None)
+    await asyncio.sleep(0)  # let create_task schedule the rewind coroutine
+    assert rewind_called, "double Esc should invoke the rewind picker"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_single_esc_still_clears(tmp_path, monkeypatch):
+    """A single Esc on non-empty input clears input and does NOT open rewind."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    rewind_called: list[bool] = []
+
+    async def _fake_rewind() -> None:
+        rewind_called.append(True)
+
+    monkeypatch.setattr(app, "_rewind_picker", _fake_rewind)
+    handler = _esc_handler(app)
+
+    app.input.insert_text("hello world")
+    assert app.input.text == "hello world"
+
+    handler(event=None)
+
+    assert app.input.text == "", "single Esc on non-empty input must clear it"
+    assert not rewind_called, "single Esc must NOT open rewind"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_empty_enter_hint_once(tmp_path, monkeypatch):
+    """Idle Enter on empty input prints the hint exactly once; repeat is silent."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    submit = _submit_handler(app)
+
+    assert app.input.text == ""
+    submit(event=None)
+    out1 = app.console.file.getvalue()
+    assert "Esc Esc rewind" in out1, "first empty Enter must show the hint"
+    assert app._hinted is True
+
+    # Second empty Enter — no new text added.
+    submit(event=None)
+    out2 = app.console.file.getvalue()
+    assert out2 == out1, "second empty Enter must not add more output"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_double_esc_picker_open_no_rewind(tmp_path, monkeypatch):
+    """Double Esc while a picker is open cancels the picker; does NOT open rewind."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    rewind_called: list[bool] = []
+
+    async def _fake_rewind() -> None:
+        rewind_called.append(True)
+
+    monkeypatch.setattr(app, "_rewind_picker", _fake_rewind)
+    handler = _esc_handler(app)
+
+    task = asyncio.create_task(
+        app._pick_menu([("one", 1), ("two", 2)], header="test", cancel_returns=None)
+    )
+    await asyncio.sleep(0)  # let the picker install the future
+    assert app._menu_future is not None and not app._menu_future.done()
+
+    # First Esc cancels the picker; second Esc is idle (picker gone) — no rewind.
+    handler(event=None)
+    handler(event=None)
+    await asyncio.sleep(0)
+
+    assert not rewind_called, "Esc while picker open must not open rewind"
+    result = await task
+    assert result is None  # cancel_returns=None
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_double_esc_busy_no_rewind(tmp_path, monkeypatch):
+    """Double Esc while busy cancels the running turn; does NOT open rewind."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    rewind_called: list[bool] = []
+
+    async def _fake_rewind() -> None:
+        rewind_called.append(True)
+
+    monkeypatch.setattr(app, "_rewind_picker", _fake_rewind)
+    handler = _esc_handler(app)
+
+    async def _never() -> None:
+        await asyncio.sleep(3600)
+
+    app._turn_task = asyncio.create_task(_never())
+    turn_task = app._turn_task
+    assert app._busy()
+
+    handler(event=None)  # busy → cancel turn, reset chord
+    handler(event=None)  # busy again (task not yet cancelled) → cancel again
+    await asyncio.sleep(0)  # let cancellation propagate
+
+    assert not rewind_called, "Esc while busy must cancel turn, not open rewind"
+    assert turn_task.cancelled() or turn_task.done()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_double_esc_no_double_picker(tmp_path, monkeypatch):
+    """Double Esc during the async gap before the rewind picker opens should
+    not spawn a second picker. The guard at the start of _rewind_picker
+    prevents concurrent invocations from overwriting _menu_future."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    # Set up a pending _menu_future to simulate a picker in flight
+    app._menu_future = asyncio.get_event_loop().create_future()
+    first_future = app._menu_future
+    assert not first_future.done()
+
+    # Call _rewind_picker twice while the future is pending
+    # The first call will return early due to the guard
+    await app._rewind_picker()
+    assert app._menu_future is first_future, \
+        "first invocation should not replace _menu_future"
+
+    # The second call should also return early (same guard)
+    await app._rewind_picker()
+    assert app._menu_future is first_future, \
+        "second invocation must not replace _menu_future (same object identity)"
+
+    app.controller.close()
+
+
+# ---------------------------------------------------------------------------
+# T-2-7: shell-escape context injection
+# ---------------------------------------------------------------------------
+
+
+def _make_bang_app(tmp_path, monkeypatch):
+    """InlineApp with a StringIO console for `!` shell-escape capture tests."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    app.console = Console(file=StringIO(), width=80)
+    return app
+
+
+@pytest.mark.asyncio
+async def test_bang_captures_tail(tmp_path, monkeypatch):
+    """!cmd stores a ShellNote on the controller for the next enrich_turn_input."""
+    app = _make_bang_app(tmp_path, monkeypatch)
+    await app._shell_escape("echo hello_context_test")
+    notes = app.controller.pending_shell_context
+    assert len(notes) == 1
+    assert notes[0].cmd == "echo hello_context_test"
+    assert "hello_context_test" in notes[0].tail
+    assert notes[0].exit_code == 0
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_bang_redacts_secrets_in_tail(tmp_path, monkeypatch):
+    """Secret-shaped output is redacted before being stored in ShellNote."""
+    from deepagents.backends.protocol import ExecuteResponse
+
+    from jarn.agent.local_backend import CancellableLocalShellBackend
+
+    app = _make_bang_app(tmp_path, monkeypatch)
+    # Patch the backend to return secret-shaped output.
+    fake_secret = "sk-ant-api03-ABCDEFGH1234567890abcdefgh"
+    monkeypatch.setattr(
+        CancellableLocalShellBackend,
+        "execute",
+        lambda self, cmd, **kw: ExecuteResponse(output=f"API_KEY={fake_secret}", exit_code=0),
+    )
+    await app._shell_escape("env")
+    notes = app.controller.pending_shell_context
+    assert len(notes) == 1
+    assert fake_secret not in notes[0].tail
+    assert "[REDACTED]" in notes[0].tail or "sk-…" in notes[0].tail
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_bang_capture_disabled_by_config(tmp_path, monkeypatch):
+    """execution.shell_escape_context=False → nothing is stored by `!`."""
+    app = _make_bang_app(tmp_path, monkeypatch)
+    app.controller.config.execution.shell_escape_context = False
+    await app._shell_escape("echo not_captured")
+    assert app.controller.pending_shell_context == []
+    # Output still prints to scrollback as before.
+    assert "not_captured" in app.console.file.getvalue()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_bang_tail_cap_lines_and_chars(tmp_path, monkeypatch):
+    """The stored tail is capped at 50 lines AND 2,000 chars (whichever smaller)."""
+    from deepagents.backends.protocol import ExecuteResponse
+
+    from jarn.agent.local_backend import CancellableLocalShellBackend
+
+    app = _make_bang_app(tmp_path, monkeypatch)
+
+    # 200 short lines → line cap binds: exactly the LAST 50 lines survive.
+    many_lines = "\n".join(f"line-{i}" for i in range(200))
+    monkeypatch.setattr(
+        CancellableLocalShellBackend,
+        "execute",
+        lambda self, cmd, **kw: ExecuteResponse(output=many_lines, exit_code=0),
+    )
+    await app._shell_escape("seq 200")
+    tail = app.controller.pending_shell_context[-1].tail
+    assert tail.count("\n") == 49  # 50 lines
+    assert tail.startswith("line-150") and tail.endswith("line-199")
+
+    # 10 very long lines → char cap binds: at most 2,000 chars, tail end kept.
+    long_lines = "\n".join(("x" * 500) + f"<{i}>" for i in range(10))
+    monkeypatch.setattr(
+        CancellableLocalShellBackend,
+        "execute",
+        lambda self, cmd, **kw: ExecuteResponse(output=long_lines, exit_code=0),
+    )
+    await app._shell_escape("cat big")
+    tail = app.controller.pending_shell_context[-1].tail
+    assert len(tail) <= 2000
+    assert tail.endswith("<9>")
+    app.controller.close()
+
+
+# ---------------------------------------------------------------------------
+# T-2-9: @git: and @url: mention expansion
+# ---------------------------------------------------------------------------
+
+
+def test_url_mention_rewrites():
+    """``@url:https://x`` is rewritten to a web_fetch instruction; no prefetch."""
+    from jarn.tui.completion import expand_mentions
+
+    result = expand_mentions("check @url:https://example.com for info")
+    assert "@url:https://example.com" not in result
+    assert "fetch https://example.com with web_fetch and use its content" in result
+
+
+def test_unknown_git_subcommand_verbatim(tmp_path):
+    """Unknown ``@git:frobnicate`` tokens are left verbatim (not crashed)."""
+    from jarn.tui.completion import expand_mentions
+
+    result = expand_mentions("try @git:frobnicate", project_root=tmp_path)
+    assert "@git:frobnicate" in result
+
+
+def test_git_mention_expands(tmp_path):
+    """``@git:status`` in a message is replaced with a fenced block of real git output."""
+    import subprocess
+
+    from jarn.tui.completion import expand_mentions
+
+    # Set up a real git repo with a staged file.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"],
+        cwd=repo, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=repo, check=True, capture_output=True,
+    )
+    (repo / "staged.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "staged.py"], cwd=repo, check=True, capture_output=True)
+
+    result = expand_mentions("look at @git:status", project_root=repo)
+
+    # Token replaced with fenced block.
+    assert "@git:status" not in result
+    assert "<git-mention status" in result
+    assert "</git-mention>" in result
+    # Real porcelain output contains the staged file.
+    assert "staged.py" in result
+
+
+def test_git_mention_redacts_secrets(tmp_path, monkeypatch):
+    """Git output containing a secret-shaped string is redacted before injection."""
+    import subprocess as _subprocess
+
+    from jarn.tui.completion import expand_mentions
+
+    fake_key = "sk-ant-api03-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+    class _FakeResult:
+        returncode = 0
+        stdout = f"A  some_file.py\n# branch: main\nADDED_KEY={fake_key}\n"
+        stderr = ""
+
+    monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: _FakeResult())
+
+    result = expand_mentions("@git:status", project_root=tmp_path)
+
+    assert fake_key not in result
+    # sk-… style replacement or [REDACTED] — either is acceptable
+    assert "sk-…" in result or "[REDACTED]" in result
+
+
+def test_git_mention_timeout_becomes_error_block(tmp_path, monkeypatch):
+    """A subprocess timeout produces an error block instead of crashing."""
+    import subprocess as _subprocess
+
+    from jarn.tui.completion import expand_mentions
+
+    def _timeout(*args, **kwargs):
+        raise _subprocess.TimeoutExpired(args[0], 5)
+
+    monkeypatch.setattr(_subprocess, "run", _timeout)
+
+    result = expand_mentions("@git:status", project_root=tmp_path)
+
+    assert "@git:status" not in result
+    assert "<git-mention status" in result
+    assert "timed out" in result.lower() or "error" in result.lower()
+
+
+def test_git_mention_multiple_tokens(tmp_path, monkeypatch):
+    """Multiple ``@git:`` tokens in one message all expand."""
+    import subprocess as _subprocess
+
+    from jarn.tui.completion import expand_mentions
+
+    class _FakeResult:
+        returncode = 0
+        stdout = "output\n"
+        stderr = ""
+
+    monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: _FakeResult())
+
+    result = expand_mentions("@git:status and @git:log", project_root=tmp_path)
+
+    assert "@git:status" not in result
+    assert "@git:log" not in result
+    assert result.count("<git-mention") == 2
+
+
+def test_url_mention_trailing_punctuation():
+    """``@url:https://x.com.`` at sentence end strips the trailing period."""
+    from jarn.tui.completion import expand_mentions
+
+    result = expand_mentions("check @url:https://x.com.")
+    # The instruction should contain the URL without the trailing dot
+    assert "fetch https://x.com with web_fetch and use its content" in result
+    # But the sentence should still end with a period
+    assert result.endswith(".")
+
+
+def test_git_mention_trailing_comma_verbatim():
+    """``@git:status,`` with trailing comma is left verbatim (allowlist miss)."""
+    from jarn.tui.completion import expand_mentions
+
+    result = expand_mentions("@git:status,", project_root=None)
+    # Unknown subcommand (status, with comma) → left verbatim
+    assert "@git:status," in result
+
+
+@pytest.mark.asyncio
+async def test_git_mention_expansion_feedback(tmp_path, monkeypatch):
+    """When @git: is present in input, a feedback message is printed before expansion."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    submit = _submit_handler(app)
+
+    # Mock _handle so it doesn't actually run the turn.
+    async def _fake_handle(_):
+        pass
+    monkeypatch.setattr(app, "_handle", _fake_handle)
+
+    # Insert text with @git: and submit.
+    app.input.insert_text("check @git:status")
+    submit(event=None)
+
+    # The console should contain the feedback message.
+    out = app.console.file.getvalue()
+    assert "expanding @git mention" in out
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_git_mention_expansion_no_feedback_without_git(tmp_path, monkeypatch):
+    """Without @git: in input, the feedback message is not printed."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    submit = _submit_handler(app)
+
+    # Mock _handle so it doesn't actually run the turn.
+    async def _fake_handle(_):
+        pass
+    monkeypatch.setattr(app, "_handle", _fake_handle)
+
+    # Insert text without @git: and submit.
+    app.input.insert_text("hello world")
+    submit(event=None)
+
+    # The console should NOT contain the feedback message.
+    out = app.console.file.getvalue()
+    assert "expanding @git mention" not in out
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_theme_command_switches_and_persists(tmp_path, monkeypatch):
+    """/theme light re-applies the palette at runtime and persists ui.theme=light."""
+    from jarn.tui import palette
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    # Stub set_setting to capture calls and return success.
+    set_calls: list[tuple[str, str]] = []
+
+    def _fake_set_setting(key: str, val: str) -> tuple[bool, str]:
+        set_calls.append((key, val))
+        app.controller.config.ui.theme = val
+        return True, f"saved {key} = {val}"
+
+    monkeypatch.setattr(app.controller, "set_setting", _fake_set_setting)
+
+    # Start with dark theme
+    palette.configure_ui(theme="dark")
+    assert palette._PALETTES["dark"].toolbar_bg == palette.TOOLBAR_BG
+
+    await app._command("theme", "light")
+
+    # Palette should be updated immediately
+    assert palette._PALETTES["light"].toolbar_bg == palette.TOOLBAR_BG, (
+        "/theme light must apply the palette at runtime"
+    )
+    # Setting should have been persisted
+    assert set_calls, "/theme must persist via set_setting"
+    assert set_calls[0] == ("ui.theme", "light"), (
+        f"expected set_setting('ui.theme', 'light'), got {set_calls}"
+    )
+    # Config updated
+    assert app.controller.config.ui.theme == "light"
+    app.controller.close()
+
+
+async def test_theme_auto_reuses_startup_cache_no_runtime_probe(tmp_path, monkeypatch):
+    """/theme auto must reuse the STARTUP-detected background and never run a
+    runtime OSC-11 probe.
+
+    A runtime ``termbg.detect`` races prompt_toolkit's input reader (junk
+    keystrokes + wrong fallback), so the startup detection is cached on the app
+    and reused; ``termbg.detect`` must NOT be called by /theme.
+    """
+    from jarn.tui import palette, termbg
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    # Startup detection resolved the terminal background to "light" and cached it
+    # on the app; /theme must read this instead of re-probing.
+    app._detected_theme = "light"
+
+    probe_calls: list[int] = []
+
+    def _fail_detect():
+        probe_calls.append(1)
+        return "dark"
+
+    monkeypatch.setattr(termbg, "detect", _fail_detect)
+
+    def _fake_set_setting(key: str, val: str) -> tuple[bool, str]:
+        app.controller.config.ui.theme = val
+        return True, f"saved {key} = {val}"
+
+    monkeypatch.setattr(app.controller, "set_setting", _fake_set_setting)
+
+    app.controller.config.ui.theme = "auto"
+    palette.configure_ui(theme="dark")
+
+    await app._command("theme", "auto")
+
+    assert not probe_calls, (
+        "/theme auto must NOT run a runtime termbg.detect probe; reuse the "
+        f"startup cache. Got {len(probe_calls)} probe call(s)."
+    )
+    # The cached 'light' background was applied at runtime.
+    assert palette._PALETTES["light"].toolbar_bg == palette.TOOLBAR_BG, (
+        "/theme auto must apply the cached (light) palette"
+    )
+    app.controller.close()
+
+
+# ===========================================================================
+# Wave-2 final review round
+# ===========================================================================
+
+
+def _ctrl_r_handler(app):
+    """Return the real `c-r`/`_ctrl_r` keybinding handler (the Ctrl+R path)."""
+    for binding in app._kb.bindings:
+        if getattr(binding.handler, "__name__", "") == "_ctrl_r":
+            return binding.handler
+    raise AssertionError("no _ctrl_r binding found")
+
+
+class _BufferingProxy:
+    """Mimics prompt_toolkit's StdoutProxy under ``patch_stdout(raw=True)``: a
+    newline-free ``write`` buffers (records but stays UNFLUSHED) until ``flush``."""
+
+    def __init__(self) -> None:
+        self.data = ""
+        self.flushed = True
+
+    def write(self, s: str) -> None:
+        self.data += s
+        self.flushed = False   # buffered, not yet on the terminal
+
+    def flush(self) -> None:
+        self.flushed = True
+
+    def isatty(self) -> bool:
+        return True
+
+
+# ── Critical 1: notify/title flush under patch_stdout's StdoutProxy ──────────
+
+
+def test_set_title_flushes_buffering_proxy():
+    """set_title must flush after the newline-free OSC-2 write so the title
+    reaches the terminal under patch_stdout(raw=True) (else it sits buffered)."""
+    from jarn.config.schema import UIConfig
+    from jarn.tui.notify import set_title
+
+    proxy = _BufferingProxy()
+    set_title(
+        "hi", settings=UIConfig(terminal_title=True),
+        write=proxy.write, isatty=proxy.isatty,
+    )
+    assert proxy.data.startswith("\x1b]2;"), "OSC-2 title must be written"
+    assert proxy.flushed, "set_title must flush the proxy after writing the title"
+
+
+def test_notify_bell_flushes_buffering_proxy():
+    """notify's bell branch must flush after the newline-free BEL so it rings on a
+    quiet turn-end under patch_stdout(raw=True)."""
+    from jarn.config.schema import UIConfig
+    from jarn.tui.notify import notify
+
+    proxy = _BufferingProxy()
+    notify(
+        "turn_done", UIConfig(notify="bell", notify_min_secs=0),
+        elapsed=5.0, write=proxy.write,
+    )
+    assert "\a" in proxy.data, "bell (\\a) must be written"
+    assert proxy.flushed, "notify must flush the proxy after writing the BEL"
+
+
+# ── Critical 2: Esc-Esc chord / Ctrl+R must not fire over a pending _ask ─────
+
+
+@pytest.mark.asyncio
+async def test_esc_chord_during_ask_no_rewind(tmp_path, monkeypatch):
+    """Esc while an app-native _ask line prompt is pending must NOT fire the
+    Esc-Esc rewind chord and must NOT touch the pending _line_future."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    rewind_called: list[bool] = []
+
+    async def _fake_rewind() -> None:
+        rewind_called.append(True)
+
+    monkeypatch.setattr(app, "_rewind_picker", _fake_rewind)
+    handler = _esc_handler(app)
+
+    fut = asyncio.get_running_loop().create_future()
+    app._line_future = fut
+    assert app.input.text == ""
+
+    # Two Esc presses that WOULD arm + fire the chord if _line_future were ignored.
+    handler(event=None)
+    handler(event=None)
+    await asyncio.sleep(0)
+
+    assert not rewind_called, "Esc during a pending _ask must not open rewind"
+    assert app._line_future is fut and not fut.done(), (
+        "Esc must not resolve or replace the pending _line_future"
+    )
+    assert app._last_esc_ts is None, "Esc during _ask must reset the chord timestamp"
+    fut.cancel()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_ctrl_r_during_ask_no_op(tmp_path, monkeypatch):
+    """Ctrl+R while an app-native _ask line prompt is pending is a no-op: it must
+    not open the history picker over the prompt or disturb the _line_future."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    picker_called: list[bool] = []
+
+    async def _fake_history() -> None:
+        picker_called.append(True)
+
+    monkeypatch.setattr(app, "_history_picker", _fake_history)
+    handler = _ctrl_r_handler(app)
+
+    fut = asyncio.get_running_loop().create_future()
+    app._line_future = fut
+
+    handler(event=None)
+    await asyncio.sleep(0)
+
+    assert not picker_called, "Ctrl+R during a pending _ask must not open history picker"
+    assert app._line_future is fut and not fut.done()
+    fut.cancel()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_esc_in_pager_collapses_and_resets_chord(tmp_path, monkeypatch):
+    """Esc while the pager overlay is open collapses it and resets the chord
+    timestamp (pins the previously-untested pager branch of _esc_key)."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    handler = _esc_handler(app)
+
+    app._expanded = True
+    app._last_esc_ts = 123.0   # a stale armed chord timestamp
+
+    handler(event=None)
+
+    assert app._expanded is False, "Esc in pager must collapse the overlay"
+    assert app._last_esc_ts is None, "Esc in pager must reset the chord timestamp"
+    app.controller.close()
+
+
+# ── Important 4: zero-match history filter must still render the modal ───────
+
+
+@pytest.mark.asyncio
+async def test_stream_control_zero_match_picker_shows_no_matches(tmp_path, monkeypatch):
+    """A history picker filtered to zero matches must still render the menu (with
+    the '(no matches)' footer) — not an invisible/blank modal."""
+    from prompt_toolkit.formatted_text import HTML
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app._menu_future = asyncio.get_running_loop().create_future()
+    app._menu_filter = "zzzzz"     # filter active (non-None)
+    app._menu_options = []          # zero matches
+    result = app._stream_control()
+    assert isinstance(result, HTML), "zero-match picker must still render the menu HTML"
+    assert "(no matches)" in result.value, "footer must show '(no matches)'"
+    app._menu_future.cancel()
+    app.controller.close()
+
+
+# ── @git mention feedback gate + color-disabled argv ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_git_mention_feedback_only_for_allowlisted_subcommand(tmp_path, monkeypatch):
+    """The 'expanding @git mention…' feedback prints only for an ALLOWLISTED
+    subcommand — an unknown @git: token (left verbatim at expand time) must not
+    print the misleading feedback."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    submit = _submit_handler(app)
+
+    async def _fake_handle(_):
+        pass
+    monkeypatch.setattr(app, "_handle", _fake_handle)
+
+    app.input.insert_text("check @git:frobnicate")
+    submit(event=None)
+
+    out = app.console.file.getvalue()
+    assert "expanding @git mention" not in out, (
+        "unknown @git: subcommand must not trigger the expansion feedback"
+    )
+    app.controller.close()
+
+
+def test_git_mention_argv_disables_color(tmp_path, monkeypatch):
+    """Every @git: expansion runs git with '-c color.ui=false' right after 'git'
+    so a user's color.ui=always config can't bleed ANSI into the payload."""
+    import subprocess as _subprocess
+
+    from jarn.tui.completion import expand_mentions
+
+    captured: list[list[str]] = []
+
+    class _FakeResult:
+        returncode = 0
+        stdout = "output\n"
+        stderr = ""
+
+    def _capture(argv, **kwargs):
+        captured.append(argv)
+        return _FakeResult()
+
+    monkeypatch.setattr(_subprocess, "run", _capture)
+    expand_mentions(
+        "@git:status @git:diff @git:staged @git:log", project_root=tmp_path
+    )
+
+    assert captured, "git subprocess must have been invoked"
+    for argv in captured:
+        assert argv[:3] == ["git", "-c", "color.ui=false"], (
+            f"expected color-disabled git argv, got {argv!r}"
+        )

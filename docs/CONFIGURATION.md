@@ -323,6 +323,9 @@ execution:
   allow_local_fallback: false   # if `backend: docker|sandbox` can't start, run on the
                                 # host anyway? OFF = fail closed (recommended).
                                 # When on, the status bar shows "host (no sandbox)".
+  shell_escape_context: true    # feed `! <cmd>` shell-escape output into the next agent
+                                # turn as a fenced <shell-escape context> block so the
+                                # agent sees what you ran. Set false to disable injection.
 
   # OS-level kernel-enforced sandbox for the LOCAL shell backend.
   # Adds a second layer of isolation beneath the danger-guard using sandbox-exec
@@ -404,9 +407,38 @@ observability:
 
 # ── UI ───────────────────────────────────────────────────────────────────
 ui:
-  theme: dark              # dark | light | high-contrast
+  theme: dark              # dark | light | high-contrast | auto
+                           #   auto — detect light/dark from the terminal background
+                           #          via OSC 11 ONCE at startup (100 ms timeout; falls
+                           #          back to dark when the terminal does not reply,
+                           #          or when stdin/stdout are not a tty). The
+                           #          resolved theme is shown in the /theme picker.
+                           #          A runtime /theme auto (or /config set ui.theme
+                           #          auto) REUSES this startup detection — it does not
+                           #          re-probe the terminal (a runtime probe would race
+                           #          prompt_toolkit's input reader).
   accent: cyan             # brand accent for splash + toolbar (cyan|blue|teal|…)
   # Set NO_COLOR=1 in the environment for plain/unstyled toolbar labels.
+  notify: bell             # off | bell | desktop | both
+                           #   off     — silent, no bell or desktop notification
+                           #   bell    — (default) emit \a terminal bell
+                           #   desktop — native OS notification (macOS osascript /
+                           #             Linux notify-send); skipped silently when
+                           #             the required binary is absent
+                           #   both    — bell + desktop
+                           # Privacy: desktop notification bodies are fixed strings
+                           # ("turn finished (42s)") — no prompt content is included.
+  notify_min_secs: 10      # minimum turn elapsed time (seconds) before a turn-end
+                           # notification fires. Approval notifications always fire
+                           # regardless of elapsed time. Set to 0 to always notify.
+  terminal_title: true     # update the terminal-tab title via OSC 2 (\x1b]2;…\x07):
+                           #   idle       → "jarn — <project>"
+                           #   working    → "✳ jarn — <project>"
+                           #   approval   → "⏸ jarn — <project>"
+                           #   on exit    → "jarn"
+                           # Silently suppressed when stdout is not a TTY. Set false
+                           # to disable entirely (e.g. if your terminal ignores OSC 2
+                           # and you see stray escape sequences).
 
 # ── Git safety (auto-checkpoint + /undo /redo) ────────────────────────────────
 git:

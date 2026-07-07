@@ -325,3 +325,62 @@ def test_panel_friendly_label_and_desc(base_config):
     text = "".join(t for _, t in p.render_lines())
     assert "OS sandbox" in text          # human label, not the dotted key
     assert "Kernel-level isolation" in text   # description of the selected item
+
+
+# ── T-2-1: ui.notify + ui.notify_min_secs config keys ─────────────────────
+
+
+def test_ui_notify_defaults():
+    """UIConfig defaults: notify=bell, notify_min_secs=10."""
+    from jarn.config.schema import UIConfig
+
+    ui = UIConfig()
+    assert ui.notify == "bell"
+    assert ui.notify_min_secs == 10
+
+
+def test_ui_notify_valid_values():
+    """ui.notify accepts off | bell | desktop | both."""
+    from jarn.config.schema import UIConfig
+
+    for v in ("off", "bell", "desktop", "both"):
+        ui = UIConfig(notify=v)
+        assert ui.notify == v
+
+
+def test_ui_notify_pydantic_validation():
+    """Pydantic model rejects bad ui.notify values."""
+    import pytest
+    from pydantic import ValidationError
+
+    from jarn.config.pydantic_schema import UIConfigModel
+
+    # valid
+    m = UIConfigModel(notify="both")
+    assert m.notify == "both"
+
+    # invalid
+    with pytest.raises(ValidationError):
+        UIConfigModel(notify="ding")
+
+
+def test_ui_notify_min_secs_pydantic():
+    """ui.notify_min_secs coerces from string and rejects negatives."""
+    import pytest
+    from pydantic import ValidationError
+
+    from jarn.config.pydantic_schema import UIConfigModel
+
+    m = UIConfigModel(notify_min_secs="5")
+    assert m.notify_min_secs == 5
+
+    with pytest.raises(ValidationError):
+        UIConfigModel(notify_min_secs=-1)
+
+
+def test_ui_notify_in_settings_panel(base_config):
+    """ui.notify and ui.notify_min_secs are surfaced in the /config panel."""
+    from jarn.config import settings
+
+    assert settings.is_settable("ui.notify")
+    assert settings.is_settable("ui.notify_min_secs")

@@ -14,7 +14,7 @@ import random
 from dataclasses import dataclass
 from typing import Literal
 
-ThemeName = Literal["dark", "light", "high-contrast"]
+ThemeName = Literal["dark", "light", "high-contrast", "auto"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,7 +236,7 @@ def toolbar_style_dict() -> dict[str, str]:
 def styled_fg(color: str, text: str, *, bold: bool = False) -> str:
     """HTML segment for prompt_toolkit, or plain text when ``NO_COLOR``."""
     if no_color():
-        return text if not bold else text  # no bold in plain mode
+        return text  # bold intent deliberately dropped in NO_COLOR mode
     b_open = "<b>" if bold else ""
     b_close = "</b>" if bold else ""
     return f'<style fg="{color}">{b_open}{text}{b_close}</style>'

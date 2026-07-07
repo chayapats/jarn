@@ -94,9 +94,11 @@ SETTINGS: tuple[Setting, ...] = (
        "Snapshot files before each turn so /undo can revert."),
     _s("observability.transcript", "bool", "Behavior", "Session transcript",
        "Write a JSONL log of each session under .jarn/sessions."),
+    _s("execution.shell_escape_context", "bool", "Behavior", "! output as context",
+       "Feed `! <cmd>` shell output into the agent's next turn."),
     # ── Appearance ──
     _s("ui.theme", "enum", "Appearance", "Theme",
-       "Color theme.", ("dark", "light", "high-contrast")),
+       "Color theme. auto detects light/dark from the terminal background.", ("auto", "dark", "light", "high-contrast")),
     _s("ui.accent", "str", "Appearance", "Accent color",
        "Brand accent color (e.g. cyan, magenta)."),
     _s("ui.splash", "enum", "Appearance", "Splash",
@@ -104,6 +106,13 @@ SETTINGS: tuple[Setting, ...] = (
        ("full", "compact", "off")),
     _s("ui.approval_diff_lines", "int", "Appearance", "Approval diff lines",
        "Max diff lines shown inline before a write approval offers 'View full diff'."),
+    _s("ui.notify", "enum", "Appearance", "Notifications",
+       "How to alert you when a long turn finishes or an approval is needed.",
+       ("off", "bell", "desktop", "both")),
+    _s("ui.notify_min_secs", "int", "Appearance", "Notify after (secs)",
+       "Minimum turn length before a turn-end notification fires (0 = always)."),
+    _s("ui.terminal_title", "bool", "Appearance", "Terminal title",
+       "Update the terminal-tab title to show idle / working / approval states via OSC 2."),
 )
 
 _BY_KEY: dict[str, Setting] = {s.key: s for s in SETTINGS}

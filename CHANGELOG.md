@@ -5,6 +5,123 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`/theme` command + terminal background auto-detection (T-2-10)** — new
+  `/theme [dark|light|high-contrast|auto]` command: bare `/theme` opens an
+  arrow-key picker (↑/↓ + Enter; Esc cancel) showing the four options with the
+  currently-resolved theme in the header; `/theme <name>` applies directly.
+  Applying re-runs `palette.configure_ui` at runtime (toolbar/live region pick
+  up new colours immediately; already-committed scrollback stays as-is) and
+  persists `ui.theme` via the standard config-set path.
+  New `ui.theme: auto` value — resolves at startup via an OSC-11 terminal
+  background probe (`\x1b]11;?\x07`): reads the reply in raw mode with a hard
+  100 ms deadline, computes sRGB relative luminance, classifies as `light` or
+  `dark`; falls back to `dark` when stdin/stdout are not a tty (pipes, CI),
+  or when the terminal does not reply.  Detection runs before
+  prompt_toolkit's Application owns the tty.  New module `jarn.tui.termbg`
+  exposes `parse_osc11`, `luminance`, and `detect` as public API.
+
+- **`@git:` and `@url:` rich mentions (T-2-9)** — two new submit-time mention kinds
+  that expand on Enter before the agent sees the message:
+  - **`@git:status|diff|staged|log`** — replaced by a fenced `<git-mention>` block
+    containing real git output.  Fixed read-only argv allowlist
+    (`--porcelain=v1 -b`, `diff`, `diff --staged`, `log --oneline -15`), direct
+    subprocess (no shell), 5 s timeout, cwd=project root, output tail-capped at
+    2 000 chars and passed through the central `redact_secrets` helper.  Unknown
+    subcommands (e.g. `@git:frobnicate`) are left verbatim.  Errors (not a repo,
+    timeout) produce an error-annotated block instead of crashing the submit.
+  - **`@url:<url>`** — pure text rewrite to
+    `fetch <url> with web_fetch and use its content`; no pre-fetch (network stays
+    agent-mediated and SSRF-guarded by the permission engine).
+  Tab completion suggests the four `@git:` subcommands; `@url:` is freeform
+  (registered in the resolver registry so it is not mis-routed to the file
+  resolver, but returns no keystroke candidates).  Expansion runs in a single pass
+  alongside paste-placeholder expansion at submit time.
+
+- **Word-level (intraline) diff emphasis (T-2-8)** — edit-approval diffs now
+  highlight the exact characters that changed within a modified line, not just
+  colour the whole line red/green.  Adjacent equal-count runs of deleted/added
+  lines are paired 1:1; each pair uses `difflib.SequenceMatcher` to locate
+  changed spans and renders them with `bold reverse` emphasis on top of the
+  existing red/green line colour.  Lines longer than 200 characters or with a
+  similarity ratio below 0.3 fall back to plain line-level rendering to avoid
+  noisy full-line reverse-video.  The `max_lines` cap and footer behaviour are
+  unchanged.  Full syntax highlighting inside diffs was deliberately excluded
+  (readability + YAGNI).
+
+- **Shell-escape context injection (T-2-7)** — `! <cmd>` output is now captured and fed
+  into the next agent turn's context as a fenced `<shell-escape context>` block so the
+  agent sees what the user ran and what it returned. Capped at 50 lines / 2 000 chars
+  (whichever is smaller), redacted for secrets, and cleared after the first use —
+  multiple `!` commands accumulate oldest-first, and queued inputs receive the block
+  too (they drain through the same enrichment path). Opt out with
+  `execution.shell_escape_context: false`, also exposed in `/config` under **Behavior**.
+
+- **Esc-Esc rewind chord + empty-Enter hint (T-2-6)** — two discoverability
+  improvements to the inline REPL:
+  - **Esc-Esc rewind chord:** press Esc twice within 500 ms while idle with an
+    empty input buffer to open the `/rewind` picker (Claude Code muscle memory).
+    The first Esc still clears non-empty input; a second Esc on an already-empty
+    buffer fires the picker. Esc while busy or while a picker/overlay is open keeps
+    its existing cancel semantics — the chord never fires in those states.
+  - **Empty-Enter hint:** the first time you press Enter on an empty idle prompt,
+    jarn prints a one-line discovery hint:
+    `type a message · / commands · @ files · Esc Esc rewind`.
+    Subsequent empty Enters are silent (hint shown once per session).
+
+- **Fuzzy completion tier (T-2-5)** — the completion engine now uses a two-tier
+  pipeline for `/command` names, `@file`/`@folder:`/`@symbol:` mentions, and
+  command-argument values (e.g. `/model` refs).  Tier 1 is the existing
+  prefix-match list (original order, behaviour unchanged).  Tier 2 appends
+  fuzzy-subsequence matches not already in tier 1, ranked by a word-boundary
+  (+3), adjacent-run (+1), gap-penalty (−0.1/char) scorer.  This means typos
+  and abbreviations now resolve: `/cmit` → `/commit`, `@pyprjct` →
+  `pyproject.toml`.  Stdlib-only; no new dependencies.  Public API:
+  `fuzzy_rank(query, candidates) -> list[str]` in `jarn.tui.completion`.
+
+- **Ghost autosuggest + Ctrl+R history picker (T-2-4)** — two fish/zsh-style history
+  features for the inline REPL:
+  - **Ghost autosuggest:** as you type, the most recent matching history entry appears
+    as dim ghost text after the cursor (`AppendAutoSuggestion`). Press **→ (Right arrow)**
+    or **Ctrl+E** at the end of the line to accept the full suggestion. Mid-line, Right
+    arrow still moves the cursor normally. When the completion dropdown is open it wins
+    over the ghost text (completion-menu-takes-precedence rule).
+  - **Ctrl+R history picker:** opens an arrow-key overlay over the 50 most recent unique
+    history entries (newest first, deduplicated by recency). Live type-to-filter with
+    case-insensitive substring matching; the header shows `(n/total)` as you filter.
+    Multiline entries display as first-line + `…` in the picker but prefill the **full**
+    text. **Enter** prefills the input buffer without submitting; **Esc** cancels with
+    input unchanged. Works while a turn is running (only edits the pending input, never
+    interferes with an in-flight approval prompt).
+
+- **Live in-place todo checklist (T-2-3)** — the `⏺ Todos` plan checklist now renders
+  LIVE above the input and re-renders in place as the agent flips items (✔ done / ◐ in
+  progress / ☐ pending), instead of appearing only after each turn finishes (Claude
+  Code-style).  It refreshes the instant a `write_todos` tool call lands, streams the
+  assistant's prose/reasoning directly below it, and is capped to 8 lines (completed
+  items collapse to a `✔ N done` summary, overflow elides behind `… +N more`) so a long
+  plan can't push the input off-screen.  The full checklist is still committed once to
+  scrollback at turn end.
+
+- **Terminal-title state via OSC 2 (T-2-2)** — jarn now updates the terminal tab title to
+  reflect the current state: `jarn — <project>` (idle), `✳ jarn — <project>` (agent working),
+  `⏸ jarn — <project>` (waiting for approval), and plain `jarn` on exit.  Titles are emitted
+  via the standard `\x1b]2;…\x07` OSC 2 sequence and are silently suppressed when stdout is
+  not a TTY or when `ui.terminal_title: false`.  New config key: `ui.terminal_title` (bool,
+  default `true`), exposed in `/config` under the **Appearance** tab.
+
+- **Turn-end + approval notifications (T-2-1)** — jarn now emits a terminal BEL (`\a`)
+  when a long agent turn finishes (elapsed ≥ `ui.notify_min_secs`, default 10 s) or when
+  an approval prompt is about to render.  New config keys in the `ui` section:
+  - `ui.notify` — `off | bell | desktop | both` (default `bell`).  `desktop` fires a
+    native OS notification via `osascript` (macOS) or `notify-send` (Linux); silently
+    skipped when the binary is absent.  `both` emits bell + desktop.
+  - `ui.notify_min_secs` — minimum elapsed seconds before a turn-end notification fires
+    (default `10`; set to `0` to always notify; approval notifications always fire).
+  Both keys are surfaced in `/config` under the **Appearance** tab.  Desktop notification
+  bodies use fixed strings only — no user prompt content is ever included.
+
 ### Removed
 
 - **`policy.profile` config key, `--profile` CLI flag, and `/profile` slash command removed
@@ -19,6 +136,30 @@ All notable changes to J.A.R.N. are documented here. Format follows
   Consumers of the JSON output should use the `preset` key instead.
 
 ### Fixed
+
+- **Single cancel message per turn (T-2-11)** — cancelling an agent turn (Esc / Ctrl+C)
+  previously could print two stop messages: `interrupted` from `app.py` and `cancelled` from
+  the renderer, depending on the cancel path.  The renderer is now the single owner: the
+  asyncio `CancelledError` path in `repl/turn.py` now calls `renderer.cancel()` before
+  re-raising, and `app.py` defers silently.  Exactly one `cancelled` line is printed per
+  cancelled agent turn.
+
+- **Blank-line rhythm in committed output (T-2-11)** — `_sep()` in `TurnRenderer` previously
+  printed a blank line on every kind transition except consecutive tools, so a same-kind
+  repeat (e.g. text→text) emitted a spurious extra blank.  `_sep()` now emits a single
+  separator only when the committed kind actually changes (generalized from the old
+  tool-only suppression); consecutive same-kind commits produce no extra blank.  This is
+  safe because no production path commits same-kind text consecutively — the suppression
+  only removes the spurious blank.
+
+- **`palette.styled_fg` NO_COLOR tautology removed (T-2-11)** — the dead branch
+  `return text if not bold else text` was replaced with `return text` and a clarifying
+  comment.  Behaviour is unchanged (plain text, bold intent dropped), dead code is gone.
+
+- **Paste placeholder format updated to `[Pasted text #N +L lines]` (T-2-11)** — the
+  bracketed-paste collapse token now matches Claude Code's style
+  (`[Pasted text #1 +12 lines]` instead of the old `[Pasted #1: 12 lines]`).  The
+  format string and the `_expand_pastes` dict-lookup round-trip are updated together.
 
 - **npm packages now ship `LICENSE`** — `npm/build-packages.mjs` now copies the repo
   `LICENSE` file into all four assembled packages (`jarn-cli` + three platform binaries).
