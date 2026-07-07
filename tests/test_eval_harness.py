@@ -321,3 +321,28 @@ def test_compare_regression_exit_code(tmp_path: Path) -> None:
     cur_bad = tmp_path / "cur_bad.json"
     cur_bad.write_text(json.dumps({"pass": 8, "fail": 2, "total": 10, "model": "m", "cost": 0.0}))
     assert eval_mod.compare_summary_files(cur_bad, bl) != 0
+
+
+def test_plain_eval_with_summary_baseline_prints_note_not_false_pass(
+    monkeypatch, capsys
+) -> None:
+    """A summary-format baseline without --compare must NOT run the dead per-fixture
+    path (which would return [] and silently exit 0 as if the gate passed). It prints
+    a clear note steering the caller to --compare and returns 0 explicitly."""
+    monkeypatch.setattr(eval_mod, "discover_fixtures", lambda *a, **k: [])
+    monkeypatch.setattr(eval_mod, "_load_eval_config", lambda **k: object())
+    monkeypatch.setattr(
+        eval_mod, "_make_headless_agent", lambda config: (lambda p, c: None)
+    )
+    summary_baseline = {"pass": 4, "fail": 0, "total": 4, "model": "m", "cost": 0.0}
+    monkeypatch.setattr(eval_mod, "load_baseline", lambda *a, **k: summary_baseline)
+
+    rc = eval_mod.main([])
+
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "summary format" in err
+    assert "--compare" in err
+    # The gate must fire BEFORE the legacy per-fixture path, which cannot even
+    # consume a summary baseline (its values are ints, not {"passed": bool}).
+    assert eval_mod.is_summary_baseline(summary_baseline) is True

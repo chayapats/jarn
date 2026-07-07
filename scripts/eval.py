@@ -445,6 +445,18 @@ def build_summary(results: list[TaskResult], model: str, cost_usd: float) -> dic
     }
 
 
+def _require_pass(summary: dict[str, Any], *, label: str) -> int:
+    """Return the ``pass`` count from a summary dict, or raise a clear error.
+
+    Guards against a malformed or old (per-fixture) baseline being fed to the
+    summary compare: a missing ``pass`` key raises a readable ``ValueError``
+    instead of a bare ``KeyError`` traceback.
+    """
+    if "pass" not in summary:
+        raise ValueError(f"{label} missing required key 'pass'")
+    return int(summary["pass"])
+
+
 def compare_summaries(current: dict[str, Any], baseline: dict[str, Any]) -> int:
     """Return 0 if regression ≤ 1 task vs baseline, 1 otherwise.
 
@@ -452,7 +464,9 @@ def compare_summaries(current: dict[str, Any], baseline: dict[str, Any]) -> int:
     (rate limits, latency, non-determinism). The nightly job should open a
     pinned issue rather than fail CI red — this is the integer signal it reads.
     """
-    regression = int(baseline["pass"]) - int(current["pass"])
+    regression = _require_pass(baseline, label="baseline JSON") - _require_pass(
+        current, label="current summary JSON"
+    )
     return 0 if regression <= 1 else 1
 
 
@@ -468,12 +482,28 @@ def compare_summary_files(current_path: Path, baseline_path: Path) -> int:
     return compare_summaries(current, baseline)
 
 
-def load_baseline(path: Path = BASELINE_PATH) -> dict[str, dict[str, bool]] | None:
-    """Return the baseline map, or None if the file is absent/empty."""
+def load_baseline(path: Path = BASELINE_PATH) -> dict[str, Any] | None:
+    """Return the parsed baseline JSON, or None if the file is absent/empty.
+
+    The value is either the legacy per-fixture map (``{fixture: {"passed": bool}}``,
+    consumed by :func:`detect_regressions`) or the newer summary shape
+    (``{"pass", "fail", "total", "model", "cost"}``, consumed by
+    :func:`compare_summaries`). Use :func:`is_summary_baseline` to tell them apart.
+    """
     if not path.is_file():
         return None
     data = json.loads(path.read_text() or "{}")
     return data or None
+
+
+def is_summary_baseline(baseline: dict[str, Any]) -> bool:
+    """True if ``baseline`` is in the summary shape (``pass`` key), not per-fixture.
+
+    The per-fixture path (:func:`detect_regressions`) is a silent no-op against a
+    summary-shaped baseline (its fixture-name keys are absent), so callers must
+    branch on this before running that path.
+    """
+    return "pass" in baseline
 
 
 def detect_regressions(
@@ -610,10 +640,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"baseline written to {BASELINE_PATH}", file=sys.stderr if args.json else sys.stdout)
         return 0
 
+    # Cost in US dollars — computed once and reused by --summary and --compare.
+    model_name = args.model or getattr(config, "default_model", "unknown")
+    cost_usd = sum(r.cost_cents for r in results) / 100.0
+
     # --summary: write {pass,fail,total,model,cost} JSON to a path.
     if args.summary:
-        model_name: str = args.model or getattr(config, "default_model", "unknown")
-        cost_usd = sum(r.cost_cents for r in results) / 100.0
         summary_data = build_summary(results, model=model_name, cost_usd=cost_usd)
         summary_path = Path(args.summary)
         summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -626,8 +658,6 @@ def main(argv: list[str] | None = None) -> int:
     # allowance); the nightly workflow reads this exit code to decide whether to open
     # a pinned issue — it does NOT fail CI red.
     if args.compare:
-        model_name = args.model or getattr(config, "default_model", "unknown")
-        cost_usd = sum(r.cost_cents for r in results) / 100.0
         current_summary = build_summary(results, model=model_name, cost_usd=cost_usd)
         baseline_path = Path(args.compare)
         if not baseline_path.is_file():
@@ -647,6 +677,18 @@ def main(argv: list[str] | None = None) -> int:
     if baseline is None:
         if not args.json:
             print("note: no baseline.json — run with --update-baseline to create one.")
+        return 0
+
+    # A summary-shaped baseline (committed by T-4-9) does NOT work with the legacy
+    # per-fixture detect_regressions() path — its fixture-name keys are absent, so
+    # detect_regressions would return [] and this would silently exit 0 as if the
+    # gate passed. Refuse that false-safe: point the caller at --compare and stop.
+    if is_summary_baseline(baseline):
+        print(
+            "note: baseline.json is in summary format; run with "
+            "--compare evals/baseline.json for regression detection.",
+            file=sys.stderr,
+        )
         return 0
 
     regressed = detect_regressions(baseline, results)

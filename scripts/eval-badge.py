@@ -30,7 +30,13 @@ def make_badge_payload(summary: dict) -> dict:
     - green  — all tasks pass (pass == total)
     - yellow — some tasks fail (pass > 0 but < total)
     - red    — no tasks pass (pass == 0)
+
+    A malformed / old-format summary missing ``pass`` or ``total`` raises a clear
+    ``ValueError`` rather than a bare ``KeyError`` traceback.
     """
+    for key in ("pass", "total"):
+        if key not in summary:
+            raise ValueError(f"summary JSON missing required key {key!r}")
     n_pass: int = int(summary["pass"])
     n_total: int = int(summary["total"])
 
@@ -68,7 +74,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: invalid JSON in {summary_path}: {exc}", file=sys.stderr)
         return 1
 
-    payload = make_badge_payload(summary)
+    try:
+        payload = make_badge_payload(summary)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     out_text = json.dumps(payload, indent=2) + "\n"
 
     if args.out:
