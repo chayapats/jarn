@@ -319,6 +319,17 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 `queue N`); manage them with `/queue`, `/queue clear`, `/queue cancel <n>`, or
 `/queue move <from> <to>`.
 
+**Mid-turn steering.** Don't want to wait for the queued line to run next turn?
+Steer it **into** the running turn: press **`[s]`** (steer now) on the freshly
+queued line, or run `/queue steer <n>` to promote line _n_. The steer is appended
+to the conversation as a new user message and the agent sees it **before its next
+tool call** — great for course-correcting a long refactor ("actually, use
+`pathlib`") without cancelling and re-prompting. It costs no extra model call (the
+turn simply continues) and is injected only at a safe tool boundary, so it never
+strands a tool call mid-flight. If the turn happens to finish first, the steer
+runs as the next turn (never lost). Disable with `ui.steering: false` (hides the
+`[s]` affordance; `/queue steer` then declines politely).
+
 ### Built-in commands
 
 | Command | Description |
@@ -345,7 +356,7 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/mcp [status] [--refresh]` | Show configured MCP servers with per-server health and last error. |
 | `/trust` | Trust this project root and lift the untrusted review-only floor. |
 | `/add-dir <path>` | Add a directory to this session's write scope (multi-root; approval-gated). |
-| `/queue [clear\|cancel <n>\|move <from> <to>]` | Show or manage queued input lines (while a turn is running). |
+| `/queue [clear\|cancel <n>\|move <from> <to>\|steer <n>]` | Show or manage queued input lines (while a turn is running). |
 | `/undo` | Revert the last agent turn's file changes. |
 | `/redo` | Re-apply the last undone agent turn's file changes. |
 | `/abort` | Cancel the running turn and roll back its file changes. |
@@ -465,7 +476,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1630 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1647 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

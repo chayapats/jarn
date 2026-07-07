@@ -413,6 +413,9 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         turn-start checkpoint exists)."""
         if self._turn_task is not None:
             self._turn_task.cancel()
+        # Cancelling means "stop and drop pending work": discard any unapplied steer
+        # so it does not resurface as the next turn via _drain_queue (T-4-6).
+        self.controller._steer_slot = None
         killed = self.controller.terminate_shells()
         if killed:
             self.console.print(f"[{palette.C_DIM}]stopped {killed} running command(s)[/{palette.C_DIM}]")
@@ -745,9 +748,55 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
 
         asyncio.create_task(_job())
 
+    def _steer_most_recent(self) -> None:
+        """[s] fastkey: steer the MOST recently queued line into the running turn.
+
+        Pops that ``QueuedLine`` off the queue, writes its payload into the single
+        steer slot (the driver injects it at the next settled tool boundary), and
+        echoes ``› (steered) …``. No-op when steering is off, no turn is running, or
+        the queue is empty."""
+        if not self.controller.config.ui.steering or not self._busy():
+            return
+        line = self._input_queue.cancel(len(self._input_queue))  # 1-based → last item
+        if line is None:
+            return
+        self.controller._steer_slot = line.payload
+        self.console.print(
+            f"[{palette.C_DIM}]› (steered) {_rich_escape(line.display)}[/{palette.C_DIM}]"
+        )
+        if self.app is not None:
+            self.app.invalidate()
+
+    def _steer_index(self, n: int) -> tuple[bool, str]:
+        """`/queue steer <n>`: route the 1-based queued line into the steer slot.
+
+        Returns ``(ok, message)``. Refuses politely when steering is disabled and
+        reports an out-of-range index without touching the queue or the slot."""
+        if not self.controller.config.ui.steering:
+            return (
+                False,
+                "steering is disabled — set ui.steering: true (or /config) to enable it.",
+            )
+        line = self._input_queue.cancel(n)
+        if line is None:
+            return (False, f"No item at {n}.")
+        self.controller._steer_slot = line.payload
+        return (True, f"› (steered) {line.display}")
+
     def _drain_queue(self) -> None:
         """Start the next queued line as a new turn (mirrors the submit path)."""
         if not self._busy():
+            # A steer the (now-ended) turn never consumed (model finished before a
+            # settled boundary) runs as the next normal turn — never lost (spec §3).
+            leftover = self.controller._pop_steer_slot()
+            if leftover is not None:
+                self._turn_start = time.monotonic()
+                self._turn_stream_chars = 0
+                self._turn_base_output = self.controller.tracker.total.output_tokens
+                self._turn_base_input = self.controller.tracker.total.input_tokens
+                self._first_token_at = None
+                self._turn_task = asyncio.create_task(self._handle(leftover))
+                return
             item = self._input_queue.pop_next()
             if item is None:
                 return

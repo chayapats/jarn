@@ -7,6 +7,21 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **Mid-turn steering — inject guidance into a running turn (T-4-6)** — while a turn
+  is running you can now steer it instead of waiting for the next turn: press **`[s]`**
+  (steer now) on a freshly `» queued` line, or run `/queue steer <n>`, to promote that
+  line **into** the live turn.  The steer is appended to the conversation as a new user
+  message and the agent sees it **before its next tool call** — course-correct a long
+  refactor ("actually, use `pathlib`") without cancelling and re-prompting.  It is a
+  cooperative checkpoint: the driver stops the model stream at a **settled tool boundary**
+  (never between a `tool_use` and its `tool_result`), appends the message via
+  `aupdate_state` on the same thread, and resumes — so it costs no extra model call, one
+  turn's cost accounting is preserved, and a steer never strands a tool call.  Only the
+  main graph is steered (never a subagent).  If the turn finishes before the steer lands,
+  it runs as the next turn (never lost); cancelling/aborting discards an unapplied steer.
+  Gated by the new `ui.steering` config key (default `true`); set it `false` to hide the
+  `[s]` affordance and make `/queue steer` decline politely.
+
 - **`jarn uninstall` — full removal of global state and keychain entries (T-4-5)** —
   running `jarn uninstall` prints an itemized summary (global `~/.jarn` dir size,
   number of keychain candidates, trust-store entry count) and asks for confirmation

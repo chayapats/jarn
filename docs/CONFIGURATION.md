@@ -490,6 +490,15 @@ ui:
                            # Silently suppressed when stdout is not a TTY. Set false
                            # to disable entirely (e.g. if your terminal ignores OSC 2
                            # and you see stray escape sequences).
+  steering: true           # mid-turn steering: while a turn is running, promote a
+                           # queued line INTO the live turn with the [s] fastkey (on
+                           # the » queued echo) or /queue steer <n>. The steer is
+                           # appended as a new user message and the agent sees it
+                           # before its next tool call — injected only at a settled
+                           # tool boundary so it never strands a tool call. Costs no
+                           # extra model call; if the turn ends first it runs as the
+                           # next turn (never lost). Set false to hide the [s]
+                           # affordance and make /queue steer decline politely.
 
 # ── Git safety (auto-checkpoint + /undo /redo) ────────────────────────────────
 git:

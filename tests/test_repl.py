@@ -4673,3 +4673,152 @@ def test_crash_line_mentions_bug_cmd():
         "Crash handler in repl/app.py must contain '— report: jarn bug' "
         "(the em-dash pointer added by T-4-3)"
     )
+
+
+# -- T-4-6: mid-turn steering — REPL wiring ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_make_driver_wires_steer_source(tmp_path, monkeypatch):
+    """make_driver threads the controller's pull-slot as the driver's steer_source;
+    a slot set by the REPL flows through and the pull is single-shot."""
+    from types import SimpleNamespace
+
+    app = _inline_app(tmp_path, monkeypatch)
+    ctrl = app.controller
+    ctrl.runtime = SimpleNamespace(
+        agent=object(), main_model_ref="x", known_model_refs=(), backend=None,
+    )
+
+    async def _approve(_req):
+        return ApprovalReply(approved=True)
+
+    driver = ctrl.make_driver(_approve)
+    assert driver.steer_source is not None
+    ctrl._steer_slot = "use pathlib"
+    assert driver.steer_source() == "use pathlib"
+    assert ctrl._steer_slot is None  # single-shot pull (never double-applies)
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_cmd_queue_steer_promotes_to_slot(tmp_path, monkeypatch):
+    """`/queue steer <n>` removes the 1-based line from the queue and routes its
+    payload into the steer slot."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.console = Console(file=StringIO(), force_terminal=True, width=100)
+    app._input_queue.append("first", "first-payload")
+    app._input_queue.append("second", "second-payload")
+
+    await app._cmd_queue("steer 1")
+
+    assert app.controller._steer_slot == "first-payload"
+    assert len(app._input_queue) == 1
+    assert app._input_queue.list()[0].display == "second"
+    assert "steered" in app.console.file.getvalue()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_cmd_queue_steer_out_of_range(tmp_path, monkeypatch):
+    """An out-of-range `/queue steer <n>` errors and leaves the queue + slot alone."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.console = Console(file=StringIO(), force_terminal=True, width=100)
+    app._input_queue.append("only", "only-payload")
+
+    await app._cmd_queue("steer 5")
+
+    assert app.controller._steer_slot is None
+    assert len(app._input_queue) == 1
+    assert "No item" in app.console.file.getvalue()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_cmd_queue_steer_disabled_errors_politely(tmp_path, monkeypatch):
+    """With ui.steering false, `/queue steer` refuses politely and touches nothing."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.console = Console(file=StringIO(), force_terminal=True, width=100)
+    app.controller.config.ui.steering = False
+    app._input_queue.append("x", "x-payload")
+
+    await app._cmd_queue("steer 1")
+
+    assert app.controller._steer_slot is None
+    assert len(app._input_queue) == 1  # not consumed
+    assert "disabled" in app.console.file.getvalue().lower()
+    app.controller.close()
+
+
+def test_steer_most_recent_promotes_last(tmp_path, monkeypatch):
+    """[s] steers the MOST recently queued line: pops it, sets the slot, echoes."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.console = Console(file=StringIO(), force_terminal=True, width=100)
+    app._input_queue.append("older", "older-payload")
+    app._input_queue.append("newest", "newest-payload")
+    # Pretend a turn is running so the busy guard passes.
+    app._turn_task = _DoneTask()
+
+    app._steer_most_recent()
+
+    assert app.controller._steer_slot == "newest-payload"
+    assert [i.display for i in app._input_queue.list()] == ["older"]
+    assert "steered" in app.console.file.getvalue()
+    app.controller.close()
+
+
+def test_steer_most_recent_noop_when_idle(tmp_path, monkeypatch):
+    """[s] is a no-op when no turn is running (idle → the line just stays queued)."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app._input_queue.append("x", "x-payload")
+    # _turn_task is None → not busy.
+    app._steer_most_recent()
+    assert app.controller._steer_slot is None
+    assert len(app._input_queue) == 1
+    app.controller.close()
+
+
+def test_steer_most_recent_noop_when_disabled(tmp_path, monkeypatch):
+    """[s] is a no-op when ui.steering is off, even while busy."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.controller.config.ui.steering = False
+    app._input_queue.append("x", "x-payload")
+    app._turn_task = _NeverTask()
+    app._steer_most_recent()
+    assert app.controller._steer_slot is None
+    assert len(app._input_queue) == 1
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_leftover_steer_becomes_next_turn(tmp_path, monkeypatch):
+    """A steer slot the (now-ended) turn never consumed runs as the next normal
+    turn via _drain_queue — never lost (spec §3 no-loss fallback)."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.controller._steer_slot = "leftover steer"
+
+    seen: list[str] = []
+
+    async def _fake_handle(text):
+        seen.append(text)
+
+    app._handle = _fake_handle  # type: ignore[assignment]
+    app._turn_task = None  # not busy → drain runs
+
+    app._drain_queue()
+    await asyncio.sleep(0)  # let the created task run
+
+    assert seen == ["leftover steer"]
+    assert app.controller._steer_slot is None  # consumed
+    app.controller.close()
+
+
+class _DoneTask:
+    """A stand-in asyncio task that reports NOT done (so _busy() is True)."""
+
+    def done(self) -> bool:
+        return False
+
+
+class _NeverTask(_DoneTask):
+    pass

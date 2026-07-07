@@ -383,6 +383,12 @@ class UIConfig:
     #: Update the terminal-tab title via OSC 2 to show idle / working / approval
     #: states. Disabled when False or when stdout is not a tty.
     terminal_title: bool = True
+    #: Mid-turn steering (T-4-6): while a turn is running, promote a queued line into
+    #: the live turn with the ``[s]`` fastkey or ``/queue steer <n>`` — the agent
+    #: sees it as a new user message before its next tool call (injected only at a
+    #: settled tool boundary). When False, the ``[s] steer now`` affordance is hidden
+    #: and ``/queue steer`` errors politely.
+    steering: bool = True
 
 
 @dataclass(slots=True)

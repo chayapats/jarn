@@ -104,6 +104,30 @@ def handle_message_chunk(
     return None
 
 
+def chunk_has_ai_message(chunk: Any) -> bool:
+    """Whether an ``updates`` chunk is a MODEL super-step (carries an ``AIMessage``).
+
+    Used by the mid-turn steering gate (T-4-6): a steer may only be injected at a
+    model-step boundary, because ``aclose()`` rolls the in-flight super-step back to
+    the last durable checkpoint. At a model step that rollback lands on the prior
+    round's ``ToolMessage``s (or the user message) — a SETTLED point where appending
+    a steer cannot strand a ``tool_use``. At a tool step the rollback would land on a
+    pending ``AIMessage(tool_calls)`` (unsettled), so those boundaries are skipped.
+    ``__interrupt__`` / metadata chunks carry no ``AIMessage`` and return ``False``."""
+    if not isinstance(chunk, dict) or "__interrupt__" in chunk:
+        return False
+    for _node, update in chunk.items():
+        if not isinstance(update, dict):
+            continue
+        messages = update.get("messages", []) or []
+        if isinstance(messages, Overwrite):
+            messages = messages.value or []
+        for msg in messages:
+            if getattr(msg, "type", "") in _ASSISTANT_TYPES:
+                return True
+    return False
+
+
 def handle_update_chunk(
     driver: SessionDriver, chunk: dict[str, Any], interrupts: list[Any],
     namespace: Any = (),

@@ -229,6 +229,14 @@ async def _run_turn(
                             f"— auto-fix round queued[/{palette.C_DIM}]"
                         )
                     produced = True
+                elif event.kind is EventKind.NOTICE and event.data.get("steer"):
+                    # Mid-turn steering (T-4-6): mark where the steer landed in
+                    # scrollback so the transcript shows it interleaved at its true
+                    # position, distinct from a queued (» queued) or normal (›) line.
+                    renderer.on_notice(
+                        f"[{palette.C_DIM}]{_rich_escape(event.text)}[/{palette.C_DIM}]"
+                    )
+                    produced = True
                 elif event.kind is EventKind.NOTICE and event.data.get("diagnostics"):
                     # Diagnostics suggest-mode NOTICE: plain notice listing findings.
                     d = event.data["diagnostics"]

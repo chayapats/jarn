@@ -101,7 +101,17 @@ class KeysMixin:
                     expanded = self._expand_mentions(expanded)
                     self._pastes.clear()
                     self._input_queue.append(stripped, expanded)
-                    self.console.print(f"[{palette.C_DIM}]» queued: {_rich_escape(stripped)}[/{palette.C_DIM}]")
+                    # While steering is on, advertise the [s] fastkey on the echo so
+                    # the user can promote this line into the running turn (T-4-6).
+                    steer_hint = (
+                        "  ·  [s] steer now"
+                        if self.controller.config.ui.steering
+                        else ""
+                    )
+                    self.console.print(
+                        f"[{palette.C_DIM}]» queued: {_rich_escape(stripped)}"
+                        f"{steer_hint}[/{palette.C_DIM}]"
+                    )
                 else:
                     self.input.reset()
                 return
@@ -159,6 +169,27 @@ class KeysMixin:
             self._turn_base_input = self.controller.tracker.total.input_tokens
             self._first_token_at = None
             self._turn_task = asyncio.create_task(self._handle(send))
+
+        # [s] steer now (T-4-6): promote the most recently queued line into the
+        # running turn. Gated so it only fires when it is unambiguous — a turn is
+        # busy, steering is enabled, the input buffer is EMPTY (so typing an 's'
+        # into a new queued line is never swallowed), a line is queued, and no
+        # picker/ask overlay owns the keyboard. Otherwise 's' types normally via the
+        # Keys.Any router below.
+        steer_now = Condition(
+            lambda: not self._expanded
+            and not self._config_open
+            and self._busy()
+            and not self.input.text
+            and self.controller.config.ui.steering
+            and len(self._input_queue) > 0
+            and (self._menu_future is None or self._menu_future.done())
+            and (self._line_future is None or self._line_future.done())
+        )
+
+        @kb.add("s", filter=steer_now)
+        def _steer_now(event) -> None:
+            self._steer_most_recent()
 
         @kb.add("c-j", filter=live)
         def _newline(event) -> None:  # Shift+Enter usually arrives as Ctrl+J

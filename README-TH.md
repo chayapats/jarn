@@ -207,6 +207,8 @@ Reply ของ assistant render เป็น **Markdown** (heading, list, code 
 
 ขณะที่ turn กำลังรัน บรรทัดที่ submit ไปจะถูก **queue** (แสดงใน toolbar เป็น `queue N`) จัดการด้วย `/queue`, `/queue clear`, `/queue cancel <n>`, หรือ `/queue move <from> <to>`
 
+**Steer กลางเทิร์น (mid-turn steering).** ไม่อยากรอให้บรรทัดที่ queue ไว้รันในเทิร์นถัดไป? steer มัน **เข้าไป** ในเทิร์นที่กำลังรันได้เลย: กด **`[s]`** (steer now) บนบรรทัดที่เพิ่ง queue หรือใช้ `/queue steer <n>` เพื่อดันบรรทัดที่ _n_ ข้อความ steer จะถูก append เข้า conversation เป็นข้อความ user ใหม่ และ agent จะเห็น **ก่อน tool call ถัดไป** — เหมาะกับการแก้ทิศ agent กลาง refactor ยาว ๆ ("จริง ๆ ใช้ `pathlib` เถอะ") โดยไม่ต้องยกเลิกแล้วพิมพ์ใหม่ ไม่มี model call เพิ่ม (เทิร์นแค่รันต่อ) และ inject เฉพาะที่ tool boundary ที่ปลอดภัยเท่านั้น จึงไม่ทำให้ tool call ค้างกลางคัน ถ้าเทิร์นจบก่อนพอดี steer จะรันเป็นเทิร์นถัดไป (ไม่หาย) ปิดด้วย `ui.steering: false` (ซ่อนปุ่ม `[s]`; `/queue steer` จะปฏิเสธอย่างสุภาพ)
+
 ### Built-in commands (คำสั่งในตัว)
 
 | Command | คำอธิบาย |
@@ -233,7 +235,7 @@ Reply ของ assistant render เป็น **Markdown** (heading, list, code 
 | `/mcp [status] [--refresh]` | ดู MCP server ที่ตั้งไว้ พร้อม health และ error ล่าสุดราย server |
 | `/trust` | trust project root นี้ เพื่อยกเลิก review-only floor ของ repo ที่ยังไม่ trust |
 | `/add-dir <path>` | เพิ่ม directory เข้า write scope ของ session นี้ (multi-root; ต้องอนุมัติ) |
-| `/queue [clear\|cancel <n>\|move <from> <to>]` | ดูหรือจัดการ input ที่ queue ไว้ (ขณะ turn รันอยู่) |
+| `/queue [clear\|cancel <n>\|move <from> <to>\|steer <n>]` | ดูหรือจัดการ input ที่ queue ไว้ (ขณะ turn รันอยู่) |
 | `/undo` | ย้อนกลับ file change ของ agent turn ล่าสุด |
 | `/redo` | ทำ file change ที่ undo ไปซ้ำอีกครั้ง |
 | `/abort` | ยกเลิก turn ที่กำลังรันและ roll back file change ของมัน |
@@ -304,7 +306,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1630 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1647 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)

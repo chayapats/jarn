@@ -586,6 +586,7 @@ class UIConfigModel(_StrictModel):
     notify: str = "bell"
     notify_min_secs: int = 10
     terminal_title: bool = True
+    steering: bool = True
 
     @field_validator("theme", mode="before")
     @classmethod
@@ -635,6 +636,11 @@ class UIConfigModel(_StrictModel):
     @classmethod
     def _terminal_title(cls, value: Any) -> bool:
         return _normalize_bool(value, "ui.terminal_title")
+
+    @field_validator("steering", mode="before")
+    @classmethod
+    def _steering(cls, value: Any) -> bool:
+        return _normalize_bool(value, "ui.steering")
 
 
 class CompatConfigModel(_StrictModel):
@@ -1058,6 +1064,7 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             notify=model.ui.notify,
             notify_min_secs=model.ui.notify_min_secs,
             terminal_title=model.ui.terminal_title,
+            steering=model.ui.steering,
         ),
         compat=CompatConfig(
             context_files=list(model.compat.context_files),
