@@ -61,7 +61,7 @@ runs:
 
     - name: Install jarn-cli
       shell: bash
-      run: npm i -g jarn-cli@0.5
+      run: npm i -g jarn-cli@0.7
 
     - name: Run jarn headless
       id: run_jarn
