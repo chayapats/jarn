@@ -7,6 +7,18 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **GitHub Action + PR/issue-fix bots (T-4-7)** — J.A.R.N. now ships a
+  composite GitHub Actions action (`action/action.yml`) that runs jarn headless
+  in CI.  Inputs: `prompt` (required), `api_key` (required, from `secrets.*`),
+  `model`, `permission_mode` (default `auto-edit`), `max_turns` (default `15`),
+  `preset` (default `ci`).  Outputs: `result`, `cost_usd`, `turns`.  Two
+  ready-to-use example workflows are included: a PR review bot
+  (`examples/github/pr-review.yml`) that posts a sticky comment on every PR,
+  and an issue-fix bot (`examples/github/issue-fix.yml`) triggered by `@jarn`
+  in an issue comment, guarded by an actor-allowlist (`author_association`
+  OWNER/MEMBER/COLLABORATOR).  A pinned `actionlint` CI job lints all three
+  YAML files on every push/PR.  See [docs/GITHUB_ACTION.md](docs/GITHUB_ACTION.md).
+
 - **Mid-turn steering — inject guidance into a running turn (T-4-6)** — while a turn
   is running you can now steer it instead of waiting for the next turn: press **`[s]`**
   (steer now) on a freshly `» queued` line, or run `/queue steer <n>`, to promote that

@@ -81,6 +81,17 @@ in your project directory when you approve them (or automatically in permissive 
   is persisted; (e) no secret value appears in the authorize URL (only the PKCE
   challenge is sent); (f) all printed output passes through `redact_secrets`.
 
+### GitHub Actions issue-fix bot (actor-allowlist requirement)
+
+The `examples/github/issue-fix.yml` workflow runs J.A.R.N. in `yolo` mode and
+pushes commits to a new branch when triggered by an issue comment containing
+`@jarn`.  Because any user can comment on a public issue, this workflow **must**
+gate on `github.event.comment.author_association`.  The example restricts
+execution to `OWNER`, `MEMBER` (org members), and `COLLABORATOR`.  Removing or
+weakening this guard lets arbitrary GitHub users execute code in your CI
+environment and push branches to your repository.  Review the trust model in
+[docs/GITHUB_ACTION.md](docs/GITHUB_ACTION.md) before enabling.
+
 ### Filesystem write scope (`--add-dir` multi-root)
 
 The agent's write scope is bounded to a set of **roots** (the primary project root

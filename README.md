@@ -210,6 +210,30 @@ would normally prompt for approval and exit non-zero. Pass `--permission-mode
 auto-edit` or `yolo` to allow unattended tool use — the danger-guard still
 blocks catastrophic commands in every mode.
 
+## In CI
+
+J.A.R.N. ships a [GitHub Actions composite action](action/action.yml) so you
+can run it in any workflow — PR review, issue-fix bots, nightly audits.
+
+```yaml
+- uses: chayapats/jarn/action@main
+  with:
+    prompt: "Review this diff: …"
+    preset: "review-only"     # read-only; use 'ci' for write-enabled runs
+    max_turns: "5"
+    api_key: ${{ secrets.OPENROUTER_API_KEY }}
+```
+
+**Outputs:** `result`, `cost_usd`, `turns`.
+
+**Docker note:** the default `ci` preset requires Docker (ubuntu runners have
+it). For docker-less runners (macOS/Windows) use `preset: trusted-repo` with
+`permission_mode: auto-edit` — see [docs/GITHUB_ACTION.md](docs/GITHUB_ACTION.md).
+
+Example workflows: [PR review bot](examples/github/pr-review.yml) ·
+[Issue-fix bot](examples/github/issue-fix.yml).
+Full docs: [docs/GITHUB_ACTION.md](docs/GITHUB_ACTION.md).
+
 ## The interface: native inline
 
 ```bash
@@ -476,7 +500,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1648 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1650 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

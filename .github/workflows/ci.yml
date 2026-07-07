@@ -80,3 +80,26 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  actionlint:
+    # Lint action/action.yml and examples/github/*.yml with a pinned actionlint
+    # binary.  This job runs only in GitHub CI (requires curl + linux-amd64).
+    # To run locally: brew install actionlint && actionlint action/ examples/github/
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download pinned actionlint
+        run: |
+          set -euo pipefail
+          ACTIONLINT_VERSION="1.7.4"
+          ACTIONLINT_SHA256="c0b2bc4a83dab936a87ee57bc3f6b2acfb6a934ca6df8c3be72c27ffb2b1e3d1"
+          curl -fsSL \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            -o actionlint.tar.gz
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+          chmod +x actionlint
+      - name: Lint action and example workflows
+        run: ./actionlint action/action.yml examples/github/pr-review.yml examples/github/issue-fix.yml

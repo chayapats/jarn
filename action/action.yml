@@ -1,0 +1,108 @@
+name: "Run J.A.R.N. (headless)"
+description: >
+  Run J.A.R.N. in CI headless mode (-p) and expose the result, cost, and
+  turn count as outputs. Requires Docker on the runner when using the default
+  'ci' preset (ubuntu-latest runners have Docker; see docs/GITHUB_ACTION.md
+  for docker-less overrides).
+
+inputs:
+  prompt:
+    description: "The prompt to send to the agent."
+    required: true
+  model:
+    description: >
+      OpenRouter model slug (e.g. anthropic/claude-opus-4-8). Overrides the
+      model set in the project config for this run.
+    required: false
+    default: ""
+  permission_mode:
+    description: >
+      Permission mode: auto-edit (default), yolo, ask, or plan.
+      The 'ci' preset forces yolo so file writes are unattended; override here
+      only if you need a stricter mode for read-only analysis runs.
+    required: false
+    default: "auto-edit"
+  max_turns:
+    description: "Maximum agent turns (default 15)."
+    required: false
+    default: "15"
+  preset:
+    description: >
+      Named policy preset. Default is 'ci' (yolo + Docker backend, fails
+      closed if Docker is absent). For docker-less runners use --preset
+      trusted-repo with permission_mode: auto-edit (see docs/GITHUB_ACTION.md).
+    required: false
+    default: "ci"
+  api_key:
+    description: >
+      API key for the LLM provider (passed as OPENROUTER_API_KEY). Source
+      this from secrets — never hardcode a literal key.
+    required: true
+
+outputs:
+  result:
+    description: "The agent's final text reply."
+    value: ${{ steps.parse.outputs.result }}
+  cost_usd:
+    description: "Total session cost in USD (from the --json envelope)."
+    value: ${{ steps.parse.outputs.cost_usd }}
+  turns:
+    description: "Number of agent turns completed."
+    value: ${{ steps.parse.outputs.turns }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+
+    - name: Install jarn-cli
+      shell: bash
+      run: npm i -g jarn-cli@0.5
+
+    - name: Run jarn headless
+      id: run_jarn
+      shell: bash
+      env:
+        OPENROUTER_API_KEY: ${{ inputs.api_key }}
+        PROMPT: ${{ inputs.prompt }}
+        MODEL_OVERRIDE: ${{ inputs.model }}
+        PERMISSION_MODE: ${{ inputs.permission_mode }}
+        MAX_TURNS: ${{ inputs.max_turns }}
+        PRESET: ${{ inputs.preset }}
+      run: |
+        set -euo pipefail
+        EXTRA_FLAGS=""
+        if [ -n "$MODEL_OVERRIDE" ]; then
+          EXTRA_FLAGS="--model $MODEL_OVERRIDE"
+        fi
+        # Emit JSON envelope: {"result":…,"tokens":…,"cost":…,"turns":…,"tool_calls":…}
+        JARN_OUTPUT=$(jarn -p "$PROMPT" \
+          --json \
+          --preset "$PRESET" \
+          --permission-mode "$PERMISSION_MODE" \
+          --max-turns "$MAX_TURNS" \
+          --cwd "$GITHUB_WORKSPACE" \
+          $EXTRA_FLAGS)
+        echo "jarn_output<<EOF_JARN_OUT" >> "$GITHUB_OUTPUT"
+        echo "$JARN_OUTPUT" >> "$GITHUB_OUTPUT"
+        echo "EOF_JARN_OUT" >> "$GITHUB_OUTPUT"
+
+    - name: Parse JSON output
+      id: parse
+      shell: bash
+      run: |
+        set -euo pipefail
+        OUTPUT='${{ steps.run_jarn.outputs.jarn_output }}'
+        RESULT=$(echo "$OUTPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['result'])")
+        COST=$(echo "$OUTPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['cost'])")
+        TURNS=$(echo "$OUTPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['turns'])")
+        {
+          echo "result<<EOF_RESULT"
+          echo "$RESULT"
+          echo "EOF_RESULT"
+          echo "cost_usd=$COST"
+          echo "turns=$TURNS"
+        } >> "$GITHUB_OUTPUT"

@@ -1,0 +1,95 @@
+# PR Review Bot — J.A.R.N.
+#
+# Runs J.A.R.N. over the PR diff and posts (or updates) a single sticky
+# comment on the pull request with the agent's review.
+#
+# Required repository secret: OPENROUTER_API_KEY (or replace with your
+# provider's key name and update the api_key input below).
+#
+# Secrets hygiene: ALL keys are sourced from secrets.* — never hardcoded.
+# Permissions: least-privilege (read code, write PR comments only).
+
+name: "J.A.R.N. PR Review"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest   # ubuntu runners have Docker (required by ci preset)
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute diff
+        id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          DIFF=$(git diff "origin/$BASE...HEAD" -- . ':(exclude)*.lock' \
+                 | head -c 40000)        # cap at 40 kB to keep prompt sane
+          echo "diff<<EOF_DIFF" >> "$GITHUB_OUTPUT"
+          echo "$DIFF" >> "$GITHUB_OUTPUT"
+          echo "EOF_DIFF" >> "$GITHUB_OUTPUT"
+
+      - name: Run J.A.R.N. review
+        id: jarn
+        uses: ./action                   # path to the composite action in this repo
+        with:
+          prompt: |
+            Review the following pull-request diff.  Focus on:
+            1. Correctness bugs and logic errors
+            2. Security issues (injection, secrets leakage, unsafe operations)
+            3. API misuse or breaking changes
+            4. Simplifications or clear improvements
+
+            Diff:
+            ${{ steps.diff.outputs.diff }}
+          preset: "review-only"          # read-only: no file writes in review mode
+          permission_mode: "plan"
+          max_turns: "5"
+          api_key: ${{ secrets.OPENROUTER_API_KEY }}
+
+      # Post or update a single sticky comment (idempotent on re-runs).
+      - name: Post or update review comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          REVIEW_BODY: ${{ steps.jarn.outputs.result }}
+          COST: ${{ steps.jarn.outputs.cost_usd }}
+          TURNS: ${{ steps.jarn.outputs.turns }}
+        run: |
+          set -euo pipefail
+          MARKER="<!-- jarn-pr-review -->"
+          BODY="${MARKER}
+          ## J.A.R.N. PR Review
+
+          ${REVIEW_BODY}
+
+          ---
+          *Cost: \$${COST} · Turns: ${TURNS} · [jarn-cli](https://github.com/chayapats/jarn)*"
+
+          # Find existing sticky comment by marker.
+          EXISTING=$(gh api \
+            "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            --jq ".[] | select(.body | startswith(\"${MARKER}\")) | .id" \
+            | head -1)
+
+          if [ -n "$EXISTING" ]; then
+            gh api --method PATCH \
+              "repos/${REPO}/issues/comments/${EXISTING}" \
+              --field body="$BODY"
+          else
+            gh api --method POST \
+              "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+              --field body="$BODY"
+          fi
