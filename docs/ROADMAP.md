@@ -57,7 +57,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-07-02** (v0.5.0 released
 - [x] `jarn` / `setup` / `init` / `doctor` (`--json`) CLI
 - [x] Strict config validation (typed bools, numeric ranges, unknown top-level keys rejected)
 - [x] Local rotating logs, opt-in LangSmith tracing
-- [x] `uv`/PyPI packaging, 1347 tests (+ packaging gate), clean lint + `mypy` CI
+- [x] `uv`/PyPI packaging, 1359 tests (+ packaging gate), clean lint + `mypy` CI
 - [x] `jarn doctor` extension diagnostics — skills, commands, subagents, hooks, MCP
   (shadowing, builtin renames, untrusted skips); `uv.lock` tracked for team installs
 
@@ -69,8 +69,9 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-07-02** (v0.5.0 released
   spans global + trusted project memory with deduped results and body display
 - [x] **Richer `/compact`** — summarize via the summarizer model and continue in a
   fresh thread seeded with the summary
-- [x] **Auto-compact** — `should_auto_compact()` compares the context gauge to
-  `context.compact_at_pct` and compacts automatically after a turn when over threshold
+- [x] **Auto-compact** — a single in-graph summarization pass on the `routing.summarizer`
+  model, triggered at `context.compact_at_pct` (built into the agent graph; disable with
+  `context.auto_compact: false`)
 - [x] **`@file` autocomplete + command palette** — `CompletionProvider` + dropdown
   (Tab to accept) for `/commands` and `@paths`
 - [x] **Standalone binary builds** — PyInstaller spec (`packaging/jarn.spec`),

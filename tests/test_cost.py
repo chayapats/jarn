@@ -5,9 +5,20 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 
+import pytest
+
 from jarn.config.schema import BudgetConfig
 from jarn.cost import BudgetStatus, CostTracker, Usage
 from jarn.cost.pricing import cost_of, lookup
+
+# T-1-2 test constants: a main-model ref and a subagent ref.
+_MAIN = "anthropic/claude-opus-4"
+_SUB = "openrouter/anthropic/claude-haiku-4-5"
+
+
+@pytest.fixture()
+def tracker() -> CostTracker:
+    return CostTracker()
 
 
 def test_pricing_known_model():
@@ -475,3 +486,61 @@ def test_pricing_network_opt_out(monkeypatch, tmp_path):
     assert fetched == []
 
     assert pricing.lookup("claude-opus-4-8") is not None
+
+
+# -- T-1-2: accurate context gauge (assignment not max; is_main flag) ---------
+
+
+def test_context_gauge_tracks_latest_prompt_not_max(tracker: CostTracker) -> None:
+    """After summarization the prompt shrinks; the gauge must drop to the latest value."""
+    tracker.record(model_id=_MAIN, input_tokens=10_000, output_tokens=1, is_main=True)
+    tracker.record(model_id=_MAIN, input_tokens=2_000, output_tokens=1, is_main=True)
+    assert tracker.context_tokens == 2_000  # latest wins, not max
+
+
+def test_subagent_calls_do_not_move_gauge(tracker: CostTracker) -> None:
+    """Subagent traffic (is_main=False) must not inflate the ctx% gauge."""
+    tracker.record(model_id=_SUB, input_tokens=50_000, output_tokens=1, is_main=False)
+    assert tracker.context_tokens == 0
+
+
+def test_gauge_includes_cache_tokens(tracker: CostTracker) -> None:
+    """prompt_tokens = input + cache_read + cache_creation; the gauge tracks that sum."""
+    tracker.record(
+        model_id=_MAIN,
+        input_tokens=1_000,
+        output_tokens=1,
+        cache_read_tokens=800,
+        cache_creation_tokens=200,
+        is_main=True,
+    )
+    assert tracker.context_tokens == 1_000 + 800 + 200
+
+
+# -- T-1-2 final-review: gauge must not be clobbered by zero-input chunks ----
+
+
+def test_gauge_not_clobbered_by_continuation_chunk(tracker: CostTracker) -> None:
+    """Continuation chunk with input=0 (cumulative input unchanged) must not reset the gauge.
+
+    Providers that stream cumulative totals resend the same input count on every
+    chunk; after dedup the delta has input=0, output>0.  The gauge must keep the
+    value set by the first (real-prompt) chunk.
+    """
+    tracker.record(model_id=_MAIN, input_tokens=5_000, output_tokens=0, is_main=True)
+    assert tracker.context_tokens == 5_000
+    # Continuation: only new output tokens in this delta
+    tracker.record(model_id=_MAIN, input_tokens=0, output_tokens=200, is_main=True)
+    assert tracker.context_tokens == 5_000  # must stay 5000, not drop to 0
+
+
+def test_gauge_not_clobbered_by_split_output_chunk(tracker: CostTracker) -> None:
+    """Anthropic-style split: message_start carries input=8000 output=0, final chunk
+    carries input=0 output=500 (non-monotonic new-call path).  The gauge must hold the
+    value from the message_start chunk.
+    """
+    tracker.record(model_id=_MAIN, input_tokens=8_000, output_tokens=0, is_main=True)
+    assert tracker.context_tokens == 8_000
+    # Output-only final chunk: non-monotonic path passes input=0 to record()
+    tracker.record(model_id=_MAIN, input_tokens=0, output_tokens=500, is_main=True)
+    assert tracker.context_tokens == 8_000  # must stay 8000, not drop to 0

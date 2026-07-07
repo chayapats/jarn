@@ -426,6 +426,13 @@ class CheckpointManager:
     # Max depth of each stack (undo / redo).  Older entries are pruned.
     max_stack: int = 20
     _is_repo: bool = field(init=False, default=False)
+    #: Snapshot-failure NOTICE state — session-lifetime so multiple per-turn
+    #: SessionDriver instances all share the same dedupe flags.  Written and
+    #: read ONLY on the asyncio event loop (done-callbacks + coroutine code),
+    #: never directly from the snapshot worker thread — no additional locking
+    #: beyond what already exists is needed.
+    snapshot_notice_pending: bool = field(init=False, default=False, repr=False)
+    snapshot_notice_shown: bool = field(init=False, default=False, repr=False)
 
     def __post_init__(self) -> None:
         # Cache the repo check once at construction; no subprocess per-call.

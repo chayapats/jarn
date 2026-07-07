@@ -102,9 +102,10 @@ async def test_run_turn_enriches_payload_once(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_turn_auto_compacts_over_threshold(tmp_path, monkeypatch):
-    """After a turn, _run_turn auto-compacts when the context gauge is over the
-    configured threshold (and not otherwise)."""
+async def test_auto_compact_controller_path_removed(tmp_path, monkeypatch):
+    """The controller-side auto-compact trigger is gone: a completed turn never
+    calls controller.compact(). Auto-compaction now happens in-graph via the
+    summarization middleware wired in build_runtime."""
     from jarn import repl
 
     ctrl = _controller(tmp_path, monkeypatch)
@@ -123,17 +124,12 @@ async def test_run_turn_auto_compacts_over_threshold(tmp_path, monkeypatch):
     monkeypatch.setattr(ctrl, "compact", _fake_compact)
 
     console = Console(file=StringIO(), width=80)
-
-    # Under threshold → no compaction.
-    monkeypatch.setattr(ctrl, "should_auto_compact", lambda: False)
     await repl._run_turn(console, ctrl, "hi", _ask_returning(""))
-    assert compacted == []
 
-    # Over threshold → compaction fires automatically.
-    monkeypatch.setattr(ctrl, "should_auto_compact", lambda: True)
-    await repl._run_turn(console, ctrl, "hi", _ask_returning(""))
-    assert compacted == [True]
-    assert "auto-compact" in console.file.getvalue().lower()
+    assert compacted == []                                    # never auto-compacts
+    assert "auto-compact" not in console.file.getvalue().lower()
+    # The old trigger is removed outright, not merely left unused.
+    assert not hasattr(ctrl, "should_auto_compact")
     ctrl.close()
 
 
@@ -2442,3 +2438,61 @@ def test_help_generated_from_registry():
         group_pos = body.index(f"[b]{group_name}[/b]")
         for spec in specs:
             assert body.index(f"/{spec.name}") > group_pos
+
+
+def test_commit_width_tracks_resize(monkeypatch):
+    """console.width is refreshed at every commit — tracks the current terminal width.
+
+    TDD RED: before the fix, console.width stays at the startup value after a resize.
+    TDD GREEN: after the fix, console.width equals the current terminal width (capped
+    at 100) at each commit and live-render call.
+    """
+    import os
+    import shutil as _shutil
+
+    from jarn.repl_renderer import TurnRenderer
+
+    # Phase 1: terminal reports 120 cols → width capped to 100.
+    monkeypatch.setattr(
+        _shutil, "get_terminal_size",
+        lambda *_a, **_k: os.terminal_size((120, 24)),
+    )
+    console = Console(file=StringIO(), force_terminal=True, width=80)
+    r = TurnRenderer(console, live_sink=lambda _: None, spinner=False)
+
+    r.on_text("first commit text")
+    r.on_tool("tool_a", {})  # triggers _commit_text before the tool line
+
+    # After first commit, width should be refreshed to min(120, 100) = 100.
+    assert console.width == 100, f"expected 100 (120 cols capped at 100), got {console.width}"
+
+    # Phase 2: terminal shrinks to 60 cols.
+    monkeypatch.setattr(
+        _shutil, "get_terminal_size",
+        lambda *_a, **_k: os.terminal_size((60, 24)),
+    )
+
+    r.on_text("second commit text")
+    r.finish()  # triggers _commit_text
+
+    # After second commit, width should be refreshed to min(60, 100) = 60.
+    assert console.width == 60, f"expected 60 after resize, got {console.width}"
+
+    # Phase 3: wide terminal (250 cols) → width still capped at 100.
+    console3 = Console(file=StringIO(), force_terminal=True, width=80)
+    monkeypatch.setattr(
+        _shutil, "get_terminal_size",
+        lambda *_a, **_k: os.terminal_size((250, 24)),
+    )
+    r3 = TurnRenderer(console3, live_sink=lambda _: None, spinner=False)
+    r3.on_text("cap test text")
+    r3.finish()
+    assert console3.width == 100, f"expected 100 cap at 250 cols, got {console3.width}"
+
+    # Phase 4: floor guard test — terminal reports 0 cols → width floored to 1.
+    from jarn.repl_renderer import _current_width
+    monkeypatch.setattr(
+        _shutil, "get_terminal_size",
+        lambda *_a, **_k: os.terminal_size((0, 24)),
+    )
+    assert _current_width() == 1, f"expected 1 (floor guard for 0 cols), got {_current_width()}"

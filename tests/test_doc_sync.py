@@ -13,6 +13,7 @@ REPO = Path(__file__).resolve().parent.parent
 # Files that state the *current* collection total (not historical sign-off tables).
 CURRENT_COUNT_DOCS = (
     REPO / "README.md",
+    REPO / "README-TH.md",
     REPO / "docs" / "CONTRIBUTING.md",
     REPO / "RELEASE.md",
 )

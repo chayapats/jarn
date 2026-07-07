@@ -52,14 +52,6 @@ def test_compact_pct_with_autocompact_off_warns():
     assert any(w.involves("context.compact_at_pct") for w in warnings)
 
 
-def test_profile_override_warns_on_disagreeing_value():
-    cfg = Config()
-    cfg.policy.profile = "offline"   # forces web_tools off at launch
-    cfg.policy.web_tools = True
-    _, warnings = check_consistency(cfg)
-    assert any(w.involves("policy.web_tools") and "offline" in w.message
-               for w in warnings)
-
 
 # -- controller wiring -----------------------------------------------------
 

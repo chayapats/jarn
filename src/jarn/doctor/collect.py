@@ -68,16 +68,11 @@ def collect_doctor(
     diag["default_profile"] = cfg.default_profile
     diag["main_model"] = cfg.resolved_main_model()
     diag["permission_mode"] = cfg.permission_mode.value
-    diag["policy_profile"] = cfg.policy.profile or "none"
     diag["web_tools"] = cfg.policy.web_tools
-    from jarn.config.profiles import UNTRUSTED_FLOOR_PROFILE
     from jarn.config.schema import PermissionMode
 
     diag["effective_mode"] = (
         PermissionMode.PLAN.value if not project_trusted else cfg.permission_mode.value
-    )
-    diag["effective_profile"] = (
-        UNTRUSTED_FLOOR_PROFILE if not project_trusted else (cfg.policy.profile or "none")
     )
 
     stripped: list[str] = []

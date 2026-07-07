@@ -52,9 +52,8 @@ def cmd_preset(ctrl, args: str) -> CommandResult:
 
     available = ", ".join(sorted(PROFILE_NAMES))
     if not args.strip():
-        current = ctrl.config.policy.profile or "none"
         return CommandResult(
-            f"Current preset: {current}. Available: {available}. "
+            f"Available presets: {available}. "
             "A preset bundles mode + OS sandbox + network into one pick."
         )
     choice = args.strip()
@@ -67,7 +66,6 @@ def cmd_preset(ctrl, args: str) -> CommandResult:
         )
     except ConfigError:
         return CommandResult(f"Unknown preset {choice!r}. Choose one of: {available}")
-    ctrl.config.policy.profile = effective or ""
     ctrl.engine.mode = ctrl.config.permission_mode
     ctrl.runtime = None  # mode/sandbox/web-tools changes require a rebuild
     # Echo the expansion so the user sees what the preset actually set.
@@ -82,14 +80,6 @@ def cmd_preset(ctrl, args: str) -> CommandResult:
         suffix = f" (clamped to {effective} — project untrusted)"
     return CommandResult(
         f"preset '{effective}'{suffix} → {expansion} (rebuilding).", rebuilt=True
-    )
-
-def cmd_profile(ctrl: Controller, args: str) -> CommandResult:
-    """Deprecated alias of /preset (kept working for back-compat)."""
-    result = cmd_preset(ctrl, args)
-    return CommandResult(
-        f"(/profile is deprecated and will be removed in v0.6.0 — use /preset.) {result.text}",
-        rebuilt=result.rebuilt,
     )
 
 def cmd_sandbox(ctrl, args: str) -> CommandResult:

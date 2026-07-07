@@ -72,6 +72,7 @@ class CostTracker:
         cache_read_tokens: int = 0,
         cache_creation_tokens: int = 0,
         increment_call: bool = True,
+        is_main: bool = False,
     ) -> Usage:
         """Record one model call; returns the updated total usage.
 
@@ -84,6 +85,13 @@ class CostTracker:
         portions of this call's input; they are priced into the returned cost and
         tracked per bucket so ``/cost`` can surface cache reuse. When both are 0
         (no cache usage), totals are identical to the pre-cache behavior.
+
+        ``is_main`` must be ``True`` when this call is attributed to the *main*
+        model (not a subagent or summarizer). Only then is the ctx% gauge updated.
+        The attribution is resolved at the call site (``stream_handlers.record_usage``)
+        by comparing the message's reported model ref to ``driver.main_model_ref``.
+        Limitation: a same-model subagent shares the main model's ref and therefore
+        cannot be distinguished here — the caller documents this where relevant.
         """
         tool_names = [t for t in (tools or []) if t]
         if not tool_names:
@@ -104,6 +112,7 @@ class CostTracker:
                 cache_read_tokens=cache_read_tokens,
                 cache_creation_tokens=cache_creation_tokens,
                 increment_call=increment_call,
+                is_main=is_main,
             )
             for i, tool_name in enumerate(tool_names):
                 extra_in = 1 if i < in_rem else 0
@@ -131,6 +140,7 @@ class CostTracker:
         cache_read_tokens: int = 0,
         cache_creation_tokens: int = 0,
         increment_call: bool = True,
+        is_main: bool = False,
     ) -> None:
         """Update session total and per-model buckets (caller holds ``_lock``)."""
         cost = pricing.cost_of(
@@ -154,7 +164,14 @@ class CostTracker:
             u.cache_creation_tokens += cache_creation_tokens
             if unpriced and increment_call:
                 u.unpriced_calls += 1
-        self.context_tokens = max(self.context_tokens, input_tokens)
+        # Update the ctx% gauge only for main-model calls (assignment so the gauge
+        # drops correctly after summarization shrinks the prompt; subagent traffic
+        # must not inflate it).  Guard: only update when the prompt is non-zero —
+        # continuation chunks (cumulative input unchanged → delta input = 0) and
+        # Anthropic-style split chunks (output-only final chunk, input = 0 on the
+        # non-monotonic new-call path) must not clobber a previously recorded value.
+        if is_main and (p := input_tokens + cache_read_tokens + cache_creation_tokens) > 0:
+            self.context_tokens = p
 
     def _record_tool_share(
         self,

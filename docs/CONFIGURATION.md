@@ -89,7 +89,7 @@ or edit the file directly (and, for an untrusted project, `jarn trust` it first)
 on an untrusted project a permissive `permission_mode` is still persisted but the live
 session stays clamped to the `review-only` floor.
 
-> `/model`, `/mode`, `/sandbox`, `/profile` change the **current session only** and do
+> `/model`, `/mode`, `/sandbox`, `/preset` change the **current session only** and do
 > not persist; use `/config set` (or edit the file) to make a change stick.
 
 ### Fixing a bad API key — `/key`
@@ -134,8 +134,7 @@ Beyond per-value checks, `/config` validates that settings make sense *together*
 - **Warnings** (`⚠`) — the value is harmless but currently has no effect, and is saved
   anyway: a `budget.hard_stop`/`warn_at_pct` while the session budget is `0` (unlimited),
   a `context.compact_at_pct` while `auto_compact` is off, a `context.repo_map_tokens`
-  while the repo map is off, or a value that an active `policy.profile` will overwrite at
-  launch.
+  while the repo map is off.
 
 In the panel the result line is colour-coded: `✗` (rejected), `⚠` (saved with a note),
 `✓` (saved cleanly).
@@ -153,10 +152,10 @@ default_model: openrouter/anthropic/claude-opus-4-8
 # Coarse trust level: plan | ask | auto-edit | yolo
 permission_mode: ask
 
-# ── Policy profile ───────────────────────────────────────────────────────
-# A named bundle of trust-relevant settings applied at launch. Selecting a
-# profile overlays permission_mode + execution.local_sandbox +
-# execution.sandbox_allow_network + policy.web_tools in one shot.
+# ── Policy / web tools ───────────────────────────────────────────────────
+# `policy.web_tools` gates the in-process web_search/web_fetch tools.
+# Use `jarn --preset NAME` (CLI) or `/preset` in the REPL to apply a named
+# bundle of trust-relevant settings at launch:
 #   trusted-repo     — ask · no OS sandbox · network on · web tools on (everyday)
 #   review-only      — plan (read-only) · web tools on
 #   sandbox-required — ask · local_sandbox=require · network off (untrusted, isolated)
@@ -165,14 +164,11 @@ permission_mode: ask
 #                      silently on the bare host; set execution.allow_local_fallback:
 #                      true to opt into host fallback)
 #   offline          — ask · local_sandbox=auto · network off · web tools OFF
-# Precedence: `jarn --profile NAME` (CLI) > policy.profile (here) > raw settings.
 # Untrusted projects are CLAMPED to `review-only` regardless — they can never be
-# loosened (via config, --profile, /profile, /mode, or Shift+Tab) until trusted.
-# Switch at runtime with `/profile`. `policy` keys are stripped from untrusted
-# project configs (capability gate).
+# loosened (/preset, /mode, or Shift+Tab) until trusted.
+# Note: `policy.profile` was removed in v0.6.0; use `--preset` / `/preset`.
 policy:
-  profile: ""              # "" = none (use the raw settings above)
-  web_tools: true          # register web_search/web_fetch? (a profile may flip this)
+  web_tools: true          # register web_search/web_fetch?
 
 # ── Providers ────────────────────────────────────────────────────────────
 # Keys are referenced, never inlined:
@@ -223,7 +219,10 @@ providers:
 routing:
   main: openrouter/anthropic/claude-opus-4-8        # main loop
   subagent: openrouter/anthropic/claude-haiku-4-5   # delegated subagents (cheaper)
-  summarizer: openrouter/anthropic/claude-haiku-4-5 # context summarization
+  summarizer: openrouter/anthropic/claude-haiku-4-5 # model for context summarization.
+                       #   Used by BOTH the automatic in-graph summarization (see
+                       #   context.auto_compact) and the manual /compact. Falls back to
+                       #   `subagent`, then the main model, when unset.
   fallback: []                                      # tried on primary failure
   prompt_cache: auto   # auto | off. Cloud caching is automatic — the agent engine
                        #   adds Anthropic cache-control, and other cloud providers
@@ -245,8 +244,24 @@ budget:
 
 # ── Context management ───────────────────────────────────────────────────
 context:
-  auto_compact: true
-  compact_at_pct: 85       # summarize when the context window is this % full (0-100)
+  auto_compact: true       # auto-summarize the conversation IN-GRAPH as it grows.
+                           #   On: one summarization pass runs on the `summarizer`
+                           #   model (routing.summarizer) once the context reaches
+                           #   compact_at_pct — evicted history is offloaded so the
+                           #   thread continues seamlessly. Off: nothing auto-compacts
+                           #   (run /compact by hand). Either way, deepagents' own
+                           #   built-in summarizer (main model, fixed 85%) is disabled
+                           #   so there is exactly one summarization path.
+  compact_at_pct: 85       # % of the MAIN model's context window that triggers the
+                           #   in-graph summarization (0-100), resolved to an absolute
+                           #   token count from JARN's own window table (the same
+                           #   source as the ctx% gauge) — so overflow risk is measured
+                           #   against the model you actually run, not the summarizer.
+                           #   Known window → e.g. 85% of 200k = ~170k tokens. UNKNOWN
+                           #   window (a model JARN can't size, incl. some local
+                           #   endpoints) → this % has NO effect and deepagents' 170k
+                           #   token default applies instead; `/compact status` reports
+                           #   which case you're in.
   repo_map: tool            # off | tool | auto
                             # off  — repo map disabled entirely.
                             # tool — (default) a read-only `repo_map` tool is
@@ -263,6 +278,25 @@ execution:
                            #   can run a dev server / watcher / long build without blocking
                            #   the turn. Local backend only (a host process would escape a
                            #   container); /ps lists them. Gated like shell.
+  # Background-process limits (both default to null = unlimited):
+  background_max_concurrent: null   # integer — hard cap on concurrently running
+                                    #   background processes. When the cap is reached,
+                                    #   run_in_background returns a refusal string
+                                    #   ("background slots full (N/N) — …") so the model
+                                    #   knows to check/kill before retrying. No process
+                                    #   is spawned. Slots are counted after exited
+                                    #   processes are swept, so naturally finished jobs
+                                    #   free up capacity automatically.
+  background_max_lifetime_secs: null # float — processes running longer than this
+                                     #   number of seconds are killed (SIGTERM then
+                                     #   SIGKILL) on the next sweep, which happens on
+                                     #   every run_in_background / check_background /
+                                     #   list_background call. Killed processes appear
+                                     #   in check_background / list_background with
+                                     #   the note "killed: exceeded max_lifetime_secs"
+                                     #   so the model can distinguish them from normal
+                                     #   exits. Per-process temp log dirs are also
+                                     #   removed when a process is swept.
   backend: local           # local | docker | sandbox  (toggle at runtime with /sandbox)
                            # local  — run on the host (permission engine is the only
                            #          authorizer; NO isolation)
@@ -349,8 +383,9 @@ mcp_servers:
 
 # ── Verification gate (post-edit) ────────────────────────────────────────
 verify:
-  gate: suggest            # off | suggest | auto — after write_file/edit_file,
-                           # suggest emits the detected test command; auto runs it
+  gate: suggest            # off | suggest | auto — once per turn, after all
+                           # write_file/edit_file calls complete: suggest emits
+                           # the detected test command; auto runs it
                            # (permissions + danger-guard still apply)
 
 # ── Observability ────────────────────────────────────────────────────────

@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from jarn.agent.checkpoint import CheckpointManager
+from jarn.agent.checkpoint import CheckpointManager, SnapshotResult
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -422,6 +422,94 @@ def test_undo_rollback_on_apply_failure(repo: Path, monkeypatch: pytest.MonkeyPa
     assert redo_after == redo_before, "failed undo must not leave an orphan on redo"
 
 
+# ---------------------------------------------------------------------------
+# T-1-4 — non-blocking snapshot: the mutation gate awaits snapshot completion
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mutation_waits_for_snapshot() -> None:
+    """The first mutating tool must not EXECUTE until the turn-start snapshot has
+    completed — while the model stream may begin while the snapshot is still
+    running (turn start no longer blocks on the snapshot).
+
+    Driven through the real ``SessionDriver.run_turn`` with a fake agent (write
+    interrupt → resume) and a deliberately slow fake snapshot, asserting event
+    order via a shared log. The core invariant (snap_done < tool_execute) is
+    guaranteed by the mutation gate regardless of timing; the non-blocking claim
+    (model_stream < snap_done) holds with a wide margin (µs of model stream vs a
+    150 ms snapshot).
+    """
+    import time as _t
+
+    from jarn.agent.session import ApprovalReply, EventKind, SessionDriver
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    order: list[str] = []
+
+    class SlowCheckpoint:
+        snapshot_notice_pending: bool = False
+        snapshot_notice_shown: bool = False
+
+        def snapshot(self, label: str, *, now: float | None = None) -> SnapshotResult:
+            order.append("snap_start")
+            _t.sleep(0.15)  # simulate O(repo) git add -A + write-tree
+            order.append("snap_done")
+            return SnapshotResult(ok=True, sha="deadbeef")
+
+    class _AIChunk:
+        type = "ai"
+
+        def __init__(self, content: str) -> None:
+            self.content = content
+            self.usage_metadata = {"input_tokens": 1, "output_tokens": 1}
+            self.response_metadata: dict[str, str] = {}
+
+    class _Interrupt:
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+    class WriteThenDone:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def astream(self, payload, config, stream_mode=None, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                order.append("model_stream")
+                yield ("messages", (_AIChunk("writing… "),))
+                yield ("updates", {"__interrupt__": (
+                    _Interrupt({"action_requests": [
+                        {"action": "write_file",
+                         "args": {"file_path": "a.txt", "content": "x"}}
+                    ]}),
+                )})
+            else:
+                order.append("tool_execute")
+                yield ("messages", (_AIChunk("done."),))
+
+    async def _approve(_req: object) -> ApprovalReply:
+        return ApprovalReply(approved=True)
+
+    driver = SessionDriver(
+        agent=WriteThenDone(),
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="t",
+        approver=_approve,
+        checkpoint=SlowCheckpoint(),
+    )
+    events = [ev async for ev in driver.run_turn("write a file")]
+
+    # Non-blocking turn start: the model stream began before the snapshot finished.
+    assert order.index("model_stream") < order.index("snap_done"), order
+    # Core invariant: the snapshot completed before the mutating tool executed.
+    assert order.index("snap_done") < order.index("tool_execute"), order
+    assert any(e.kind is EventKind.DONE for e in events)
+
+
 def test_concurrent_undo_locked(repo: Path) -> None:
     """Concurrent undo attempts serialize on the checkpoint lock without corrupting stacks."""
     import threading
@@ -456,5 +544,134 @@ def test_concurrent_undo_locked(repo: Path) -> None:
     undo_stack = cp._stack_read(cp._UNDO_PREFIX, repo)
     # Two serialized undos from a depth-2 stack leaves 0 or 1 entry — never negative/corrupt.
     assert len(undo_stack) <= 2
+    for sha in undo_stack:
+        assert len(sha) >= 40
+
+
+# ---------------------------------------------------------------------------
+# T-1-4 fix — /abort rollback must not race a still-building detached snapshot
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_abort_rollback_waits_for_detached_snapshot(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the T-1-4 review Critical: the /abort over-revert race.
+
+    A turn cancelled while its turn-start snapshot is still BUILDING (tree captured
+    off the checkpoint lock, not yet pushed) detaches that snapshot fire-and-forget.
+    If the abort rollback's ``undo()`` runs before the snapshot pushes, it pops the
+    PREVIOUS turn's checkpoint and reverts the tree an extra turn back (over-revert),
+    then the late snapshot pushes and the stack is left out of sync with disk.
+
+    ``settle_snapshot`` (awaited in the /abort path before abort_rollback) must wait
+    for the detached snapshot to land, so undo() targets THIS turn's start.
+    """
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+
+    from jarn.agent import checkpoint as cp
+    from jarn.agent.session import _DETACHED_SNAPSHOTS, EventKind, SessionDriver
+    from jarn.config.schema import PermissionMode
+    from jarn.controller import session_helpers
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    mgr = _manager(repo)
+    readme = repo / "README.txt"
+
+    # Turn-0 checkpoint captures the "init" tree — the extra-turn-back over-revert
+    # target if undo() runs too early.
+    c0 = mgr.snapshot("turn-0-start", now=1.0)
+    assert c0.ok
+    # Turn-0's result / turn-1's starting tree.
+    readme.write_text("v1\n", encoding="utf-8")
+
+    # Slow the turn-1 snapshot: build the commit (capturing "v1") as usual, then
+    # block BEFORE the dedup/push — exactly the real race window. The gate lets the
+    # test cancel the turn and inspect the stack while the snapshot is provably in
+    # flight. Only turn-1's snapshot is gated (matched by label).
+    started = threading.Event()
+    release = threading.Event()
+    orig_build = cp._build_snapshot
+
+    def slow_build(label: str, root: Path):
+        result = orig_build(label, root)
+        if "turn-1-start" in label:
+            started.set()
+            release.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(cp, "_build_snapshot", slow_build)
+
+    class _AIChunk:
+        type = "ai"
+
+        def __init__(self, content: str) -> None:
+            self.content = content
+            self.usage_metadata = {"input_tokens": 1, "output_tokens": 1}
+            self.response_metadata: dict[str, str] = {}
+
+    class Hang:
+        async def astream(self, payload, config, stream_mode=None, **kwargs):
+            yield ("messages", (_AIChunk("working… "),))
+            await asyncio.sleep(10)  # hold the turn open until cancelled
+
+    driver = SessionDriver(
+        agent=Hang(),
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="t",
+        checkpoint=mgr,
+    )
+    agen = driver.run_turn("turn-1-start")
+    first = await agen.__anext__()
+    assert first.kind is EventKind.TEXT
+    # Wait until the snapshot has captured "v1" and is blocked before its push.
+    for _ in range(500):
+        if started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert started.is_set()
+
+    # Simulate turn-1's in-progress edit (the snapshot already captured "v1").
+    readme.write_text("v2\n", encoding="utf-8")
+
+    # RACE WINDOW: turn-1's snapshot is NOT on the stack yet, so an unsettled undo
+    # here would pop turn-0 (the "init" checkpoint) → over-revert.
+    assert mgr.list()[0].sha == c0.sha
+
+    # Cancel the turn mid-snapshot → the snapshot is detached fire-and-forget.
+    await agen.aclose()
+    assert driver._snapshot_task is None
+    assert [t for t in _DETACHED_SNAPSHOTS if not t.done()], (
+        "the still-building snapshot should be detached and pending"
+    )
+
+    # The /abort sequence: unblock the snapshot, settle it, THEN roll back.
+    release.set()
+    await driver.settle_snapshot()
+
+    # settle waited for the push: turn-1's checkpoint (tree "v1") is now on top,
+    # distinct from turn-0's "init" checkpoint.
+    top = mgr.list()[0]
+    assert top.sha != c0.sha
+    v1_tree = cp._git(["rev-parse", f"{top.sha}^{{tree}}"], cwd=repo).stdout.strip()
+    init_tree = cp._git(["rev-parse", f"{c0.sha}^{{tree}}"], cwd=repo).stdout.strip()
+    assert v1_tree != init_tree
+
+    # The real abort_rollback (what /abort offloads to a thread) now targets turn-1
+    # start → README restored to "v1", NOT an extra turn back to "init".
+    msg = session_helpers.abort_rollback(SimpleNamespace(checkpoint_manager=mgr))
+    assert "rolled back" in msg.lower(), msg
+    assert readme.read_text(encoding="utf-8") == "v1\n"
+
+    # Stack stays consistent: undo popped turn-1 (top is turn-0 again), the pre-undo
+    # state is recoverable on redo, and no ref is corrupt.
+    undo_stack = cp._stack_read(cp._UNDO_PREFIX, repo)
+    assert undo_stack and undo_stack[0] == c0.sha
+    assert cp._stack_read(cp._REDO_PREFIX, repo)  # redo point saved
     for sha in undo_stack:
         assert len(sha) >= 40

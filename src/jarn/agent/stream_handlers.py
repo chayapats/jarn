@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -119,9 +120,16 @@ def record_usage(driver: SessionDriver, msg: Any) -> None:
         input_tokens, output_tokens, cache_read, cache_creation = cumulative
     driver._last_usage_totals[usage_key] = cumulative
 
+    # Attribute to main model: ctx% gauge only updates for the main model's prompt.
+    # NOTE: a subagent that shares the main model's id cannot be distinguished here
+    # (resolve_model_ref will return main_model_ref for both). That case is documented
+    # as a known limitation — the gauge may be inflated by same-model subagent prompts.
+    # Distinguishable case (different model id) is fully handled and tested.
+    is_main = model_ref == driver.main_model_ref
+
     tools = _tool_names(msg)
     driver.tracker.record(
-        resolve_model_ref(driver, msg),
+        model_ref,
         input_tokens,
         output_tokens,
         tools=tools if len(tools) > 1 else None,
@@ -129,6 +137,7 @@ def record_usage(driver: SessionDriver, msg: Any) -> None:
         cache_read_tokens=cache_read,
         cache_creation_tokens=cache_creation,
         increment_call=not is_continuation,
+        is_main=is_main,
     )
 
 
@@ -218,8 +227,15 @@ def _first_tool_name(msg: Any) -> str | None:
     return names[0] if names else None
 
 
+# ---------------------------------------------------------------------------
+# Typed error classification (T-1-8)
+# ---------------------------------------------------------------------------
+
 #: Substrings / exception-name fragments that mark a provider error as worth a
 #: model fallback (transient or capacity-related, not a logic bug).
+#: Provider-specific class names without a typed equivalent remain here as the
+#: last-resort safety net.  The status_code branch that was previously in
+#: ``_is_retryable_error`` is now handled in the typed tier of ``classify_error``.
 _RETRYABLE_NAME_HINTS = ("timeout", "connecterror", "connectionerror", "ratelimit",
                          "overloaded", "serviceunavailable", "apierror", "internalserver")
 # Narrow phrases only — a bare "connection"/"timeout" can appear in unrelated
@@ -228,24 +244,6 @@ _RETRYABLE_MSG_HINTS = ("rate limit", "rate-limit", "overloaded",
                         "temporarily unavailable", "service unavailable",
                         "connection reset", "connection refused", "connection aborted",
                         "connection error", "read timed out", "request timed out")
-
-
-def _is_retryable_error(exc: BaseException) -> bool:
-    """Heuristic: is this a transient/capacity provider error worth falling back?
-
-    Providers raise wildly different exception types, so we match on the type
-    name and message rather than a fixed exception class. A numeric ``status_code``
-    in the 429/5xx family also counts.
-    """
-    status = getattr(exc, "status_code", None)
-    if isinstance(status, int) and (status == 429 or 500 <= status < 600):
-        return True
-    name = type(exc).__name__.lower()
-    if any(h in name for h in _RETRYABLE_NAME_HINTS):
-        return True
-    msg = str(exc).lower()
-    return any(h in msg for h in _RETRYABLE_MSG_HINTS)
-
 
 #: Exception-name fragments and message phrases that mark a provider failure as an
 #: authentication/authorization rejection — an invalid/expired/missing API key.
@@ -258,23 +256,205 @@ _AUTH_MSG_HINTS = ("invalid x-api-key", "invalid api key", "invalid_api_key",
                    "expired api key", "invalid bearer token", "permission denied")
 
 
-def _is_auth_error(exc: BaseException) -> bool:
-    """Heuristic: is this a 401/403 auth rejection (bad/expired/missing key)?
+def _iter_exc_chain(exc: BaseException, max_depth: int = 5):
+    """Yield *exc* and up to *max_depth* more causes/contexts from the chain.
 
-    Matches on a numeric ``status_code`` of 401/403, the exception type name, or
-    known message phrases. Kept deliberately narrow so a generic "permission"
-    string in an unrelated tool result doesn't get misclassified.
+    Prefers ``__cause__`` (explicit ``raise X from Y``) over ``__context__``
+    (implicit exception-during-exception).  A ``seen`` set guards against the
+    theoretical cycle that a misbehaved exception could create.
     """
-    status = getattr(exc, "status_code", None)
-    if isinstance(status, int) and status in (401, 403):
-        return True
-    name = type(exc).__name__.lower()
-    if any(h in name for h in _AUTH_NAME_HINTS):
-        return True
-    msg = str(exc).lower()
-    if "401" in msg or "403" in msg:
-        return True
-    return any(h in msg for h in _AUTH_MSG_HINTS)
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    remaining = max_depth + 1
+    while current is not None and remaining > 0 and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        remaining -= 1
+        cause = getattr(current, "__cause__", None)
+        context = getattr(current, "__context__", None)
+        current = cause if cause is not None else context
+
+
+def _classify_by_status(status: object) -> tuple[bool, bool] | None:
+    """Map a numeric HTTP status to *(retryable, auth)* or ``None`` if not an int."""
+    if not isinstance(status, int):
+        return None
+    if status in (401, 403):
+        return (False, True)
+    if status == 429 or status == 408 or (500 <= status < 600):
+        return (True, False)
+    if 400 <= status < 500:
+        return (False, False)
+    return None
+
+
+def _classify_single_typed(exc: BaseException) -> tuple[bool, bool] | None:
+    """Try to classify *exc* conclusively by type / status code.
+
+    Returns *(retryable, auth)* when a definitive verdict is reached, or
+    ``None`` when the exception is inconclusive (chain walk should continue).
+    All attribute accesses are guarded with ``getattr`` to stay defensive.
+    """
+    # (a) status_code attribute — covers any SDK that exposes it directly
+    try:
+        status = getattr(exc, "status_code", None)
+        verdict = _classify_by_status(status)
+        if verdict is not None:
+            return verdict
+        # Also check exc.response.status_code (httpx, requests, …)
+        response = getattr(exc, "response", None)
+        if response is not None:
+            r_status = getattr(response, "status_code", None)
+            verdict = _classify_by_status(r_status)
+            if verdict is not None:
+                return verdict
+    except Exception:  # noqa: BLE001
+        pass  # defensive: a property raising must not propagate
+
+    # (b) known exception types — import-guarded so missing SDKs are safe
+
+    # httpx IS a jarn dependency; no guarding needed but kept symmetric.
+    try:
+        import httpx as _httpx  # noqa: PLC0415
+        if isinstance(exc, _httpx.TimeoutException):
+            return (True, False)
+        if isinstance(exc, _httpx.HTTPStatusError):
+            try:
+                s = exc.response.status_code
+                verdict = _classify_by_status(s)
+                return verdict if verdict is not None else (False, False)
+            except Exception:  # noqa: BLE001
+                return (False, False)
+    except ImportError:
+        pass
+
+    # Built-in / asyncio timeouts
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return (True, False)
+
+    # Network-ish OS errors
+    if isinstance(exc, ConnectionError):
+        return (True, False)
+
+    # anthropic SDK — optional; feature-detect by class hierarchy
+    try:
+        import anthropic as _anthropic  # noqa: PLC0415
+        if isinstance(exc, _anthropic.APIStatusError):
+            try:
+                s = exc.status_code
+                verdict = _classify_by_status(s)
+                return verdict if verdict is not None else (False, False)
+            except Exception:  # noqa: BLE001
+                return (False, False)
+        if isinstance(exc, _anthropic.RateLimitError):
+            return (True, False)
+        if isinstance(exc, _anthropic.AuthenticationError):
+            return (False, True)
+        if isinstance(exc, _anthropic.APIConnectionError):
+            return (True, False)
+    except ImportError:
+        pass
+
+    # openai SDK — optional
+    try:
+        import openai as _openai  # noqa: PLC0415
+        if isinstance(exc, _openai.APIStatusError):
+            try:
+                s = exc.status_code
+                verdict = _classify_by_status(s)
+                return verdict if verdict is not None else (False, False)
+            except Exception:  # noqa: BLE001
+                return (False, False)
+        if isinstance(exc, _openai.RateLimitError):
+            return (True, False)
+        if isinstance(exc, _openai.AuthenticationError):
+            return (False, True)
+        if isinstance(exc, _openai.APIConnectionError):
+            return (True, False)
+    except ImportError:
+        pass
+
+    return None  # inconclusive — caller should check the next cause in the chain
+
+
+def classify_error(exc: BaseException) -> dict[str, Any]:
+    """Classify *exc* as retryable/auth, walking the exception chain up to depth 5.
+
+    Classification order per exception in the chain:
+
+    1. ``status_code`` / ``response.status_code`` attributes (any SDK).
+    2. Known exception types (``httpx``, ``asyncio``, ``anthropic``, ``openai``),
+       import-guarded so missing providers don't break classification.
+    3. Fall back to the existing substring heuristic table as a last resort (keeps
+       provider wrappers that only stringify their errors working).
+
+    The chain walk stops at the **first conclusive typed match**; inconclusive
+    exceptions (no recognised type/attribute) move to the next ``__cause__`` /
+    ``__context__``.
+
+    Returns a ``dict`` with keys:
+
+    * ``retryable`` (``bool``) — worth trying a model fallback.
+    * ``auth`` (``bool``) — 401/403 key rejection; friendly hint shown instead of
+      raw SDK JSON.
+    * ``classified_by`` (``"type"`` | ``"heuristic"``) — observability tag;
+      included in the ``ERROR`` event's ``data`` dict so transcripts can record it.
+    """
+    # Walk the chain looking for a conclusive typed verdict first.
+    for cause in _iter_exc_chain(exc):
+        verdict = _classify_single_typed(cause)
+        if verdict is not None:
+            retryable, auth = verdict
+            return {"retryable": retryable, "auth": auth, "classified_by": "type"}
+
+    # Heuristic fallback — the safety net for provider wrappers that only
+    # stringify their errors.  We run only the name/message checks here; the
+    # status_code branch that lived in the old ``_is_retryable_error`` /
+    # ``_is_auth_error`` is now handled (conclusively) in the typed tier above.
+    try:
+        name = type(exc).__name__.lower()
+        retryable_h = any(h in name for h in _RETRYABLE_NAME_HINTS)
+        if not retryable_h:
+            msg = str(exc).lower()
+            retryable_h = any(h in msg for h in _RETRYABLE_MSG_HINTS)
+
+        auth_h = any(h in name for h in _AUTH_NAME_HINTS)
+        if not auth_h:
+            msg_h = str(exc).lower()
+            if "401" in msg_h or "403" in msg_h or any(h in msg_h for h in _AUTH_MSG_HINTS):
+                auth_h = True
+    except Exception:  # noqa: BLE001
+        retryable_h = False
+        auth_h = False
+
+    return {"retryable": retryable_h, "auth": auth_h, "classified_by": "heuristic"}
+
+
+def _is_retryable_error(exc: BaseException) -> bool:
+    """Return ``True`` when *exc* represents a transient/capacity provider error.
+
+    Delegates to :func:`classify_error` so both the typed tier (status codes,
+    known SDK exception types, exception chain walk) and the heuristic fallback
+    are applied consistently.  Kept for backward-compatibility; call sites that
+    need the full classification dict should use :func:`classify_error` directly.
+
+    Previously contained an inline ``status_code`` check (429 / 5xx) that is now
+    handled by the typed tier in :func:`classify_error` — that branch is the
+    deleted "dead" substring/attribute check noted in the T-1-8 report.
+    """
+    return classify_error(exc)["retryable"]
+
+
+def _is_auth_error(exc: BaseException) -> bool:
+    """Return ``True`` when *exc* is a 401/403 key rejection.
+
+    Delegates to :func:`classify_error`.  Kept for backward-compatibility.
+
+    The inline ``status_code in (401, 403)`` check from the original
+    implementation is now handled by the typed tier in :func:`classify_error`
+    (deleted dead branch; see T-1-8 report).
+    """
+    return classify_error(exc)["auth"]
 
 
 def _provider_of_ref(ref: str) -> str:

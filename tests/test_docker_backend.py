@@ -727,3 +727,59 @@ def test_make_backend_docker_start_error_no_traceback_exposed(
         pass
     except DockerStartError:
         pytest.fail("DockerStartError must be wrapped in SandboxUnavailable")
+
+
+# --------------------------------------------------------------------------
+# Item 6: atexit cleanup registration
+# --------------------------------------------------------------------------
+
+
+def test_atexit_cleanup_registered_and_idempotent(monkeypatch):
+    """atexit callable: registered at container start, stops/removes the container,
+    idempotent on second call, and disarmed after close().
+
+    Design: do NOT invoke the real atexit machinery — capture the registered
+    callable via monkeypatching atexit.register, then call it manually.
+    """
+    # --- Part 1: registration and cleanup ---
+    registered: list = []
+    monkeypatch.setattr(docker_backend.atexit, "register", lambda fn: registered.append(fn))
+
+    fake = _FakeRun()
+    monkeypatch.setattr(docker_backend.subprocess, "run", fake)
+    be = docker_backend.CancellableDockerSandbox(project_root=Path("/work/proj"))
+    cid = be.id
+
+    # atexit.register must have been called with one callable
+    assert len(registered) == 1, "exactly one atexit callable must be registered"
+    atexit_fn = registered[0]
+
+    # Calling the callable removes the container
+    n_before = len(fake.calls)
+    atexit_fn()
+    rm_calls = [c for c in fake.calls[n_before:] if c[:3] == ["docker", "rm", "-f"] and cid in c]
+    assert rm_calls, f"atexit callback must force-remove the container; calls: {fake.calls[n_before:]}"
+
+    # Second call is idempotent — no new subprocess calls
+    n_after_first = len(fake.calls)
+    atexit_fn()
+    assert len(fake.calls) == n_after_first, (
+        "atexit callback must be idempotent (second invocation must be a no-op)"
+    )
+
+    # --- Part 2: close() disarms the atexit callback ---
+    registered2: list = []
+    monkeypatch.setattr(docker_backend.atexit, "register", lambda fn: registered2.append(fn))
+    fake2 = _FakeRun()
+    monkeypatch.setattr(docker_backend.subprocess, "run", fake2)
+    be2 = docker_backend.CancellableDockerSandbox(project_root=Path("/work/proj"))
+
+    assert len(registered2) == 1, "second backend must also register an atexit callable"
+    atexit_fn2 = registered2[0]
+
+    be2.close()  # graceful close disarms the atexit hook
+    n_before2 = len(fake2.calls)  # count *after* close already ran docker rm
+    atexit_fn2()  # must be a no-op — container already gone, flag cleared by close()
+    assert len(fake2.calls) == n_before2, (
+        "atexit callback must be a no-op after close() has already cleaned up"
+    )

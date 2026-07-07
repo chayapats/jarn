@@ -14,7 +14,9 @@ driver works headless (tests) and inside Textual.
 
 from __future__ import annotations
 
-import contextlib
+import asyncio
+import logging
+import time as _time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -44,6 +46,7 @@ from jarn.agent.stream_handlers import (
     _provider_of_ref,
     _tool_summary,
     _unpack_stream_item,
+    classify_error,
     handle_message_chunk,
     handle_update_chunk,
     record_usage,
@@ -71,7 +74,22 @@ __all__ = [
     "_resume_payload",
     "_tool_summary",
     "_unpack_stream_item",
+    "classify_error",
 ]
+
+_log = logging.getLogger("jarn")
+
+#: User-facing NOTICE emitted (exactly once per session) when a checkpoint
+#: snapshot raises — so a silently-disabled ``/undo`` is no longer invisible.
+SNAPSHOT_FAIL_NOTICE = (
+    "checkpoint failed — /undo unavailable this turn (see ~/.jarn/logs/jarn.log)"
+)
+
+#: Strong references to snapshot tasks detached from a cancelled/closed turn so
+#: they finish in their worker thread without being garbage-collected while
+#: pending (which would emit "Task was destroyed but it is pending"). Each task's
+#: done-callback removes its own entry, so this set self-drains.
+_DETACHED_SNAPSHOTS: set[asyncio.Task[Any]] = set()
 
 
 @dataclass(slots=True)
@@ -116,10 +134,19 @@ class SessionDriver:
     project_root: Any = None
     #: Optional shell executor for ``verify.gate: auto`` (mock-friendly).
     verify_executor: Any = None
+    #: Set to True when at least one write_file/edit_file TOOL_END occurs this turn.
+    #: Cleared at turn start; triggers one deferred verify call when the turn
+    #: completes without pending interrupts (see debounce logic in run_turn).
+    _verify_dirty: bool = False
     #: Last cumulative usage seen per (thread, model) — streaming providers resend totals.
     _last_usage_totals: dict[tuple[str, str], tuple[int, int, int, int]] = field(
         default_factory=dict, repr=False
     )
+    #: In-flight working-tree snapshot for the current turn — started off the
+    #: event loop at turn start, awaited at the first mutation gate (and at turn
+    #: end for a no-mutation turn), reaped/detached in ``run_turn``'s cleanup.
+    #: ``None`` when idle.
+    _snapshot_task: asyncio.Task[Any] | None = field(default=None, repr=False)
 
     def _config(self) -> dict[str, Any]:
         return {"configurable": {"thread_id": self.thread_id}}
@@ -135,8 +162,6 @@ class SessionDriver:
         since LangGraph already checkpointed the user message before the (failed)
         model call. This prevents a duplicate human message in the thread.
         """
-        import time as _time
-
         self.tracker.check_or_raise()
 
         messages: list[dict[str, str]] = []
@@ -156,19 +181,63 @@ class SessionDriver:
         if self.transcript is not None and not resume:
             self.transcript.write_user(user_input, ts=_time.time())
         self._turn_text = ""
+        self._verify_dirty = False
         if not resume:
-            self._last_usage_totals = {
-                k: v for k, v in self._last_usage_totals.items() if k[0] != self.thread_id
-            }
+            # Clear ALL entries at turn start, not just the current thread's.
+            # The cumulative-stream dedup uses this dict to baseline provider totals
+            # WITHIN a turn (a provider resends cumulative counts on each chunk; we
+            # delta them). Clearing at turn start is correct: deltas are only
+            # meaningful within a single turn, and a fresh turn always starts from
+            # zero. The old inverted filter (`if k[0] != self.thread_id`) kept OTHER
+            # threads' keys forever — after /clear, /compact, or /rewind those stale
+            # (thread_id, model_ref) pairs accumulated unboundedly. Clearing also
+            # cannot break mid-turn dedup: keys are re-populated by record_usage as
+            # each streaming chunk arrives, so the first chunk of a new turn gets
+            # treated as an absolute count (no prev → delta = cumulative) which is
+            # the correct baseline for a fresh API call.
+            self._last_usage_totals.clear()
 
-        # Snapshot the working tree before the agent can edit files, so /undo can
-        # revert this turn. Best-effort — a checkpoint failure must never abort
-        # the turn (the manager itself no-ops cleanly when disabled / not a repo).
+        # A snapshot failure detected during a PRIOR turn's cleanup (after that
+        # turn's last yield) could not be surfaced then — emit its NOTICE now, at
+        # the very start of this turn, still exactly once per session.
+        notice = self._pending_snapshot_notice()
+        if notice is not None:
+            yield notice
+
+        # Snapshot the working tree BEFORE the agent can edit files (so /undo can
+        # revert this turn) — but OFF the event loop, so turn start no longer
+        # blocks on O(repo) git work. The model call runs concurrently; the
+        # snapshot is awaited at the first mutation gate (and, for a no-mutation
+        # turn, at turn end) so no mutating tool ever runs against an uncaptured
+        # tree. Best-effort: a failure never aborts the turn — it is logged with a
+        # traceback and surfaced as a NOTICE exactly once per session.
         if self.checkpoint is not None and not resume:
-            # A snapshot failure must never abort the turn.
-            with contextlib.suppress(Exception):
-                self.checkpoint.snapshot(user_input[:80], now=_time.time())
+            self._start_snapshot(user_input[:80], _time.time())
 
+        try:
+            async for ev in self._stream_turn(payload):
+                yield ev
+            # Turn-end reap (reached only on a NON-cancelled completion): wait for
+            # the snapshot so it is guaranteed to have landed and any failure is
+            # recorded. This runs at turn END only (never turn start) and is
+            # typically instant — the snapshot overlapped the whole model response.
+            # A failure discovered here is past the turn's last yield, so its NOTICE
+            # is deferred to the start of the next turn.
+            await self._ensure_snapshot()
+        finally:
+            # Never leak the snapshot task: a cancelled/closed turn skips the reap
+            # above (GeneratorExit/CancelledError propagates past it), so settle it
+            # here without blocking — detach it to finish in its worker thread (the
+            # snapshot still lands; any failure surfaces on the next turn).
+            self._detach_pending_snapshot()
+
+    async def _stream_turn(self, payload: Any):
+        """Stream one turn's model output and resolve HITL interrupts.
+
+        Extracted from :meth:`run_turn` so the snapshot task can be reaped in a
+        single ``finally`` there without indenting this loop. ``payload`` is
+        rebuilt in place on each interrupt resume.
+        """
         while True:
             interrupts: list[Any] = []
             try:
@@ -199,12 +268,11 @@ class SessionDriver:
                             if ev.kind is EventKind.TOOL_END and self.hooks is not None:
                                 async for note in self._run_post_hooks(ev.text):
                                     yield note
-                            if ev.kind is EventKind.TOOL_END:
-                                from jarn.agent.verify import verify_after_edit
-
-                                notice = await verify_after_edit(self, ev.text)
-                                if notice is not None:
-                                    yield notice
+                            if ev.kind is EventKind.TOOL_END and ev.text in (
+                                "write_file",
+                                "edit_file",
+                            ):
+                                self._verify_dirty = True
                         # Mid-turn budget enforcement: usage was just recorded for
                         # this message, so re-check the hard-stop the same way it is
                         # checked before the turn and abort cleanly if exceeded.
@@ -237,14 +305,23 @@ class SessionDriver:
                 # Auth/401 failures are *not* retryable (rotating models won't fix a
                 # rejected key); tag them so the front-end can show a friendly,
                 # actionable message naming the provider instead of the raw SDK JSON.
-                data: dict[str, Any] = {"retryable": _is_retryable_error(exc)}
-                if _is_auth_error(exc):
-                    data["auth"] = True
+                data: dict[str, Any] = classify_error(exc)
+                if data.get("auth"):
                     data["provider"] = _provider_of_ref(self.main_model_ref)
                 yield Event(EventKind.ERROR, text=str(exc), data=data)
                 return
 
             if not interrupts:
+                # Deferred verify: run exactly once after all edits in the turn,
+                # only when the turn completes normally (not on cancel/abort — those
+                # raise CancelledError which propagates past this branch).
+                if self._verify_dirty:
+                    from jarn.agent.verify import verify_after_edit
+
+                    notice = await verify_after_edit(self, "write_file")
+                    if notice is not None:
+                        yield notice
+                    self._verify_dirty = False
                 # Flush the accumulated assistant reply as a single transcript line.
                 if self.transcript is not None and self._turn_text:
                     self.transcript.write_assistant(self._turn_text, ts=_time.time())
@@ -285,6 +362,164 @@ class SessionDriver:
                         intr_decisions.append(decision)
                 resolved.append((iid, intr_decisions))
             payload = _resume_payload(resolved)
+
+            # Mutation gate. Every mutating tool (write_file / edit_file / execute
+            # — plus SHELL-gated run_in_background starts) ALWAYS raises a HITL
+            # interrupt (permissions_bridge.MUTATING_TOOLS), even when the engine
+            # auto-approves without prompting, and the tool only EXECUTES when the
+            # graph is resumed at the top of this loop with ``payload``. Awaiting
+            # the snapshot HERE — after the resume decision is built, before the
+            # loop resumes — therefore guarantees the working tree is captured
+            # before ANY mutation runs, on every resolution path (auto-allow, ask,
+            # edit-before-apply, background start). Idempotent: the task is reaped
+            # on the first gate, so later gates in the same turn are no-ops. This
+            # gate also (harmlessly) fires on a non-mutating NETWORK/MCP resume —
+            # those tools raise their own HITL interrupt and resume through this
+            # same loop; awaiting an already-reaped or about-to-complete snapshot
+            # there is a cheap no-op and never wrong.
+            await self._ensure_snapshot()
+            notice = self._pending_snapshot_notice()
+            if notice is not None:
+                yield notice
+
+    # -- checkpoint snapshot lifecycle --------------------------------------
+
+    def _start_snapshot(self, label: str, ts: float) -> None:
+        """Kick off the working-tree snapshot in a worker thread (off the event
+        loop). The manager's git work is synchronous subprocess code, safe to run
+        via ``to_thread``. Awaited later at the first mutation gate / turn end;
+        reaped or detached in ``run_turn``'s cleanup."""
+        self._snapshot_task = asyncio.create_task(
+            asyncio.to_thread(self.checkpoint.snapshot, label, now=ts)
+        )
+
+    async def _ensure_snapshot(self) -> None:
+        """Block until the in-flight snapshot has landed, so a mutating tool never
+        runs against an uncaptured tree. Idempotent — a turn snapshots once, so
+        later gates are no-ops. A git *exception* is logged with a traceback and
+        recorded as a once-per-session pending NOTICE; a benign ``ok=False`` result
+        (disabled / not-a-repo / nothing-new) is not a failure and surfaces nothing.
+        Never aborts the turn (a snapshot failure is swallowed here)."""
+        task = self._snapshot_task
+        if task is None:
+            return
+        if not task.done():
+            try:
+                await task
+            except asyncio.CancelledError:
+                # The turn is being cancelled while we wait — leave the task on the
+                # slot so run_turn's cleanup detaches it (don't orphan it here).
+                raise
+            except Exception:  # noqa: BLE001 - snapshot is best-effort; never abort
+                pass  # the failure is read back from the task below
+        # Guard against a race with _detach_pending_snapshot: if that method ran
+        # during the await above (e.g. the cancelled turn's finally fired while
+        # settle_snapshot was awaiting here), it already took ownership of the task
+        # and registered a done-callback that will call _collect_snapshot_result.
+        # Collecting here too would log the traceback a second time (the NOTICE is
+        # deduped by snapshot_notice_shown, but the log entry is not).
+        if self._snapshot_task is not task:
+            return
+        self._snapshot_task = None
+        self._collect_snapshot_result(task)
+
+    def _detach_pending_snapshot(self) -> None:
+        """``run_turn`` cleanup safety net. If the snapshot task is still set — a
+        cancelled/closed turn skipped the turn-end reap — settle it WITHOUT
+        blocking: collect it if already finished, else detach it to complete in its
+        worker thread (the snapshot still lands; the done-callback surfaces any
+        failure on the next turn). Never awaits, so it is safe under GeneratorExit."""
+        task = self._snapshot_task
+        if task is None:
+            return
+        self._snapshot_task = None
+        if task.done():
+            self._collect_snapshot_result(task)
+        else:
+            self._detach_snapshot(task)
+
+    def _detach_snapshot(self, task: asyncio.Task[Any]) -> None:
+        """Hold a strong reference to a still-running snapshot task and arrange for
+        its outcome to be retrieved when it finishes — so it neither leaks (GC'd
+        while pending) nor warns about an unretrieved exception."""
+        _DETACHED_SNAPSHOTS.add(task)
+        task.add_done_callback(self._on_detached_snapshot_done)
+
+    def _on_detached_snapshot_done(self, task: asyncio.Task[Any]) -> None:
+        _DETACHED_SNAPSHOTS.discard(task)
+        self._collect_snapshot_result(task)
+
+    def _collect_snapshot_result(self, task: asyncio.Task[Any]) -> None:
+        """Read a finished snapshot task's outcome and record a failure NOTICE if it
+        raised. A cancelled task carries no outcome to surface."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self._handle_snapshot_failure(exc)
+
+    def _handle_snapshot_failure(self, exc: BaseException) -> None:
+        """Log the snapshot failure with a full traceback and arm the once-per-
+        session NOTICE (deduped via ``snapshot_notice_shown`` on the shared
+        CheckpointManager — session-lifetime, so it survives across per-turn
+        driver instances)."""
+        _log.error(
+            "checkpoint snapshot failed; /undo unavailable this turn", exc_info=exc
+        )
+        cp = self.checkpoint
+        if cp is not None and not cp.snapshot_notice_shown:
+            cp.snapshot_notice_pending = True
+
+    def _pending_snapshot_notice(self) -> Event | None:
+        """Return the once-per-session snapshot-failure NOTICE if one is armed and
+        not yet shown (marking it shown), else ``None``.  Reads/writes state on the
+        CheckpointManager so the dedupe survives across fresh per-turn drivers."""
+        cp = self.checkpoint
+        if cp is None:
+            return None
+        if cp.snapshot_notice_pending and not cp.snapshot_notice_shown:
+            cp.snapshot_notice_pending = False
+            cp.snapshot_notice_shown = True
+            return Event(EventKind.NOTICE, text=SNAPSHOT_FAIL_NOTICE)
+        return None
+
+    async def settle_snapshot(self) -> None:
+        """Await every in-flight checkpoint snapshot so a UI-driven checkpoint-stack
+        mutation (``/undo`` / ``/redo`` / an ``/abort`` rollback) can never race a
+        snapshot that is still building its tree OFF ``_checkpoint_lock``.
+
+        Two sources are drained: this driver's own pending task (covers ``/abort``
+        firing *before* the cancelled turn's ``finally`` has detached it — the task
+        is still on the slot) and the module-level ``_DETACHED_SNAPSHOTS`` set
+        (snapshots a cancelled/closed turn detached fire-and-forget, which may still
+        be building in their worker thread). A snapshot's function only returns after
+        it has pushed under the lock, so once its task is done the checkpoint is on
+        the stack — the undo/redo/abort that follows then targets THIS turn's entry.
+
+        Without this, ``undo()`` takes the lock first and pops the PREVIOUS turn's
+        checkpoint (this turn's snapshot has not pushed yet), reverting the tree an
+        extra turn back (over-revert) while the late snapshot then pushes — leaving
+        the stack out of sync with disk.
+
+        Best-effort and non-fatal: snapshot exceptions are swallowed (a failed
+        snapshot just means this turn has no checkpoint — same as the old sync
+        behaviour, still surfaced via the once-per-session NOTICE path); this never
+        raises on them. Fast when nothing is pending — an idle driver returns without
+        awaiting."""
+        # 1. This driver's own task, if /abort beat the cancelled turn's finally
+        #    (the snapshot is still on the slot, not yet detached). No-op when the
+        #    turn already reaped/detached it (``_snapshot_task is None``).
+        await self._ensure_snapshot()
+        # 2. Snapshots detached by a cancelled/closed turn: await each still-pending
+        #    one, letting its own done-callback record any failure and self-remove.
+        #    Loop on done-ness (not set membership) so a callback that has not yet
+        #    run on the loop can't spin us; ``return_exceptions`` keeps a failing
+        #    snapshot from propagating out of settle.
+        while True:
+            pending = [t for t in _DETACHED_SNAPSHOTS if not t.done()]
+            if not pending:
+                break
+            await asyncio.gather(*pending, return_exceptions=True)
 
     # -- thin wrappers for tests / backward compatibility -------------------
 
