@@ -131,6 +131,26 @@ def test_skip_conditions_no_http(
     assert thread is None, f"{description}: expected None (skipped), got {thread!r}"
 
 
+def test_demo_mode_skips_update_check(tmp_path: Path, monkeypatch) -> None:
+    """F6: JARN_DEMO=1 → maybe_start_update_check returns None (no thread, no HTTP).
+
+    A '⬆ v… available' line printed during a JARN_DEMO=1 session would contaminate
+    the recorded demo GIF, so the check must be skipped when demo mode is active."""
+    from jarn.update_check import maybe_start_update_check
+
+    monkeypatch.setenv("JARN_DEMO", "1")
+    cfg = _make_config(check=True)
+    console = MagicMock()
+
+    with patch(
+        "jarn.update_check._do_update_check",
+        side_effect=AssertionError("update check must not run in demo mode"),
+    ):
+        thread = maybe_start_update_check(cfg, console, preset_name=None, headless=False)
+
+    assert thread is None, f"demo mode must skip the update check, got {thread!r}"
+
+
 # ---------------------------------------------------------------------------
 # Test case 4 — network failure is silent
 # ---------------------------------------------------------------------------

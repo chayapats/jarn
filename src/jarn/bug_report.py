@@ -134,8 +134,11 @@ def _truncate_body(body: str) -> str:
         return with_note
 
     available = _BODY_MAX_CHARS - len(_ATTACH_NOTE) - len(_ELISION)
-    if available < 0:
-        # Pathological max — return just the attach note.
+    if available <= 0:
+        # Pathological max — return just the attach note. NOTE: this must be
+        # ``<= 0``, not ``< 0``: at ``available == 0`` both head and tail are 0
+        # and ``body[-0:]`` == ``body[0:]`` returns the WHOLE body, blowing past
+        # the cap.
         return _ATTACH_NOTE[:_BODY_MAX_CHARS]
     head = max(0, available * 2 // 3)
     tail = max(0, available - head)

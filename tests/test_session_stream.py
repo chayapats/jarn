@@ -1033,6 +1033,81 @@ async def test_steer_transcript_ordering():
     assert steer_row < tool_row
 
 
+class _SteerAfterTextAgent:
+    """T-4-6 M1 fixture: call 1 STREAMS assistant text, then hits a model-step
+    boundary (AIMessage with tool_calls) where a steer is injected; call 2 streams
+    the real (re-run) answer. Models the abandoned-partial-text scenario."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def astream(self, payload, config, *, stream_mode=None, subgraphs=False):
+        self.calls += 1
+        call = self.calls
+
+        async def _gen():
+            if call == 1:
+                # Assistant streams a partial reply (accumulates into _turn_text)…
+                yield ((), "messages", (_AIChunk("abandoned reply "),))
+                # …then a model-step boundary carrying tool_calls → steer fires here,
+                # rolling this super-step back (its text is discarded from state).
+                yield ((), "updates", {"model": {"messages": [AIMessage(
+                    content="abandoned reply ",
+                    tool_calls=[{"name": "read_file", "id": "c1", "args": {"file_path": "x"}}],
+                )]}})
+            else:
+                # Re-run after the steer: the real answer.
+                yield ((), "messages", (_AIChunk("final answer"),))
+                yield ((), "updates", {"model": {"messages": [AIMessage(content="final answer")]}})
+
+        return _gen()
+
+    async def aget_state(self, config):
+        # Settled boundary (text-only AIMessage) so the steer is injected.
+        return SimpleNamespace(values={"messages": [AIMessage(content="prior")]})
+
+    async def aupdate_state(self, config, values):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_steer_does_not_double_emit_discarded_text():
+    """T-4-6 M1: a steer that interrupts a text-streaming model step must NOT leave
+    the discarded partial text in _turn_text — otherwise the transcript's single
+    assistant line double-emits the abandoned reply concatenated with the re-run
+    reply. State is correct (the rolled-back text isn't in `messages`); this pins
+    transcript fidelity."""
+
+    class _Transcript:
+        def __init__(self) -> None:
+            self.rows: list[tuple[str, str]] = []
+
+        def write_user(self, text, *, ts=None) -> None:
+            self.rows.append(("user", text))
+
+        def write_assistant(self, text, *, ts=None) -> None:
+            self.rows.append(("assistant", text))
+
+        def write_tool(self, name, *, ts=None, args=None, result=None) -> None:
+            self.rows.append(("tool", name))
+
+    agent = _SteerAfterTextAgent()
+    driver = _ns_driver(agent)
+    driver.transcript = _Transcript()
+    driver.steer_source = _steer_once("do it differently")
+
+    _ = [ev async for ev in driver.run_turn("go")]
+
+    assistant_rows = [text for kind, text in driver.transcript.rows if kind == "assistant"]
+    assert assistant_rows, "expected a flushed assistant transcript line"
+    joined = "".join(assistant_rows)
+    # The abandoned (rolled-back) prefix must NOT appear in the transcript.
+    assert "abandoned reply" not in joined, (
+        f"discarded model-step text leaked into the transcript: {assistant_rows!r}"
+    )
+    assert "final answer" in joined
+
+
 # -- T-4-6: real-checkpointer integration (spec §6 risk 1 — the TOP risk) ----
 #
 # The fixture tests above use fake agents; they cannot prove the tool_use/

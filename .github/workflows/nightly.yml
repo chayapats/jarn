@@ -69,21 +69,21 @@ jobs:
 
       - name: Run smoke evals — write summary + compare to baseline
         if: steps.gate.outputs.enabled == 'true'
-        id: run_eval
         run: |
           DATE="${{ steps.date.outputs.date }}"
           mkdir -p evals/nightly
           # --summary writes {pass,fail,total,model,cost}; --compare checks regression.
-          # eval.py exits 0 (ok / ≤1 regression) or 1 (>1 regression).
-          # We capture the exit code without failing the step.
+          # eval.py exits 0 (ok / ≤1 regression) or 1 (>1 regression). The exit code
+          # is intentionally NOT consumed here — the "Check regression" step below
+          # re-derives regression from the written summary file (so a forced-fail dry
+          # run is picked up too). We only need to keep a non-zero eval exit from
+          # aborting the step under the default `bash -e` shell.
           set +e
           uv run python scripts/eval.py \
             --model openrouter/deepseek/deepseek-chat \
             --summary "evals/nightly/${DATE}.json" \
             --compare evals/baseline.json
-          EVAL_RC=$?
           set -e
-          echo "rc=${EVAL_RC}" >> "$GITHUB_OUTPUT"
 
       - name: Simulate regression (forced-fail dry run)
         if: steps.gate.outputs.enabled == 'true' && github.event.inputs.force_regression == 'true'
@@ -112,6 +112,11 @@ jobs:
         run: |
           # Re-evaluate regression using the written summary file so forced-fail
           # dry-runs are picked up correctly regardless of the eval exit code above.
+          # The default `run:` shell is `bash -e`, so a non-zero exit from the python
+          # heredoc would ABORT the step before `regressed` is written (skipping the
+          # issue + publish steps while CI stays green). Capture the code inside a
+          # `set +e` fence so `regressed` is ALWAYS emitted.
+          set +e
           python3 - evals/latest.json evals/baseline.json <<'PYEOF'
           import json, sys
           current  = json.loads(open(sys.argv[1]).read())
@@ -121,6 +126,7 @@ jobs:
           sys.exit(1 if regression > 1 else 0)
           PYEOF
           RC=$?
+          set -e
           if [ $RC -ne 0 ]; then
             echo "regressed=true" >> "$GITHUB_OUTPUT"
           else
@@ -157,12 +163,14 @@ jobs:
             gh issue comment "$EXISTING" --body "$BODY"
             echo "Updated existing regression issue #${EXISTING}."
           else
-            gh issue create \
+            # `gh issue create` has no --pin flag (pinning is a separate command);
+            # capture the new issue URL it prints on stdout, then pin it.
+            NEW_URL=$(gh issue create \
               --title "$TITLE" \
               --body "$BODY" \
-              --label "nightly-regression" \
-              --pin
-            echo "Created new pinned regression issue."
+              --label "nightly-regression")
+            gh issue pin "$NEW_URL"
+            echo "Created and pinned new regression issue: ${NEW_URL}."
           fi
 
       - name: Publish results to eval-results branch

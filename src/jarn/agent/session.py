@@ -155,6 +155,13 @@ class SessionDriver:
     #: Accumulates assistant TEXT chunks for the current turn so a single
     #: ``assistant`` event is written per turn rather than one per streaming token.
     _turn_text: str = ""
+    #: Snapshot of ``_turn_text`` at the last COMMITTED super-step boundary. On a
+    #: mid-turn steer, the in-flight model super-step is rolled back by ``aclose()``
+    #: and its streamed text will be re-generated on resume, so ``_turn_text`` is
+    #: truncated back to this snapshot — otherwise the single flushed transcript
+    #: line double-emits the abandoned reply concatenated with the re-run reply
+    #: (T-4-6 M1). State is unaffected; this is transcript/live fidelity only.
+    _committed_turn_text: str = ""
     #: Post-edit verify gate: ``off`` | ``suggest`` | ``auto`` (from config).
     verify_gate: str = "off"
     #: Project root for capability detection (``None`` disables verify).
@@ -260,6 +267,7 @@ class SessionDriver:
         if self.transcript is not None and not resume:
             self.transcript.write_user(user_input, ts=_time.time())
         self._turn_text = ""
+        self._committed_turn_text = ""
         self._verify_dirty = False
         self._edited_paths = set()
         # Fresh subagent-tagging state each turn (correlation is per-turn only).
@@ -413,6 +421,12 @@ class SessionDriver:
                                 # Stop the stream FIRST so the committed checkpoint is
                                 # stable, then confirm it is a settled boundary.
                                 await agen.aclose()
+                                # ``aclose()`` rolled the in-flight model super-step
+                                # back; its streamed text (already in ``_turn_text``)
+                                # will be re-generated on resume, so truncate back to
+                                # the last committed snapshot — else the flushed
+                                # transcript line double-emits it (T-4-6 M1).
+                                self._turn_text = self._committed_turn_text
                                 if await self._steer_boundary_settled():
                                     from langchain_core.messages import HumanMessage
 
@@ -449,6 +463,12 @@ class SessionDriver:
                                     args=ev.data.get("args"),
                                 )
                             yield ev
+                        # This super-step's output is committed and will survive a
+                        # future steer's rollback, so its accumulated text is durable:
+                        # advance the committed snapshot (T-4-6 M1). MAIN graph only —
+                        # a subagent subgraph boundary never anchors the main turn's text.
+                        if not namespace:
+                            self._committed_turn_text = self._turn_text
             except Exception as exc:  # noqa: BLE001 - surface to UI, don't crash
                 # Tag retryable provider failures (rate-limit/timeout/5xx/etc.)
                 # so the front-end can transparently fall back to another model

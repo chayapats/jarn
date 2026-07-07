@@ -128,8 +128,17 @@ def maybe_start_update_check(
     may join the thread (with a short timeout) for testing; production code
     ignores the return value.
     """
-    # Skip conditions: headless, check disabled, or offline preset.
-    if headless or not config.updates.check or preset_name == "offline":
+    # Skip conditions: headless, check disabled, offline preset, or demo mode
+    # (JARN_DEMO=1) — a '⬆ v… available' line would contaminate the recorded
+    # demo GIF (F6).
+    from jarn.providers.models import is_demo_active
+
+    if (
+        headless
+        or not config.updates.check
+        or preset_name == "offline"
+        or is_demo_active()
+    ):
         return None
 
     from jarn.config import paths

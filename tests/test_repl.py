@@ -4790,6 +4790,98 @@ def test_steer_most_recent_noop_when_disabled(tmp_path, monkeypatch):
     app.controller.close()
 
 
+# -- I5: [s] must never steer an INTERNAL (diagnostics) queue item -----------
+
+
+def test_input_queue_user_count_excludes_internal():
+    """InputQueue.user_count / user_items / cancel_user ignore internal items."""
+    from jarn.tui.input_queue import InputQueue
+
+    q = InputQueue()
+    q.append("user line", "user-payload")
+    q.append("", "diagnostics auto-fix payload", internal=True)
+    assert len(q) == 2
+    assert q.user_count() == 1
+    assert [i.display for i in q.user_items()] == ["user line"]
+    # cancel_user(1) removes the 1st NON-internal item, leaving the internal one.
+    removed = q.cancel_user(1)
+    assert removed is not None and removed.display == "user line"
+    assert q.user_count() == 0
+    assert len(q) == 1  # internal item still present
+    # No more user items → cancel_user is a safe no-op.
+    assert q.cancel_user(1) is None
+
+
+def test_steer_most_recent_skips_internal_item(tmp_path, monkeypatch):
+    """[s] steers the last NON-internal line, never an internal diagnostics item —
+    even when the internal item is the most recently queued (T-4-6 × T-3-3 / I5)."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.console = Console(file=StringIO(), force_terminal=True, width=100)
+    app._input_queue.append("real user line", "user-payload")
+    # An internal diagnostics round queued AFTER the user line (the LAST item).
+    app._input_queue.append("", "Diagnostics after your edits:\n…\nFix them.", internal=True)
+    app._turn_task = _DoneTask()  # busy
+
+    app._steer_most_recent()
+
+    # The user line is steered — NOT the internal payload.
+    assert app.controller._steer_slot == "user-payload"
+    # The internal item is left untouched in the queue.
+    remaining = app._input_queue.list()
+    assert len(remaining) == 1 and remaining[0].internal is True
+    app.controller.close()
+
+
+def test_steer_most_recent_noop_with_only_internal(tmp_path, monkeypatch):
+    """With ONLY an internal item queued, [s] steers nothing (no internal leak)."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.console = Console(file=StringIO(), force_terminal=True, width=100)
+    app._input_queue.append("", "internal diagnostics payload", internal=True)
+    app._turn_task = _DoneTask()
+
+    app._steer_most_recent()
+
+    assert app.controller._steer_slot is None
+    assert len(app._input_queue) == 1  # internal item untouched
+    app.controller.close()
+
+
+def test_steer_key_armed_ignores_internal_only_queue(tmp_path, monkeypatch):
+    """The [s] fastkey predicate is False when only internal items are queued
+    (so a diagnostics round mid-turn never arms [s])."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.controller.config.ui.steering = True
+    app._turn_task = _DoneTask()  # busy
+    app._steer_armed_until = _time_now() + 100  # window wide open
+    app._input_queue.append("", "internal payload", internal=True)
+    assert app._steer_key_armed() is False
+
+
+def test_steer_key_armed_word_initial_s_not_swallowed_after_window(tmp_path, monkeypatch):
+    """I5 word-initial-'s' trap: [s] is armed only for a short window after the
+    `» queued` echo. Once the window expires, the predicate is False so typing a
+    fresh message starting with 's' ("stop", "show me") is routed to the buffer,
+    not swallowed as a steer."""
+    app = _inline_app(tmp_path, monkeypatch)
+    app.controller.config.ui.steering = True
+    app._turn_task = _DoneTask()  # busy
+    app._input_queue.append("earlier line", "earlier-payload")
+
+    # Within the arm window → armed.
+    app._steer_armed_until = _time_now() + 100
+    assert app._steer_key_armed() is True
+
+    # Window expired → NOT armed (the 's' keypress types normally).
+    app._steer_armed_until = _time_now() - 1
+    assert app._steer_key_armed() is False
+    app.controller.close()
+
+
+def _time_now() -> float:
+    import time
+    return time.monotonic()
+
+
 @pytest.mark.asyncio
 async def test_leftover_steer_becomes_next_turn(tmp_path, monkeypatch):
     """A steer slot the (now-ended) turn never consumed runs as the next normal

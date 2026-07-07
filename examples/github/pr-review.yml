@@ -34,8 +34,12 @@ jobs:
           BASE: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
-          DIFF=$(git diff "origin/$BASE...HEAD" -- . ':(exclude)*.lock' \
-                 | head -c 40000)        # cap at 40 kB to keep prompt sane
+          # Write the full diff first, THEN cap it. Piping `git diff | head -c` would
+          # SIGPIPE `git diff` (141) once `head` closes after 40 kB — and under
+          # `pipefail` that fails the step on exactly the large PRs we most want to
+          # review. Writing to a file and reading the head separately avoids the pipe.
+          git diff "origin/$BASE...HEAD" -- . ':(exclude)*.lock' > /tmp/jarn-diff.txt
+          DIFF=$(head -c 40000 /tmp/jarn-diff.txt)   # cap at 40 kB to keep prompt sane
           echo "diff<<EOF_DIFF" >> "$GITHUB_OUTPUT"
           echo "$DIFF" >> "$GITHUB_OUTPUT"
           echo "EOF_DIFF" >> "$GITHUB_OUTPUT"

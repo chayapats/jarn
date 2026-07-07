@@ -15,6 +15,11 @@ from rich.markup import escape as _rich_escape
 from jarn.extensibility.commands import parse_input
 from jarn.tui import palette
 
+#: Seconds the ``[s]`` steer fastkey stays armed after a ``» queued`` echo. Long
+#: enough to press ``s`` right after queuing (the hint says "[s] steer now"), short
+#: enough that a fresh message starting with ``s`` typed later is not swallowed (I5).
+_STEER_ARM_WINDOW_S = 4.0
+
 
 class KeysMixin:
     """prompt_toolkit key bindings for :class:`~jarn.repl.app.InlineApp`."""
@@ -103,11 +108,12 @@ class KeysMixin:
                     self._input_queue.append(stripped, expanded)
                     # While steering is on, advertise the [s] fastkey on the echo so
                     # the user can promote this line into the running turn (T-4-6).
-                    steer_hint = (
-                        "  ·  [s] steer now"
-                        if self.controller.config.ui.steering
-                        else ""
-                    )
+                    # Arm [s] only for a short window after this echo so a fresh
+                    # message starting with 's' typed later is not swallowed (I5).
+                    steer_hint = ""
+                    if self.controller.config.ui.steering:
+                        steer_hint = "  ·  [s] steer now"
+                        self._steer_armed_until = time.monotonic() + _STEER_ARM_WINDOW_S
                     self.console.print(
                         f"[{palette.C_DIM}]» queued: {_rich_escape(stripped)}"
                         f"{steer_hint}[/{palette.C_DIM}]"
@@ -170,22 +176,13 @@ class KeysMixin:
             self._first_token_at = None
             self._turn_task = asyncio.create_task(self._handle(send))
 
-        # [s] steer now (T-4-6): promote the most recently queued line into the
-        # running turn. Gated so it only fires when it is unambiguous — a turn is
-        # busy, steering is enabled, the input buffer is EMPTY (so typing an 's'
-        # into a new queued line is never swallowed), a line is queued, and no
-        # picker/ask overlay owns the keyboard. Otherwise 's' types normally via the
-        # Keys.Any router below.
-        steer_now = Condition(
-            lambda: not self._expanded
-            and not self._config_open
-            and self._busy()
-            and not self.input.text
-            and self.controller.config.ui.steering
-            and len(self._input_queue) > 0
-            and (self._menu_future is None or self._menu_future.done())
-            and (self._line_future is None or self._line_future.done())
-        )
+        # [s] steer now (T-4-6): promote the most recently queued NON-internal line
+        # into the running turn. The full gate lives in _steer_key_armed() (busy +
+        # steering + empty buffer + a user line queued + no overlay + within the
+        # short arm window opened on the `» queued` echo). Internal diagnostics
+        # rounds never arm it, and a fresh message starting with 's' typed after the
+        # window expires is never swallowed — 's' types normally via Keys.Any below.
+        steer_now = Condition(lambda: self._steer_key_armed())
 
         @kb.add("s", filter=steer_now)
         def _steer_now(event) -> None:

@@ -613,6 +613,40 @@ def test_bug_opens_prefilled_issue(tmp_path, monkeypatch):
     assert "bug-report.md" in body, "Body doesn't mention bug-report.md (attach pointer missing)"
 
 
+def test_truncate_body_head_tail_elision_bound(monkeypatch):
+    """T-4-3 M4: the HEAD+TAIL elision path must keep the body within the cap.
+
+    Regression guard for the ``available == 0`` off-by-one (M1): the guard was
+    ``if available < 0`` so at ``available == 0`` (a pathologically small cap)
+    ``head`` and ``tail`` are both 0 and ``body[-0:]`` == ``body[0:]`` returns the
+    WHOLE body — blowing past the cap. Forcing ``available == 0`` exercises exactly
+    that branch."""
+    from jarn import bug_report
+
+    # Pick a cap equal to the two fixed notes so available == 0 exactly.
+    cap = len(bug_report._ATTACH_NOTE) + len(bug_report._ELISION)
+    monkeypatch.setattr(bug_report, "_BODY_MAX_CHARS", cap)
+
+    body = "X" * (cap * 5)  # long enough to force the elision path
+    result = bug_report._truncate_body(body)
+
+    assert len(result) <= cap, (
+        f"truncated body {len(result)} exceeds cap {cap} "
+        "(available==0 returned the whole body)"
+    )
+
+
+def test_truncate_body_normal_elision_stays_under_cap():
+    """The elision path under the real 6000-char cap keeps the body bounded and
+    still appends the attach pointer."""
+    from jarn import bug_report
+
+    body = "Y" * 20000
+    result = bug_report._truncate_body(body)
+    assert len(result) <= bug_report._BODY_MAX_CHARS
+    assert "bug-report.md" in result
+
+
 # ---------------------------------------------------------------------------
 # T-4-4: jarn completions {bash,zsh,fish} — anti-drift parity
 # ---------------------------------------------------------------------------

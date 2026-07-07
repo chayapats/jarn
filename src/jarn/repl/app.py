@@ -132,6 +132,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self._pastes: dict[str, str] = {}          # collapsed token -> full paste
         self._paste_n = 0
         self._input_queue = InputQueue()
+        # [s] steer fastkey arm-window: monotonic deadline until which an empty-buffer
+        # 's' promotes the last queued line. Opened briefly on each `» queued` echo so a
+        # fresh message starting with 's' typed LATER is never swallowed (T-4-6 / I5).
+        self._steer_armed_until: float = 0.0
         self._resume_task: asyncio.Task | None = None
         self._line_future: asyncio.Future | None = None       # app-native asks
         self._yolo_confirm_inflight = False    # de-dupe rapid Shift+Tab→yolo presses
@@ -748,16 +752,40 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
 
         asyncio.create_task(_job())
 
-    def _steer_most_recent(self) -> None:
-        """[s] fastkey: steer the MOST recently queued line into the running turn.
+    def _steer_key_armed(self) -> bool:
+        """Predicate for the ``[s]`` steer fastkey (extracted so it is testable).
 
-        Pops that ``QueuedLine`` off the queue, writes its payload into the single
+        True only when a steer is unambiguous: neither overlay is open, a turn is
+        busy, the input buffer is EMPTY, steering is enabled, at least one
+        NON-internal line is queued (internal diagnostics rounds are never
+        steerable — I5), no picker/ask overlay owns the keyboard, AND we are still
+        within the short arm window opened by the last ``» queued`` echo. The window
+        is what stops a fresh message starting with ``s`` (typed later, with an
+        empty buffer) from being swallowed as a steer instead of typed."""
+        return (
+            not self._expanded
+            and not self._config_open
+            and self._busy()
+            and not self.input.text
+            and self.controller.config.ui.steering
+            and self._input_queue.user_count() > 0
+            and time.monotonic() < self._steer_armed_until
+            and (self._menu_future is None or self._menu_future.done())
+            and (self._line_future is None or self._line_future.done())
+        )
+
+    def _steer_most_recent(self) -> None:
+        """[s] fastkey: steer the MOST recently queued NON-internal line into the
+        running turn.
+
+        Pops the last user ``QueuedLine`` off the queue (internal diagnostics
+        rounds are skipped — never steered), writes its payload into the single
         steer slot (the driver injects it at the next settled tool boundary), and
         echoes ``› (steered) …``. No-op when steering is off, no turn is running, or
-        the queue is empty."""
+        no user line is queued."""
         if not self.controller.config.ui.steering or not self._busy():
             return
-        line = self._input_queue.cancel(len(self._input_queue))  # 1-based → last item
+        line = self._input_queue.cancel_user(self._input_queue.user_count())  # last user item
         if line is None:
             return
         self.controller._steer_slot = line.payload
@@ -777,7 +805,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 False,
                 "steering is disabled — set ui.steering: true (or /config) to enable it.",
             )
-        line = self._input_queue.cancel(n)
+        line = self._input_queue.cancel_user(n)
         if line is None:
             return (False, f"No item at {n}.")
         self.controller._steer_slot = line.payload

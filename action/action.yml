@@ -17,9 +17,10 @@ inputs:
     default: ""
   permission_mode:
     description: >
-      Permission mode: auto-edit (default), yolo, ask, or plan.
-      The 'ci' preset forces yolo so file writes are unattended; override here
-      only if you need a stricter mode for read-only analysis runs.
+      Permission mode: auto-edit (default), yolo, ask, or plan. This EXPLICIT
+      mode wins over the preset's default mode (explicit > preset > config), so
+      e.g. preset 'trusted-repo' + permission_mode 'auto-edit' runs in auto-edit
+      even though the preset's own default is ask.
     required: false
     default: "auto-edit"
   max_turns:
@@ -87,9 +88,15 @@ runs:
           --max-turns "$MAX_TURNS" \
           --cwd "$GITHUB_WORKSPACE" \
           "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}")
-        echo "jarn_output<<EOF_JARN_OUT" >> "$GITHUB_OUTPUT"
-        echo "$JARN_OUTPUT" >> "$GITHUB_OUTPUT"
-        echo "EOF_JARN_OUT" >> "$GITHUB_OUTPUT"
+        # Use a RANDOM heredoc delimiter around the (untrusted) model output so a
+        # reply that happens to contain a literal `EOF_JARN_OUT` line can't close
+        # the block early and inject arbitrary step outputs (GitHub hardening guide).
+        DELIM="EOF_$(openssl rand -hex 8)"
+        {
+          echo "jarn_output<<${DELIM}"
+          echo "$JARN_OUTPUT"
+          echo "${DELIM}"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Parse JSON output
       id: parse
@@ -107,10 +114,13 @@ runs:
         RESULT=$(printf '%s' "$JARN_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['result'])")
         COST=$(printf '%s' "$JARN_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['cost'])")
         TURNS=$(printf '%s' "$JARN_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['turns'])")
+        # Random delimiter around RESULT (derived from untrusted model output) so a
+        # reply containing a literal `EOF_RESULT` line can't terminate the block early.
+        DELIM="EOF_$(openssl rand -hex 8)"
         {
-          echo "result<<EOF_RESULT"
+          echo "result<<${DELIM}"
           echo "$RESULT"
-          echo "EOF_RESULT"
+          echo "${DELIM}"
           echo "cost_usd=$COST"
           echo "turns=$TURNS"
         } >> "$GITHUB_OUTPUT"

@@ -51,9 +51,11 @@ Override the preset and permission mode to avoid the Docker requirement:
     api_key: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
-`trusted-repo` uses `permission_mode: ask` with the sandbox disabled.  Pair it
-with `permission_mode: auto-edit` (passed here) to allow unattended file writes
-without Docker.
+`trusted-repo`'s default mode is `ask`, but an **explicit `permission_mode`
+wins over the preset's default** (precedence: explicit > preset > config
+default).  So the `permission_mode: auto-edit` passed above takes effect,
+allowing unattended file writes without Docker — the preset still governs the
+other trust knobs (sandbox off, network on).
 
 ## Secrets setup
 

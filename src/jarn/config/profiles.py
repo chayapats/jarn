@@ -114,18 +114,27 @@ def resolve_effective_profile(
     *,
     project_trusted: bool,
     cli_profile: str | None = None,
+    cli_permission_mode: str | None = None,
 ) -> str | None:
     """Expand the effective preset onto ``config`` and return its name (or None).
 
-    Precedence: ``cli_profile`` > nothing (config-level preset was removed in
-    v0.6.0).  The chosen preset (if any) is expanded first; THEN, when the
-    project is untrusted, the untrusted floor is forced as a direct clamp — an
-    untrusted session can never be loosened below it, regardless of what the
-    CLI asked for.
+    Precedence for the coarse permission mode: **explicit ``cli_permission_mode``
+    > preset default > config default**.  A preset (if any) is expanded first —
+    which sets the mode from its table — then an explicitly-passed
+    ``cli_permission_mode`` (argparse sentinel ``None`` == not passed) overrides
+    just that mode, so ``--permission-mode`` is never silently stomped by
+    ``--preset``.  The preset still governs the other trust-relevant knobs
+    (sandbox, network, web tools).  Finally, when the project is untrusted, the
+    untrusted floor is forced as a direct clamp — an untrusted session can never
+    be loosened below it, regardless of what the CLI asked for (the floor beats
+    an explicit mode too).
     """
     chosen = cli_profile or None
     if chosen:
         apply_profile(config, chosen)
+    if cli_permission_mode is not None:
+        # Explicit CLI mode wins over the preset's default mode.
+        config.permission_mode = PermissionMode(cli_permission_mode)
     if not project_trusted:
         _clamp_untrusted_floor(config)
         return UNTRUSTED_FLOOR_PROFILE

@@ -387,23 +387,21 @@ def _cmd_headless(
     if model_override:
         cfg.routing.main = model_override
         cfg.default_model = model_override
-    if permission_mode_override:
-        cfg.permission_mode = PermissionMode(permission_mode_override)
 
     # Expand the effective preset (CLI > config) and clamp untrusted. A preset
-    # sets the trust-relevant knobs (incl. the mode), so warn when both were
-    # supplied rather than silently dropping --mode.
-    if profile_override and permission_mode_override:
-        print(
-            f"warning: --preset {profile_override} overrides "
-            f"--mode {permission_mode_override} for trust-relevant settings.",
-            file=sys.stderr,
-        )
+    # sets the trust-relevant knobs including the mode, but an EXPLICIT
+    # --permission-mode must win over the preset's default mode (explicit >
+    # preset > config default) — so it is threaded into the resolver rather than
+    # set before and stomped by apply_profile. The preset still governs the other
+    # knobs (sandbox/network/web).
     from jarn.config.profiles import resolve_effective_profile
 
     try:
         resolve_effective_profile(
-            cfg, project_trusted=trusted, cli_profile=profile_override
+            cfg,
+            project_trusted=trusted,
+            cli_profile=profile_override,
+            cli_permission_mode=permission_mode_override,
         )
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)

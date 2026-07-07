@@ -17,6 +17,8 @@ TUI-first coding agent harness ที่สร้างบน [DeepAgents](https
 
 ![jarn demo](docs/assets/demo.gif)
 
+[![evals](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/chayapats/jarn/eval-results/evals/badge.json)](https://github.com/chayapats/jarn/blob/eval-results/evals/latest.json)
+
 </div>
 
 ---
@@ -145,6 +147,27 @@ jarn -p "do X" --cwd /path/to/project       # กำหนด working directory
 ```
 
 **Fail-closed safety:** mode เริ่มต้น (`ask` / `plan`) จะปฏิเสธ tool ใด ๆ ที่ปกติต้องขออนุมัติ และออกด้วย non-zero exit code ถ้าต้องการให้ทำงานโดยไม่มีคนดู ให้ใช้ `--permission-mode auto-edit` หรือ `yolo` — danger-guard ยังบล็อกคำสั่งร้ายแรงในทุก mode อยู่ดี
+
+## บน CI
+
+J.A.R.N. มี [GitHub Actions composite action](action/action.yml) ให้ใช้ในทุก workflow — PR review, issue-fix bot, nightly audit
+
+```yaml
+- uses: chayapats/jarn/action@main
+  with:
+    prompt: "Review this diff: …"
+    preset: "review-only"     # อ่านอย่างเดียว; ใช้ 'ci' สำหรับรันที่เขียนไฟล์ได้
+    max_turns: "5"
+    api_key: ${{ secrets.OPENROUTER_API_KEY }}
+```
+
+**Outputs:** `result`, `cost_usd`, `turns`
+
+**หมายเหตุ Docker:** preset `ci` (ค่าเริ่มต้น) ต้องใช้ Docker (ubuntu runner มีให้) สำหรับ runner ที่ไม่มี Docker (macOS/Windows) ให้ใช้ `preset: trusted-repo` คู่กับ `permission_mode: auto-edit` (mode ที่ระบุชัดจะ override mode ของ preset) — ดู [docs/GITHUB_ACTION.md](docs/GITHUB_ACTION.md)
+
+ตัวอย่าง workflow: [PR review bot](examples/github/pr-review.yml) ·
+[Issue-fix bot](examples/github/issue-fix.yml)
+เอกสารเต็ม: [docs/GITHUB_ACTION.md](docs/GITHUB_ACTION.md)
 
 ## หน้าตา interface: native inline
 
@@ -308,7 +331,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1657 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1669 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)
