@@ -82,9 +82,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   actionlint:
-    # Lint action/action.yml and examples/github/*.yml with a pinned actionlint
+    # Lint the example workflows in examples/github/ with a pinned actionlint
     # binary.  This job runs only in GitHub CI (requires curl + linux-amd64).
-    # To run locally: brew install actionlint && actionlint action/ examples/github/
+    # action/action.yml is a composite-action metadata file (not a workflow), so
+    # actionlint cannot lint it.  To run locally: brew install actionlint &&
+    # actionlint examples/github/
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -104,5 +106,5 @@ jobs:
           echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
           tar -xzf actionlint.tar.gz actionlint
           chmod +x actionlint
-      - name: Lint action and example workflows
-        run: ./actionlint action/action.yml examples/github/pr-review.yml examples/github/issue-fix.yml
+      - name: Lint example workflows
+        run: ./actionlint examples/github/pr-review.yml examples/github/issue-fix.yml
