@@ -10,11 +10,17 @@ All notable changes to J.A.R.N. are documented here. Format follows
 - **Demo assets + community files (T-4-8)** — reproducible demo tape
   (`demo.tape`, charmbracelet/vhs) scripts the money shot: launch → task →
   plan approval → streamed diff → verified badge (T-3-2) → `/cost`.  The tape
-  sets `JARN_DEMO=1` to activate a canned-response fixture provider in
-  `src/jarn/providers/models.py` (`DEMO_PROFILE`, `demo_provider_config()`) so
-  the recording is fully deterministic — no real API key needed.  The env-var
-  gate is verified by `tests/test_cli.py::test_demo_provider_gated` (security
-  invariant: demo mode cannot activate unless `JARN_DEMO=1` is explicitly set).
+  sets `JARN_DEMO=1`, which makes `ModelFactory.build_main()`/`build()` return a
+  canned-response chat model (`build_demo_model()` in
+  `src/jarn/providers/models.py`) that bypasses real provider resolution — no
+  API key, no endpoint, no network — and replays a scripted plan → `write_file`
+  tool-call diff → verified badge → cost across successive turns, so the
+  recording is fully deterministic.  Gated ONLY by the env var (`is_demo_active`,
+  `demo_provider_config`); the demo model is never reachable in a normal user
+  session.  Verified by `tests/test_cli.py::test_demo_provider_gated` (the gate)
+  and `tests/test_providers_extra.py::test_demo_mode_wires_canned_model_into_build`
+  (the wiring is consumed) — security invariant: demo mode cannot activate unless
+  `JARN_DEMO=1` is explicitly set.
   `scripts/record-demo.sh` checks `vhs`/`gifsicle`, records, and optimizes
   (target < 3 MB).  Community files added: `CODE_OF_CONDUCT.md` (Contributor
   Covenant 2.1) and root `CONTRIBUTING.md` (pointer to `docs/CONTRIBUTING.md`).
