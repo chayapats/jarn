@@ -43,6 +43,7 @@ jobs:
       - name: Run J.A.R.N. review
         id: jarn
         uses: ./action                   # path to the composite action in this repo
+        # When copying to another repo, change to: uses: chayapats/jarn/action@<tag>
         with:
           prompt: |
             Review the following pull-request diff.  Focus on:

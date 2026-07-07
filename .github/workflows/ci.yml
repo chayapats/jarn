@@ -94,7 +94,10 @@ jobs:
         run: |
           set -euo pipefail
           ACTIONLINT_VERSION="1.7.4"
-          ACTIONLINT_SHA256="c0b2bc4a83dab936a87ee57bc3f6b2acfb6a934ca6df8c3be72c27ffb2b1e3d1"
+          # Real SHA256 of actionlint_1.7.4_linux_amd64.tar.gz from the release
+          # checksums file (actionlint_1.7.4_checksums.txt), verified against the
+          # downloaded artifact. Fail-closed: sha256sum -c aborts on any mismatch.
+          ACTIONLINT_SHA256="fc0a6886bbb9a23a39eeec4b176193cadb54ddbe77cdbb19b637933919545395"
           curl -fsSL \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
             -o actionlint.tar.gz

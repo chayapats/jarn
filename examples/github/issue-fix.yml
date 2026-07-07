@@ -55,6 +55,7 @@ jobs:
       - name: Run J.A.R.N. fix
         id: jarn
         uses: ./action                   # path to the composite action in this repo
+        # When copying to another repo, change to: uses: chayapats/jarn/action@<tag>
         with:
           prompt: ${{ github.event.comment.body }}
           preset: "ci"                   # yolo + Docker; fails closed if Docker absent

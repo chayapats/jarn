@@ -196,3 +196,11 @@ def test_example_workflows_parse() -> None:
         assert "secrets." in raw, (
             f"{path.name} must source API keys from secrets.* (hygiene guard)"
         )
+
+    # The issue-fix bot grants write access on a comment trigger, so it MUST
+    # keep an actor gate — guard against a refactor silently dropping it.
+    issue_fix_raw = ISSUE_FIX_YML.read_text()
+    assert "author_association" in issue_fix_raw, (
+        "issue-fix.yml must gate on github.event.comment.author_association "
+        "(actor allowlist) so arbitrary users cannot trigger the write-access bot"
+    )
