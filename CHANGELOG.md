@@ -15,8 +15,9 @@ All notable changes to J.A.R.N. are documented here. Format follows
   refactor ("actually, use `pathlib`") without cancelling and re-prompting.  It is a
   cooperative checkpoint: the driver stops the model stream at a **settled tool boundary**
   (never between a `tool_use` and its `tool_result`), appends the message via
-  `aupdate_state` on the same thread, and resumes — so it costs no extra model call, one
-  turn's cost accounting is preserved, and a steer never strands a tool call.  Only the
+  `aupdate_state` on the same thread, and resumes — steering re-runs only the in-flight
+  model step with your guidance (one extra model call); completed tool results are never
+  re-run, one turn's cost accounting is preserved, and a steer never strands a tool call.  Only the
   main graph is steered (never a subagent).  If the turn finishes before the steer lands,
   it runs as the next turn (never lost); cancelling/aborting discards an unapplied steer.
   Gated by the new `ui.steering` config key (default `true`); set it `false` to hide the

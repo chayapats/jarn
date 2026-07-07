@@ -4813,6 +4813,23 @@ async def test_leftover_steer_becomes_next_turn(tmp_path, monkeypatch):
     app.controller.close()
 
 
+def test_cancel_turn_clears_steer_slot(tmp_path, monkeypatch):
+    """_cancel_turn discards any pending steer so it does not resurface as the
+    next turn (spec §3 abort window — REPL-level slot clear in InlineApp).
+    The slot clear is unconditional (not guarded by turn_task) so a sync test
+    with _turn_task=None is sufficient and is the simplest proof of the clear."""
+    app = _inline_app(tmp_path, monkeypatch)
+    # Pre-condition: a steer is pending in the slot.
+    app.controller._steer_slot = "pending guidance"
+    # No in-flight task; the slot-clear path is unconditional — runs regardless.
+    app._turn_task = None
+
+    app._cancel_turn(note_edits=False)
+
+    assert app.controller._steer_slot is None
+    app.controller.close()
+
+
 class _DoneTask:
     """A stand-in asyncio task that reports NOT done (so _busy() is True)."""
 

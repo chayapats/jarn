@@ -494,9 +494,9 @@ ui:
                            # queued line INTO the live turn with the [s] fastkey (on
                            # the » queued echo) or /queue steer <n>. The steer is
                            # appended as a new user message and the agent sees it
-                           # before its next tool call — injected only at a settled
-                           # tool boundary so it never strands a tool call. Costs no
-                           # extra model call; if the turn ends first it runs as the
+                           # before its next tool call — steering re-runs only the
+                           # in-flight model step (one extra model call); completed
+                           # tool results are never re-run. If the turn ends first it runs as the
                            # next turn (never lost). Set false to hide the [s]
                            # affordance and make /queue steer decline politely.
 

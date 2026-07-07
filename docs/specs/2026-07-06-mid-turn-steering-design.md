@@ -48,6 +48,19 @@ graph is driven with `astream` (`sessions.py:75-78, 94-95`). Every mechanism bel
 
 ## 2. Injection mechanism
 
+> **NOTE — §2 mechanism SUPERSEDED during T-4-6 implementation.**
+> The mechanism described below (inject at a *tool-node* `updates` boundary; decide
+> "settled" via `aget_state`) was proven **BROKEN** against the real `AsyncSqliteSaver`:
+> mid-stream `aget_state` over-reports pending writes as committed, causing
+> `aupdate_state` to strand a `tool_use` without its `tool_result`.
+> **What shipped instead:** inject only at a **MODEL-step** main-graph boundary;
+> call `aclose()` FIRST (rolling the in-flight step back to the last durable
+> checkpoint), then confirm the committed checkpoint via `aget_state_history(limit=1)`
+> before `aupdate_state`.  This re-runs the in-flight model step with the steer
+> (one extra model call); completed tool results are never re-run or stranded.
+> See `.superpowers/sdd/task-4-6-report.md` §1 and `src/jarn/agent/session.py`
+> `_stream_turn` for the authoritative implementation.
+
 Three candidates were evaluated. **Recommendation: (a) cooperative checkpoint.**
 
 ### (a) Cooperative checkpoint — RECOMMENDED

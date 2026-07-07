@@ -324,9 +324,9 @@ Steer it **into** the running turn: press **`[s]`** (steer now) on the freshly
 queued line, or run `/queue steer <n>` to promote line _n_. The steer is appended
 to the conversation as a new user message and the agent sees it **before its next
 tool call** — great for course-correcting a long refactor ("actually, use
-`pathlib`") without cancelling and re-prompting. It costs no extra model call (the
-turn simply continues) and is injected only at a safe tool boundary, so it never
-strands a tool call mid-flight. If the turn happens to finish first, the steer
+`pathlib`") without cancelling and re-prompting. Steering re-runs only the
+in-flight model step with your guidance (one extra model call); completed tool
+results are never re-run, so it never strands a tool call mid-flight. If the turn happens to finish first, the steer
 runs as the next turn (never lost). Disable with `ui.steering: false` (hides the
 `[s]` affordance; `/queue steer` then declines politely).
 
@@ -476,7 +476,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1647 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1648 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)
