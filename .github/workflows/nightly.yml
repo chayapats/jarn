@@ -5,11 +5,23 @@ on:
     # 06:00 UTC daily — optional live-LLM regression signal (non-blocking).
     - cron: "0 6 * * *"
   workflow_dispatch:
+    inputs:
+      force_regression:
+        description: "Set to 'true' to simulate a >1-task regression (forced-fail dry run)"
+        required: false
+        default: "false"
 
+# Require the 'nightly-eval' GitHub environment — same environment-gate pattern as
+# the npm publish job in release.yml.  EVAL_API_KEY is scoped to that environment.
 jobs:
   eval:
     runs-on: ubuntu-latest
+    environment: nightly-eval
+    # Never block merges — this is a signal job, not a gate.
     continue-on-error: true
+    permissions:
+      contents: write   # push to eval-results branch
+      issues: write     # open / update pinned regression issue
     steps:
       - name: Guard (requires NIGHTLY_EVAL_ENABLED secret)
         id: gate
@@ -22,16 +34,20 @@ jobs:
             echo "enabled=false" >> "$GITHUB_OUTPUT"
             echo "Nightly eval disabled — set NIGHTLY_EVAL_ENABLED repo secret to 'true' to enable."
           fi
+
       - uses: actions/checkout@v4
         if: steps.gate.outputs.enabled == 'true'
+
       - uses: astral-sh/setup-uv@v5
         if: steps.gate.outputs.enabled == 'true'
         with:
           python-version: "3.12"
+
       - name: Sync deps
         if: steps.gate.outputs.enabled == 'true'
         run: uv sync --extra dev
-      - name: Write eval config
+
+      - name: Write eval config (pinned model — openrouter/deepseek/deepseek-chat)
         if: steps.gate.outputs.enabled == 'true'
         env:
           EVAL_API_KEY: ${{ secrets.EVAL_API_KEY }}
@@ -45,15 +61,138 @@ jobs:
               base_url: https://openrouter.ai/api/v1
           default_model: openrouter/deepseek/deepseek-chat
           EOF
-      - name: Run smoke evals (small fixture set)
+
+      - name: Set date
+        if: steps.gate.outputs.enabled == 'true'
+        id: date
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Run smoke evals — write summary + compare to baseline
+        if: steps.gate.outputs.enabled == 'true'
+        id: run_eval
+        run: |
+          DATE="${{ steps.date.outputs.date }}"
+          mkdir -p evals/nightly
+          # --summary writes {pass,fail,total,model,cost}; --compare checks regression.
+          # eval.py exits 0 (ok / ≤1 regression) or 1 (>1 regression).
+          # We capture the exit code without failing the step.
+          set +e
+          uv run python scripts/eval.py \
+            --model openrouter/deepseek/deepseek-chat \
+            --summary "evals/nightly/${DATE}.json" \
+            --compare evals/baseline.json
+          EVAL_RC=$?
+          set -e
+          echo "rc=${EVAL_RC}" >> "$GITHUB_OUTPUT"
+
+      - name: Simulate regression (forced-fail dry run)
+        if: steps.gate.outputs.enabled == 'true' && github.event.inputs.force_regression == 'true'
+        run: |
+          DATE="${{ steps.date.outputs.date }}"
+          # Overwrite the nightly summary with a hard-fail payload (0 pass) so the
+          # comparison below exercises the pinned-issue path without spending tokens.
+          printf '{"pass":0,"fail":4,"total":4,"model":"openrouter/deepseek/deepseek-chat","cost":0.0}\n' \
+            > "evals/nightly/${DATE}.json"
+          echo "Forced-fail dry run: overwrote summary with 0/4 passing."
+
+      - name: Update evals/latest.json
         if: steps.gate.outputs.enabled == 'true'
         run: |
-          uv run python scripts/eval.py --fixture fix-off-by-one --json
-          uv run python scripts/eval.py --fixture fix-failing-test --json
-      - name: Upload eval summary
-        if: always() && steps.gate.outputs.enabled == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: nightly-eval-${{ github.run_id }}
-          path: evals/baseline.json
-          if-no-files-found: ignore
+          DATE="${{ steps.date.outputs.date }}"
+          cp "evals/nightly/${DATE}.json" evals/latest.json
+
+      - name: Generate shields.io badge JSON
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          uv run python scripts/eval-badge.py evals/latest.json --out evals/badge.json
+
+      - name: Check regression (pure file comparison — no model needed)
+        if: steps.gate.outputs.enabled == 'true'
+        id: compare
+        run: |
+          # Re-evaluate regression using the written summary file so forced-fail
+          # dry-runs are picked up correctly regardless of the eval exit code above.
+          python3 - evals/latest.json evals/baseline.json <<'PYEOF'
+          import json, sys
+          current  = json.loads(open(sys.argv[1]).read())
+          baseline = json.loads(open(sys.argv[2]).read())
+          regression = int(baseline["pass"]) - int(current["pass"])
+          print(f"current={current['pass']}/{current['total']}, baseline={baseline['pass']}, regression={regression}")
+          sys.exit(1 if regression > 1 else 0)
+          PYEOF
+          RC=$?
+          if [ $RC -ne 0 ]; then
+            echo "regressed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "regressed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update pinned regression issue
+        if: steps.gate.outputs.enabled == 'true' && steps.compare.outputs.regressed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DATE="${{ steps.date.outputs.date }}"
+          SUMMARY=$(cat evals/latest.json)
+          TITLE="[nightly-eval] Regression detected ${DATE}"
+          BODY="Nightly eval regression detected on ${DATE}.
+
+          \`\`\`json
+          ${SUMMARY}
+          \`\`\`
+
+          Run ID: \`${{ github.run_id }}\`
+
+          Check \`evals/nightly/${DATE}.json\` on the \`eval-results\` branch.
+          Compare to \`evals/baseline.json\` on \`main\` and run \`scripts/eval.py --update-baseline\` once resolved."
+
+          # Update an existing open regression issue; create+pin a new one if none exists.
+          EXISTING=$(gh issue list \
+            --label "nightly-regression" \
+            --state open \
+            --json number \
+            --jq '.[0].number // ""' 2>/dev/null || true)
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+            echo "Updated existing regression issue #${EXISTING}."
+          else
+            gh issue create \
+              --title "$TITLE" \
+              --body "$BODY" \
+              --label "nightly-regression" \
+              --pin
+            echo "Created new pinned regression issue."
+          fi
+
+      - name: Publish results to eval-results branch
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DATE="${{ steps.date.outputs.date }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Stash results before switching branches.
+          cp "evals/nightly/${DATE}.json" "/tmp/nightly-${DATE}.json"
+          cp evals/latest.json /tmp/latest.json
+          cp evals/badge.json  /tmp/badge.json
+
+          # Switch to eval-results (create as orphan on first run).
+          git fetch origin eval-results 2>/dev/null || true
+          if git show-ref --verify --quiet refs/remotes/origin/eval-results; then
+            git checkout -B eval-results origin/eval-results
+          else
+            git checkout --orphan eval-results
+            git rm -rf . --quiet 2>/dev/null || true
+          fi
+
+          mkdir -p evals/nightly
+          cp "/tmp/nightly-${DATE}.json" "evals/nightly/${DATE}.json"
+          cp /tmp/latest.json evals/latest.json
+          cp /tmp/badge.json  evals/badge.json
+
+          git add "evals/nightly/${DATE}.json" evals/latest.json evals/badge.json
+          git commit -m "nightly eval ${DATE} (run ${{ github.run_id }})"
+          git push origin eval-results

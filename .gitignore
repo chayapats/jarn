@@ -50,9 +50,10 @@ credentials.json
 # OS
 .DS_Store
 
-# Eval harness: the fixtures + runner are tracked, but the baseline holds
-# machine-specific live pass/fail numbers — record it locally, don't commit.
-evals/baseline.json
+# Eval harness: per-run nightly outputs live on the eval-results branch (not main).
+evals/nightly/
+evals/latest.json
+evals/badge.json
 
 # superpowers SDD scratch (ledger, briefs, review packages)
 .superpowers/

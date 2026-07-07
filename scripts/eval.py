@@ -424,6 +424,50 @@ def _print_comparison(rows: list[dict[str, Any]]) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def build_summary(results: list[TaskResult], model: str, cost_usd: float) -> dict[str, Any]:
+    """Return the ``{pass, fail, total, model, cost}`` summary dict for a run.
+
+    This is the canonical summary shape written by ``--summary`` and read by
+    ``--compare``; the nightly workflow emits this as ``evals/nightly/<date>.json``
+    and updates ``evals/latest.json`` from it.
+
+    ``cost_usd`` is in US dollars (not cents).  Call sites convert from
+    :attr:`TaskResult.cost_cents` as ``sum(r.cost_cents for r in results) / 100.0``.
+    """
+    n_pass = sum(1 for r in results if r.passed)
+    n_fail = len(results) - n_pass
+    return {
+        "pass": n_pass,
+        "fail": n_fail,
+        "total": len(results),
+        "model": model,
+        "cost": float(cost_usd),
+    }
+
+
+def compare_summaries(current: dict[str, Any], baseline: dict[str, Any]) -> int:
+    """Return 0 if regression ≤ 1 task vs baseline, 1 otherwise.
+
+    A tolerance of ≤ 1 is allowed because live-LLM evals are inherently flaky
+    (rate limits, latency, non-determinism). The nightly job should open a
+    pinned issue rather than fail CI red — this is the integer signal it reads.
+    """
+    regression = int(baseline["pass"]) - int(current["pass"])
+    return 0 if regression <= 1 else 1
+
+
+def compare_summary_files(current_path: Path, baseline_path: Path) -> int:
+    """Read two summary JSON files and return the regression exit code.
+
+    Convenience wrapper around :func:`compare_summaries` for CLI callers and
+    tests that drive the comparison via filesystem fixtures (``tmp_path``).
+    Returns 0 when regression ≤ 1, 1 when regression > 1.
+    """
+    current = json.loads(current_path.read_text())
+    baseline = json.loads(baseline_path.read_text())
+    return compare_summaries(current, baseline)
+
+
 def load_baseline(path: Path = BASELINE_PATH) -> dict[str, dict[str, bool]] | None:
     """Return the baseline map, or None if the file is absent/empty."""
     if not path.is_file():
@@ -488,6 +532,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--repeat", type=int, default=3,
         help="repeats per (arm, fixture) in --compare-harness mode (default 3)",
+    )
+    parser.add_argument(
+        "--summary",
+        metavar="PATH",
+        help="write {pass,fail,total,model,cost} summary JSON to PATH after running",
+    )
+    parser.add_argument(
+        "--compare",
+        metavar="BASELINE",
+        help="after running, compare current summary to BASELINE summary JSON; "
+        "exits non-zero if regression > 1 task (≤1 is tolerated as flaky-model allowance)",
     )
     args = parser.parse_args(argv)
 
@@ -554,6 +609,39 @@ def main(argv: list[str] | None = None) -> int:
         # To stderr when --json so it doesn't contaminate the JSON on stdout.
         print(f"baseline written to {BASELINE_PATH}", file=sys.stderr if args.json else sys.stdout)
         return 0
+
+    # --summary: write {pass,fail,total,model,cost} JSON to a path.
+    if args.summary:
+        model_name: str = args.model or getattr(config, "default_model", "unknown")
+        cost_usd = sum(r.cost_cents for r in results) / 100.0
+        summary_data = build_summary(results, model=model_name, cost_usd=cost_usd)
+        summary_path = Path(args.summary)
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(json.dumps(summary_data, indent=2) + "\n")
+        out = sys.stderr if args.json else sys.stdout
+        print(f"summary written to {summary_path}", file=out)
+
+    # --compare: compare current run's summary against a committed summary baseline.
+    # Exit non-zero when regression > 1 task (≤1 is tolerated as a flaky-model
+    # allowance); the nightly workflow reads this exit code to decide whether to open
+    # a pinned issue — it does NOT fail CI red.
+    if args.compare:
+        model_name = args.model or getattr(config, "default_model", "unknown")
+        cost_usd = sum(r.cost_cents for r in results) / 100.0
+        current_summary = build_summary(results, model=model_name, cost_usd=cost_usd)
+        baseline_path = Path(args.compare)
+        if not baseline_path.is_file():
+            print(f"error: compare baseline not found: {baseline_path}", file=sys.stderr)
+            return 2
+        baseline_summary = json.loads(baseline_path.read_text())
+        rc = compare_summaries(current_summary, baseline_summary)
+        if rc != 0:
+            print(
+                f"REGRESSION: baseline had {baseline_summary['pass']} passing, "
+                f"current has {current_summary['pass']} (>{1} task regression).",
+                file=sys.stderr,
+            )
+        return rc
 
     baseline = load_baseline()
     if baseline is None:

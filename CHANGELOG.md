@@ -7,6 +7,27 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **Public eval story — nightly badge + regression gate (T-4-9)** — "Reliable"
+  now has a public number.  `scripts/eval.py` gains `--summary <path>` (writes
+  `{pass, fail, total, model, cost}` JSON) and `--compare <baseline>` (exits
+  non-zero when regression > 1 task; ≤ 1 is tolerated as a flaky-model
+  allowance). `scripts/eval-badge.py` converts a summary JSON into a shields.io
+  ENDPOINT JSON (`{"schemaVersion":1,"label":"evals","message":"4/4
+  nightly","color":"green"}`). `evals/baseline.json` is now committed in summary
+  format (un-gitignored; current file is a placeholder — refresh with a real
+  nightly run before relying on the regression gate). The nightly workflow
+  (`.github/workflows/nightly.yml`) is extended: it runs the live smoke suite
+  against the pinned `openrouter/deepseek/deepseek-chat` model (API key from the
+  `EVAL_API_KEY` secret scoped to the `nightly-eval` GitHub environment), writes
+  `evals/nightly/<date>.json` + `evals/latest.json` + `evals/badge.json`, commits
+  those to the dedicated **`eval-results`** branch (keeps `main` clean), and on a
+  >1-task regression opens/updates a pinned issue (label `nightly-regression`) —
+  CI stays green (`continue-on-error: true`). A `workflow_dispatch` input
+  `force_regression: true` exercises the pinned-issue path without spending
+  tokens. README badge added: `![evals](https://img.shields.io/endpoint?url=…)`.
+  Verified by `tests/test_eval_harness.py::test_summary_json_shape` and
+  `::test_compare_regression_exit_code` (deterministic, no live model).
+
 - **Demo assets + community files (T-4-8)** — reproducible demo tape
   (`demo.tape`, charmbracelet/vhs) scripts the money shot: launch → task →
   plan approval → streamed diff → verified badge (T-3-2) → `/cost`.  The tape

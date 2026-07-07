@@ -17,6 +17,8 @@ A TUI-first coding agent harness built on [DeepAgents](https://github.com/langch
 
 ![jarn demo](docs/assets/demo.gif)
 
+[![evals](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/chayapats/jarn/eval-results/evals/badge.json)](https://github.com/chayapats/jarn/blob/eval-results/evals/latest.json)
+
 </div>
 
 ---
@@ -502,7 +504,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1654 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1656 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

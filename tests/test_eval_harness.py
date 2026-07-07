@@ -9,6 +9,7 @@ design buys us.
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -275,3 +276,48 @@ def test_write_then_load_baseline_roundtrip(tmp_path: Path) -> None:
     eval_mod.write_baseline(results, path)
     loaded = eval_mod.load_baseline(path)
     assert loaded == {"a": {"passed": True}, "b": {"passed": False}}
+
+
+# --------------------------------------------------------------------------- #
+# Summary JSON shape + compare/regression exit-code (T-4-9).                  #
+# --------------------------------------------------------------------------- #
+
+
+def test_summary_json_shape() -> None:
+    """build_summary emits exactly {pass, fail, total, model, cost} with correct types."""
+    results = [_mk_result("a", True), _mk_result("b", True), _mk_result("c", False)]
+    summary = eval_mod.build_summary(results, model="test-model", cost_usd=0.05)
+
+    assert set(summary.keys()) == {"pass", "fail", "total", "model", "cost"}
+    assert isinstance(summary["pass"], int)
+    assert isinstance(summary["fail"], int)
+    assert isinstance(summary["total"], int)
+    assert isinstance(summary["model"], str)
+    assert isinstance(summary["cost"], float)
+    assert summary["pass"] == 2
+    assert summary["fail"] == 1
+    assert summary["total"] == 3
+    assert summary["model"] == "test-model"
+    assert summary["cost"] == pytest.approx(0.05)
+
+
+def test_compare_regression_exit_code(tmp_path: Path) -> None:
+    """compare_summary_files returns 0 when regression ≤1, non-zero when >1."""
+    baseline = {"pass": 10, "fail": 0, "total": 10, "model": "m", "cost": 0.0}
+    bl = tmp_path / "baseline.json"
+    bl.write_text(json.dumps(baseline))
+
+    # No regression — same pass count.
+    cur_same = tmp_path / "cur_same.json"
+    cur_same.write_text(json.dumps({"pass": 10, "fail": 0, "total": 10, "model": "m", "cost": 0.0}))
+    assert eval_mod.compare_summary_files(cur_same, bl) == 0
+
+    # Exactly 1 regression — within the flaky-model tolerance.
+    cur_minus1 = tmp_path / "cur_minus1.json"
+    cur_minus1.write_text(json.dumps({"pass": 9, "fail": 1, "total": 10, "model": "m", "cost": 0.0}))
+    assert eval_mod.compare_summary_files(cur_minus1, bl) == 0
+
+    # >1 regression — must exit non-zero.
+    cur_bad = tmp_path / "cur_bad.json"
+    cur_bad.write_text(json.dumps({"pass": 8, "fail": 2, "total": 10, "model": "m", "cost": 0.0}))
+    assert eval_mod.compare_summary_files(cur_bad, bl) != 0
