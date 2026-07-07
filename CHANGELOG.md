@@ -7,6 +7,21 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- **Demo assets + community files (T-4-8)** — reproducible demo tape
+  (`demo.tape`, charmbracelet/vhs) scripts the money shot: launch → task →
+  plan approval → streamed diff → verified badge (T-3-2) → `/cost`.  The tape
+  sets `JARN_DEMO=1` to activate a canned-response fixture provider in
+  `src/jarn/providers/models.py` (`DEMO_PROFILE`, `demo_provider_config()`) so
+  the recording is fully deterministic — no real API key needed.  The env-var
+  gate is verified by `tests/test_cli.py::test_demo_provider_gated` (security
+  invariant: demo mode cannot activate unless `JARN_DEMO=1` is explicitly set).
+  `scripts/record-demo.sh` checks `vhs`/`gifsicle`, records, and optimizes
+  (target < 3 MB).  Community files added: `CODE_OF_CONDUCT.md` (Contributor
+  Covenant 2.1) and root `CONTRIBUTING.md` (pointer to `docs/CONTRIBUTING.md`).
+  README.md + README-TH.md embed `docs/assets/demo.gif` under the logo.
+  **PRE-TAG manual DoD item**: run `./scripts/record-demo.sh` to produce the
+  GIF and commit it before tagging the release — the reference 404s until then.
+
 - **GitHub Action + PR/issue-fix bots (T-4-7)** — J.A.R.N. now ships a
   composite GitHub Actions action (`action/action.yml`) that runs jarn headless
   in CI.  Inputs: `prompt` (required), `api_key` (required, from `secrets.*`),

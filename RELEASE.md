@@ -11,7 +11,7 @@ see CHANGELOG §0.3.0 for the remaining road-to-1.0 work.
 uv sync --extra dev
 uv run ruff check src tests scripts
 uv run mypy src/
-uv run pytest -q                    # 1650 tests
+uv run pytest -q                    # 1651 tests
 uv run pytest tests/test_packaging.py -q
 uv build
 ```
@@ -40,6 +40,7 @@ Run on a **fresh machine or clean venv** with a real API key. Record date + resu
 | 10 | `jarn trust <path>` → project hooks honoured after approval | ☐ |
 | 11 | Untrusted repo → launch shows the untrusted notice; `/trust` lifts the floor | ☐ |
 | 12 | `/mcp status` — lists configured MCP servers (or "no MCP servers configured") | ☐ |
+| 13 | **T-4-8 demo GIF** — `./scripts/record-demo.sh` → `docs/assets/demo.gif` < 3 MB; README preview renders | ☐ |
 
 Optional binary smoke (maintainer):
 

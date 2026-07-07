@@ -892,3 +892,40 @@ def test_uninstall_channel_hint(tmp_path, monkeypatch, capsys):
     assert main(["uninstall", "--yes"]) == 0
     out_npm = capsys.readouterr().out
     assert "npm" in out_npm, f"expected 'npm' in output, got: {out_npm!r}"
+
+
+# ---------------------------------------------------------------------------
+# T-4-8 — Demo provider gating (JARN_DEMO=1)
+# ---------------------------------------------------------------------------
+
+
+def test_demo_provider_gated(monkeypatch):
+    """JARN_DEMO=1 makes the canned demo provider available; unset means it is NOT.
+
+    Security invariant: the demo canned-response model must never activate in a
+    real user session.  The only gate is the ``JARN_DEMO=1`` environment variable —
+    no config key, no fallback.  This test is the machine-checkable proof of that
+    contract.
+    """
+    from jarn.config.defaults import DEFAULT_MODELS
+    from jarn.providers.models import DEMO_PROFILE, demo_provider_config
+
+    # --- JARN_DEMO=1: canned provider is available ---
+    monkeypatch.setenv("JARN_DEMO", "1")
+    cfg = demo_provider_config()
+    assert cfg is not None, (
+        "demo_provider_config() must return a ProviderConfig when JARN_DEMO=1"
+    )
+
+    # --- env unset: canned provider must not be available ---
+    monkeypatch.delenv("JARN_DEMO", raising=False)
+    cfg_unset = demo_provider_config()
+    assert cfg_unset is None, (
+        "demo_provider_config() must return None when JARN_DEMO is not set"
+    )
+
+    # The demo profile must never appear in the normal DEFAULT_MODELS registry,
+    # so it cannot accidentally become the default for any provider resolution.
+    assert DEMO_PROFILE not in DEFAULT_MODELS, (
+        f"DEMO_PROFILE {DEMO_PROFILE!r} must not be registered in DEFAULT_MODELS"
+    )

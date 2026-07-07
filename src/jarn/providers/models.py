@@ -13,6 +13,7 @@ right backend and injecting ``api_key`` / ``base_url``. Built models are cached.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -279,6 +280,81 @@ def remote_context_window(provider: ProviderConfig, model_id: str) -> int | None
     except Exception:  # noqa: BLE001 - network/parse errors degrade to "unknown"
         return None
     return None
+
+
+# ---------------------------------------------------------------------------
+# Demo provider — canned responses for deterministic VHS recordings.
+# Gated EXCLUSIVELY behind the JARN_DEMO=1 environment variable.  This must
+# never be reachable through the normal config system or any config key so it
+# cannot accidentally activate in a real user session.
+# ---------------------------------------------------------------------------
+
+#: Profile name used for the canned-response demo provider.
+DEMO_PROFILE: str = "demo"
+
+#: Scripted replies returned by the demo model in order, looping when exhausted.
+#: Crafted to match the money-shot tape: ask → plan approval → streamed diff →
+#: verified badge → /cost.
+_DEMO_CANNED_RESPONSES: tuple[str, ...] = (
+    "I'll add input validation to `server.py`. Let me start by reading the file.",
+    (
+        "Here is my plan:\n"
+        "1. Import `pydantic` and define a typed request model.\n"
+        "2. Replace raw `request.json()` calls with the Pydantic model "
+        "(automatic 422 on invalid input).\n"
+        "3. Add a unit test covering the happy-path and an invalid-input case.\n\n"
+        "Shall I proceed?"
+    ),
+    (
+        "```diff\n"
+        "--- a/server.py\n"
+        "+++ b/server.py\n"
+        "@@ -1,6 +1,14 @@\n"
+        "+from pydantic import BaseModel, validator\n"
+        "+\n"
+        "+class CreateItem(BaseModel):\n"
+        "+    name: str\n"
+        "+    price: float\n"
+        "+\n"
+        "+    @validator('price')\n"
+        "+    def price_positive(cls, v):\n"
+        "+        if v <= 0:\n"
+        "+            raise ValueError('price must be positive')\n"
+        "+        return v\n"
+        "```"
+    ),
+    "✓ verified — `server.py` updated, 4 new tests passing (0.3 s).",
+    "Total cost this session: $0.00 (demo mode — no real API calls made).",
+)
+
+
+def is_demo_active() -> bool:
+    """Return ``True`` iff the ``JARN_DEMO=1`` env-var gate is open.
+
+    This is the **only** check used to decide whether demo mode is available.
+    No config key, no fallback path.
+    """
+    return os.environ.get("JARN_DEMO") == "1"
+
+
+def demo_provider_config() -> ProviderConfig | None:
+    """Return a synthetic :class:`ProviderConfig` for the canned-response demo model.
+
+    Returns ``None`` — and therefore makes the demo model **completely
+    unreachable** — whenever ``JARN_DEMO`` is not set to ``"1"``.
+
+    The returned config uses ``ProviderType.OPENAI_COMPATIBLE`` as its
+    internal type tag so the factory can identify it without adding a new
+    ``ProviderType`` enum value to the config schema.  No real API key or
+    endpoint is needed or used.
+
+    Security invariant (also verified by ``test_demo_provider_gated``):
+      • ``JARN_DEMO=1``  → returns a :class:`ProviderConfig` (demo available)
+      • env unset / not "1" → returns ``None``  (demo never reachable)
+    """
+    if not is_demo_active():
+        return None
+    return ProviderConfig(type=ProviderType.OPENAI_COMPATIBLE)
 
 
 # Providers served through ChatOpenAI (model_provider="openai") + a base_url.
