@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
+import subprocess
 import time
 
 
@@ -15,16 +17,6 @@ def _pg_alive(pgid: int) -> bool:
         return False
 
 
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-
-
 def _wait_dead(alive_fn, grace_secs: float) -> None:
     deadline = time.monotonic() + grace_secs
     while time.monotonic() < deadline:
@@ -33,11 +25,41 @@ def _wait_dead(alive_fn, grace_secs: float) -> None:
         time.sleep(0.05)
 
 
-def terminate_process_group(pid: int, *, grace_secs: float = 0) -> None:
-    """Best-effort terminate the whole process group rooted at *pid*.
+def _terminate_windows(pid: int) -> None:
+    """Best-effort terminate the process tree rooted at *pid* on Windows.
 
-    On POSIX uses ``killpg`` (``SIGTERM`` then optional ``SIGKILL`` when
-    *grace_secs* > 0). On other platforms falls back to ``os.kill`` on *pid*.
+    Windows has no POSIX process groups (``start_new_session`` is a no-op there)
+    and no graceful ``SIGTERM``, so ``taskkill /T`` — which kills the whole tree —
+    is the closest analog to ``killpg``; a single ``TerminateProcess`` (via
+    ``os.kill``) is the fallback when ``taskkill`` is unavailable.
+
+    The bounded ``timeout`` guarantees this never blocks the caller. We must NOT
+    reuse the POSIX ``os.kill(pid, 0)`` liveness probe here: on Windows that call
+    maps to ``TerminateProcess`` (it is destructive, not a probe) and busy-waiting
+    on it spins until the process is force-killed — the cause of the original
+    Windows CI hang.
+    """
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            check=False,
+            capture_output=True,
+            timeout=5,
+        )
+        return
+    except (OSError, subprocess.SubprocessError):
+        # taskkill missing or timed out — fall back to a single-process kill.
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+
+
+def terminate_process_group(pid: int, *, grace_secs: float = 0) -> None:
+    """Best-effort terminate the whole process tree rooted at *pid*.
+
+    On POSIX uses ``killpg`` (``SIGTERM`` then ``SIGKILL`` after *grace_secs*
+    when it is > 0, else an immediate ``SIGKILL``). On Windows delegates to
+    :func:`_terminate_windows` (``taskkill /T``); *grace_secs* is ignored there
+    because the platform has no graceful terminate.
     """
     try:
         if os.name == "posix":
@@ -49,13 +71,7 @@ def terminate_process_group(pid: int, *, grace_secs: float = 0) -> None:
                     os.killpg(pgid, signal.SIGKILL)
             else:
                 os.killpg(pgid, signal.SIGKILL)
-        else:  # pragma: no cover - non-posix fallback
-            if grace_secs > 0:
-                os.kill(pid, signal.SIGTERM)
-                _wait_dead(lambda: _pid_alive(pid), grace_secs)
-                if _pid_alive(pid):
-                    os.kill(pid, signal.SIGTERM)
-            else:
-                os.kill(pid, signal.SIGTERM)
+        else:
+            _terminate_windows(pid)
     except (ProcessLookupError, PermissionError, OSError):
         pass
