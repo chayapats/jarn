@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -108,6 +108,32 @@ async def test_run_headless_returns_model_text(tmp_path, monkeypatch, base_confi
     assert isinstance(result, HeadlessResult)
     assert result.result == "The answer is 42."
     assert result.turns == 1
+
+
+@pytest.mark.asyncio
+async def test_run_headless_threads_extra_roots(tmp_path, monkeypatch, base_config):
+    """_run_headless builds the Controller with add_dirs in scope (item F): the
+    --add-dir grant must reach the engine/backend, not stop at the CLI."""
+    import jarn.headless as headless_mod
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    captured: dict = {}
+    orig_init = headless_mod.Controller.__init__
+
+    def _spy_init(self, *a, **k):
+        captured["extra_roots"] = k.get("extra_roots")
+        orig_init(self, *a, **k)
+
+    monkeypatch.setattr(headless_mod.Controller, "__init__", _spy_init)
+    _stub_controller(monkeypatch)
+
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    await _run_headless("hi", base_config, tmp_path, add_dirs=[extra])
+
+    assert captured["extra_roots"] == [extra], (
+        "add_dirs must be passed to Controller(extra_roots=…) in headless"
+    )
 
 
 def test_run_headless_exits_0_via_run_headless(tmp_path, monkeypatch, base_config, capsys):
@@ -572,7 +598,10 @@ def test_no_args_calls_launch_not_headless(tmp_path, monkeypatch):
 
     called: list[str] = []
 
-    def _fake_launch(*, resume: bool = False, profile_override: str | None = None) -> int:
+    def _fake_launch(
+        *, resume: bool = False, profile_override: str | None = None,
+        add_dirs: list | None = None,
+    ) -> int:
         called.append("launch")
         return 0
 
@@ -589,3 +618,114 @@ def test_no_args_calls_launch_not_headless(tmp_path, monkeypatch):
     code = main([])
     assert code == 0
     assert called == ["launch"]
+
+
+# ---------------------------------------------------------------------------
+# T-3-6: --output-schema structured output
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_output_schema_roundtrip(tmp_path, monkeypatch, base_config):
+    """_run_headless with response_format passes it to Controller and returns structured result.
+
+    The spy records the response_format stored on the Controller (which is then
+    forwarded to build_runtime → create_deep_agent). The mocked agent's aget_state
+    returns a state with structured_response so result.result is the parsed object.
+    """
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+
+    import jarn.headless as headless_mod
+    from jarn.agent.session import Event
+
+    schema_dict = {"type": "object", "properties": {"answer": {"type": "string"}}}
+    response_format = {"type": "json_schema", "schema": schema_dict}
+    structured_data = {"answer": "42"}
+
+    captured_rf: list = []
+
+    async def _fake_run_turn(prompt, *, resume=False):
+        yield Event(kind=EventKind.TEXT, text="The answer is 42.")
+        yield Event(kind=EventKind.DONE)
+
+    fake_driver = MagicMock()
+    fake_driver.run_turn = _fake_run_turn
+
+    fake_state = SimpleNamespace(values={"structured_response": structured_data})
+    fake_agent = MagicMock()
+    fake_agent.aget_state = AsyncMock(return_value=fake_state)
+    fake_runtime = SimpleNamespace(agent=fake_agent, main_model_ref="m")
+
+    async def _fake_ensure_runtime(self):
+        # Spy: record the response_format stored on the controller (proves the
+        # plumbing from _run_headless → Controller → build_runtime is wired).
+        captured_rf.append(self.response_format)
+        self.runtime = fake_runtime
+        return fake_runtime
+
+    async def _fake_aclose(self):
+        pass
+
+    monkeypatch.setattr(headless_mod.Controller, "ensure_runtime", _fake_ensure_runtime)
+    monkeypatch.setattr(headless_mod.Controller, "make_driver", lambda self, a: fake_driver)
+    monkeypatch.setattr(headless_mod.Controller, "validate", lambda self: (True, "ready"))
+    monkeypatch.setattr(headless_mod.Controller, "enrich_turn_input", lambda self, t: t)
+    monkeypatch.setattr(headless_mod.Controller, "aclose", _fake_aclose)
+
+    result = await _run_headless(
+        "what is the answer?", base_config, tmp_path,
+        response_format=response_format,
+    )
+
+    assert captured_rf == [response_format], (
+        "response_format must flow from _run_headless → Controller (spy on self.response_format)"
+    )
+    assert result.result == structured_data, (
+        "HeadlessResult.result must be the parsed structured object from state.structured_response"
+    )
+
+
+def test_schema_validation_failure_exit(tmp_path, monkeypatch, base_config, capsys):
+    """When the agent doesn't produce a structured response, run_headless exits 1 with kind: 'schema'."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+
+    import jarn.headless as headless_mod
+    from jarn.agent.session import Event
+
+    async def _fake_run_turn(prompt, *, resume=False):
+        yield Event(kind=EventKind.TEXT, text="I couldn't produce structured output.")
+        yield Event(kind=EventKind.DONE)
+
+    fake_driver = MagicMock()
+    fake_driver.run_turn = _fake_run_turn
+
+    # structured_response is None — agent didn't satisfy the schema
+    fake_state = SimpleNamespace(values={"structured_response": None})
+    fake_agent = MagicMock()
+    fake_agent.aget_state = AsyncMock(return_value=fake_state)
+    fake_runtime = SimpleNamespace(agent=fake_agent, main_model_ref="m")
+
+    async def _fake_ensure_runtime(self):
+        self.runtime = fake_runtime
+        return fake_runtime
+
+    async def _fake_aclose(self):
+        pass
+
+    monkeypatch.setattr(headless_mod.Controller, "ensure_runtime", _fake_ensure_runtime)
+    monkeypatch.setattr(headless_mod.Controller, "make_driver", lambda self, a: fake_driver)
+    monkeypatch.setattr(headless_mod.Controller, "validate", lambda self: (True, "ready"))
+    monkeypatch.setattr(headless_mod.Controller, "enrich_turn_input", lambda self, t: t)
+    monkeypatch.setattr(headless_mod.Controller, "aclose", _fake_aclose)
+
+    response_format = {"type": "json_schema", "schema": {"type": "object"}}
+
+    code = run_headless(
+        "what is the answer?", base_config, tmp_path,
+        as_json=True,
+        response_format=response_format,
+    )
+
+    assert code == EXIT_ERROR
+    data = json.loads(capsys.readouterr().out)
+    assert data["error"]["kind"] == "schema"

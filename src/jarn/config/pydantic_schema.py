@@ -31,6 +31,8 @@ from jarn.config.schema import (
     ProviderConfig,
     ProviderType,
     RoutingConfig,
+    SearchConfig,
+    SearchProviderType,
     TracingConfig,
     UIConfig,
     VerifyConfig,
@@ -282,6 +284,7 @@ class ExecutionConfigModel(_StrictModel):
     sandbox_provider: str = "langsmith"
     docker_image: str = "python:3.12"
     multimodal: bool = True
+    inline_images: str = "auto"
     allow_local_fallback: bool = False
     shell_escape_context: bool = True
     local_sandbox: str = "off"
@@ -311,6 +314,19 @@ class ExecutionConfigModel(_StrictModel):
         if raw not in valid:
             raise ConfigValidationError(
                 f"execution.local_sandbox must be one of {sorted(valid)} (got {raw!r})."
+            )
+        return raw
+
+    @field_validator("inline_images", mode="before")
+    @classmethod
+    def _inline_images(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_INLINE_IMAGES
+
+        raw = str(value)
+        if raw not in _VALID_INLINE_IMAGES:
+            raise ConfigValidationError(
+                f"execution.inline_images must be one of "
+                f"{sorted(_VALID_INLINE_IMAGES)} (got {raw!r})."
             )
         return raw
 
@@ -691,6 +707,9 @@ class PlanConfigModel(_StrictModel):
 
 class VerifyConfigModel(_StrictModel):
     gate: str = "suggest"
+    diagnostics: str = "suggest"
+    diagnostics_max_rounds: int = 1
+    diagnostics_ts: bool = False
 
     @field_validator("gate", mode="before")
     @classmethod
@@ -704,6 +723,34 @@ class VerifyConfigModel(_StrictModel):
             )
         return raw
 
+    @field_validator("diagnostics", mode="before")
+    @classmethod
+    def _diagnostics(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_DIAGNOSTICS_MODES
+
+        raw = str(value)
+        if raw not in _VALID_DIAGNOSTICS_MODES:
+            raise ConfigValidationError(
+                f"verify.diagnostics must be one of "
+                f"{sorted(_VALID_DIAGNOSTICS_MODES)} (got {raw!r})."
+            )
+        return raw
+
+    @field_validator("diagnostics_max_rounds", mode="before")
+    @classmethod
+    def _diagnostics_max_rounds(cls, value: Any) -> int:
+        raw = _coerce_int(value, "verify.diagnostics_max_rounds")
+        if raw < 1:
+            raise ConfigValidationError(
+                f"verify.diagnostics_max_rounds must be >= 1 (got {raw})."
+            )
+        return raw
+
+    @field_validator("diagnostics_ts", mode="before")
+    @classmethod
+    def _diagnostics_ts(cls, value: Any) -> bool:
+        return _normalize_bool(value, "verify.diagnostics_ts")
+
 
 class PricingConfigModel(_StrictModel):
     network: bool = True
@@ -712,6 +759,35 @@ class PricingConfigModel(_StrictModel):
     @classmethod
     def _network(cls, value: Any) -> bool:
         return _normalize_bool(value, "pricing.network")
+
+
+class SearchConfigModel(_StrictModel):
+    """Pluggable web-search provider configuration."""
+
+    provider: SearchProviderType = SearchProviderType.AUTO
+    api_key: str = ""
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _provider(cls, value: Any) -> SearchProviderType:
+        try:
+            return SearchProviderType(str(value))
+        except ValueError as exc:
+            valid = [e.value for e in SearchProviderType]
+            raise ConfigValidationError(
+                f"search.provider must be one of {valid} (got {value!r})."
+            ) from exc
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def _api_key(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise ConfigValidationError(
+                f"search.api_key must be a string (got {value!r})."
+            )
+        return value
 
 
 class ConfigModel(_StrictModel):
@@ -740,6 +816,7 @@ class ConfigModel(_StrictModel):
     plan: PlanConfigModel = Field(default_factory=PlanConfigModel)
     verify: VerifyConfigModel = Field(default_factory=VerifyConfigModel)
     pricing: PricingConfigModel = Field(default_factory=PricingConfigModel)
+    search: SearchConfigModel = Field(default_factory=SearchConfigModel)
 
     @field_validator("permission_mode", mode="before")
     @classmethod
@@ -902,6 +979,7 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             sandbox_provider=model.execution.sandbox_provider,
             docker_image=model.execution.docker_image,
             multimodal=model.execution.multimodal,
+            inline_images=model.execution.inline_images,
             allow_local_fallback=model.execution.allow_local_fallback,
             shell_escape_context=model.execution.shell_escape_context,
             local_sandbox=model.execution.local_sandbox,
@@ -980,6 +1058,15 @@ def config_to_dataclass(model: ConfigModel) -> Config:
         ),
         wiki=WikiConfig(enabled=model.wiki.enabled),
         plan=PlanConfig(exit_mode=model.plan.exit_mode),
-        verify=VerifyConfig(gate=model.verify.gate),
+        verify=VerifyConfig(
+            gate=model.verify.gate,
+            diagnostics=model.verify.diagnostics,
+            diagnostics_max_rounds=model.verify.diagnostics_max_rounds,
+            diagnostics_ts=model.verify.diagnostics_ts,
+        ),
         pricing=PricingConfig(network=model.pricing.network),
+        search=SearchConfig(
+            provider=model.search.provider,
+            api_key=model.search.api_key,
+        ),
     )

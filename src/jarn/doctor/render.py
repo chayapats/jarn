@@ -34,6 +34,13 @@ def doctor_lines(diag: dict) -> list[str]:
         lines.append(f"[yellow]{_esc(diag['jarn_home_warning'])}[/yellow]")
     root = diag.get("project_root")
     lines.append(f"project root: {_esc(root) if root else '[dim]none[/dim]'}")
+    # Added (--add-dir / /add-dir) roots beyond the primary, if any.
+    added_roots = [r for r in diag.get("roots", []) if r != (str(root) if root else None)]
+    if added_roots:
+        lines.append(
+            "added roots: " + ", ".join(_esc(r) for r in added_roots)
+            + " [dim](write scope only — checkpoint/context stay primary)[/dim]"
+        )
     if diag.get("project_trusted") is False and diag.get("project_stripped_keys"):
         keys = ", ".join(diag["project_stripped_keys"])
         lines.append(

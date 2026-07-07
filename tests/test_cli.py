@@ -238,6 +238,91 @@ def test_headless_non_yolo_no_warning(tmp_path, monkeypatch, capsys):
     assert "yolo" not in captured.err.lower()
 
 
+def test_headless_add_dir_threads_into_run_headless(tmp_path, monkeypatch):
+    """`jarn -p ... --add-dir X` (item F): X is validated and threaded into
+    run_headless as add_dirs — the documented flag must not silently no-op in -p.
+    """
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    gp = _make_headless_config(tmp_path)
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None)
+    )
+
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    captured: dict = {}
+
+    import jarn.headless as hd
+
+    def _fake_run_headless(prompt, cfg, root, **k):
+        captured["add_dirs"] = k.get("add_dirs")
+        return 0
+
+    monkeypatch.setattr(hd, "run_headless", _fake_run_headless)
+
+    result = cli_mod._cmd_headless(prompt_arg="do something", add_dirs=[str(extra)])
+    assert result == 0
+    assert captured["add_dirs"] == [extra.resolve()], (
+        "--add-dir must be validated and passed to run_headless in -p mode"
+    )
+
+
+def test_headless_add_dir_invalid_fails_fast(tmp_path, monkeypatch, capsys):
+    """A nonexistent --add-dir in -p mode fails fast (fail-closed, not a
+    half-promise that silently no-ops)."""
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    gp = _make_headless_config(tmp_path)
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None)
+    )
+
+    import jarn.headless as hd
+
+    monkeypatch.setattr(hd, "run_headless", lambda *a, **k: 0)
+
+    result = cli_mod._cmd_headless(
+        prompt_arg="hi", add_dirs=[str(tmp_path / "does-not-exist")]
+    )
+    assert result == 1
+    assert "add-dir" in capsys.readouterr().err.lower()
+
+
+def test_headless_gates_diagnostics_off(tmp_path, monkeypatch):
+    """Headless (-p) forces verify.diagnostics off (item G): ruff/pyright output
+    is dropped in -p mode, so paying up to 30s/edit-turn for it is pure latency
+    tax. The on-disk config leaves it at the default (``suggest``)."""
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    gp = _make_headless_config(tmp_path)
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None)
+    )
+
+    captured: dict = {}
+
+    import jarn.headless as hd
+
+    def _fake_run_headless(prompt, cfg, root, **k):
+        captured["diagnostics"] = cfg.verify.diagnostics
+        return 0
+
+    monkeypatch.setattr(hd, "run_headless", _fake_run_headless)
+
+    cli_mod._cmd_headless(prompt_arg="do something")
+    assert captured["diagnostics"] == "off"
+
+
 def test_trust_hooks_cli_writes_marker(tmp_path, monkeypatch, capsys):
     """`jarn trust-hooks` writes the one-time global-hooks accept marker and
     reports its path; a second call is idempotent."""
@@ -288,3 +373,132 @@ def test_doctor_warns_custom_jarn_home(tmp_path, monkeypatch, capsys):
     assert data["jarn_home_overridden"] is True
     assert "jarn_home_warning" in data
     assert str(custom) in data["jarn_home_warning"]
+
+
+# ---------------------------------------------------------------------------
+# T-3-6: --output-schema headless structured output
+# ---------------------------------------------------------------------------
+
+
+def test_output_schema_requires_print(tmp_path, capsys):
+    """``--output-schema`` without ``-p`` must argparse-error (exit 2, stderr).
+
+    The assertion targets the specific ``parser.error(...)`` message emitted by
+    the headless-only validation, not a generic argparse "unrecognized argument"
+    string.  This ensures the flag is wired up AND the guard fires correctly.
+    """
+    with pytest.raises(SystemExit) as exc:
+        main(["--output-schema", str(tmp_path / "schema.json")])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--output-schema requires -p" in err
+
+
+def test_bad_schema_file_exit2(tmp_path, monkeypatch, capsys):
+    """``--output-schema`` pointing at an unreadable/non-JSON file exits 2 with kind: 'usage'."""
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    gp = _make_headless_config(tmp_path)
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
+    monkeypatch.setattr(cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None))
+
+    bad = tmp_path / "bad.txt"
+    bad.write_text("this is not valid json {{{", encoding="utf-8")
+
+    code = main(["-p", "hello", "--output-schema", str(bad), "--json"])
+    assert code == 2
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert data["error"]["kind"] == "usage"
+
+
+def test_missing_schema_file_exit2(tmp_path, monkeypatch, capsys):
+    """``--output-schema`` pointing at a nonexistent file exits 2 with kind: 'usage'.
+
+    Exercises the OSError branch of the schema-file loader (distinct from the
+    bad-JSON / ValueError branch covered by ``test_bad_schema_file_exit2``).
+    """
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    gp = _make_headless_config(tmp_path)
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
+    monkeypatch.setattr(cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None))
+
+    nonexistent = tmp_path / "nonexistent.json"  # never created → OSError on read
+
+    code = main(["-p", "hello", "--output-schema", str(nonexistent), "--json"])
+    assert code == 2
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert data["error"]["kind"] == "usage"
+
+
+# ---------------------------------------------------------------------------
+# T-3-9: --add-dir multi-root workspaces
+# ---------------------------------------------------------------------------
+
+
+def test_add_dir_flag_repeatable(tmp_path, monkeypatch):
+    """``--add-dir`` is repeatable and every dir becomes an active root.
+
+    argparse ``action="append"`` collects each ``--add-dir``; launch resolves and
+    validates them and threads the whole set into the session (captured here via
+    the ``add_dirs`` kwarg handed to ``run_inline``)."""
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    gp = _make_headless_config(tmp_path)
+    root = tmp_path / "proj"
+    root.mkdir()
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: root)
+    monkeypatch.setattr(cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None))
+
+    d1 = tmp_path / "sibling-a"
+    d1.mkdir()
+    d2 = tmp_path / "sibling-b"
+    d2.mkdir()
+
+    captured: dict = {}
+
+    def _fake_run_inline(config, project_root, **kwargs):
+        captured["add_dirs"] = kwargs.get("add_dirs")
+        return 0
+
+    import jarn.repl as repl_mod
+
+    monkeypatch.setattr(repl_mod, "run_inline", _fake_run_inline)
+
+    code = main(["--add-dir", str(d1), "--add-dir", str(d2)])
+    assert code == 0
+    roots = captured["add_dirs"]
+    assert roots is not None
+    resolved = {str(p) for p in roots}
+    assert str(d1.resolve()) in resolved
+    assert str(d2.resolve()) in resolved
+
+
+def test_add_dir_flag_rejects_missing_dir(tmp_path, monkeypatch, capsys):
+    """``--add-dir`` pointing at a non-existent path fails fast (exit 1, stderr)."""
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    gp = _make_headless_config(tmp_path)
+    root = tmp_path / "proj"
+    root.mkdir()
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: root)
+    monkeypatch.setattr(cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None))
+
+    import jarn.repl as repl_mod
+
+    monkeypatch.setattr(repl_mod, "run_inline", lambda *a, **k: 0)
+
+    missing = tmp_path / "nope"
+    code = main(["--add-dir", str(missing)])
+    assert code == 1
+    assert "--add-dir" in capsys.readouterr().err

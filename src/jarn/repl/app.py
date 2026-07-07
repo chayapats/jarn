@@ -89,6 +89,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         resume: bool = False,
         project_trusted: bool = True,
         detected_theme: str | None = None,
+        add_dirs: list[Path] | None = None,
     ) -> None:
         self.config = config
         # Terminal background resolved ONCE at startup (light/dark) when
@@ -96,7 +97,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         # re-probing (a runtime OSC-11 probe races prompt_toolkit's input reader).
         self._detected_theme = detected_theme
         self.controller = Controller(
-            config, project_root, project_trusted=project_trusted
+            config,
+            project_root,
+            project_trusted=project_trusted,
+            extra_roots=add_dirs,
         )
         # Derive project name once (used in OSC 2 title strings).
         self._proj_name: str = project_root.name if project_root is not None else "jarn"
@@ -741,8 +745,16 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             if item is None:
                 return
             # No prompt echo here: the line was already echoed once with the
-            # `» queued: …` marker at submit time (see _submit). Re-echoing it as
-            # `› …` on drain would put two scrollback lines per queued input.
+            # `» queued: …` marker at submit time (see _submit) — and INTERNAL
+            # items (diagnostics auto-fix rounds) are never echoed at all, by
+            # design. Re-echoing on drain would double a queued input's lines
+            # (or fake a user line for an internal one).
+            if not item.internal:
+                # A real user line starts a fresh turn-chain: reset the
+                # diagnostics auto-fix round counter (T-3-3 loop guard).
+                self.controller._diag_chain_round = 0
+                # A real user line supersedes pending auto-diagnostics rounds.
+                self._input_queue.drop_internal()
             self._turn_start = time.monotonic()
             self._turn_stream_chars = 0
             self._turn_base_output = self.controller.tracker.total.output_tokens
@@ -763,6 +775,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 # — Ctrl+O works mid-turn, not only after the answer completes.
                 self._last_tool_outputs = []
                 self._title_hook("working")   # Set working title when agent turn starts
+                # T-3-7: scan the submitted text for @-mentioned images to inline as
+                # native content blocks (gated by execution.inline_images + the
+                # session fallback flag). Non-image / oversize mentions stay text.
+                images = repl_turn.select_inline_images(self.controller, text)
                 await repl_turn._run_turn(
                     self.console, self.controller, text, self._ask,
                     pick=self._pick_approval, view=self._view_full_diff,
@@ -772,6 +788,8 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                     token_sink=self._count_stream_chars,
                     todos_sink=self._on_todos_live,
                     title_hook=self._title_hook,
+                    queue_sink=self._input_queue.append,
+                    images=images,
                 )
                 # Turn completed normally (not cancelled — CancelledError would
                 # have bypassed this line).  Fire the turn-end notification.

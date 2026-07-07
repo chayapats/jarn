@@ -5,10 +5,113 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-07-07
-
 ### Added
 
+- **`--add-dir` multi-root workspaces (T-3-9)** — the agent's filesystem write scope
+  generalizes from a single project root to a set of roots (primary first). Add extra
+  writable roots at launch with `jarn --add-dir <dir>` (repeatable; each must exist and
+  be a directory — honored in the interactive TUI **and** headless `jarn -p …` runs) or
+  mid-session with the new `/add-dir <path>` command. A write is
+  in-scope when it resolves under **any** root, and the per-root `resolve()`
+  symlink-escape discipline holds for every added root exactly as for the primary. The
+  same roots set is propagated to the permission engine, the local virtual-mode FS
+  guard, the OS-sandbox writable allow-set, and the Docker bind mounts, so an
+  engine-allowed added-root write is also permitted at syscall time. `/add-dir` is
+  capability-gated: it requires approval in `ask` **and `plan`** modes (a root added in
+  plan persists into a later escalation to auto-edit, so it must be confirmed) and is
+  refused on an untrusted project. Added roots widen the **write scope only** — project
+  context (JARN.md) and
+  checkpoint/undo (`/undo`, `/rewind`) stay **primary-root only**, and `/add-dir` prints
+  that limitation when it adds a root. `jarn doctor` now lists all active roots. See
+  `docs/PERMISSIONS.md` and `SECURITY.md`.
+
+- **Direct image content blocks (T-3-7)** — an `@`-mentioned image is now inlined
+  into your message as a native multimodal content block (base64), so weak vision
+  models see the image directly instead of depending on them choosing to call
+  `read_file`. Gated by `execution.inline_images: auto|off` (default `auto`): `auto`
+  inlines images ≤ 5 MB whose `@path` resolves to an image file (non-image and
+  oversize mentions stay text-only), `off` keeps the old text-only `@path`
+  behaviour. The original `@path` stays in the message text so `read_file` still
+  works and transcripts stay greppable. Block shape is the langchain-core v1
+  `{"type":"image","base64":…,"mime_type":…}` — the same shape DeepAgents'
+  `read_file` emits. If a provider rejects images, the front-end retries the turn
+  **once, same-model, text-only** with a notice and disables inlining for the rest
+  of the session (`auto` then behaves like `off`). Also settable via `/config`.
+
+- **Headless structured output — `--output-schema` (T-3-6)** — `jarn -p "..." --output-schema schema.json --json` constrains the agent's final answer to the given JSON Schema and returns the parsed object as `result` in the JSON envelope (`--json` mode), enabling jq-able CI pipelines. The flag is headless-only (argparse errors if given without `-p`). Bad/missing schema files exit `2` with `error.kind: "usage"`; a model that fails to satisfy the schema exits `1` with `error.kind: "schema"`. The schema is passed as `response_format` through cli → headless → Controller → `build_runtime` → `create_deep_agent`.
+
+- **Subagent progress labels in the stream (T-3-5)** — output from delegated
+  `task` subagents is now labelled instead of interleaving anonymously. Each
+  streamed event is correlated back to the subagent that produced it (the name from
+  the `task` args, tied to the subgraph namespace as it first appears) and tagged
+  `agent=<name>`. Tagged tool lines render with a dim `┊ <name> ` prefix; a
+  subagent's streamed prose collapses to a single live status line
+  `└ <name>: working… (N tool calls)` (the full text stays in the Ctrl+O pager), and
+  committed scrollback keeps the compact form — the subagent's tool lines plus a
+  one-line `┊ <name> ⎿ done · N tool calls` summary. Parallel subagents are labelled
+  independently. Display-only: cost/usage attribution (model-based) is unchanged.
+
+- **Pluggable web-search providers (T-3-4)** — `web_search` now supports Tavily,
+  Brave Search, and Exa in addition to the original keyless DuckDuckGo scraper.
+  Set `search.provider: tavily|brave|exa` to pin a provider, or leave it as `auto`
+  (default) to auto-discover the first provider whose key is set
+  (`TAVILY_API_KEY` → `BRAVE_API_KEY` → `EXA_API_KEY`, then DDG fallback).  Keys
+  are resolved through the existing secret-reference resolver (`${ENV_VAR}`,
+  `keychain:jarn/<provider>`) — never inline.  Output format is identical to the
+  DDG scraper so prompts are unchanged.  `jarn doctor` now reports the active search
+  provider and whether its key resolves.  `web_fetch` and its SSRF guard are
+  untouched.
+
+- **Diagnostics feedback loop — LSP-lite (T-3-3)** — after the verify gate, ruff +
+  pyright run on the files the turn edited (each only when its binary is installed;
+  30 s combined budget) and feed lint/type errors back. `verify.diagnostics: suggest`
+  (default) prints a notice listing the findings; `auto` queues ONE internal
+  follow-up turn — `Diagnostics after your edits: … Fix them.` — that runs without a
+  `» queued:` / `› …` echo, so the agent fixes the type error it just introduced.
+  Provably bounded: `verify.diagnostics_max_rounds` (default 1) caps consecutive
+  auto-fix rounds per user turn (the counter resets only on real user input, so an
+  auto round that introduces new errors still stops at the cap); when the cap is
+  reached with errors still present, a `suggest`-style notice surfaces the remaining
+  findings instead of dropping them silently. Edited paths are anchored to the
+  project root before running so diagnostics work regardless of the process CWD
+  (e.g. under `-p` / a subdir launch). Scoped to edited files only — pre-existing
+  errors elsewhere never surface. Skipped entirely in headless `-p` runs (its notice
+  is not consumed there). `verify.diagnostics_ts:
+  false` optionally adds `npx tsc --noEmit` (off by default: tsc is project-wide and
+  slow; its findings are still filtered back to the edited files). All three keys
+  are in the `/config` panel (plus `verify.gate`, previously YAML-only). New
+  `jarn.agent.diagnostics` module (`collect_diagnostics` / `format_diagnostics`);
+  skipped on cancelled/errored turns, same semantics as the verify gate.
+
+- **Verified badge on turn completion (T-3-2)** — a structured `verify` NOTICE event
+  is emitted at the end of every edit-turn, rendered as a badge on the last line:
+  `⎿ verified: pytest ✓ 214 passed · 3.2s` (pass) or `⎿ verify: pytest ✗ 2 failed ·
+  details · ctrl+o` (fail — full output in Ctrl+O pager). Suggest mode shows
+  `⎿ verify: run pytest to confirm (verify.gate: auto to automate)`. Adds per-runner
+  summary extraction (`summarize_output`: pytest / cargo / go test / npm-family) and
+  per-turn timing (`secs`). Badge never appears on cancelled, errored, or read-only
+  turns.
+
+- **`/rewind` slice 2 — atomic conversation + file rewind (T-3-1)** — the `/rewind`
+  picker gains a second arrow-key confirm after you choose a turn: **Restore files
+  too (recommended)** / **Conversation only** / **Cancel**. Restoring reverts the
+  working tree to that turn's git checkpoint *before* forking the thread, so the
+  conversation and the files rewind together (previously `/rewind` rewound the
+  conversation only and pointed you at `/undo`). The confirm previews what will
+  revert as a capped `git diff --stat` (≤10 lines + `+N more`) and shows a ⚠ when
+  the tree has hand-edits no checkpoint captured. The file restore is itself
+  reversible — `/undo` brings the pre-rewind tree back (no work is ever lost). Each
+  turn-start snapshot now records its `thread_id` + 0-based `turn_index`
+  (`CheckpointManager.find_for_turn`), which is how a chosen turn resolves back to
+  its checkpoint; old snapshots without the tag simply fall back to
+  conversation-only. When auto-summarization reduces the human-message count a later
+  turn can re-issue a `(thread, turn)` tag; snapshot refs are read
+  `--sort=creatordate` and `find_for_turn` takes the **newest** match, so a rewind
+  after auto-compaction restores the right snapshot rather than an arbitrary
+  colliding one. Needs `git.autocheckpoint` on — with it off (the default), the
+  picker shows no extra confirm and behaves exactly as slice 1. New public API:
+  `CheckpointManager.find_for_turn` / `restore_to` / `diff_stat` /
+  `has_uncheckpointed_changes`; `Controller.fork_to_turn(..., restore_files=)`.
 - **`/theme` command + terminal background auto-detection (T-2-10)** — new
   `/theme [dark|light|high-contrast|auto]` command: bare `/theme` opens an
   arrow-key picker (↑/↓ + Enter; Esc cancel) showing the four options with the

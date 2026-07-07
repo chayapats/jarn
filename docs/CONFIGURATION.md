@@ -152,6 +152,30 @@ default_model: openrouter/anthropic/claude-opus-4-8
 # Coarse trust level: plan | ask | auto-edit | yolo
 permission_mode: ask
 
+# ── Pluggable web search ─────────────────────────────────────────────────
+# `search.provider` selects which backend `web_search` uses.
+# `search.api_key` is a reference to the key for the explicitly-named provider.
+#
+# Providers: auto (default) | duckduckgo | tavily | brave | exa
+#
+# In `auto` mode each provider is discovered by its conventional env var or
+# keychain entry — no api_key needed in config.  In `auto`, the priority order
+# is tavily → brave → exa; first with a resolved key wins.  When none resolve,
+# the keyless DuckDuckGo scraper is used as a fallback.
+#
+# Per-provider env vars and keychain entries:
+#   Tavily: ${TAVILY_API_KEY}    / keychain:jarn/tavily
+#   Brave:  ${BRAVE_API_KEY}     / keychain:jarn/brave
+#   Exa:    ${EXA_API_KEY}       / keychain:jarn/exa
+#
+# To pin a single provider with a key ref:
+#   search:
+#     provider: tavily
+#     api_key: ${TAVILY_API_KEY}   # or keychain:jarn/tavily
+search:
+  provider: auto
+  api_key: ""     # reference-only; set per-provider env vars for auto-discovery
+
 # ── Policy / web tools ───────────────────────────────────────────────────
 # `policy.web_tools` gates the in-process web_search/web_fetch tools.
 # Use `jarn --preset NAME` (CLI) or `/preset` in the REPL to apply a named
@@ -320,6 +344,13 @@ execution:
                            # (e.g. "1000:1000") to avoid root-owned files. Not forced
                            # by default because many images need root for apt/pip.
   multimodal: true         # read_file auto-detects image/PDF/audio/video
+  inline_images: auto      # auto | off. auto: an @-mentioned image (≤ 5 MB) is sent
+                           # to the model as a native image content block in your
+                           # message — so weak vision models see it without having to
+                           # call read_file (the @path stays in the text too). off:
+                           # the old text-only @path behaviour. If a provider rejects
+                           # images, JARN retries the turn text-only once and treats
+                           # auto like off for the rest of the session.
   allow_local_fallback: false   # if `backend: docker|sandbox` can't start, run on the
                                 # host anyway? OFF = fail closed (recommended).
                                 # When on, the status bar shows "host (no sandbox)".
@@ -388,8 +419,28 @@ mcp_servers:
 verify:
   gate: suggest            # off | suggest | auto — once per turn, after all
                            # write_file/edit_file calls complete: suggest emits
-                           # the detected test command; auto runs it
+                           # the detected test command; auto runs it and renders
+                           # a badge: ⎿ verified: pytest ✓ 214 passed · 3.2s
                            # (permissions + danger-guard still apply)
+  diagnostics: suggest     # off | suggest | auto — diagnostics feedback loop
+                           # (LSP-lite). After the verify gate, ruff + pyright
+                           # run on the files THIS turn edited (never the whole
+                           # project, so pre-existing issues elsewhere stay out
+                           # of scope; each tool runs only if its binary exists).
+                           #   suggest — (default) notice listing the findings
+                           #   auto    — if the edits introduced errors, queue
+                           #             ONE internal follow-up turn telling the
+                           #             agent to fix them (not echoed as a user
+                           #             line)
+                           # 30 s combined budget; skipped on cancelled/error turns.
+  diagnostics_max_rounds: 1  # loop guard for `auto`: max consecutive auto-fix
+                             # rounds per user turn. Resets on real user input;
+                             # an auto round that introduces NEW errors still
+                             # stops at this cap — no runaway loops.
+  diagnostics_ts: false    # also run `npx tsc --noEmit` in the diagnostics pass.
+                           # OFF by default: tsc has no per-file mode, so it
+                           # checks the whole project (slow on big codebases).
+                           # Findings are still filtered to the edited files.
 
 # ── Observability ────────────────────────────────────────────────────────
 observability:
@@ -454,6 +505,53 @@ At REPL launch, `palette.configure_ui(theme, accent)` applies theme tokens to th
 shared palette (chat colors, toolbar background/foreground, cost/context colors).
 The bottom toolbar is rendered by `tui/toolbar.py` and shows **model · mode · queue ·
 ctx · cost** (low-priority segments drop on narrow terminals).
+
+## Pluggable web search (`search`)
+
+`web_search` supports multiple search backends.  By default (`provider: auto`) it
+tries Tavily → Brave → Exa in priority order and falls back to the keyless
+DuckDuckGo HTML scraper when none have a resolved key.
+
+```yaml
+search:
+  provider: auto       # auto | duckduckgo | tavily | brave | exa
+  api_key: ""          # reference-only; applies only when provider is named explicitly
+```
+
+### Providers
+
+| Provider | How to supply the key |
+|---|---|
+| `tavily` | `${TAVILY_API_KEY}` env var or `keychain:jarn/tavily` |
+| `brave` | `${BRAVE_API_KEY}` env var or `keychain:jarn/brave` |
+| `exa` | `${EXA_API_KEY}` env var or `keychain:jarn/exa` |
+| `duckduckgo` | No key required |
+
+In `auto` mode the key discovery order is: (1) conventional env var
+(`TAVILY_API_KEY` / `BRAVE_API_KEY` / `EXA_API_KEY`), then (2) keychain entry
+`keychain:jarn/<provider>`.  The single `search.api_key` field is **only**
+consulted when you name an explicit provider — it is never used in `auto` mode.
+
+### Examples
+
+```yaml
+# Auto-discover — export BRAVE_API_KEY and jarn will use Brave automatically:
+search:
+  provider: auto
+
+# Pin to Tavily with an explicit key reference:
+search:
+  provider: tavily
+  api_key: ${TAVILY_API_KEY}
+
+# Pin to Tavily, key stored in OS keychain:
+search:
+  provider: tavily
+  api_key: keychain:jarn/tavily
+```
+
+`web_fetch` and the SSRF guard are completely separate from the provider
+selection — they are never used for API calls to the provider hosts.
 
 ## Wiki knowledge base (`wiki`)
 
@@ -622,18 +720,27 @@ jarn -p "follow up" --resume-session abc  # send a new message on thread abc
 
 `--json` prints one JSON object on stdout:
 
-- **Success:** `{result, tokens, cost, turns, tool_calls}`
+- **Success:** `{result, tokens, cost, turns, tool_calls}` — `result` is a string, or a parsed JSON object when `--output-schema` is used.
 - **Failure:** `{error: {kind, message}}` (kinds include `error`, `refusal`,
-  `budget`, `timeout`)
+  `budget`, `timeout`, `schema`, `usage`)
 
 **Exit codes:**
 
 | Code | Meaning |
 |------|---------|
 | `0` | Success |
-| `1` | Generic error (config, provider, unexpected failure) |
-| `2` | Approval refused (fail-closed in `ask`/`plan`, or danger-guard in auto modes) or session budget hard-stop |
+| `1` | Generic error (config, provider, unexpected failure) or `schema` — agent failed to satisfy `--output-schema` |
+| `2` | Approval refused (fail-closed in `ask`/`plan`, or danger-guard in auto modes), session budget hard-stop, or `usage` — bad/unreadable `--output-schema` file |
 | `124` | Timeout |
+
+**`--output-schema FILE`** (headless-only, use with `--json`): path to a JSON Schema
+file. The agent's final answer is constrained to the schema; on success the `result`
+field contains the parsed object:
+
+```bash
+# Extract a structured answer and pipe to jq
+jarn -p "list changed files" --output-schema files.schema.json --json | jq '.result.files[]'
+```
 
 `--max-turns N` runs up to *N* agent turns on the same session thread. After the
 first turn, later turns resume without a new user message so the agent can keep

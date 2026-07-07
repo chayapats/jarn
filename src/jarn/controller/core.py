@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from jarn.agent.builder import JarnRuntime, build_runtime
 from jarn.agent.checkpoint import CheckpointManager
@@ -59,17 +60,29 @@ class Controller:
         *,
         project_trusted: bool = True,
         system_prompt_override: str | None = None,
+        response_format: Any | None = None,
+        extra_roots: list[Path] | None = None,
     ) -> None:
         self.config = config
         self.project_root = project_root
         self.project_trusted = project_trusted
+        # Added (secondary) roots from --add-dir / /add-dir. These widen the WRITE
+        # scope only — the engine, the backend FS guard, and the sandboxes all
+        # share this set (kept in sync in build_runtime). Context loading and
+        # checkpoint/undo stay PRIMARY-ONLY (project_root). Resolved once so the
+        # symlink-escape discipline and the scope check agree byte-for-byte.
+        self.extra_roots: list[Path] = self._resolve_extra_roots(extra_roots)
         # When set, build_runtime swaps J.A.R.N.'s assembled system prompt for
         # this string (eval-harness A/B of the harness prompt; see build_runtime).
         self.system_prompt_override = system_prompt_override
+        # When set, build_runtime passes this as response_format to create_deep_agent
+        # so the agent constrains its final answer to the given JSON schema.
+        self.response_format = response_format
         self.engine = PermissionEngine(
             mode=config.permission_mode,
             rules=config.permissions,
             project_root=project_root,
+            roots=tuple(self.extra_roots),
         )
         # Persist ALWAYS-scoped approvals to the project config so they survive
         # across processes (no-op outside a project).
@@ -129,6 +142,77 @@ class Controller:
         # Shell-escape output captured by ! commands; injected once into the next
         # turn via enrich_turn_input and then cleared.
         self.pending_shell_context: list[ShellNote] = []
+        # Diagnostics auto-fix chain round (T-3-3): 0 for a real user turn,
+        # incremented when an auto-fix round is queued, reset on real user
+        # input. Passed to each per-turn SessionDriver so the round cap holds
+        # across the driver instances that make up one auto-fix chain.
+        self._diag_chain_round: int = 0
+        # T-3-7: set True after a provider rejects inlined images, so `auto` behaves
+        # like `off` for the rest of the session (session-lifetime, not per-turn —
+        # drivers are recreated each turn and would reset a per-driver flag).
+        self.inline_images_disabled: bool = False
+
+    # -- multi-root scope ---------------------------------------------------
+
+    @staticmethod
+    def _resolve_extra_roots(raw: list[Path] | None) -> list[Path]:
+        """Normalize added roots to resolved, de-duplicated ``Path`` objects.
+
+        Resolving here (once) is what keeps the engine's scope check, the backend
+        FS guard, and the sandboxes agreeing on the exact same paths — including
+        the symlink-escape realpath — with no per-layer drift.
+        """
+        out: list[Path] = []
+        for p in raw or []:
+            try:
+                resolved = Path(p).expanduser().resolve()
+            except (OSError, RuntimeError, ValueError):
+                continue
+            if resolved not in out:
+                out.append(resolved)
+        return out
+
+    def add_root(self, raw: str) -> tuple[bool, str]:
+        """Add a directory to the session's WRITE scope (``/add-dir`` core logic).
+
+        Refuses on an untrusted project (a scope-widening capability must not be
+        grantable to a repo whose config we don't trust). Validates the path
+        (exists, is a directory), de-dupes against the primary + existing roots,
+        then extends the engine's roots and drops the runtime so the next turn
+        rebuilds the backend (FS guard + sandbox) with the new root bound. Returns
+        ``(ok, message)``; the message always states the checkpoint/undo
+        primary-only limitation on success.
+        """
+        if not self.project_trusted:
+            return (
+                False,
+                "/add-dir is refused on an untrusted project — run /trust here "
+                "first (an untrusted repo may not widen the agent's write scope).",
+            )
+        try:
+            path = Path(raw).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError) as exc:
+            return False, f"/add-dir: cannot resolve {raw!r}: {exc}"
+        if not path.exists():
+            return False, f"/add-dir: {path} does not exist."
+        if not path.is_dir():
+            return False, f"/add-dir: {path} is not a directory."
+        primary = self.project_root.resolve() if self.project_root else None
+        if path == primary or path in self.extra_roots:
+            return False, f"/add-dir: {path} is already an active root."
+        self.extra_roots.append(path)
+        self.engine.roots = tuple(self.extra_roots)
+        # Rebuild the runtime on the next turn so the backend FS guard + sandbox
+        # bind/writable set pick up the new root (kept in sync with the engine).
+        self.runtime = None
+        return (
+            True,
+            f"Added {path} to this session's write scope "
+            f"({len(self.extra_roots) + (1 if primary else 0)} active roots). "
+            "Note: checkpoint/undo still snapshots the primary project root ONLY "
+            "— edits in added roots are NOT captured by /undo or /rewind, and "
+            "project context (JARN.md) is loaded from the primary root only.",
+        )
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -160,6 +244,8 @@ class Controller:
                     checkpointer=self._saver,
                     extra_tools=tools,
                     system_prompt_override=self.system_prompt_override,
+                    response_format=self.response_format,
+                    extra_roots=self.extra_roots,
                 )
             except AmbientKeyLeakError as exc:
                 self.health = "error"
@@ -188,6 +274,8 @@ class Controller:
                     checkpointer=self._saver,
                     extra_tools=tools,
                     system_prompt_override=self.system_prompt_override,
+                    response_format=self.response_format,
+                    extra_roots=self.extra_roots,
                 )
         if not self._session_started:
             self._fire_lifecycle("session_start")
@@ -364,7 +452,9 @@ class Controller:
             turns.append((idx, preview))
         return turns
 
-    async def fork_to_turn(self, keep_count: int) -> int | None:
+    async def fork_to_turn(
+        self, keep_count: int, *, restore_files: bool = False
+    ) -> int | None:
         """Branch the conversation: keep ``messages[:keep_count]`` on a *new*
         thread and continue from there. The original thread is untouched and
         still resumable (this forks, it does not destroy).
@@ -380,6 +470,17 @@ class Controller:
         compaction relies on. Resets the context-token gauge like
         :meth:`new_thread`.
 
+        When ``restore_files`` is True (slice 2), the working tree is reverted to
+        the chosen turn's checkpoint BEFORE the thread is forked, so conversation
+        and files rewind atomically. The checkpoint is resolved on the ORIGINAL
+        thread (snapshots were recorded against it) by the human-turn count in the
+        kept prefix — the same 0-based turn index the session driver records at
+        snapshot time. Any in-flight snapshot is settled first (the /abort race
+        guard) so the restore targets a consistent stack. A missing checkpoint
+        (autocheckpoint off, turn never snapshotted) degrades to conversation-only
+        — the fork still proceeds, the tree is left untouched. When
+        ``restore_files`` is False the behavior is byte-identical to slice 1.
+
         Returns the cut index actually used, or ``None`` when there is nothing
         to rewind (empty thread or a negative ``keep_count``). ``keep_count == 0``
         is a *valid* rewind to before the very first turn: it seeds an empty
@@ -391,21 +492,46 @@ class Controller:
         if not messages or keep_count < 0:
             return None
 
+        import asyncio
+
         kept_prefix = list(messages[:keep_count])  # empty when keep_count == 0
+        original_thread = self.thread_id
+
+        # Slice 2: revert the working tree to the chosen turn's checkpoint before
+        # forking. Resolve against the ORIGINAL thread; the turn index is the
+        # human-turn count in the kept prefix (matches the driver's recording).
+        if restore_files:
+            turn_index = sum(
+                1 for m in kept_prefix if getattr(m, "type", "") == "human"
+            )
+            ref = await asyncio.to_thread(
+                self.checkpoint_manager.find_for_turn, self.thread_id, turn_index
+            )
+            if ref is not None:
+                # Settle any in-flight snapshot first so restore_to's undo-stack
+                # push targets a consistent stack (mirrors /abort, /undo, /redo).
+                await self.settle_snapshot()
+                await asyncio.to_thread(self.checkpoint_manager.restore_to, ref.sha)
+
         from langchain_core.messages import RemoveMessage
         from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
+        # Compute kept_turns before minting the new thread_id.
+        _kept_turns = sum(
+            1 for m in kept_prefix if getattr(m, "type", "") == "human"
+        )
         self.new_thread()  # mint a fresh thread_id; resets tracker.context_tokens
+        # Register alias so find_for_turn can walk back to the parent on a stacked
+        # rewind within the same session (in-memory, not persisted).
+        self.checkpoint_manager.register_thread_alias(
+            self.thread_id, original_thread, _kept_turns
+        )
         await rt.agent.aupdate_state(
             self._config(),
             {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *kept_prefix]},
         )
         return keep_count
 
-    # TODO(rewind-conversation) slice 2: link this fork to the git checkpoint
-    # stack (a per-turn turn-id<->snapshot-SHA index) so file edits made since
-    # the chosen turn revert atomically with the conversation. Today the working
-    # tree is NOT reverted on rewind — the picker points the user at /undo.
     # TODO(rewind-conversation) slice 3: in-place/destructive rewind on the same
     # thread + true free message-editing.
     # TODO(rewind-conversation) slice 4: visual branch tree across forked threads
@@ -450,6 +576,10 @@ class Controller:
             verify_executor=getattr(
                 getattr(self.runtime, "backend", None), "execute", None
             ),
+            diagnostics_mode=self.config.verify.diagnostics,
+            diagnostics_max_rounds=self.config.verify.diagnostics_max_rounds,
+            diagnostics_ts=self.config.verify.diagnostics_ts,
+            _diag_round=self._diag_chain_round,
         )
         # Retain for settle_snapshot: the /undo, /redo, and /abort paths await this
         # driver's pending turn-start snapshot before mutating the checkpoint stack.
@@ -587,6 +717,47 @@ class Controller:
                 return cand
             idx += 1
         return None
+
+    async def drop_pending_image_message(self) -> bool:
+        """Remove the last checkpointed human message from the current thread IFF it
+        carries inline image blocks (T-3-7 image fallback).
+
+        After a provider rejects inlined images, the front-end re-sends the turn
+        text-only. LangGraph has already checkpointed the image-laden human message
+        (that is why model-rotation *resumes* rather than re-sends), so a plain
+        re-send would leave the rejected image in state and the model would see it
+        again. Stripping only a message that actually contains image blocks makes
+        this safe whether or not the failed call persisted the message: if it did we
+        remove it; if it did not, the last human message is a prior text turn we must
+        not touch. Best-effort — returns ``False`` (no-op) when the runtime/agent
+        can't update state (e.g. a fake agent in tests) or on any error."""
+        agent = getattr(self.runtime, "agent", None)
+        aget = getattr(agent, "aget_state", None)
+        aupdate = getattr(agent, "aupdate_state", None)
+        if aget is None or aupdate is None:
+            return False
+        try:
+            state = await aget(self._config())
+            messages = (getattr(state, "values", {}) or {}).get("messages", []) or []
+            last_human = next(
+                (m for m in reversed(messages) if getattr(m, "type", "") == "human"),
+                None,
+            )
+            if last_human is None:
+                return False
+            mid = getattr(last_human, "id", None)
+            content = getattr(last_human, "content", None)
+            has_image = isinstance(content, list) and any(
+                isinstance(b, dict) and b.get("type") == "image" for b in content
+            )
+            if mid is None or not has_image:
+                return False
+            from langchain_core.messages import RemoveMessage
+
+            await aupdate(self._config(), {"messages": [RemoveMessage(id=mid)]})
+            return True
+        except Exception:  # noqa: BLE001 - best-effort; never abort the fallback retry
+            return False
 
     def record_session_title(self, title: str, *, when: float) -> None:
         self.sessions.touch(self.thread_id, title, when=when)

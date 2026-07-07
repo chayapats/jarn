@@ -287,3 +287,209 @@ def test_tool_summary_non_web_search_unchanged():
     multi_line = "line1\nline2\nline3"
     assert _tool_summary(multi_line, "bash") == "3 lines"
     assert _tool_summary(multi_line) == "3 lines"  # default tool_name=""
+
+
+# ---------------------------------------------------------------------------
+# T-3-4 — Pluggable web-search providers
+# ---------------------------------------------------------------------------
+
+def _make_search_cfg(provider: str = "auto", api_key: str = ""):
+    """Build a minimal Config with specific search settings for testing."""
+    from jarn.config.schema import Config, SearchConfig, SearchProviderType
+    cfg = Config()
+    cfg.search = SearchConfig(provider=SearchProviderType(provider), api_key=api_key)
+    return cfg
+
+
+def _mock_transport(handler):
+    """Return an httpx Client factory using a MockTransport with the given handler."""
+    transport = httpx.MockTransport(handler)
+    return lambda: httpx.Client(transport=transport)
+
+
+def test_tavily(monkeypatch):
+    """Tavily: POST to api.tavily.com/search with key in body, parse title/url/content."""
+    import json as _json
+
+    cfg = _make_search_cfg("tavily")
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key-12345")
+
+    def handler(request):
+        body = _json.loads(request.content)
+        assert body["api_key"] == "tvly-test-key-12345"
+        assert str(request.url) == "https://api.tavily.com/search"
+        return httpx.Response(200, json={
+            "results": [
+                {"title": "TavTitle", "url": "https://tav.example/1", "content": "TavSnip"}
+            ]
+        })
+
+    monkeypatch.setattr(web_tools, "_api_client", _mock_transport(handler))
+    monkeypatch.setattr(web_tools, "_active_config", cfg)
+    out = web_search.invoke({"query": "tavily test"})
+    assert "Top results for 'tavily test'" in out
+    assert "TavTitle" in out
+    assert "https://tav.example/1" in out
+    assert "TavSnip" in out
+
+
+def test_brave(monkeypatch):
+    """Brave: GET api.search.brave.com/res/v1/web/search with X-Subscription-Token."""
+    cfg = _make_search_cfg("brave")
+    monkeypatch.setenv("BRAVE_API_KEY", "brave-test-key-12345")
+
+    def handler(request):
+        assert request.headers.get("X-Subscription-Token") == "brave-test-key-12345"
+        assert "api.search.brave.com" in str(request.url)
+        return httpx.Response(200, json={
+            "web": {
+                "results": [
+                    {
+                        "title": "BraveTitle",
+                        "url": "https://brave.example/2",
+                        "description": "BraveSnip",
+                    }
+                ]
+            }
+        })
+
+    monkeypatch.setattr(web_tools, "_api_client", _mock_transport(handler))
+    monkeypatch.setattr(web_tools, "_active_config", cfg)
+    out = web_search.invoke({"query": "brave test"})
+    assert "Top results for 'brave test'" in out
+    assert "BraveTitle" in out
+    assert "https://brave.example/2" in out
+    assert "BraveSnip" in out
+
+
+def test_exa(monkeypatch):
+    """Exa: POST to api.exa.ai/search with x-api-key header, parse highlights."""
+    cfg = _make_search_cfg("exa")
+    monkeypatch.setenv("EXA_API_KEY", "exa-test-key-12345")
+
+    def handler(request):
+        assert request.headers.get("x-api-key") == "exa-test-key-12345"
+        assert "api.exa.ai" in str(request.url)
+        return httpx.Response(200, json={
+            "results": [
+                {
+                    "title": "ExaTitle",
+                    "url": "https://exa.example/3",
+                    "highlights": ["ExaSnip"],
+                }
+            ]
+        })
+
+    monkeypatch.setattr(web_tools, "_api_client", _mock_transport(handler))
+    monkeypatch.setattr(web_tools, "_active_config", cfg)
+    out = web_search.invoke({"query": "exa test"})
+    assert "Top results for 'exa test'" in out
+    assert "ExaTitle" in out
+    assert "https://exa.example/3" in out
+    assert "ExaSnip" in out
+
+
+def test_auto_selection(monkeypatch):
+    """auto: first provider whose key resolves wins; falls back to DDG when none set."""
+    cfg = _make_search_cfg("auto")
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    monkeypatch.setenv("BRAVE_API_KEY", "brave-auto-key-12345")
+
+    def handler(request):
+        assert "api.search.brave.com" in str(request.url), (
+            f"expected brave endpoint, got {request.url}"
+        )
+        return httpx.Response(200, json={
+            "web": {
+                "results": [
+                    {"title": "AutoBrave", "url": "https://auto.example/b", "description": ""}
+                ]
+            }
+        })
+
+    monkeypatch.setattr(web_tools, "_api_client", _mock_transport(handler))
+    monkeypatch.setattr(web_tools, "_active_config", cfg)
+    out = web_search.invoke({"query": "auto test"})
+    assert "AutoBrave" in out
+
+
+def test_auto_fallback_ddg(monkeypatch):
+    """auto with NO provider key resolvable falls back to the keyless DDG scraper.
+
+    The plan's failing-test spec named this branch ("`auto` picks the first
+    provider whose key resolves, ELSE DuckDuckGo") but no test exercised it.
+    """
+    cfg = _make_search_cfg("auto", api_key="")  # search.api_key explicitly empty
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    # No keychain entry for any provider in the test env — auto falls to DDG.
+
+    # DDG routes through the SSRF-guarded, IP-pinned _fetch_raw path.
+    _public_dns(monkeypatch)
+    seen: list[str] = []
+
+    def _fake_fetch(url, **k):
+        seen.append(url)
+        return _raw(_DDG_HTML)
+
+    monkeypatch.setattr(web_tools, "_fetch_raw", _fake_fetch)
+    monkeypatch.setattr(web_tools, "_active_config", cfg)
+
+    out = web_search.invoke({"query": "gold price"})
+    # The DDG scraper ran (its endpoint was hit) and returned formatted results.
+    assert any("duckduckgo.com" in u for u in seen), (
+        f"auto with no keys must fall back to the DDG scraper; hit {seen}"
+    )
+    assert "Gold price today" in out
+    assert "https://gold.example/price" in out
+
+
+def test_provider_error_string(monkeypatch):
+    """HTTP failure from a provider returns a tool-error string; never raises."""
+    cfg = _make_search_cfg("tavily")
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key-12345")
+
+    def handler(request):
+        return httpx.Response(500, text="Internal Server Error")
+
+    monkeypatch.setattr(web_tools, "_api_client", _mock_transport(handler))
+    monkeypatch.setattr(web_tools, "_active_config", cfg)
+    out = web_search.invoke({"query": "error test"})
+    assert "web_search failed" in out
+    assert isinstance(out, str)
+    # The resolved API key must never leak into the surfaced error string.
+    assert "tvly-test-key-12345" not in out
+
+
+def test_key_by_reference(monkeypatch):
+    """search.api_key as a ${ENV} reference resolves to the real value; key never in output."""
+    from jarn.config.schema import Config, SearchConfig, SearchProviderType
+
+    cfg = Config()
+    cfg.search = SearchConfig(
+        provider=SearchProviderType.TAVILY,
+        api_key="${TAVILY_API_KEY}",  # env-var reference, not a literal key
+    )
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-ref-resolved-12345")
+
+    import json as _json
+
+    def handler(request):
+        body = _json.loads(request.content)
+        assert body.get("api_key") == "tvly-ref-resolved-12345", (
+            f"key not resolved correctly: {body}"
+        )
+        return httpx.Response(200, json={
+            "results": [
+                {"title": "RefTitle", "url": "https://ref.example/", "content": "RefSnip"}
+            ]
+        })
+
+    monkeypatch.setattr(web_tools, "_api_client", _mock_transport(handler))
+    monkeypatch.setattr(web_tools, "_active_config", cfg)
+    out = web_search.invoke({"query": "ref key test"})
+    assert "RefTitle" in out
+    # The resolved key value must never appear in the returned string
+    assert "tvly-ref-resolved-12345" not in out

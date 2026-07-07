@@ -27,6 +27,7 @@ import threading
 from pathlib import Path
 
 from deepagents.backends import LocalShellBackend
+from deepagents.backends.filesystem import _raise_if_symlink_loop
 from deepagents.backends.protocol import ExecuteResponse
 
 from jarn.agent.process_util import terminate_process_group
@@ -57,6 +58,14 @@ class CancellableLocalShellBackend(LocalShellBackend):
         Extra filesystem paths the sandbox may write to (in addition to
         project_root and the default cache/temp set from
         :func:`jarn.agent.os_sandbox.default_writable`).
+    extra_roots:
+        Added roots (``--add-dir`` / ``/add-dir``). Absolute paths that resolve
+        (symlinks followed) inside one of these are permitted through the
+        virtual-mode FS guard, in addition to the primary ``root_dir``. This
+        keeps the FS-layer bound in sync with the permission engine's multi-root
+        scope. The per-root ``resolve()`` discipline holds: a symlink inside an
+        added root that points outside every root does NOT match and falls back
+        to the (rejecting) primary-root guard.
     """
 
     def __init__(
@@ -66,6 +75,7 @@ class CancellableLocalShellBackend(LocalShellBackend):
         project_root: Path | None = None,
         sandbox_allow_network: bool = True,
         sandbox_extra_writable: list[Path] | None = None,
+        extra_roots: list[Path] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -75,6 +85,36 @@ class CancellableLocalShellBackend(LocalShellBackend):
         self._sandbox_project_root = project_root or Path(self.cwd)
         self._sandbox_allow_network = sandbox_allow_network
         self._sandbox_extra_writable: list[Path] = sandbox_extra_writable or []
+        self._extra_roots: list[Path] = [
+            Path(p).resolve() for p in (extra_roots or [])
+        ]
+
+    def _resolve_path(self, key: str) -> Path:
+        """Extend the virtual-mode FS guard to also accept added roots.
+
+        An absolute path whose realpath (symlinks followed) lies inside one of
+        ``self._extra_roots`` is allowed and returned as its resolved absolute
+        path — mirroring the permission engine's added-root scope so an
+        engine-allowed write is not then blocked at the FS layer. Everything else
+        (relative/virtual paths, and absolute paths NOT inside an added root)
+        falls through to the base virtual-mode guard unchanged. A symlink inside
+        an added root that escapes it resolves outside every root, does not match
+        here, and is rejected by the base guard — preserving the symlink-escape
+        discipline per-root.
+        """
+        if self._extra_roots:
+            candidate = Path(key)
+            if candidate.is_absolute():
+                try:
+                    resolved = candidate.resolve()
+                except (OSError, RuntimeError):
+                    resolved = None
+                if resolved is not None:
+                    for r in self._extra_roots:
+                        if resolved == r or r in resolved.parents:
+                            _raise_if_symlink_loop(resolved)
+                            return resolved
+        return super()._resolve_path(key)
 
     def _build_sandbox_argv(self, command: str) -> list[str] | None:
         """Return a sandboxed argv list, or None to fall back to shell=True.

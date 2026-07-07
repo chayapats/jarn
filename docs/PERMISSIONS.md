@@ -74,17 +74,49 @@ Shift+Tab to cycle at runtime. (`--permission-mode` is kept as a hidden CLI alia
 | `auto-edit` | allow | allow *(in-scope)* | ask | allow *(read-only: web + async status)* |
 | `yolo` | allow | allow | allow | allow |
 
-"In-scope" means inside the project root. An out-of-scope write is never silently
-allowed; in `auto-edit` it downgrades to *ask*. Relative write paths are resolved
-against the **project root**, not the agent's current working directory, so an
-`../outside` write is judged out-of-scope regardless of which subdir the shell is
-in. Symlinks are followed: a symlink inside the project that points *outside* it
-resolves out-of-scope and is treated as a dangerous write. This scope check is an
-*intent* gate; the tool layer re-checks the bound at syscall time to close the
-TOCTOU window between the permission decision and the actual write.
+"In-scope" means inside the project root **or any added root** (see *Multi-root
+workspaces* below). An out-of-scope write is never silently allowed; in `auto-edit`
+it downgrades to *ask*. Relative write paths are resolved against the **primary
+project root**, not the agent's current working directory, so an `../outside` write
+is judged out-of-scope regardless of which subdir the shell is in. Symlinks are
+followed: a symlink inside any root that points *outside* every root resolves
+out-of-scope and is treated as a dangerous write. This scope check is an *intent*
+gate; the tool layer (backend FS guard + OS/Docker sandbox) re-checks the bound at
+syscall time — using the same roots set — to close the TOCTOU window between the
+permission decision and the actual write.
 
 Built-in web tools (`web_search`, `web_fetch`) auto-allow in `auto-edit`; other
 network (MCP, async subagents) still prompt `ask`.
+
+### Multi-root workspaces (`--add-dir` / `/add-dir`)
+
+The write scope generalizes from a single project root to a set of roots
+(**primary first**). Add extra roots at launch with `jarn --add-dir <dir>`
+(repeatable) — this works for both the interactive TUI and headless `jarn -p …`
+runs — or mid-session with `/add-dir <path>`. A write is in-scope when it
+resolves under **any** root, and the per-root `resolve()` symlink discipline holds
+for **every** root: a symlink inside an added root that escapes it is rejected
+exactly as for the primary. The same roots set is propagated to the backend
+filesystem guard, the OS sandbox writable allow-set, and the Docker bind mounts, so
+an engine-allowed added-root write is enforceable — not blocked — at syscall time.
+
+`/add-dir` is **approval-gated**: mid-session it requires explicit confirmation in
+`ask` **and `plan`** modes (a root added in plan persists into a later escalation to
+auto-edit, so it must be confirmed), and it is **refused outright on an untrusted
+project** (a scope-widening capability must not be grantable to a repo whose config
+you have not trusted). The launch `--add-dir` flag (interactive or `-p`) is an
+explicit operator grant at start — same trust model as the primary root — so it does
+not go through the mid-session ask/trust gate.
+
+Added roots widen the **write scope only**. Two things stay **primary-root only**,
+by design:
+
+- **Project context** — `JARN.md` and repo-map/context loading come from the
+  primary root; added roots contribute no context.
+- **Checkpoint / undo** — auto-checkpoints (and therefore `/undo` and `/rewind`
+  file restore) snapshot the primary project root only. **Edits the agent makes in
+  an added root are NOT captured** and cannot be reverted by `/undo` / `/rewind`.
+  `/add-dir` prints this limitation when it adds a root.
 
 ### Plan-mode handoff
 
@@ -143,10 +175,11 @@ Three modes control behaviour:
 | `auto` | Use the OS sandbox when available; emit a one-time warning and continue without isolation if the tool is absent. |
 | `require` | Sandbox or fail closed — `execute()` returns exit-code 126 with a clear error if the sandbox tool is not on PATH. Never runs unsandboxed silently. |
 
-The writable scope is: the project root, the system temp dir (`$TMPDIR`/`/tmp`), and
-common cache directories that exist (`~/.cache`, `~/.npm`, `~/.cargo`,
-`~/.local/share`). Add extra paths with `execution.sandbox_writable`. Reads are always
-unrestricted — only writes are limited.
+The writable scope is: the project root, **any `--add-dir` / `/add-dir` added
+roots**, the system temp dir (`$TMPDIR`/`/tmp`), and common cache directories that
+exist (`~/.cache`, `~/.npm`, `~/.cargo`, `~/.local/share`). Add extra paths with
+`execution.sandbox_writable`. Reads are always unrestricted — only writes are
+limited.
 
 Enable with `execution.local_sandbox: auto` to get kernel enforcement opportunistically,
 or `require` in environments where isolation is non-negotiable. `jarn doctor` reports
@@ -155,9 +188,9 @@ the detected backend and configured mode.
 ### Docker backend (opt-in container isolation)
 
 `execution.backend: docker` runs **every** shell command and filesystem operation inside
-a Docker container. The host is exposed only through a bind-mount of the project root
-at the same absolute path; everything else the agent touches is the container image's
-own filesystem. Escaping requires a container breakout, not just slipping past the
+a Docker container. The host is exposed only through bind-mounts of the project root
+(and any `--add-dir` / `/add-dir` added roots) at their same absolute paths;
+everything else the agent touches is the container image's own filesystem. Escaping requires a container breakout, not just slipping past the
 danger-guard regex. Network is denied (`--network none`) when
 `execution.sandbox_allow_network: false`. Resource limits (`docker_memory` /
 `docker_pids` / `docker_cpus`) and a non-root `docker_user` are available (see

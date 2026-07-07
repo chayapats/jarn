@@ -621,6 +621,54 @@ def expand_mentions(text: str, project_root: Path | None = None) -> str:
     return _MENTION_EXPAND_RE.sub(_replace, text)
 
 
+#: Max size of an image inlined as a native content block (T-3-7). Larger images
+#: stay text-only ``@path`` mentions (the model can still read_file them).
+INLINE_IMAGE_MAX_BYTES: int = 5 * 1024 * 1024
+
+#: Whitespace-delimited ``@path`` token, anchored at line/word start so it does not
+#: match inside e.g. an ``a@b`` email. Reuses the same "``@`` + ``\\S+``" tokenizer
+#: convention as :data:`_MENTION_EXPAND_RE`.
+_PATH_MENTION_RE: re.Pattern[str] = re.compile(r"(?:^|\s)@(\S+)")
+
+#: Trailing punctuation stripped off a hand-typed ``@path`` before it is resolved
+#: (mirrors the URL-mention trimming so "``@shot.png.``" resolves to "shot.png").
+_MENTION_TRAILING_PUNCT = ".,;:!?)]>'\""
+
+
+def scan_image_mentions(
+    text: str, root: Path, *, max_bytes: int = INLINE_IMAGE_MAX_BYTES
+) -> list[Path]:
+    """Return the image files ``@``-mentioned in ``text`` that qualify for inlining.
+
+    A mention qualifies only when its resolved path exists, has an image modality
+    (:func:`jarn.agent.files.modality_of`), and is ``<= max_bytes``. Non-image
+    mentions and oversize images are skipped (they stay text-only ``@path``
+    references the model can still ``read_file``). Duplicates are de-duped by
+    resolved path, preserving first-seen order. Pure — no file is opened, only
+    ``stat``-ed.
+    """
+    from jarn.agent.files import modality_of
+
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for match in _PATH_MENTION_RE.finditer(text):
+        token = match.group(1).rstrip(_MENTION_TRAILING_PUNCT)
+        if not token or modality_of(token) != "image":
+            continue
+        path = root / token
+        try:
+            if not path.is_file() or path.stat().st_size > max_bytes:
+                continue
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        out.append(path)
+    return out
+
+
 #: The default resolver for a bare ``@frag`` token.
 _FILE_RESOLVER: FileMentionResolver = FileMentionResolver()
 

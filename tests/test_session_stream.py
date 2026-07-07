@@ -259,7 +259,7 @@ async def test_snapshot_failure_notice_once() -> None:
         snapshot_notice_pending: bool = False
         snapshot_notice_shown: bool = False
 
-        def snapshot(self, label, *, now=None):
+        def snapshot(self, label, *, now=None, thread_id=None, turn_index=None):
             raise RuntimeError("git exploded")
 
     class WriteEachTurn:
@@ -323,7 +323,7 @@ async def test_snapshot_failure_notice_deferred_to_next_turn() -> None:
         snapshot_notice_pending: bool = False
         snapshot_notice_shown: bool = False
 
-        def snapshot(self, label, *, now=None):
+        def snapshot(self, label, *, now=None, thread_id=None, turn_index=None):
             raise RuntimeError("git exploded")
 
     class ReplyOnly:
@@ -370,7 +370,7 @@ async def test_snapshot_task_not_leaked_on_cancelled_turn(caplog) -> None:
         snapshot_notice_pending: bool = False
         snapshot_notice_shown: bool = False
 
-        def snapshot(self, label, *, now=None):
+        def snapshot(self, label, *, now=None, thread_id=None, turn_index=None):
             started.set()
             time.sleep(0.2)  # still running when the turn is cancelled
             return SnapshotResult(ok=True)
@@ -448,7 +448,7 @@ async def test_settle_snapshot_swallows_failure() -> None:
         snapshot_notice_pending: bool = False
         snapshot_notice_shown: bool = False
 
-        def snapshot(self, label, *, now=None):
+        def snapshot(self, label, *, now=None, thread_id=None, turn_index=None):
             raise RuntimeError("git exploded")
 
     driver = SessionDriver(
@@ -485,7 +485,7 @@ async def test_snapshot_failure_notice_once_across_drivers() -> None:
         snapshot_notice_pending: bool = False
         snapshot_notice_shown: bool = False
 
-        def snapshot(self, label, *, now=None) -> None:
+        def snapshot(self, label, *, now=None, thread_id=None, turn_index=None) -> None:
             raise RuntimeError("git exploded")
 
     class _WriteEachTurn:
@@ -555,7 +555,7 @@ async def test_deferred_snapshot_failure_surfaces_on_fresh_driver() -> None:
         snapshot_notice_pending: bool = False
         snapshot_notice_shown: bool = False
 
-        def snapshot(self, label, *, now=None) -> None:
+        def snapshot(self, label, *, now=None, thread_id=None, turn_index=None) -> None:
             raise RuntimeError("git exploded")
 
     class _ReplyOnly:
@@ -593,3 +593,161 @@ async def test_deferred_snapshot_failure_surfaces_on_fresh_driver() -> None:
     assert turn2[0].text == _SNAPSHOT_FAIL_TEXT
     assert any(e.kind is EventKind.DONE for e in turn1)
     assert any(e.kind is EventKind.DONE for e in turn2)
+
+
+# -- T-3-5: subagent progress labels in the stream ---------------------------
+#
+# Frozen fixture for the real ``astream(subgraphs=True)`` namespace shape,
+# determined by reading source (see task-3-5-report.md):
+#   * main-graph events carry namespace ``()``.
+#   * a delegated subagent's events carry ``("tools:<task_id>",)`` where
+#     ``<task_id>`` is a LangGraph checkpoint task id — a UUID-shaped hash
+#     (``hex[:8]-hex[8:12]-hex[12:16]-hex[16:20]-hex[20:32]``) computed by
+#     langgraph from (checkpoint_id, "tools", step, PUSH, send-idx). It is NOT
+#     the ``task`` tool_call_id and does not embed it, so the subagent NAME is
+#     captured from the ``task`` tool args at TOOL_START and correlated to the
+#     namespace by first-appearance (FIFO) order.
+_NS_A = ("tools:9f8e7d6c-1a2b-3c4d-5e6f-0a1b2c3d4e5f",)
+_NS_B = ("tools:1234abcd-5678-9012-3456-7890abcdef12",)
+
+
+class _NSAgent:
+    """Single-pass agent that yields explicit ``(namespace, mode, chunk)`` triples,
+    mimicking ``astream(subgraphs=True)``."""
+
+    def __init__(self, items: list) -> None:
+        self.items = items
+
+    async def astream(self, payload, config, stream_mode=None, **kwargs):
+        for item in self.items:
+            yield item
+
+
+def _ns_driver(agent) -> SessionDriver:
+    return SessionDriver(
+        agent=agent,
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="t",
+        main_model_ref="claude-opus-4-8",
+    )
+
+
+def _task_launch(*calls) -> dict:
+    """A main-graph ``updates`` chunk whose AI message launches ``task`` calls."""
+    msg = SimpleNamespace(tool_calls=[
+        {"name": "task", "args": {"subagent_type": name, "description": "go"},
+         "id": cid}
+        for name, cid in calls
+    ])
+    return {"model": {"messages": [msg]}}
+
+
+@pytest.mark.asyncio
+async def test_subagent_events_tagged():
+    """Events streamed from a task-subgraph carry ``data['agent'] == 'researcher'``."""
+    agent = _NSAgent([
+        ((), "updates", _task_launch(("researcher", "call_1"))),
+        (_NS_A, "messages", (_AIChunk("found the answer"),)),
+    ])
+    events = [ev async for ev in _ns_driver(agent).run_turn("go")]
+    tagged = [e for e in events if e.kind is EventKind.TEXT and e.text == "found the answer"]
+    assert tagged, "subagent text event missing"
+    assert tagged[0].data.get("agent") == "researcher"
+
+
+@pytest.mark.asyncio
+async def test_parallel_tags_independent():
+    """Two parallel ``task`` calls tag their subgraph events independently."""
+    agent = _NSAgent([
+        ((), "updates", _task_launch(("researcher", "c1"), ("coder", "c2"))),
+        (_NS_A, "messages", (_AIChunk("research result"),)),
+        (_NS_B, "messages", (_AIChunk("code result"),)),
+    ])
+    events = [ev async for ev in _ns_driver(agent).run_turn("go")]
+    by_text = {e.text: e for e in events if e.kind is EventKind.TEXT}
+    assert by_text["research result"].data.get("agent") == "researcher"
+    assert by_text["code result"].data.get("agent") == "coder"
+
+
+@pytest.mark.asyncio
+async def test_main_untagged():
+    """Main-graph events (namespace ``()``) carry no agent tag."""
+    agent = _NSAgent([
+        ((), "messages", (_AIChunk("main answer"),)),
+    ])
+    events = [ev async for ev in _ns_driver(agent).run_turn("go")]
+    texts = [e for e in events if e.kind is EventKind.TEXT]
+    assert texts and all(e.data.get("agent") is None for e in texts)
+
+
+@pytest.mark.asyncio
+async def test_nested_task_does_not_pollute_fifo():
+    """A task launch that arrives under a subgraph namespace (a nested subagent
+    calling task) must NOT be appended to _subagent_pending.  Before Fix 1,
+    that stale name is popped by the NEXT top-level subagent binding and
+    mislabels it.
+
+    Sequence:
+      1. main-graph launches A  → pending=["A"]
+      2. A's subgraph (_NS_A) launches nested  (should be ignored for FIFO)
+      3. main-graph launches B  → pending=["A","B"] after fix; ["A","nested","B"] before
+      4. _NS_A streams → binds to "A"
+      5. _NS_B streams → should bind to "B" (not "nested")
+    """
+    agent = _NSAgent([
+        # 1 — main graph launches A
+        ((), "updates", _task_launch(("A", "call_A"))),
+        # 2 — A's subgraph launches a nested sub (must not enter FIFO)
+        (_NS_A, "updates", _task_launch(("nested", "call_nested"))),
+        # 3 — main graph launches B
+        ((), "updates", _task_launch(("B", "call_B"))),
+        # 4 & 5 — subgraph output
+        (_NS_A, "messages", (_AIChunk("A output"),)),
+        (_NS_B, "messages", (_AIChunk("B output"),)),
+    ])
+    events = [ev async for ev in _ns_driver(agent).run_turn("go")]
+    by_text = {e.text: e for e in events if e.kind is EventKind.TEXT}
+    assert by_text["A output"].data.get("agent") == "A", (
+        f"expected 'A', got {by_text['A output'].data.get('agent')!r}"
+    )
+    assert by_text["B output"].data.get("agent") == "B", (
+        f"expected 'B', got {by_text['B output'].data.get('agent')!r} (nested pollution?)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_duplicate_task_launch_not_double_counted():
+    """When the same task TOOL_START (same tool_call_id) is re-emitted by
+    LangGraph (stream_mode=["messages","updates"] + subgraphs=True can surface
+    the same update chunk more than once), it must not shift the FIFO.
+
+    Before Fix 2 the duplicate appends the same name a second time so the
+    next binding consumes the stale copy and mislabels the second subagent.
+
+    Sequence:
+      1. main-graph emits task launch for A (call_id="call_A")  → pending=["A"]
+      2. duplicate: same chunk re-emitted (call_id="call_A")   → must NOT append again
+      3. main-graph launches B (call_id="call_B")              → pending=["A","B"]
+      4. _NS_A streams → binds to "A"
+      5. _NS_B streams → must bind to "B" (not stale "A")
+    """
+    agent = _NSAgent([
+        # 1 — first emission
+        ((), "updates", _task_launch(("A", "call_A"))),
+        # 2 — duplicate of the same TOOL_START
+        ((), "updates", _task_launch(("A", "call_A"))),
+        # 3 — second subagent launch
+        ((), "updates", _task_launch(("B", "call_B"))),
+        # 4 & 5 — subgraph output
+        (_NS_A, "messages", (_AIChunk("A output"),)),
+        (_NS_B, "messages", (_AIChunk("B output"),)),
+    ])
+    events = [ev async for ev in _ns_driver(agent).run_turn("go")]
+    by_text = {e.text: e for e in events if e.kind is EventKind.TEXT}
+    assert by_text["A output"].data.get("agent") == "A", (
+        f"expected 'A', got {by_text['A output'].data.get('agent')!r}"
+    )
+    assert by_text["B output"].data.get("agent") == "B", (
+        f"expected 'B', got {by_text['B output'].data.get('agent')!r} (duplicate shifted FIFO?)"
+    )

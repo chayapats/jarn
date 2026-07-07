@@ -53,18 +53,30 @@ base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists 
 
 - **Reliable by design** — plan → act → verify is baked into the system prompt, with
   a self-verification loop that runs your project's build/test/lint before reporting done.
+  The completion badge — `` ⎿ verified: pytest ✓ 214 passed · 3.2s `` — confirms the
+  result; it never claims success on a guess (`verify.gate: auto`). A diagnostics
+  feedback loop (LSP-lite) then lints/type-checks just the files each turn edited
+  (ruff + pyright) and can queue one bounded auto-fix round, so the agent catches
+  the type error it just introduced (`verify.diagnostics: auto`).
 - **Safe by default** — a multi-layer permission system (coarse modes + fine-grained
   rules) sits in front of every file write and shell command, backed by a hard
   *danger-guard* that always confirms catastrophic actions — even in YOLO mode.
 - **Bring your own model** — 13 providers (OpenRouter, Anthropic, OpenAI, Google,
   Mistral, Groq, DeepSeek, Together, Fireworks, xAI, Ollama, LM Studio, plus a generic
   OpenAI-compatible endpoint) with per-task routing so subagents can use cheaper models.
+- **Labelled subagent streaming** — output from delegated `task` subagents is tagged
+  with a dim `┊ <name> ` prefix and collapses to a single `└ <name>: working… (N tool
+  calls)` status line (full text in the Ctrl+O pager), so parallel subagents no longer
+  interleave anonymously.
 - **Cost- & context-aware** — live token/cost tracking (with a per-tool breakdown)
   and a per-session budget that can warn or hard-stop; a context-% gauge and live
   generation throughput (tok/s) that work for local models (LM Studio / Ollama)
   too, not just priced cloud ones.
 - **Date-aware** — the current local date/time is injected into the system prompt,
   so "today"-relative requests don't anchor to the model's training cutoff.
+- **Pluggable web search** — `web_search` supports Tavily, Brave Search, and Exa in
+  addition to the keyless DuckDuckGo fallback.  Set `search.provider: auto` (default)
+  and export `TAVILY_API_KEY` / `BRAVE_API_KEY` / `EXA_API_KEY` — the first one set wins.
 - **Extensible** — skills, slash commands, custom subagents, lifecycle hooks, and MCP
   servers, all configured through plain files in `~/.jarn` and `.jarn/`.
 
@@ -136,7 +148,21 @@ jarn -p "do X" --json                        # emit JSON: {result, tokens, cost,
 jarn -p "do X" --model anthropic/claude-opus-4-8  # override model for this run
 jarn -p "do X" --permission-mode auto-edit  # allow file writes without prompting
 jarn -p "do X" --cwd /path/to/project       # set working directory
+jarn -p "extract the version" --output-schema schema.json --json  # structured output
 ```
+
+**Structured output (`--output-schema`):** pass a JSON Schema file to constrain the
+agent's final answer. The parsed object replaces the free-text `result` field in the
+`--json` envelope, making CI parsing trivial:
+
+```bash
+jarn -p "list changed files as JSON" --output-schema files.schema.json --json \
+  | jq '.result.files[]'
+```
+
+Exit codes when `--output-schema` is used: `0` success (structured object in `result`);
+`1` with `error.kind: "schema"` if the agent fails to produce a conforming response;
+`2` with `error.kind: "usage"` if the schema file can't be read or parsed.
 
 **Fail-closed safety:** the default modes (`ask` / `plan`) refuse any tool that
 would normally prompt for approval and exit non-zero. Pass `--permission-mode
@@ -148,7 +174,18 @@ blocks catastrophic commands in every mode.
 ```bash
 jarn            # start a session
 jarn --resume   # pick a previous session to resume on launch
+jarn --add-dir ../shared-lib --add-dir ../sibling-repo  # extra writable roots (repeatable)
 ```
+
+**Multi-root workspaces (`--add-dir`):** by default the agent's write scope is the
+project root. Pass `--add-dir <dir>` (repeatable) to grant scoped write access to a
+sibling directory too — useful for monorepo/sibling-repo work. Each dir must exist
+and be a directory. The launch flag works for headless runs too (`jarn -p … --add-dir
+<dir>`). You can also add one mid-session with `/add-dir <path>` (approval-gated in
+`ask`/`plan` modes; refused on an untrusted project). Added roots widen
+the **write scope only** — project context (JARN.md) is loaded from the primary root,
+and checkpoint/undo (`/undo`, `/rewind`) snapshot the **primary root only**. See
+[docs/PERMISSIONS.md](docs/PERMISSIONS.md) and [SECURITY.md](SECURITY.md).
 
 J.A.R.N. renders the conversation straight to your terminal's normal buffer —
 no alternate screen. The whole transcript lives in your terminal's **native
@@ -201,9 +238,20 @@ preview appear inline.
   `.jarn/pastes/` and inserted as an `@path` the agent reads on send.
   Supported on **macOS** (PNG/TIFF/JPEG), **Linux** (Wayland `wl-paste` or X11
   `xclip`), and **Windows** (PowerShell); images over 10 MB are rejected.
+  With `execution.inline_images: auto` (the default), an `@`-mentioned image
+  (≤ 5 MB) is sent to the model as a **native image content block** in your message
+  — so weak vision models see it directly instead of hoping they call `read_file`.
+  Set `inline_images: off` for the old text-only `@path` behaviour. If a provider
+  rejects images, JARN retries the turn **text-only** once and stops inlining for
+  the rest of the session.
 - **Esc Esc** (two Esc presses within 500 ms, idle, empty input) opens the **`/rewind`
   picker** — same chord as Claude Code. The first Esc still clears non-empty input;
-  only the second Esc on an already-empty buffer fires the picker.
+  only the second Esc on an already-empty buffer fires the picker. After you pick a
+  turn, a second arrow-key confirm offers **Restore files too** (revert the working
+  tree to that turn's checkpoint, shown as a `git diff --stat` preview) or
+  **Conversation only** (leave files as-is). Restoring is itself reversible with
+  `/undo`; the file restore needs `git.autocheckpoint` on (otherwise the picker
+  quietly rewinds the conversation only, exactly as before).
 - **Esc** cancels the running turn. **Ctrl+C** cancels a turn / clears the input,
   and **twice in a row** exits (Claude Code-style). **Ctrl+Q** also quits.
 - **Copy text:** the terminal owns selection — just **drag to select and ⌘C**
@@ -249,12 +297,13 @@ While a turn is running, submitted lines are **queued** (shown in the toolbar as
 | `/clear` | Clear the conversation and start a fresh thread. |
 | `/sessions` | List and resume previous sessions. |
 | `/resume` | Pick a previous session to resume. |
-| `/rewind` | Rewind the conversation to an earlier turn and continue (forks a new thread). |
+| `/rewind` | Rewind to an earlier turn and continue (forks a new thread); optionally restore files to that turn too. A second arrow-key confirm reverts the working tree to that turn's checkpoint (shown as a `git diff --stat` preview), so conversation and files rewind together. |
 | `/skills` | List available skills. |
 | `/memory [search\|show\|add\|update\|delete\|dump] ...` | List, search, show, add, update, delete, or dump long-term memory. |
 | `/permissions` | Show current permission rules and allowlist. |
 | `/mcp [status] [--refresh]` | Show configured MCP servers with per-server health and last error. |
 | `/trust` | Trust this project root and lift the untrusted review-only floor. |
+| `/add-dir <path>` | Add a directory to this session's write scope (multi-root; approval-gated). |
 | `/queue [clear\|cancel <n>\|move <from> <to>]` | Show or manage queued input lines (while a turn is running). |
 | `/undo` | Revert the last agent turn's file changes. |
 | `/redo` | Re-apply the last undone agent turn's file changes. |
@@ -370,7 +419,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1504 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1595 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

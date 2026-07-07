@@ -25,6 +25,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--version", action="version", version=f"jarn {__version__}")
     parser.add_argument("--resume", action="store_true", help="Pick a previous session to resume on launch")
+    parser.add_argument(
+        "--add-dir",
+        dest="add_dir",
+        action="append",
+        metavar="DIR",
+        help=(
+            "Add a directory to the session's write scope (repeatable). Each dir "
+            "becomes an active root the agent may edit, alongside the project "
+            "root. Checkpoint/undo and project context stay primary-root only."
+        ),
+    )
 
     # Headless one-shot flags (top-level, not a subcommand).
     parser.add_argument(
@@ -104,10 +115,23 @@ def main(argv: list[str] | None = None) -> int:
             "continues without a new user message."
         ),
     )
+    parser.add_argument(
+        "--output-schema",
+        dest="headless_output_schema",
+        metavar="FILE",
+        help=(
+            "With -p: path to a JSON Schema file. Constrains the agent's final "
+            "answer to the schema; the parsed object is returned as 'result' in "
+            "the --json envelope (exit 1 with kind 'schema' if the agent fails "
+            "to produce a conforming response)."
+        ),
+    )
 
     parser.epilog = (
-        "Headless exit codes (jarn -p): 0 success, 1 generic error, "
-        "2 approval refused or budget hard-stop, 124 timeout."
+        "Headless exit codes (jarn -p): 0 success, "
+        "1 generic error or schema validation failure (--output-schema), "
+        "2 approval refused, budget hard-stop, or usage error (bad/missing schema file), "
+        "124 timeout."
     )
 
     sub = parser.add_subparsers(dest="command")
@@ -169,6 +193,10 @@ def main(argv: list[str] | None = None) -> int:
 
     preset_override = args.preset
 
+    # --output-schema is headless-only: error if given without -p.
+    if args.headless_output_schema is not None and args.headless_prompt is None:
+        parser.error("--output-schema requires -p / --print")
+
     # Headless one-shot: dispatch before any TUI setup.
     if args.headless_prompt is not None:
         return _cmd_headless(
@@ -180,6 +208,8 @@ def main(argv: list[str] | None = None) -> int:
             cwd_override=args.headless_cwd,
             profile_override=preset_override,
             resume_session=args.headless_resume_session,
+            output_schema=args.headless_output_schema,
+            add_dirs=args.add_dir,
         )
 
     # Fix the macOS Caps Lock language-switch stray-character bug before any TUI
@@ -208,7 +238,11 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_trust(path=args.path, remove=args.remove, as_json=args.json)
     if args.command == "trust-hooks":
         return _cmd_trust_hooks()
-    return _cmd_launch(resume=args.resume, profile_override=preset_override)
+    return _cmd_launch(
+        resume=args.resume,
+        profile_override=preset_override,
+        add_dirs=args.add_dir,
+    )
 
 
 def _cmd_headless(
@@ -221,11 +255,19 @@ def _cmd_headless(
     cwd_override: str | None = None,
     profile_override: str | None = None,
     resume_session: str | None = None,
+    output_schema: str | None = None,
+    add_dirs: list[str] | None = None,
 ) -> int:
     """Run a single non-interactive agent turn and print the result.
 
     Reads config from disk (same path as the normal launch), applies any CLI
     overrides, then delegates to :func:`jarn.headless.run_headless`.
+
+    ``--add-dir`` grants (``add_dirs``) are validated with the same
+    :func:`_validate_add_dirs` the interactive launch uses and threaded through to
+    the Controller's write scope. Like the launch flag, an ``--add-dir`` given at
+    start is an explicit operator grant (same trust model as the primary root), so
+    it does NOT need the mid-session ``/add-dir`` trust/ask gate.
     """
     import sys
 
@@ -272,6 +314,18 @@ def _cmd_headless(
     setup_logging(cfg.observability.log_level)
     configure_tracing(cfg.observability)
 
+    # Validate --add-dir grants up front (fail fast — don't run with a promised
+    # root that isn't there). Same validation as the interactive launch.
+    extra_roots, add_dir_err = _validate_add_dirs(add_dirs)
+    if add_dir_err is not None:
+        print(f"error: {add_dir_err}", file=sys.stderr)
+        return 1
+
+    # T-3-3 (item G): in -p mode the diagnostics NOTICE is dropped, but ruff/pyright
+    # would still spend up to 30s per edit-turn. Gate the whole feature off so a
+    # headless run never pays that latency tax for output nobody consumes.
+    cfg.verify.diagnostics = "off"
+
     # Apply CLI overrides.
     if model_override:
         cfg.routing.main = model_override
@@ -307,6 +361,25 @@ def _cmd_headless(
             file=sys.stderr,
         )
 
+    # Load and parse the JSON schema file if --output-schema was given.
+    response_format: Any | None = None
+    if output_schema is not None:
+        import json as _json
+
+        from jarn.headless import HeadlessFailure, _emit_failure
+
+        schema_path = Path(output_schema)
+        try:
+            schema_dict = _json.loads(schema_path.read_bytes())
+        except (OSError, ValueError) as exc:
+            failure = HeadlessFailure(
+                "usage",
+                f"--output-schema: cannot read/parse {schema_path}: {exc}",
+                exit_code=2,
+            )
+            return _emit_failure(failure, as_json=as_json)
+        response_format = {"type": "json_schema", "schema": schema_dict}
+
     from jarn.headless import run_headless
 
     return run_headless(
@@ -317,6 +390,8 @@ def _cmd_headless(
         as_json=as_json,
         max_turns=max_turns,
         resume_session=resume_session,
+        response_format=response_format,
+        add_dirs=extra_roots,
     )
 
 
@@ -462,10 +537,43 @@ def _trust_list(store: Any, *, as_json: bool) -> int:
     return 0
 
 
-def _cmd_launch(*, resume: bool = False, profile_override: str | None = None) -> int:
+def _validate_add_dirs(raw: list[str] | None) -> tuple[list[Path], str | None]:
+    """Resolve and validate ``--add-dir`` values (must exist / be a directory).
+
+    Returns ``(roots, error)``. ``error`` is non-None on the first invalid dir;
+    the caller surfaces it and aborts (fail fast — don't launch with a promised
+    root that isn't there). Roots are resolved + de-duplicated, primary excluded
+    later by the engine's own de-dupe.
+    """
+    roots: list[Path] = []
+    for entry in raw or []:
+        try:
+            path = Path(entry).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError) as exc:
+            return [], f"--add-dir: cannot resolve {entry!r}: {exc}"
+        if not path.exists():
+            return [], f"--add-dir: {path} does not exist."
+        if not path.is_dir():
+            return [], f"--add-dir: {path} is not a directory."
+        if path not in roots:
+            roots.append(path)
+    return roots, None
+
+
+def _cmd_launch(
+    *,
+    resume: bool = False,
+    profile_override: str | None = None,
+    add_dirs: list[str] | None = None,
+) -> int:
     from jarn.config import paths
     from jarn.config.loader import ConfigError, load_config
     from jarn.observability import configure_tracing, setup_logging
+
+    extra_roots, add_dir_err = _validate_add_dirs(add_dirs)
+    if add_dir_err is not None:
+        print(f"error: {add_dir_err}", file=sys.stderr)
+        return 1
 
     if not paths.global_config_path().is_file():
         print("No configuration found. Running first-time setup...\n")
@@ -507,7 +615,9 @@ def _cmd_launch(*, resume: bool = False, profile_override: str | None = None) ->
     # The terminal front-end (native scrollback) is the only chat UI.
     from jarn.repl import run_inline
 
-    return run_inline(cfg, root, resume=resume, project_trusted=trusted)
+    return run_inline(
+        cfg, root, resume=resume, project_trusted=trusted, add_dirs=extra_roots
+    )
 
 
 def _resolve_project_trust(root: Path) -> tuple[bool, dict[str, Any], str | None]:

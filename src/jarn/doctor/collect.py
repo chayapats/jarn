@@ -11,6 +11,7 @@ def collect_doctor(
     config: Any = None,
     project_root: Any = None,
     project_trusted: bool | None = None,
+    extra_roots: Any = None,
 ) -> int:
     """Populate ``diag`` with doctor diagnostics and return the exit code.
 
@@ -64,6 +65,12 @@ def collect_doctor(
         if project_trusted is None:
             project_trusted = True
         diag["project_trusted"] = project_trusted
+
+    # Active in-scope roots: the primary project root first, then any added
+    # (--add-dir / /add-dir) roots that widen the WRITE scope for this session.
+    active_roots: list[str] = [str(root)] if root else []
+    active_roots.extend(str(p) for p in (extra_roots or []))
+    diag["roots"] = active_roots
 
     diag["default_profile"] = cfg.default_profile
     diag["main_model"] = cfg.resolved_main_model()
@@ -148,6 +155,23 @@ def collect_doctor(
     diag["extensions"] = collect_extensions(
         root, project_trusted=project_trusted, config=cfg
     )
+
+    # Search provider diagnostics
+    from jarn.agent.web_tools import _resolve_provider_key
+
+    search_provider = cfg.search.provider.value
+    if search_provider in ("tavily", "brave", "exa"):
+        key_resolved = _resolve_provider_key(search_provider, cfg) is not None
+    elif search_provider == "auto":
+        key_resolved = any(
+            _resolve_provider_key(p, cfg) is not None for p in ("tavily", "brave", "exa")
+        )
+    else:  # duckduckgo
+        key_resolved = True  # keyless
+    diag["search"] = {
+        "provider": search_provider,
+        "key_resolved": key_resolved,
+    }
 
     diag["ok"] = ok
     return 0 if ok else 1

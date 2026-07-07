@@ -11,7 +11,13 @@ import pytest
 from rich.console import Console
 
 from jarn.agent.session import ApprovalReply, ApprovalRequest, Event, EventKind
-from jarn.config.schema import Config, ProviderConfig, ProviderType, RoutingConfig
+from jarn.config.schema import (
+    Config,
+    PermissionMode,
+    ProviderConfig,
+    ProviderType,
+    RoutingConfig,
+)
 from jarn.permissions import Action, ActionKind, Decision, PermissionResult, RememberScope
 from jarn.tui.controller import Controller
 
@@ -1201,6 +1207,161 @@ async def test_cmd_compact_edit_aborted_keeps_context(tmp_path, monkeypatch):
     app.controller.close()
 
 
+# ── item C: per-turn wiring on the three secondary _run_turn call sites ─────────
+
+
+def _spy_run_turn(monkeypatch):
+    """Replace repl.turn._run_turn with a spy capturing each call's kwargs."""
+    from jarn import repl
+
+    captured: list[dict] = []
+
+    async def _spy(*_a, **k):
+        captured.append(k)
+        return []
+
+    monkeypatch.setattr(repl.turn, "_run_turn", _spy)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_custom_command_turn_wires_queue_sink(tmp_path, monkeypatch):
+    """A custom-command turn passes ``queue_sink`` so a diagnostics auto-fix round
+    under ``diagnostics: auto`` is queued rather than silently discarded."""
+    from types import SimpleNamespace
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr(app, "_ensure_extensions", _noop)
+    monkeypatch.setattr(app, "_render_todos", _noop)
+    monkeypatch.setattr(app, "_maybe_autocheckpoint_hint", lambda: None)
+    app.controller.runtime = SimpleNamespace(
+        commands={"greet": SimpleNamespace(render=lambda a: "do the thing")}
+    )
+    captured = _spy_run_turn(monkeypatch)
+
+    await app._command("greet", "")
+
+    assert captured, "custom-command turn never called _run_turn"
+    assert captured[0].get("queue_sink") == app._input_queue.append
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_git_seed_turn_wires_queue_sink(tmp_path, monkeypatch):
+    """`/commit` (and `/review`) seed turns pass ``queue_sink`` too."""
+    from types import SimpleNamespace
+
+    import jarn.agent.git_commands as gc
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr(app, "_render_todos", _noop)
+    monkeypatch.setattr(app, "_maybe_autocheckpoint_hint", lambda: None)
+    monkeypatch.setattr(gc, "gather_diff", lambda root: SimpleNamespace(is_repo=True))
+    monkeypatch.setattr(gc, "commit_prompt", lambda diff: "commit prompt")
+    monkeypatch.setattr(gc, "review_prompt", lambda diff: "review prompt")
+    captured = _spy_run_turn(monkeypatch)
+
+    await app._cmd_git_seed("commit")
+
+    assert captured, "git-seed turn never called _run_turn"
+    assert captured[0].get("queue_sink") == app._input_queue.append
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_rewind_continuation_wires_queue_sink_and_images(tmp_path, monkeypatch):
+    """The rewind-continuation turn passes BOTH ``queue_sink`` (so an auto-fix
+    round on an edited/rewound prompt is queued) AND ``images`` (so an @image
+    mention in the rewound prompt can be inlined) — matching the main submit path.
+    """
+    from types import SimpleNamespace
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app._menu_future = None
+
+    async def _human_turns():
+        return [(0, "first turn"), (1, "second turn")]
+
+    async def _pick_menu(options, **kw):
+        return (0, "first turn")
+
+    async def _confirm(cut_index, turns):
+        return False
+
+    async def _ask(prompt, prefill=""):
+        return ""  # keep the prompt as-is
+
+    async def _fork(cut_index, restore_files=False):
+        return SimpleNamespace()
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr(app.controller, "human_turns", _human_turns)
+    monkeypatch.setattr(app, "_pick_menu", _pick_menu)
+    monkeypatch.setattr(app, "_confirm_rewind_restore", _confirm)
+    monkeypatch.setattr(app, "_ask", _ask)
+    monkeypatch.setattr(app.controller, "fork_to_turn", _fork)
+    monkeypatch.setattr(app, "_replay_transcript", _noop)
+    monkeypatch.setattr(app, "_render_todos", _noop)
+    monkeypatch.setattr(app, "_maybe_autocheckpoint_hint", lambda: None)
+    captured = _spy_run_turn(monkeypatch)
+
+    await app._rewind_picker()
+
+    assert captured, "rewind continuation never called _run_turn"
+    assert captured[0].get("queue_sink") == app._input_queue.append
+    assert "images" in captured[0], "rewind continuation must pass images= too"
+    app.controller.close()
+
+
+# ── item J: /add-dir must confirm in PLAN mode, not just ASK ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_add_dir_confirms_in_plan_mode(tmp_path, monkeypatch):
+    """`/add-dir` in PLAN mode requires explicit confirmation before widening
+    scope — a root added in plan persists into a later Shift+Tab escalation to
+    auto-edit, so it must not slip in unconfirmed.
+
+    RED before the fix: PLAN mode skipped the confirm and added the root outright.
+    """
+    from jarn.config.schema import PermissionMode
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.controller.config.permission_mode = PermissionMode.PLAN
+    app.controller.project_trusted = True
+
+    added: list[str] = []
+    monkeypatch.setattr(
+        app.controller, "add_root", lambda raw: (added.append(raw), (True, "ok"))[1]
+    )
+    asked: list[str] = []
+
+    async def _ask(prompt, **kw):
+        asked.append(prompt)
+        return "n"
+
+    monkeypatch.setattr(app, "_ask", _ask)
+
+    target = tmp_path / "extra"
+    target.mkdir()
+    await app._cmd_add_dir(str(target))
+
+    assert asked, "PLAN mode must prompt before widening scope"
+    assert added == [], "declining the confirm must not add the root"
+    assert "cancelled" in app.console.file.getvalue().lower()
+    app.controller.close()
+
+
 @pytest.mark.asyncio
 async def test_cmd_compact_nothing_to_compact(tmp_path, monkeypatch):
     """An empty preview short-circuits before any prompt — nothing to apply."""
@@ -1651,7 +1812,7 @@ async def test_rewind_blank_continuation_indexes_branch(tmp_path, monkeypatch):
     async def _human_turns():
         return [(0, ""), (2, "second")]  # fork target (turn 1) has empty content
 
-    async def _fork(idx):
+    async def _fork(idx, *, restore_files=False):
         return idx  # non-None: the fork "succeeded"
 
     async def _pick(options, header="", cancel_returns=None):
@@ -1675,6 +1836,228 @@ async def test_rewind_blank_continuation_indexes_branch(tmp_path, monkeypatch):
 
     await app._rewind_picker()
     assert titles, "blank-continuation rewind must index the new branch in /resume"
+    app.controller.close()
+
+
+def _rewind_app(tmp_path, monkeypatch):
+    """An InlineApp whose checkpoint manager is (fake-)enabled inside a git repo,
+    so the /rewind second confirm (restore files?) is exercised."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    # Pretend autocheckpoint is on inside a repo, with a checkpoint for the turn.
+    from jarn.agent.checkpoint import CheckpointRef
+
+    cpm = app.controller.checkpoint_manager
+    cpm.enabled = True
+    cpm._is_repo = True
+    monkeypatch.setattr(
+        cpm, "find_for_turn",
+        lambda thread, turn: CheckpointRef(sha="deadbeef", thread_id=thread, turn_index=turn),
+    )
+    monkeypatch.setattr(cpm, "diff_stat", lambda sha: [" file.txt | 2 +-"])
+    monkeypatch.setattr(cpm, "has_uncheckpointed_changes", lambda: False)
+    return app
+
+
+def _wire_rewind(app, monkeypatch, confirm_value, fork_calls):
+    """Common monkeypatching for the /rewind picker-flow tests."""
+    async def _human_turns():
+        return [(0, "first"), (2, "second"), (4, "third")]
+
+    async def _fork(idx, *, restore_files=False):
+        fork_calls.append((idx, restore_files))
+        return idx
+
+    async def _pick(options, header="", cancel_returns=None):
+        if "Rewind to turn" in header:
+            return (0, "first")  # choose turn 1
+        return confirm_value  # the restore-files confirm
+
+    async def _ask(*a, **k):
+        return ""  # blank → no continuation turn
+
+    async def _replay():
+        return None
+
+    monkeypatch.setattr(app.controller, "human_turns", _human_turns)
+    monkeypatch.setattr(app.controller, "fork_to_turn", _fork)
+    monkeypatch.setattr(app, "_pick_menu", _pick)
+    monkeypatch.setattr(app, "_ask", _ask)
+    monkeypatch.setattr(app, "_replay_transcript", _replay)
+    monkeypatch.setattr(
+        app.controller, "record_session_title", lambda title, *, when: None
+    )
+
+
+@pytest.mark.asyncio
+async def test_rewind_confirm_restore_path(tmp_path, monkeypatch):
+    """Picking 'Restore files too' forks with restore_files=True (conversation +
+    files rewind atomically)."""
+    app = _rewind_app(tmp_path, monkeypatch)
+    fork_calls: list[tuple[int, bool]] = []
+    _wire_rewind(app, monkeypatch, confirm_value=True, fork_calls=fork_calls)
+
+    await app._rewind_picker()
+
+    assert fork_calls == [(0, True)]
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_rewind_confirm_conversation_only_path(tmp_path, monkeypatch):
+    """Picking 'Conversation only' forks with restore_files=False (slice-1 behavior)."""
+    app = _rewind_app(tmp_path, monkeypatch)
+    fork_calls: list[tuple[int, bool]] = []
+    _wire_rewind(app, monkeypatch, confirm_value=False, fork_calls=fork_calls)
+
+    await app._rewind_picker()
+
+    assert fork_calls == [(0, False)]
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_rewind_confirm_cancel_path(tmp_path, monkeypatch):
+    """Cancelling the restore confirm aborts the whole rewind — no fork happens."""
+    app = _rewind_app(tmp_path, monkeypatch)
+    fork_calls: list[tuple[int, bool]] = []
+    _wire_rewind(app, monkeypatch, confirm_value=None, fork_calls=fork_calls)
+
+    await app._rewind_picker()
+
+    assert fork_calls == []  # rewind cancelled before forking
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_rewind_autocheckpoint_off_skips_confirm(tmp_path, monkeypatch):
+    """With autocheckpoint off, /rewind shows NO restore confirm and forks
+    conversation-only — byte-identical to slice 1 for the default config."""
+    app = _rewind_app(tmp_path, monkeypatch)
+    app.controller.checkpoint_manager.enabled = False  # autocheckpoint off
+    fork_calls: list[tuple[int, bool]] = []
+    confirm_menu_shown = []
+
+    async def _human_turns():
+        return [(0, "first"), (2, "second")]
+
+    async def _fork(idx, *, restore_files=False):
+        fork_calls.append((idx, restore_files))
+        return idx
+
+    async def _pick(options, header="", cancel_returns=None):
+        if "Restore files" in header:
+            confirm_menu_shown.append(True)
+        return (0, "first")
+
+    async def _ask(*a, **k):
+        return ""
+
+    async def _replay():
+        return None
+
+    monkeypatch.setattr(app.controller, "human_turns", _human_turns)
+    monkeypatch.setattr(app.controller, "fork_to_turn", _fork)
+    monkeypatch.setattr(app, "_pick_menu", _pick)
+    monkeypatch.setattr(app, "_ask", _ask)
+    monkeypatch.setattr(app, "_replay_transcript", _replay)
+    monkeypatch.setattr(
+        app.controller, "record_session_title", lambda title, *, when: None
+    )
+
+    await app._rewind_picker()
+
+    assert not confirm_menu_shown, "no restore confirm when autocheckpoint is off"
+    assert fork_calls == [(0, False)]  # conversation-only fork
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_confirm_rewind_no_checkpoint_note_text(tmp_path, monkeypatch):
+    """When find_for_turn returns None, the printed dim note mentions
+    'forked in an earlier session' to explain the cross-session fork case."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    cpm = app.controller.checkpoint_manager
+    cpm.enabled = True
+    cpm._is_repo = True
+    monkeypatch.setattr(cpm, "find_for_turn", lambda thread, turn: None)
+
+    buf = StringIO()
+    app.console = Console(file=buf, width=120, no_color=True)
+
+    result = await app._confirm_rewind_restore(0, [(0, "first")])
+
+    assert result is False
+    import re as _re
+    output = _re.sub(r"\s+", " ", buf.getvalue())
+    assert "forked in an earlier session" in output
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_confirm_rewind_restore_preview_header(tmp_path, monkeypatch):
+    """The diff-stat preview header mentions untracked file removal."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    from jarn import repl
+    from jarn.agent.checkpoint import CheckpointRef
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    cpm = app.controller.checkpoint_manager
+    cpm.enabled = True
+    cpm._is_repo = True
+    monkeypatch.setattr(
+        cpm, "find_for_turn",
+        lambda thread, turn: CheckpointRef(sha="abc", thread_id=thread, turn_index=turn),
+    )
+    monkeypatch.setattr(cpm, "diff_stat", lambda sha: [" file.txt | 2 +-"])
+    monkeypatch.setattr(cpm, "has_uncheckpointed_changes", lambda: False)
+
+    buf = StringIO()
+    app.console = Console(file=buf, width=120, no_color=True)
+
+    async def _pick(options, header="", cancel_returns=None):
+        return True
+
+    monkeypatch.setattr(app, "_pick_menu", _pick)
+
+    await app._confirm_rewind_restore(0, [(0, "first")])
+
+    output = buf.getvalue()
+    assert "untracked" in output.lower()
     app.controller.close()
 
 
@@ -3969,3 +4352,302 @@ def test_git_mention_argv_disables_color(tmp_path, monkeypatch):
         assert argv[:3] == ["git", "-c", "color.ui=false"], (
             f"expected color-disabled git argv, got {argv!r}"
         )
+
+
+def test_verify_badge_render_pass():
+    """Pass badge: shows verified:, cmd, ✓, summary, timing, ⎿."""
+    from io import StringIO
+
+    from jarn.repl_renderer import TurnRenderer
+
+    console = Console(file=StringIO(), width=80)
+    r = TurnRenderer(console, live_sink=lambda _s: None, spinner=False)
+    r.on_verify_badge({"cmd": "pytest", "ok": True, "summary": "214 passed", "secs": 3.2})
+    out = console.file.getvalue()
+    assert "verified:" in out
+    assert "pytest" in out
+    assert "✓" in out
+    assert "214 passed" in out
+    assert "3.2s" in out
+    assert "⎿" in out
+
+
+def test_verify_badge_render_fail_with_pager():
+    """Fail badge: shows verify:, cmd, ✗, summary, ctrl+o, ⎿; stores full_output in tool_sink."""
+    from io import StringIO
+
+    from jarn.repl_renderer import TurnRenderer
+
+    sink: list = []
+    console = Console(file=StringIO(), width=80)
+    r = TurnRenderer(console, live_sink=lambda _s: None, spinner=False, tool_sink=sink)
+    r.on_verify_badge({
+        "cmd": "pytest",
+        "ok": False,
+        "summary": "2 failed",
+        "secs": 1.5,
+        "full_output": "FAILED test_foo\n2 failed",
+    })
+    out = console.file.getvalue()
+    assert "verify:" in out
+    assert "pytest" in out
+    assert "✗" in out
+    assert "2 failed" in out
+    assert "ctrl+o" in out
+    assert "⎿" in out
+    assert sink == [("verify", "FAILED test_foo\n2 failed")]
+
+
+def test_verify_badge_render_suggest():
+    """Suggest badge: shows verify:, cmd, confirm, verify.gate: auto, ⎿."""
+    from io import StringIO
+
+    from jarn.repl_renderer import TurnRenderer
+
+    console = Console(file=StringIO(), width=80)
+    r = TurnRenderer(console, live_sink=lambda _s: None, spinner=False)
+    r.on_verify_badge({"cmd": "pytest", "mode": "suggest"})
+    out = console.file.getvalue()
+    assert "verify:" in out
+    assert "pytest" in out
+    assert "confirm" in out
+    assert "verify.gate: auto" in out
+    assert "⎿" in out
+
+
+@pytest.mark.asyncio
+async def test_diag_auto_queue_internal_not_echoed(tmp_path, monkeypatch):
+    """A diagnostics auto-fix round is queued as an INTERNAL item: payload only,
+    no '» queued:' echo, and the chain-round counter is bumped before it runs."""
+    from jarn import repl
+    from jarn.tui.input_queue import InputQueue
+
+    ctrl = _controller(tmp_path, monkeypatch)
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+    payload = (
+        "Diagnostics after your edits:\n"
+        "  ruff  f.py:1  error  [F401] unused import os\n"
+        "Fix them."
+    )
+    events = [
+        Event(EventKind.NOTICE, "", {"diagnostics_auto_queue": payload}),
+        Event(EventKind.DONE),
+    ]
+    monkeypatch.setattr(ctrl, "make_driver", lambda approver: _FakeDriver(events))
+
+    queue = InputQueue()
+    console = Console(file=StringIO(), width=100)
+    await repl._run_turn(
+        console, ctrl, "hi", _ask_returning(""), queue_sink=queue.append
+    )
+    out = console.file.getvalue()
+    assert "» queued:" not in out          # internal item is never echoed as queued
+    assert "Fix them." not in out          # payload itself is not printed
+    assert len(queue) == 1
+    item = queue.pop_next()
+    assert item is not None
+    assert item.internal is True
+    assert item.display == ""              # nothing for the drain path to echo
+    assert item.payload == payload
+    assert ctrl._diag_chain_round == 1     # bumped BEFORE the round runs (loop guard)
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_diag_chain_round_reset_on_user_drain_only(tmp_path, monkeypatch):
+    """Draining a REAL user item resets the diag chain round; an internal
+    auto-fix item does not (the cap must hold across its own edits)."""
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+
+    async def _noop_handle(text):
+        return None
+    monkeypatch.setattr(app, "_handle", _noop_handle)
+
+    # Internal auto-fix item: counter must survive the drain.
+    app.controller._diag_chain_round = 1
+    app._input_queue.append("", "Diagnostics after your edits:\n…\nFix them.", internal=True)
+    app._drain_queue()
+    await asyncio.sleep(0)  # let the (noop) turn task settle
+    assert app.controller._diag_chain_round == 1
+
+    # Real user item: counter resets — a fresh turn-chain begins.
+    app._input_queue.append("do more", "do more")
+    app._drain_queue()
+    await asyncio.sleep(0)
+    assert app.controller._diag_chain_round == 0
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_real_user_drain_drops_stale_internal_items(tmp_path, monkeypatch):
+    """When a real user item is drained, stale internal diagnostics items that
+    are already in the queue must be purged (not just the round counter reset).
+
+    Interleaving: turn A ends and appends internal I_A while user line U is
+    already queued → queue is [U, I_A].  Draining U must drop I_A so that
+    the stale diagnostics prompt does not run after U's turn.
+    """
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+
+    async def _noop_handle(text):
+        return None
+    monkeypatch.setattr(app, "_handle", _noop_handle)
+
+    # Simulate interleaving: user queued U first, then turn A appended I_A.
+    app.controller._diag_chain_round = 1
+    app._input_queue.append("user line U", "user line U")
+    app._input_queue.append("", "Diagnostics after your edits:\n…\nFix them.", internal=True)
+    assert len(app._input_queue) == 2
+
+    # Drain U (non-internal).
+    app._drain_queue()
+    await asyncio.sleep(0)
+
+    # Counter must be reset.
+    assert app.controller._diag_chain_round == 0
+    # Stale internal item I_A must have been purged from the queue.
+    assert len(app._input_queue) == 0, (
+        "stale internal diagnostics item was NOT dropped after real user drain"
+    )
+    app.controller.close()
+
+
+# -- T-3-5: subagent progress labels render -----------------------------------
+
+
+def test_subagent_prefix_render():
+    """A tagged subagent's tool line renders with a dim ``┊ <name> `` prefix, its
+    streamed prose collapses to a single ``└ <name>: working…`` live status line
+    (with the full text kept in the ctrl+o pager), and a compact per-subagent
+    summary lands in committed scrollback at finish."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+
+    pager: list = []
+    live: list[str] = []
+    console = Console(file=StringIO(), width=80)
+    r = _TurnRenderer(console, tool_sink=pager, live_sink=live.append, spinner=False)
+
+    # A tagged tool line: dim ┊ researcher prefix in committed scrollback.
+    r.on_tool("read_file", {"path": "x"}, agent="researcher")
+    out = console.file.getvalue()
+    assert "┊ researcher" in out
+    assert "read_file" in out
+
+    # Tagged prose collapses: NOT dumped to scrollback, pushed to the live status
+    # line, full text stashed in the pager for ctrl+o.
+    long_prose = "a very long subagent narration that should not flood scrollback"
+    r.on_text(long_prose, agent="researcher")
+    out = console.file.getvalue()
+    assert long_prose not in out  # collapsed, not committed as markdown
+    assert any("researcher" in s and "working" in s for s in live)
+    assert any("1 tool call" in s for s in live)  # (N tool calls) reflects the count
+    assert any(long_prose in full for _, full in pager)  # available in ctrl+o
+
+    # Finish commits a compact one-line per-subagent summary.
+    r.finish()
+    out = console.file.getvalue()
+    assert "researcher" in out
+    # Main-untagged prose still commits to scrollback normally (regression guard).
+    r2 = _TurnRenderer(Console(file=(buf := StringIO()), width=80),
+                       live_sink=lambda _s: None, spinner=False)
+    r2.on_text("plain main answer")
+    r2.finish()
+    assert "plain main answer" in buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# T-3-9: /add-dir session-scoped multi-root command
+# ---------------------------------------------------------------------------
+
+
+class _AddDirStub:
+    """Minimal stand-in exposing exactly what ``CommandMixin._cmd_add_dir`` uses."""
+
+    def __init__(self, controller, ask):
+        self.controller = controller
+        self.console = Console(file=StringIO(), force_terminal=True, width=100)
+        self._ask = ask
+
+    @property
+    def output(self) -> str:
+        return self.console.file.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_add_dir_command_gated(tmp_path, monkeypatch):
+    """`/add-dir` requires approval in ask mode AND is refused on untrusted projects."""
+    from jarn.repl.commands import CommandMixin
+
+    added = tmp_path / "sibling"
+    added.mkdir()
+    resolved = added.resolve()
+
+    # --- Refused on an untrusted project (never widens scope, no prompt). -----
+    ctrl = _controller(tmp_path / "a", monkeypatch)
+    ctrl.project_trusted = False
+    ctrl.config.permission_mode = PermissionMode.ASK
+    stub = _AddDirStub(ctrl, _ask_returning("y"))
+    await CommandMixin._cmd_add_dir(stub, str(added))
+    assert resolved not in ctrl.engine.roots
+    assert "untrust" in stub.output.lower() or "trust" in stub.output.lower()
+
+    # --- Trusted + ask mode, approval DECLINED → scope unchanged. ------------
+    ctrl2 = _controller(tmp_path / "b", monkeypatch)
+    ctrl2.config.permission_mode = PermissionMode.ASK
+    stub2 = _AddDirStub(ctrl2, _ask_returning("n"))
+    await CommandMixin._cmd_add_dir(stub2, str(added))
+    assert resolved not in ctrl2.engine.roots
+    assert "cancel" in stub2.output.lower()
+
+    # --- Trusted + ask mode, approval GRANTED → root added + limitation shown. -
+    ctrl3 = _controller(tmp_path / "c", monkeypatch)
+    ctrl3.config.permission_mode = PermissionMode.ASK
+    stub3 = _AddDirStub(ctrl3, _ask_returning("y"))
+    await CommandMixin._cmd_add_dir(stub3, str(added))
+    assert resolved in ctrl3.engine.roots
+    # /add-dir must PRINT the checkpoint/undo primary-only limitation.
+    out = stub3.output.lower()
+    assert "checkpoint" in out or "undo" in out
+    assert "primary" in out or "not" in out
+
+
+@pytest.mark.asyncio
+async def test_add_dir_checkpoint_stays_primary_only(tmp_path, monkeypatch):
+    """Adding a root must NOT widen checkpoint/undo scope — it stays the primary root."""
+    from jarn.repl.commands import CommandMixin
+
+    ctrl = _controller(tmp_path, monkeypatch)
+    ctrl.config.permission_mode = PermissionMode.AUTO_EDIT  # no approval prompt
+    primary_cp_root = ctrl.checkpoint_manager.repo_root
+
+    added = tmp_path / "sibling"
+    added.mkdir()
+    stub = _AddDirStub(ctrl, _ask_returning("y"))
+    await CommandMixin._cmd_add_dir(stub, str(added))
+
+    assert added.resolve() in ctrl.engine.roots  # scope widened
+    # …but the checkpoint manager still snapshots ONLY the primary root.
+    assert ctrl.checkpoint_manager.repo_root == primary_cp_root

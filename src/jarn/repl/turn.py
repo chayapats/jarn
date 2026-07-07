@@ -10,7 +10,8 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, cast
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -48,6 +49,36 @@ _EDIT_BEFORE_APPLY = object()
 #: others it is not an :class:`ApprovalReply` — the editor flow produces the reply.
 _EDIT_MEMORY = object()
 
+#: Substrings that mark a provider ERROR as an image/vision/multimodal capability
+#: rejection (T-3-7). Matched case-insensitively against the error text, and only
+#: consulted on a turn that actually inlined images, so a false positive is bounded
+#: to one harmless text-only re-send.
+_IMAGE_ERROR_MARKERS: tuple[str, ...] = ("image", "vision", "multimodal", "modalit")
+
+
+def select_inline_images(controller: Controller, text: str) -> list[Path]:
+    """Return the image paths to inline for this turn's user message (T-3-7).
+
+    Empty when ``execution.inline_images`` is ``off`` or the session-level fallback
+    has already fired (``controller.inline_images_disabled``). Otherwise scans
+    ``text`` for qualifying image ``@``-mentions via the completion scanner
+    (exists + image mimetype + ≤ 5 MB). Called at submit; the result is threaded
+    through :func:`_run_turn` into ``SessionDriver.run_turn``."""
+    if (
+        controller.config.execution.inline_images != "auto"
+        or controller.inline_images_disabled
+    ):
+        return []
+    from jarn.tui.completion import scan_image_mentions
+
+    return scan_image_mentions(text, controller.project_root or Path.cwd())
+
+
+def _is_image_capability_error(event: Event) -> bool:
+    """True when a provider ERROR looks like an image/vision/multimodal rejection."""
+    text = (event.text or "").lower()
+    return any(marker in text for marker in _IMAGE_ERROR_MARKERS)
+
 
 async def _run_turn(
     console: Console,
@@ -64,13 +95,18 @@ async def _run_turn(
     token_sink: Callable[[str], None] | None = None,
     todos_sink: Callable[[], Awaitable[None]] | None = None,
     title_hook: Callable[[str], None] | None = None,
+    queue_sink: Callable[..., int] | None = None,
+    images: list[Path] | None = None,
 ) -> list[tuple[str, str]]:
     """Stream a turn; return the turn's expandable ``(tool, full output)`` pairs.
 
     If ``tool_sink`` is given, tool outputs are appended to it live (so a pager
     can read them mid-turn). If ``todos_sink`` is given, it is awaited on every
     ``write_todos`` tool completion so the front-end can refresh the live plan
-    checklist in place as the agent flips items."""
+    checklist in place as the agent flips items. If ``queue_sink`` is given
+    (the REPL's ``InputQueue.append``), a diagnostics auto-fix round is queued
+    through it as an *internal* item (``internal=True``) so the drain runs it
+    without a ``» queued:`` / ``› …`` user-line echo."""
     try:
         await controller.ensure_runtime()
     except Exception as exc:  # noqa: BLE001
@@ -124,14 +160,28 @@ async def _run_turn(
         # thread's existing state (LangGraph already checkpointed the user
         # message before the failed model call) so the user turn isn't duplicated.
         resume = False
+        image_fallback_done = False
         while True:
             driver = controller.make_driver(approver)
             produced = False
             pending_error: Event | None = None
             payload = "" if resume else turn_text
-            async for event in driver.run_turn(payload, resume=resume):
+            # Inline images only on a fresh (non-resume) attempt while the session
+            # fallback hasn't disabled them. A model-rotation resume re-runs on the
+            # already-checkpointed state (which still holds the image blocks), so it
+            # must not re-inline; only pass the kwarg when there is something to send,
+            # so drivers with the old signature (tests) are unaffected.
+            turn_images = (
+                images
+                if (images and not resume and not controller.inline_images_disabled)
+                else None
+            )
+            run_kwargs: dict[str, Any] = {"resume": resume}
+            if turn_images:
+                run_kwargs["images"] = turn_images
+            async for event in driver.run_turn(payload, **run_kwargs):
                 if event.kind is EventKind.TEXT:
-                    renderer.on_text(event.text)
+                    renderer.on_text(event.text, agent=event.data.get("agent"))
                     if token_sink is not None:
                         token_sink(event.text)
                     produced = True
@@ -145,6 +195,7 @@ async def _run_turn(
                         event.text,
                         event.data.get("args", {}),
                         tool_call_id=event.data.get("tool_call_id"),
+                        agent=event.data.get("agent"),
                     )
                     produced = True
                 elif event.kind is EventKind.TOOL_END:
@@ -153,17 +204,49 @@ async def _run_turn(
                         event.data.get("summary", ""),
                         event.data.get("full", ""),
                         tool_call_id=event.data.get("tool_call_id"),
+                        agent=event.data.get("agent"),
                     )
                     # Refresh the live plan checklist the moment a todo write lands,
                     # so it re-renders in place mid-turn (not only after the turn).
                     if todos_sink is not None and event.text == "write_todos":
                         await todos_sink()
                     produced = True
+                elif event.kind is EventKind.NOTICE and event.data.get(
+                    "diagnostics_auto_queue"
+                ):
+                    # Diagnostics auto-fix (T-3-3): queue ONE internal follow-up
+                    # turn. The chain-round counter is bumped BEFORE the round
+                    # runs so its driver sees round>=1 and the cap holds even if
+                    # the auto round introduces new errors. Reset to 0 on real
+                    # user input (keys._submit / app._drain_queue).
+                    if queue_sink is not None:
+                        controller._diag_chain_round += 1
+                        queue_sink(
+                            "", event.data["diagnostics_auto_queue"], internal=True
+                        )
+                        renderer.on_notice(
+                            f"[{palette.C_DIM}]diagnostics: errors in edited files "
+                            f"— auto-fix round queued[/{palette.C_DIM}]"
+                        )
+                    produced = True
+                elif event.kind is EventKind.NOTICE and event.data.get("diagnostics"):
+                    # Diagnostics suggest-mode NOTICE: plain notice listing findings.
+                    d = event.data["diagnostics"]
+                    body = _rich_escape(str(d.get("text", "")))
+                    renderer.on_notice(
+                        f"[{palette.C_NOTICE}]diagnostics: {d.get('count', 0)} "
+                        f"issue(s) in edited files[/{palette.C_NOTICE}]\n"
+                        f"[{palette.C_DIM}]{body}[/{palette.C_DIM}]"
+                    )
+                    produced = True
                 elif event.kind is EventKind.NOTICE or (
                     event.kind is EventKind.APPROVAL
                     and event.text.startswith(("blocked", "rejected"))
                 ):
-                    renderer.on_notice(f"[{palette.C_NOTICE}]{event.text}[/{palette.C_NOTICE}]")
+                    if event.kind is EventKind.NOTICE and event.data.get("verify"):
+                        renderer.on_verify_badge(event.data["verify"])
+                    else:
+                        renderer.on_notice(f"[{palette.C_NOTICE}]{event.text}[/{palette.C_NOTICE}]")
                     produced = True
                 elif event.kind is EventKind.APPROVAL:
                     produced = True  # a tool was authorized → has a side effect
@@ -173,6 +256,28 @@ async def _run_turn(
             if pending_error is None:
                 controller.reset_model_rotation()  # back to primary on success
                 break
+            # T-3-7 image fallback: a provider that rejects the inlined image gets
+            # ONE same-model text-only retry (do NOT rotate). One-shot per turn and
+            # one-way per session — the flag makes `auto` behave like `off` for the
+            # rest of the session, and the guard stops a second image error from
+            # re-triggering (it then surfaces normally / falls to the branches below).
+            if (
+                turn_images
+                and not image_fallback_done
+                and not produced
+                and _is_image_capability_error(pending_error)
+            ):
+                controller.inline_images_disabled = True
+                image_fallback_done = True
+                # Strip the rejected image message from state so the text-only
+                # re-send doesn't leave the model re-seeing the image.
+                await controller.drop_pending_image_message()
+                renderer.on_notice(
+                    f"[{palette.C_NOTICE}]image not accepted by this model — "
+                    f"retrying without the inline image (text-only)[/{palette.C_NOTICE}]"
+                )
+                resume = False  # re-send the turn text; images are dropped
+                continue
             if pending_error.data.get("retryable") and not produced:
                 new_ref = controller.rotate_to_fallback()
                 if new_ref:

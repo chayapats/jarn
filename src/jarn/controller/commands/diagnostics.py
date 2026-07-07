@@ -25,6 +25,7 @@ def cmd_doctor(ctrl: Controller, args: str) -> CommandResult:
         config=ctrl.config,
         project_root=ctrl.project_root,
         project_trusted=ctrl.project_trusted,
+        extra_roots=ctrl.extra_roots,
     )
     return CommandResult("\n".join(doctor_lines(diag)))
 

@@ -85,13 +85,22 @@ class PermissionEngine:
     """Evaluates actions for the lifetime of one session.
 
     ``mode`` and the persisted ``rules`` come from config; session approvals are
-    accumulated in-memory. ``project_root`` bounds filesystem writes; ``None``
-    means "no scope restriction" (e.g. running outside a project).
+    accumulated in-memory. ``project_root`` is the PRIMARY root (it anchors
+    relative write targets and backs project context / checkpoints); ``roots``
+    holds any ADDED roots (from ``--add-dir`` / ``/add-dir``). A write is
+    in-scope when it resolves under the primary OR any added root — see
+    :meth:`_in_scope`. ``project_root=None`` with no added roots means "no scope
+    restriction" (e.g. running outside a project).
     """
 
     mode: PermissionMode = PermissionMode.ASK
     rules: PermissionRules = field(default_factory=PermissionRules)
     project_root: Path | None = None
+    #: Additional in-scope roots beyond ``project_root`` (added mid-session by
+    #: ``/add-dir`` or at launch by ``--add-dir``). Each is enforced with the same
+    #: per-root ``resolve()`` symlink discipline as the primary. Context loading
+    #: and checkpoint/undo stay PRIMARY-ONLY — these widen the WRITE scope only.
+    roots: tuple[Path, ...] = ()
     #: Optional sink for ALWAYS-scoped rules so they persist across processes
     #: (wired by the controller to a :class:`PermissionRuleStore`).
     persist: Callable[[str], object] | None = None
@@ -189,30 +198,47 @@ class PermissionEngine:
         # ASK (and AUTO_EDIT for shell / other network) -> confirm.
         return PermissionResult(Decision.ASK, f"{mode.value} mode requires confirmation")
 
+    def _scope_roots(self) -> list[Path]:
+        """The active in-scope roots, PRIMARY FIRST.
+
+        ``project_root`` (the primary) leads, followed by any added ``roots``.
+        Empty when neither is set (→ no scope restriction).
+        """
+        roots: list[Path] = []
+        if self.project_root is not None:
+            roots.append(self.project_root)
+        roots.extend(self.roots)
+        return roots
+
     def _in_scope(self, target: str) -> bool:
-        if self.project_root is None:
+        roots = self._scope_roots()
+        if not roots:
             return True
+        # Resolve relative targets against the PRIMARY root, NOT the process CWD:
+        # an agent in a subdir writing "../outside" must be judged by intent
+        # relative to the project it works in, not by where the shell happens to
+        # be running. ``primary / target`` keeps absolute targets as-is and
+        # anchors relative ones (including ``~`` via expanduser).
+        #
+        # ``resolve()`` follows symlinks, so a symlink inside ANY root that
+        # points outside every root resolves out-of-scope and is rejected for
+        # writes — the same discipline holds per-root for added roots as for the
+        # primary. This is an *intent* check; the tool layer (backend FS guard +
+        # OS/Docker sandbox) enforces the same bound again at syscall time
+        # (TOCTOU mitigation), using the SAME roots set.
         try:
-            root = self.project_root.resolve()
+            primary = roots[0].resolve()
+            resolved = (primary / target).expanduser().resolve()
         except (OSError, RuntimeError, ValueError):
             return False
-        try:
-            # Resolve relative targets against project_root, NOT the process
-            # CWD: an agent in a subdir writing "../outside" must be judged by
-            # intent relative to the project, not by where the shell happens to
-            # be running. ``root / target`` keeps absolute targets as-is and
-            # anchors relative ones (including ``~`` via expanduser).
-            #
-            # ``resolve()`` follows symlinks, so a symlink inside the project
-            # that points outside resolves out-of-scope and is rejected for
-            # writes. This is an *intent* check; the tool layer enforces the
-            # same bound again at syscall time (TOCTOU mitigation).
-            resolved = (root / target).expanduser().resolve()
-        except (OSError, RuntimeError, ValueError):
-            return False
-        if resolved == root:
-            return True
-        return root in resolved.parents
+        for root in roots:
+            try:
+                r = root.resolve()
+            except (OSError, RuntimeError, ValueError):
+                continue
+            if resolved == r or r in resolved.parents:
+                return True
+        return False
 
     def _rule_for(self, action: Action) -> str:
         if action.kind is ActionKind.SHELL:

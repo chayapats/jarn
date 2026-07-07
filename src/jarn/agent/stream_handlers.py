@@ -22,9 +22,54 @@ _REASONING_TYPES = {"thinking", "reasoning", "reasoning_content"}
 _MAX_FULL_CHARS = 100_000
 
 
-def handle_message_chunk(driver: SessionDriver, chunk: Any) -> Event | None:
+def _tag_agent(ev: Event | None, agent: str | None) -> Event | None:
+    """Stamp ``data['agent']`` when *ev* flows from a correlated subagent namespace.
+
+    Display-only: the front-end uses this to label subagent-originated lines. Main-
+    graph events (``agent is None``) are left untouched.
+    """
+    if ev is not None and agent:
+        ev.data["agent"] = agent
+    return ev
+
+
+def _agent_for_namespace(driver: SessionDriver, namespace: Any) -> str | None:
+    """Correlate a ``subgraphs=True`` *namespace* to the subagent name behind it.
+
+    A delegated subagent's events arrive under a namespace tuple whose first element
+    is ``"tools:<task_id>"`` — a LangGraph checkpoint task id (an opaque UUID-shaped
+    hash of the parent checkpoint id + the ``"tools"`` node + step + Send index). It
+    is NOT the ``task`` tool_call_id and does not embed it, so the id cannot be mapped
+    to a name on its own. The subagent NAME lives only in the ``task`` tool args,
+    recorded (in launch order) into ``driver._subagent_pending`` at TOOL_START. Each
+    newly-seen namespace is therefore bound to the next pending name on a first-
+    appearance (FIFO) basis and remembered (``driver._ns_agent``) for the rest of the
+    turn.
+
+    Returns ``None`` for the main graph (namespace ``()``) — those are never tagged —
+    and for any subgraph whose ``task`` launch was not observed (no name to attribute).
+    Keyed on the *first* namespace element so a subagent's own nested output is
+    attributed to that top-level subagent.
+    """
+    if not namespace:
+        return None
+    key = namespace[0] if isinstance(namespace, (tuple, list)) else namespace
+    bound = driver._ns_agent.get(key)
+    if bound is not None:
+        return bound
+    if driver._subagent_pending:
+        name = driver._subagent_pending.pop(0)
+        driver._ns_agent[key] = name
+        return name
+    return None
+
+
+def handle_message_chunk(
+    driver: SessionDriver, chunk: Any, namespace: Any = ()
+) -> Event | None:
     msg = chunk[0] if isinstance(chunk, tuple) else chunk
     record_usage(driver, msg)
+    agent = _agent_for_namespace(driver, namespace)
     mtype = getattr(msg, "type", "")
     # Tool results (ToolMessage) — e.g. a fetched web page — must not be
     # dumped into the chat, but a one-line summary ("3 lines", "12 results")
@@ -40,24 +85,28 @@ def handle_message_chunk(driver: SessionDriver, chunk: Any) -> Event | None:
         # only when there is genuinely more to see than the summary line.
         if full and (full.count("\n") or len(full) > 80):
             data["full"] = full[:_MAX_FULL_CHARS]
-        return Event(EventKind.TOOL_END, text=getattr(msg, "name", "") or "tool", data=data)
+        return _tag_agent(
+            Event(EventKind.TOOL_END, text=getattr(msg, "name", "") or "tool", data=data),
+            agent,
+        )
     # Otherwise only stream ASSISTANT text; the model's reply is what the
     # user should see.
     if mtype not in _ASSISTANT_TYPES:
         return None
     content = _text_of(getattr(msg, "content", ""))
     if content:
-        return Event(EventKind.TEXT, text=content)
+        return _tag_agent(Event(EventKind.TEXT, text=content), agent)
     # No visible answer text in this chunk: surface extended-reasoning text
     # (Anthropic thinking blocks, DeepSeek `reasoning_content`, …) if present.
     reasoning = _reasoning_of(msg)
     if reasoning:
-        return Event(EventKind.REASONING, text=reasoning)
+        return _tag_agent(Event(EventKind.REASONING, text=reasoning), agent)
     return None
 
 
 def handle_update_chunk(
-    driver: SessionDriver, chunk: dict[str, Any], interrupts: list[Any]
+    driver: SessionDriver, chunk: dict[str, Any], interrupts: list[Any],
+    namespace: Any = (),
 ):
     if not isinstance(chunk, dict):
         return
@@ -65,6 +114,7 @@ def handle_update_chunk(
         for intr in chunk["__interrupt__"]:
             interrupts.append(intr)
         return
+    agent = _agent_for_namespace(driver, namespace)
     for _node, update in chunk.items():
         if not isinstance(update, dict):
             continue
@@ -75,6 +125,27 @@ def handle_update_chunk(
             for call in getattr(msg, "tool_calls", None) or []:
                 name = call.get("name", "tool")
                 args = call.get("args", {}) or {}
+                # A ``task`` launch names the subagent it spawns (in its args); record
+                # that name — in call order — so the subagent's later subgraph events
+                # can be correlated back to it (see _agent_for_namespace).
+                # Only the main graph (namespace == ()) launches top-level subagents;
+                # nested task launches from inside a subgraph must not pollute the FIFO.
+                if name == "task" and not namespace:
+                    sub = str(
+                        args.get("subagent_type") or args.get("subagent")
+                        or args.get("name") or ""
+                    ).strip()
+                    if sub:
+                        # Dedup by call id: stream_mode=["messages","updates"] +
+                        # subgraphs=True can re-emit the same TOOL_START chunk;
+                        # a duplicate append would shift the FIFO and mislabel
+                        # later subagents. Fall back to appending when call has no id
+                        # (shouldn't happen for a real tool call, but be safe).
+                        call_id = call.get("id")
+                        if call_id is None or call_id not in driver._subagent_seen_calls:
+                            driver._subagent_pending.append(sub)
+                            if call_id is not None:
+                                driver._subagent_seen_calls.add(call_id)
                 if name in ("write_file", "edit_file"):
                     driver._last_edit_target = str(
                         args.get("file_path") or args.get("path")
@@ -84,6 +155,8 @@ def handle_update_chunk(
                 call_id = call.get("id")
                 if call_id:
                     data["tool_call_id"] = str(call_id)
+                if agent:
+                    data["agent"] = agent
                 yield Event(EventKind.TOOL_START, text=name, data=data)
 
 

@@ -348,6 +348,8 @@ def build_runtime(
     checkpointer: Any | None = None,
     extra_tools: list[Any] | None = None,
     system_prompt_override: str | None = None,
+    response_format: Any | None = None,
+    extra_roots: list[Path] | None = None,
 ) -> JarnRuntime:
     """Build a ready-to-run :class:`JarnRuntime` from config.
 
@@ -410,7 +412,7 @@ def build_runtime(
     # 'offline' profile sets policy.web_tools False).
     from jarn.agent.web_tools import build_web_tools
 
-    web_tools = build_web_tools() if config.policy.web_tools else []
+    web_tools = build_web_tools(config) if config.policy.web_tools else []
     tools = [*web_tools, *(extra_tools or [])]
 
     tools, system_prompt = _wire_builtin_tools(
@@ -452,7 +454,7 @@ def build_runtime(
         extra_gated, include_async=bool(config.async_subagents)
     )
 
-    backend = _make_backend(config, root)
+    backend = _make_backend(config, root, extra_roots=extra_roots)
 
     # Unify auto-compaction into a single in-graph summarization pass. Always
     # exclude deepagents' built-in SummarizationMiddleware (main model, fixed 85%
@@ -506,6 +508,7 @@ def build_runtime(
         interrupt_on=interrupts or None,
         checkpointer=checkpointer,
         tools=tools or None,
+        response_format=response_format,
     )
 
     return JarnRuntime(

@@ -11,7 +11,12 @@ class SandboxUnavailable(RuntimeError):
     """Raised when a sandbox backend is requested but cannot be constructed."""
 
 
-def _make_local_backend(project_root: Path | None, config: Config | None = None):
+def _make_local_backend(
+    project_root: Path | None,
+    config: Config | None = None,
+    *,
+    extra_roots: list[Path] | None = None,
+):
     """Local-first backend: real filesystem + shell, scoped to the project root.
 
     ``virtual_mode=True`` adds path guardrails (blocks ``..``/absolute escapes)
@@ -22,11 +27,18 @@ def _make_local_backend(project_root: Path | None, config: Config | None = None)
     shell command is additionally wrapped by :mod:`jarn.agent.os_sandbox` so the
     kernel enforces write isolation and optional network denial.  The default is
     ``"off"`` which preserves the original behaviour exactly.
+
+    ``extra_roots`` are the ``--add-dir`` / ``/add-dir`` added roots: they extend
+    BOTH the virtual-mode FS guard's allowlist (so an engine-allowed added-root
+    write isn't blocked at the FS layer) AND the OS-sandbox writable set (so the
+    kernel permits it too) — keeping the syscall-time bound in sync with the
+    engine's intent scope.
     """
     from jarn.agent.local_backend import CancellableLocalShellBackend
 
     root = str(project_root) if project_root else str(Path.cwd())
     root_path = Path(root)
+    added = list(extra_roots or [])
 
     sandbox_mode = "off"
     sandbox_allow_network = True
@@ -44,7 +56,11 @@ def _make_local_backend(project_root: Path | None, config: Config | None = None)
         sandbox_mode=sandbox_mode,
         project_root=root_path,
         sandbox_allow_network=sandbox_allow_network,
-        sandbox_extra_writable=sandbox_extra_writable,
+        # Added roots are writable inside the OS sandbox alongside config-declared
+        # extra-writable paths.
+        sandbox_extra_writable=[*sandbox_extra_writable, *added],
+        # …and reachable through the virtual-mode FS guard.
+        extra_roots=added,
     )
 
 
@@ -73,7 +89,12 @@ def _make_sandbox_backend(config: Config):
     raise SandboxUnavailable(f"Unknown sandbox provider: {provider!r}")
 
 
-def _make_docker_backend(config: Config, project_root: Path | None):
+def _make_docker_backend(
+    config: Config,
+    project_root: Path | None,
+    *,
+    extra_roots: list[Path] | None = None,
+):
     """Construct a Docker container backend (real OS-level isolation).
 
     Requires the ``docker`` CLI on PATH and a reachable daemon; otherwise raises
@@ -81,6 +102,10 @@ def _make_docker_backend(config: Config, project_root: Path | None):
     the host only when ``allow_local_fallback`` is set). The project root is
     bind-mounted read-write at its own absolute path; everything else the agent
     sees is the container image's filesystem.
+
+    ``extra_roots`` (``--add-dir`` / ``/add-dir``) are added to the container's
+    read-write bind mounts (one ``-v <root>:<root>`` each) so an engine-allowed
+    write to an added root exists and is writable inside the container.
     """
     from jarn.agent.docker_backend import (
         CancellableDockerSandbox,
@@ -100,7 +125,10 @@ def _make_docker_backend(config: Config, project_root: Path | None):
             project_root=root,
             image=ex.docker_image,
             allow_network=ex.sandbox_allow_network,
-            extra_writable=[Path(p).expanduser() for p in ex.sandbox_writable],
+            extra_writable=[
+                *(Path(p).expanduser() for p in ex.sandbox_writable),
+                *(extra_roots or []),
+            ],
             memory=ex.docker_memory,
             pids=ex.docker_pids,
             cpus=ex.docker_cpus,
@@ -113,13 +141,20 @@ def _make_docker_backend(config: Config, project_root: Path | None):
         ) from exc
 
 
-def _make_backend(config: Config, project_root: Path | None):
+def _make_backend(
+    config: Config,
+    project_root: Path | None,
+    *,
+    extra_roots: list[Path] | None = None,
+):
     if config.execution.backend == "docker":
-        return _make_docker_backend(config, project_root)  # may raise SandboxUnavailable
+        return _make_docker_backend(
+            config, project_root, extra_roots=extra_roots
+        )  # may raise SandboxUnavailable
     if config.execution.backend == "sandbox":
         # The "sandbox" backend historically meant the remote LangSmith runtime;
         # `sandbox_provider: docker` redirects it to the local container backend.
         if config.execution.sandbox_provider == "docker":
-            return _make_docker_backend(config, project_root)
+            return _make_docker_backend(config, project_root, extra_roots=extra_roots)
         return _make_sandbox_backend(config)  # may raise SandboxUnavailable
-    return _make_local_backend(project_root, config)
+    return _make_local_backend(project_root, config, extra_roots=extra_roots)

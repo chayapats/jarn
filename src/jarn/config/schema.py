@@ -31,6 +31,42 @@ class PermissionMode(str, Enum):
         return {"plan": 0, "ask": 1, "auto-edit": 2, "yolo": 3}[self.value]
 
 
+class SearchProviderType(str, Enum):
+    """Which search provider ``web_search`` should use.
+
+    ``auto``       — try tavily → brave → exa in order; first with a resolved
+                     key wins; fall back to the keyless DuckDuckGo scraper.
+    ``duckduckgo`` — always use the keyless DDG HTML scraper.
+    ``tavily``     — use Tavily (requires ``TAVILY_API_KEY`` or ``search.api_key``).
+    ``brave``      — use Brave Search (requires ``BRAVE_API_KEY`` or ``search.api_key``).
+    ``exa``        — use Exa (requires ``EXA_API_KEY`` or ``search.api_key``).
+    """
+
+    AUTO = "auto"
+    DUCKDUCKGO = "duckduckgo"
+    TAVILY = "tavily"
+    BRAVE = "brave"
+    EXA = "exa"
+
+
+@dataclass(slots=True)
+class SearchConfig:
+    """Pluggable web-search provider settings.
+
+    ``provider``
+        Which search backend to use (default ``auto``).
+
+    ``api_key``
+        Secret reference (``${ENV_VAR}`` / ``keychain:jarn/<provider>`` / ``file:…``)
+        for the explicitly-named provider.  Ignored in ``auto`` mode — per-provider
+        env vars and keychain entries are discovered automatically.  Never an inline
+        literal.
+    """
+
+    provider: SearchProviderType = SearchProviderType.AUTO
+    api_key: str = ""   # reference-only; resolved via jarn.config.secrets.resolve
+
+
 class ProviderType(str, Enum):
     # OpenAI-compatible (served through ChatOpenAI + base_url — no extra deps)
     OPENROUTER = "openrouter"
@@ -124,6 +160,9 @@ class ContextConfig:
     project_context_tokens: int = 8192
 
 
+_VALID_INLINE_IMAGES: frozenset[str] = frozenset({"auto", "off"})
+
+
 @dataclass(slots=True)
 class ExecutionConfig:
     """Where tools run. ``local`` is the default; ``sandbox`` isolates execution
@@ -145,6 +184,12 @@ class ExecutionConfig:
     # so ``procps``/``pkill`` is present for in-container turn cancellation.
     docker_image: str = "python:3.12"
     multimodal: bool = True           # read_file auto-detects images/PDF/audio/video
+    # Inline @-mentioned images as native multimodal content blocks in the user
+    # message (base64), so weak vision models see the image without having to call
+    # read_file. ``auto`` (default) inlines images ≤ 5 MB; ``off`` keeps the old
+    # text-only @path behaviour. On a provider that rejects images, the front-end
+    # falls back to text-only for the rest of the session (auto behaves like off).
+    inline_images: str = "auto"       # auto | off
     # When ``backend: sandbox`` but the sandbox can't start, fall back to running
     # on the host. OFF by default: silently downgrading isolation is a footgun, so
     # we fail closed unless the user explicitly opts in.
@@ -253,18 +298,39 @@ class MCPServer:
 
 _VALID_VERIFY_GATES: frozenset[str] = frozenset({"off", "suggest", "auto"})
 
+_VALID_DIAGNOSTICS_MODES: frozenset[str] = frozenset({"off", "suggest", "auto"})
+
 
 @dataclass(slots=True)
 class VerifyConfig:
-    """Post-edit verification gate.
+    """Post-edit verification gate + diagnostics feedback loop.
 
-    ``off``     — no post-edit verify prompts or runs.
-    ``suggest`` — (default) emit a NOTICE with the detected test command.
-    ``auto``    — run the detected test command via the execution backend when
-                  permissions allow (explicit opt-in).
+    ``gate``
+        ``off``     — no post-edit verify prompts or runs.
+        ``suggest`` — (default) emit a NOTICE with the detected test command.
+        ``auto``    — run the detected test command via the execution backend
+                      when permissions allow (explicit opt-in).
+
+    ``diagnostics``
+        ``off``     — no diagnostics feedback.
+        ``suggest`` — (default) emit a NOTICE listing ruff/pyright findings on
+                      edited files so the user can see them.
+        ``auto``    — if edited files have new errors, queue ONE internal
+                      follow-up turn asking the agent to fix them.  Bounded by
+                      ``diagnostics_max_rounds`` (default 1) to prevent loops.
+
+    ``diagnostics_max_rounds``
+        Maximum consecutive auto-fix rounds before the loop stops.  Default 1.
+
+    ``diagnostics_ts``
+        Run ``npx tsc --noEmit --pretty false`` as a diagnostics tool.  OFF by
+        default: tsc runs project-wide and is slow — opt in explicitly.
     """
 
     gate: str = "suggest"
+    diagnostics: str = "suggest"
+    diagnostics_max_rounds: int = 1
+    diagnostics_ts: bool = False
 
 
 @dataclass(slots=True)
@@ -429,6 +495,7 @@ class Config:
     plan: PlanConfig = field(default_factory=PlanConfig)
     verify: VerifyConfig = field(default_factory=VerifyConfig)
     pricing: PricingConfig = field(default_factory=PricingConfig)
+    search: SearchConfig = field(default_factory=SearchConfig)
 
     def resolved_main_model(self) -> str | None:
         """The model used for the top-level agent loop."""

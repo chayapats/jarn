@@ -1,0 +1,22 @@
+# gitleaks configuration for jarn (auto-loaded by gitleaks / gitleaks-action@v2).
+#
+# Extends the upstream default ruleset — so real credentials committed anywhere
+# are still caught — and adds a single allowlist for test fixtures. Tests
+# deliberately use fake, non-functional placeholder credentials, e.g.
+#   monkeypatch.setenv("TAVILY_API_KEY", "test-tavily-...")   # tests/test_web_tools.py
+#   raw_key = "sk-or-v1-..."                                  # tests/test_oauth.py
+# which the generic-api-key rule reports as false positives. gitleaks scans the
+# full commit history, so this also covers fixtures in since-renamed test files.
+#
+# Policy: never commit a real secret to a file under tests/.
+
+title = "jarn gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures use fake placeholder credentials, never real secrets."
+paths = [
+  '''^tests/''',
+]

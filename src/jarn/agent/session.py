@@ -18,8 +18,10 @@ import asyncio
 import logging
 import time as _time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+from jarn.agent.diagnostics import collect_diagnostics, format_diagnostics
 from jarn.agent.events import (
     ApprovalReply,
     ApprovalRequest,
@@ -92,6 +94,29 @@ SNAPSHOT_FAIL_NOTICE = (
 _DETACHED_SNAPSHOTS: set[asyncio.Task[Any]] = set()
 
 
+def _build_user_content(text: str, images: list[Path] | None) -> Any:
+    """Return the user-message ``content`` for a turn (T-3-7).
+
+    With no ``images`` (the common path), returns the plain ``text`` string —
+    byte-for-byte the pre-existing behaviour. With images, returns a multimodal
+    block list ``[{"type":"text", "text": text}, <image block>, …]`` where the
+    text (``@path`` intact) leads and each image is a langchain-core base64 image
+    block. Images that fail to encode are dropped; if none survive, we fall back to
+    the plain string so a turn is never sent empty."""
+    if not images:
+        return text
+    from jarn.agent.files import image_content_block
+
+    blocks: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    for path in images:
+        block = image_content_block(path)
+        if block is not None:
+            blocks.append(block)
+    if len(blocks) == 1:  # every image failed to encode → plain text
+        return text
+    return blocks
+
+
 @dataclass(slots=True)
 class SessionDriver:
     """Drives one conversation thread against a compiled deep agent."""
@@ -138,10 +163,36 @@ class SessionDriver:
     #: Cleared at turn start; triggers one deferred verify call when the turn
     #: completes without pending interrupts (see debounce logic in run_turn).
     _verify_dirty: bool = False
+    #: Paths edited this turn (populated from ``_last_edit_target`` on each
+    #: write_file / edit_file TOOL_END). Scopes diagnostics to edited files only.
+    _edited_paths: set[str] = field(default_factory=set)
+    #: Diagnostics feedback mode: ``off`` | ``suggest`` | ``auto`` (from config).
+    diagnostics_mode: str = "off"
+    #: Max consecutive auto-fix rounds per turn-chain (loop guard).
+    diagnostics_max_rounds: int = 1
+    #: Also run ``npx tsc --noEmit`` in the diagnostics pass (opt-in; tsc has no
+    #: per-file mode so it checks the whole project — slow on big codebases).
+    diagnostics_ts: bool = False
+    #: Which auto-diag round this driver is in (0 = first/real turn).  Set per
+    #: turn by the controller; incremented in the REPL when an auto-queue event
+    #: fires.
+    _diag_round: int = 0
     #: Last cumulative usage seen per (thread, model) — streaming providers resend totals.
     _last_usage_totals: dict[tuple[str, str], tuple[int, int, int, int]] = field(
         default_factory=dict, repr=False
     )
+    #: T-3-5 subagent stream tagging (display-only). ``_subagent_pending`` is a FIFO
+    #: of subagent names launched via the ``task`` tool this turn (recorded at
+    #: TOOL_START, in call order); each newly-seen subgraph namespace consumes the
+    #: next pending name. ``_ns_agent`` remembers namespace-key → name bindings for
+    #: the turn so all of a subagent's events carry the same tag.
+    #: ``_subagent_seen_calls`` guards against re-emitted update chunks
+    #: (stream_mode=["messages","updates"] + subgraphs=True can surface the same
+    #: TOOL_START more than once) double-appending the same name and shifting
+    #: the FIFO. All three reset at turn start.
+    _subagent_pending: list[str] = field(default_factory=list, repr=False)
+    _ns_agent: dict[str, str] = field(default_factory=dict, repr=False)
+    _subagent_seen_calls: set[str] = field(default_factory=set, repr=False)
     #: In-flight working-tree snapshot for the current turn — started off the
     #: event loop at turn start, awaited at the first mutation gate (and at turn
     #: end for a no-mutation turn), reaped/detached in ``run_turn``'s cleanup.
@@ -151,7 +202,13 @@ class SessionDriver:
     def _config(self) -> dict[str, Any]:
         return {"configurable": {"thread_id": self.thread_id}}
 
-    async def run_turn(self, user_input: str, *, resume: bool = False):
+    async def run_turn(
+        self,
+        user_input: str,
+        *,
+        resume: bool = False,
+        images: list[Path] | None = None,
+    ):
         """Async-generate :class:`Event`s for one user turn.
 
         Raises :class:`jarn.cost.BudgetExceeded` if the hard budget cap is hit
@@ -161,10 +218,18 @@ class SessionDriver:
         appending a new user message — used by the front-end's fallback retry,
         since LangGraph already checkpointed the user message before the (failed)
         model call. This prevents a duplicate human message in the thread.
+
+        ``images`` (T-3-7) is a list of image paths to inline as native multimodal
+        content blocks alongside the text. When provided (and not a ``resume``), the
+        user message ``content`` becomes ``[{"type":"text",…}, {"type":"image",…}]``
+        instead of a plain string; the original text (with its ``@path`` intact)
+        stays in the text block so the ``read_file`` fallback still works and
+        transcripts stay greppable. When absent, ``content`` is the plain string —
+        the pre-existing path, byte-for-byte unchanged.
         """
         self.tracker.check_or_raise()
 
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
         date_block = date_context()
         if self._last_date != date_block:
             messages.append({"role": "system", "content": date_block})
@@ -173,7 +238,9 @@ class SessionDriver:
         if resume:
             payload: Any = {"messages": messages}
         else:
-            messages.append({"role": "user", "content": user_input})
+            messages.append(
+                {"role": "user", "content": _build_user_content(user_input, images)}
+            )
             payload = {"messages": messages}
 
         # Emit the user prompt to the transcript before the model is called so a
@@ -182,6 +249,11 @@ class SessionDriver:
             self.transcript.write_user(user_input, ts=_time.time())
         self._turn_text = ""
         self._verify_dirty = False
+        self._edited_paths = set()
+        # Fresh subagent-tagging state each turn (correlation is per-turn only).
+        self._subagent_pending = []
+        self._ns_agent = {}
+        self._subagent_seen_calls = set()
         if not resume:
             # Clear ALL entries at turn start, not just the current thread's.
             # The cumulative-stream dedup uses this dict to baseline provider totals
@@ -212,7 +284,8 @@ class SessionDriver:
         # tree. Best-effort: a failure never aborts the turn — it is logged with a
         # traceback and surfaced as a NOTICE exactly once per session.
         if self.checkpoint is not None and not resume:
-            self._start_snapshot(user_input[:80], _time.time())
+            turn_index = await self._current_turn_index()
+            self._start_snapshot(user_input[:80], _time.time(), turn_index=turn_index)
 
         try:
             async for ev in self._stream_turn(payload):
@@ -248,11 +321,11 @@ class SessionDriver:
                     payload, self._config(),
                     stream_mode=["messages", "updates"], subgraphs=True,
                 ):
-                    _, mode, chunk = _unpack_stream_item(item)
+                    namespace, mode, chunk = _unpack_stream_item(item)
                     if mode is None:
                         continue
                     if mode == "messages":
-                        ev = self._handle_message_chunk(chunk)
+                        ev = self._handle_message_chunk(chunk, namespace)
                         if ev:
                             # Accumulate assistant text chunks for the transcript.
                             if ev.kind is EventKind.TEXT and self.transcript is not None:
@@ -273,6 +346,8 @@ class SessionDriver:
                                 "edit_file",
                             ):
                                 self._verify_dirty = True
+                                if self._last_edit_target:
+                                    self._edited_paths.add(self._last_edit_target)
                         # Mid-turn budget enforcement: usage was just recorded for
                         # this message, so re-check the hard-stop the same way it is
                         # checked before the turn and abort cleanly if exceeded.
@@ -289,7 +364,7 @@ class SessionDriver:
                             )
                             return
                     elif mode == "updates":
-                        for ev in self._handle_update_chunk(chunk, interrupts):
+                        for ev in self._handle_update_chunk(chunk, interrupts, namespace):
                             # Write tool-start events incrementally.
                             if ev.kind is EventKind.TOOL_START and self.transcript is not None:
                                 self.transcript.write_tool(
@@ -322,6 +397,12 @@ class SessionDriver:
                     if notice is not None:
                         yield notice
                     self._verify_dirty = False
+                # Deferred diagnostics: run ruff/pyright on the edited files and
+                # emit a NOTICE (suggest) or a queue-trigger (auto).
+                if self._edited_paths and self.diagnostics_mode != "off":
+                    diag_ev = await _diagnostics_after_edit(self)
+                    if diag_ev is not None:
+                        yield diag_ev
                 # Flush the accumulated assistant reply as a single transcript line.
                 if self.transcript is not None and self._turn_text:
                     self.transcript.write_assistant(self._turn_text, ts=_time.time())
@@ -384,13 +465,43 @@ class SessionDriver:
 
     # -- checkpoint snapshot lifecycle --------------------------------------
 
-    def _start_snapshot(self, label: str, ts: float) -> None:
+    async def _current_turn_index(self) -> int | None:
+        """0-based index of the turn about to run = the count of human messages
+        ALREADY in this thread's checkpointed state (before this turn's message is
+        appended). Recorded on the turn-start snapshot so ``/rewind`` can resolve a
+        chosen turn back to its checkpoint (:meth:`CheckpointManager.find_for_turn`).
+
+        Returns ``None`` when the graph state can't be read (a fake agent without
+        ``aget_state`` in tests, or any error) — the snapshot is still taken, just
+        as an untagged old-format record that ``find_for_turn`` won't match."""
+        get_state = getattr(self.agent, "aget_state", None)
+        if get_state is None:
+            return None
+        try:
+            state = await get_state(self._config())
+        except Exception:  # noqa: BLE001 - metadata is best-effort; never abort the turn
+            return None
+        messages = (getattr(state, "values", {}) or {}).get("messages", []) or []
+        return sum(1 for m in messages if getattr(m, "type", "") == "human")
+
+    def _start_snapshot(
+        self, label: str, ts: float, *, turn_index: int | None = None
+    ) -> None:
         """Kick off the working-tree snapshot in a worker thread (off the event
         loop). The manager's git work is synchronous subprocess code, safe to run
         via ``to_thread``. Awaited later at the first mutation gate / turn end;
-        reaped or detached in ``run_turn``'s cleanup."""
+        reaped or detached in ``run_turn``'s cleanup.
+
+        ``turn_index`` (with this driver's ``thread_id``) tags the snapshot so
+        ``/rewind`` can resolve it back to the turn that produced it."""
         self._snapshot_task = asyncio.create_task(
-            asyncio.to_thread(self.checkpoint.snapshot, label, now=ts)
+            asyncio.to_thread(
+                self.checkpoint.snapshot,
+                label,
+                now=ts,
+                thread_id=self.thread_id,
+                turn_index=turn_index,
+            )
         )
 
     async def _ensure_snapshot(self) -> None:
@@ -523,11 +634,13 @@ class SessionDriver:
 
     # -- thin wrappers for tests / backward compatibility -------------------
 
-    def _handle_message_chunk(self, chunk: Any) -> Event | None:
-        return handle_message_chunk(self, chunk)
+    def _handle_message_chunk(self, chunk: Any, namespace: Any = ()) -> Event | None:
+        return handle_message_chunk(self, chunk, namespace)
 
-    def _handle_update_chunk(self, chunk: dict[str, Any], interrupts: list[Any]):
-        yield from handle_update_chunk(self, chunk, interrupts)
+    def _handle_update_chunk(
+        self, chunk: dict[str, Any], interrupts: list[Any], namespace: Any = ()
+    ):
+        yield from handle_update_chunk(self, chunk, interrupts, namespace)
 
     def _record_usage(self, msg: Any) -> None:
         record_usage(self, msg)
@@ -545,3 +658,70 @@ class SessionDriver:
     async def _run_post_hooks(self, name: str):
         async for item in run_post_hooks(self, name):
             yield item
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics helper (T-3-3)
+# ---------------------------------------------------------------------------
+
+
+async def _diagnostics_after_edit(driver: SessionDriver) -> Any | None:
+    """Run diagnostics on edited files and return an Event or None.
+
+    Called only when ``driver._edited_paths`` is non-empty and
+    ``driver.diagnostics_mode != "off"``.
+
+    Modes:
+    - ``suggest``: always emit a NOTICE with the formatted diagnostics text.
+    - ``auto``:    queue a follow-up turn if there are *error*-severity findings
+                   and we haven't hit ``diagnostics_max_rounds``.
+    """
+    mode = driver.diagnostics_mode
+    if mode == "off":
+        return None
+    project_root = driver.project_root
+    if project_root is None:
+        return None
+    # Anchor edited paths to the project root BEFORE running the tools. The
+    # edited paths come from the model-authored ``file_path`` tool arg and are
+    # usually PROJECT-ROOT-RELATIVE, while jarn's process CWD may be a subdir or
+    # unrelated (``-p`` / find_project_root). Passing a bare relative path to
+    # ruff/pyright (which run with no ``cwd=``) resolves it against the process
+    # CWD → a nonexistent file → the feature silently reports nothing (or a bogus
+    # E902). ``project_root / p`` keeps an already-absolute p as-is (pathlib rule)
+    # and also neutralises a ``-``-prefixed-filename arg-injection nit.
+    paths = [Path(project_root) / p for p in driver._edited_paths if p]
+    if not paths:
+        return None
+    try:
+        diags = await asyncio.wait_for(
+            asyncio.to_thread(
+                collect_diagnostics, paths, project_root, ts=driver.diagnostics_ts
+            ),
+            timeout=30.0,
+        )
+    except TimeoutError:
+        return None
+    if not diags:
+        return None
+    error_diags = [d for d in diags if d.severity == "error"]
+    if mode == "suggest":
+        text = format_diagnostics(diags)
+        return Event(
+            EventKind.NOTICE,
+            data={"diagnostics": {"text": text, "count": len(diags)}},
+        )
+    # auto mode: queue only if errors exist and rounds remain
+    if not error_diags:
+        return None
+    if driver._diag_round >= driver.diagnostics_max_rounds:
+        # Round cap reached with errors still present: don't silently drop them.
+        # Surface a suggest-style NOTICE (count + top findings) so the user sees
+        # what auto-fix could not resolve within the round budget.
+        text = format_diagnostics(diags)
+        return Event(
+            EventKind.NOTICE,
+            data={"diagnostics": {"text": text, "count": len(diags)}},
+        )
+    payload = f"Diagnostics after your edits:\n{format_diagnostics(diags)}\nFix them."
+    return Event(EventKind.NOTICE, data={"diagnostics_auto_queue": payload})
