@@ -406,9 +406,15 @@ async def test_snapshot_task_not_leaked_on_cancelled_turn(caplog) -> None:
         # Cleanup reaped the driver slot and detached the still-running task.
         assert driver._snapshot_task is None
         assert task in _DETACHED_SNAPSHOTS
-        await asyncio.sleep(0.3)  # let the worker thread finish
+        # Condition-based wait (robust on slow/loaded CI): poll for the actual
+        # post-condition — worker thread finished and its done-callback reaped the
+        # task out of the detached set — instead of a fixed sleep that raced.
+        for _ in range(500):
+            if task.done() and task not in _DETACHED_SNAPSHOTS:
+                break
+            await asyncio.sleep(0.01)
         gc.collect()
-        await asyncio.sleep(0)  # run the done-callback
+        await asyncio.sleep(0)  # surface any "destroyed while pending" warning
 
     # The task completed fire-and-forget (not left pending, not cancelled) and the
     # done-callback cleaned it out of the detached set.
