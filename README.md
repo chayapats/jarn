@@ -34,14 +34,17 @@ agents), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcrip
 base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists to
 `~/.jarn/config.yaml`), and per-server **MCP health** (`/mcp status`).
 
-> **Status:** v0.5.0 (Alpha) — on PyPI (`pip install jarn`) and npm (`npm install -g
-> jarn-cli` — a standalone binary, no Python). Closes five user pain
-> points vs other harnesses (prompt caching, plan-mode handoff, `/commit` +
-> `/review`, background processes, macOS image paste) plus a UX-polish round (live
-> in-place streaming, conversation `/rewind`, rich `@`-mentions, in-session `/key`,
-> faster approvals). The architecture, configuration, permission engine, and
-> terminal REPL are implemented and tested; live model calls require your own API
-> key. See [CHANGELOG.md](CHANGELOG.md) and [SECURITY.md](SECURITY.md).
+> **Status:** v0.8.0 (Alpha) — on PyPI (`pip install jarn`) and npm (`npm install -g
+> jarn-cli` — a standalone binary, no Python). Three releases (v0.6.0–v0.8.0) land four
+> improvement waves: **engine reliability**; **UX parity with Claude Code** (live
+> in-place streaming, `/theme`, `@git:`/`@url:` mentions, word-level diffs, ghost
+> autosuggest, conversation `/rewind` with file restore); **differentiators**
+> (`--add-dir` multi-root, inline images, headless `--output-schema`, labelled subagent
+> streaming, pluggable web search, an LSP-lite diagnostics loop, a verified-completion
+> badge); and **launch systems** (a reusable GitHub Action + a nightly eval harness). The
+> architecture, configuration, permission engine, and terminal REPL are implemented and
+> tested; live model calls require your own API key. See [CHANGELOG.md](CHANGELOG.md) and
+> [SECURITY.md](SECURITY.md).
 
 > **Security:** J.A.R.N. runs tools on your **host** by default (real filesystem +
 > shell). A project's `.jarn/config.yaml` can declare hooks, MCP servers, and

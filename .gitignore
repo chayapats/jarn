@@ -35,6 +35,7 @@ audit_logs/
 .audit-jarn-home/
 
 # Internal planning / audit notes (kept local, not for the public repo)
+IMPROVEMENT_PLAN.md
 PROJECT_AUDIT_*.md
 todo.md
 fable-todo.md
