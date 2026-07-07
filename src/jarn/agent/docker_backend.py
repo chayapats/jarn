@@ -30,6 +30,7 @@ requirement (see :func:`docker_available`).
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import logging
 import os
@@ -329,14 +330,42 @@ class CancellableDockerSandbox(BaseSandbox):
                 f"docker run failed (exit {proc.returncode}): {proc.stderr.strip()}"
             )
         self._container_id = proc.stdout.strip()
+        # Register atexit cleanup so a crash without close() still removes the
+        # container.  We register a strong bound-method reference deliberately:
+        # this keeps the backend alive until interpreter exit, which is the
+        # correct behaviour for the crash case (we *want* the object to outlive
+        # any dropped user reference so cleanup is certain).  The trade-off is
+        # that __del__ will not fire before exit — that is acceptable because
+        # __del__ is already marked best-effort and not relied upon.  close()
+        # calls atexit.unregister() so a normally-closed session removes the
+        # entry from the registry rather than leaving a dead callback.
+        atexit.register(self._atexit_cleanup)
         logger.info(
             "jarn: started docker sandbox %s (image=%s, network=%s)",
             self._container_id[:12], self._image,
             "on" if self._allow_network else "none",
         )
 
+    def _atexit_cleanup(self) -> None:
+        """Remove the container at interpreter exit — called by atexit.
+
+        Wraps close() so that errors during interpreter shutdown (partially torn
+        down modules, missing globals) are silently swallowed.  close() provides
+        the idempotency guard: if it has already been called its early-return
+        branch fires and no subprocess is spawned.
+
+        Note: atexit handlers run *before* Python's module tear-down phase, so
+        contextlib.suppress is still available here; this is safe.
+        """
+        with contextlib.suppress(Exception):
+            self.close()
+
     def close(self) -> None:
         """Force-remove the session container + pid-file (idempotent)."""
+        # Unregister the atexit hook so a cleanly-closed session does not leave
+        # a dead callback in the interpreter's exit list.  Silently a no-op if
+        # the container never started or the hook was already removed.
+        atexit.unregister(self._atexit_cleanup)
         if self._pid_file is not None:
             with contextlib.suppress(OSError):
                 self._pid_file.unlink()

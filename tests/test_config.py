@@ -445,3 +445,13 @@ def test_reference_api_key_no_warn(tmp_path):
         warnings.simplefilter("error")
         cfg = load_config(global_path=gp, project_path=None)
     assert cfg.providers["a"].api_key == "${OPENROUTER_API_KEY}"
+
+
+def test_policy_profile_migrated_v2(tmp_path):
+    """v1→v2 migration drops policy.profile and emits a UserWarning."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"config_version": 1, "policy": {"profile": "offline", "web_tools": True}})
+    with pytest.warns(UserWarning, match="policy.profile"):
+        cfg = load_config(global_path=gp, project_path=None)
+    # The profile key is gone — no attribute, no effect
+    assert cfg.policy.web_tools is True  # other policy keys untouched

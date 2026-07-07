@@ -37,7 +37,7 @@ from jarn.config.schema import (
     WikiConfig,
 )
 
-CURRENT_CONFIG_VERSION = 1
+CURRENT_CONFIG_VERSION = 2
 
 _TRUE_STRINGS = {"true", "yes", "on", "1"}
 _FALSE_STRINGS = {"false", "no", "off", "0", ""}
@@ -352,21 +352,7 @@ class ExecutionConfigModel(_StrictModel):
 
 
 class PolicyConfigModel(_StrictModel):
-    profile: str = ""
     web_tools: bool = True
-
-    @field_validator("profile", mode="before")
-    @classmethod
-    def _profile(cls, value: Any) -> str:
-        from jarn.config.profiles import PROFILE_NAMES
-
-        profile = str(value)
-        if profile and profile not in PROFILE_NAMES:
-            raise ConfigValidationError(
-                f"policy.profile must be one of "
-                f"{sorted(PROFILE_NAMES)} or empty (got {profile!r})."
-            )
-        return profile
 
     @field_validator("web_tools", mode="before")
     @classmethod
@@ -755,12 +741,43 @@ def _migrate_v0_to_v1(raw: dict[str, Any]) -> dict[str, Any]:
         obs = dict(out.get("observability") or {})
         obs.setdefault("log_level", out.pop("log_level"))
         out["observability"] = obs
+    out["config_version"] = 1
+    return out
+
+
+def _migrate_v1_to_v2(raw: dict[str, Any]) -> dict[str, Any]:
+    """Upgrade version-1 configs to version 2.
+
+    v2 removes ``policy.profile`` — the ``--profile`` CLI flag and ``/profile``
+    command were removed in v0.6.0.  If the key is present, drop it and emit a
+    :class:`UserWarning` so users know to switch to ``--preset`` / ``/preset``.
+    """
+    import warnings
+
+    out = dict(raw)
+    policy = out.get("policy")
+    if isinstance(policy, dict) and "profile" in policy:
+        dropped = policy["profile"]
+        new_policy = {k: v for k, v in policy.items() if k != "profile"}
+        out["policy"] = new_policy
+        preset_hint = (
+            f" Use 'jarn --preset {dropped}' or '/preset {dropped}' instead."
+            if dropped
+            else ""
+        )
+        warnings.warn(
+            f"policy.profile ('{dropped}') was removed in v0.6.0 and has been "
+            f"ignored.{preset_hint} Remove it from your config to silence this warning.",
+            UserWarning,
+            stacklevel=2,
+        )
     out["config_version"] = CURRENT_CONFIG_VERSION
     return out
 
 
 _MIGRATORS: dict[int, Any] = {
     0: _migrate_v0_to_v1,
+    1: _migrate_v1_to_v2,
 }
 
 
@@ -850,7 +867,6 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             docker_user=model.execution.docker_user,
         ),
         policy=PolicyConfig(
-            profile=model.policy.profile,
             web_tools=model.policy.web_tools,
         ),
         permissions=PermissionRules(

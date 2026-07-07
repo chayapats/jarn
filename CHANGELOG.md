@@ -5,6 +5,158 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+### Removed
+
+- **`policy.profile` config key, `--profile` CLI flag, and `/profile` slash command removed
+  (v0.6.0 promise fulfilled)** — the deprecated `policy.profile` YAML key, the `--profile`
+  CLI flag (hidden alias of `--preset`), and the `/profile` command (deprecated alias of
+  `/preset`) are gone.  A `UserWarning` is emitted on first load if a v1 config still
+  contains `policy.profile`; the key is dropped and the session continues.  Use
+  `jarn --preset NAME` / `/preset NAME` instead (same preset names).  `jarn --profile X`
+  now fails fast with an error naming `--preset`.  Config version bumped to 2 (T-1-9).
+- **`jarn doctor --json` no longer emits `policy_profile` / `effective_profile` keys** —
+  these machine-readable fields were removed alongside the profile system (T-1-9).
+  Consumers of the JSON output should use the `preset` key instead.
+
+### Fixed
+
+- **npm packages now ship `LICENSE`** — `npm/build-packages.mjs` now copies the repo
+  `LICENSE` file into all four assembled packages (`jarn-cli` + three platform binaries).
+  `jarn-cli/package.json` template updated to list `LICENSE` in `files` (T-1-9).
+- **RELEASE.md post-release note now references "the latest CHANGELOG section"** rather
+  than a hardcoded `§0.4.4` version anchor, so the checklist stays accurate after each
+  release; added the missing v0.5.0 sign-off row to the QA table (T-1-9).
+- **README-TH.md synced and doc-sync-enforced**: the Thai README's test count had gone
+  stale twice this wave; `tests/test_doc_sync.py` now covers `README-TH.md` alongside
+  README/CONTRIBUTING/RELEASE. Count re-synced, lint command updated to include
+  `scripts/`, `/profile` table row removed (T-1-9).
+- **REPL console width now tracks terminal resize** — the Rich `Console` width was
+  computed once at startup and capped at 100 columns; after a terminal resize,
+  committed scrollback (prose, tool lines, reasoning blocks) and the live markdown
+  preview continued wrapping to the stale startup width while prompt_toolkit's own
+  windows (toolbar, input) already recomputed per frame, causing visible disagreement.
+  A new `_current_width()` helper (`min(shutil.get_terminal_size().columns, 100)`) is
+  called at the top of every commit and live-render entry point
+  (`_commit_text`, `_commit_reasoning`, `_flush_stable`, `on_tool`, `on_tool_end`,
+  `on_notice`, `cancel` in `TurnRenderer`; `_render_stream_md` and `_render_dim_ansi`
+  in `InlineApp`), setting `console.width` at render time without reconstructing the
+  Console object. The live-region markdown cache key was updated to include the current
+  width so a resize at constant source content re-renders at the new width (T-1-7).
+
+- **`background_max_concurrent` now enforces the cap instead of warning** — previously,
+  reaching the configured concurrent-process limit logged a one-time warning but still
+  allowed new starts. `run_in_background` now returns a tool-level refusal string
+  `"background slots full (N/N) — check or kill existing jobs (list_background, kill_background)"`
+  and does **not** spawn the process, letting the model react gracefully. Slot count is
+  measured after exited processes are swept, so naturally finished jobs free capacity
+  automatically (T-1-5).
+- **`background_max_lifetime_secs` now kills over-age processes instead of warning** —
+  previously, exceeding the configured lifetime logged a one-time warning. Processes that
+  outlive `background_max_lifetime_secs` are now terminated (SIGTERM → SIGKILL escalation
+  via the shared `terminate_process_group` helper) on the next
+  `run_in_background` / `check_background` / `list_background` call. Killed processes
+  appear in `check_background` and `list_background` output with the distinguishing note
+  `"killed: exceeded max_lifetime_secs"` (T-1-5).
+- **Per-process background log directories are now removed on prune and shutdown** —
+  previously, `mkdtemp`-created log directories under `jarn-bg-*` were leaked for the
+  lifetime of the host process. Each background process now owns its own temp directory,
+  which is removed via `shutil.rmtree` when the process is pruned (exited entry swept
+  from the registry) or when the session shuts down via the existing atexit hook (T-1-5).
+- **Docker containers are now removed on interpreter exit, not just on `close()`** —
+  previously, a crash or uncaught exception that bypassed `close()` left the session
+  container running until the *next* session's anti-orphan reaper picked it up.
+  `CancellableDockerSandbox._start()` now registers an `atexit` callback
+  (`_atexit_cleanup`) immediately after the container starts; `close()` calls
+  `atexit.unregister()` so a normally-closed session removes the entry cleanly.  The
+  callback is idempotent and swallows all errors so it never aborts interpreter
+  shutdown.  `__del__` and the pid-file reaper are retained as additional backstops
+  (T-1-6).
+
+- **ctx% gauge now tracks the latest main-model prompt, not the lifetime max** —
+  `CostTracker.record()` previously used `max(context_tokens, input_tokens)`, so the
+  gauge never dropped after summarization (T-1-1) shrunk the prompt. It now assigns
+  `prompt_tokens = input_tokens + cache_read_tokens + cache_creation_tokens` (assignment,
+  not max) and only updates the gauge for main-model calls (`is_main=True`). Subagent and
+  summarizer traffic no longer inflates the ctx% gauge.
+- **`_last_usage_totals` no longer leaks stale entries across thread churn** —
+  `SessionDriver.run_turn()` previously used an inverted filter that kept OTHER threads'
+  `(thread_id, model_ref)` keys forever after `/clear`, `/compact`, or `/rewind`. Replaced
+  with `dict.clear()` so the dict is bounded to the keys added within the current turn.
+  The cumulative-stream dedup is unaffected: it baselines from the first chunk of each
+  new turn (no prior entry → delta = cumulative), which is correct for a fresh API call.
+- **Silent auto-checkpoint failures now surface once per session** — a snapshot that
+  raised was previously swallowed by `contextlib.suppress(Exception)` in
+  `SessionDriver.run_turn()`, silently disabling `/undo` with no signal. A snapshot
+  exception is now logged with a full traceback and surfaced as a single NOTICE —
+  `checkpoint failed — /undo unavailable this turn (see ~/.jarn/logs/jarn.log)` — exactly
+  once per session (a failure found during turn cleanup, e.g. on a no-mutation turn, is
+  deferred to the start of the next turn). The turn is never aborted.
+- **`/abort`, `/undo`, and `/redo` no longer race a still-building checkpoint snapshot** —
+  after the non-blocking-snapshot change, a turn cancelled while its turn-start snapshot
+  was still building (tree captured off `_checkpoint_lock`, not yet pushed) detached that
+  snapshot fire-and-forget. An immediate `/abort` rollback (or a manual `/undo` right after
+  an Esc-cancel) could take the lock first and pop the *previous* turn's checkpoint —
+  reverting the working tree an extra turn back (over-revert) — while the late snapshot then
+  pushed, leaving the stack out of sync with disk. A new `SessionDriver.settle_snapshot()`
+  (awaited via `Controller.settle_snapshot()` before every UI-driven checkpoint-stack
+  mutation) now waits for the pending and any detached snapshot to land first, so the
+  rollback targets exactly the cancelled turn's start. Reachable only on large repos, where
+  the snapshot is slow enough to still be in flight.
+
+### Changed
+
+- **Error classification is now type/status-code-first with heuristic fallback** —
+  `classify_error(exc)` (new public function in `jarn.agent.stream_handlers`) replaces
+  the two separate `_is_retryable_error` / `_is_auth_error` heuristic checks at the
+  error-emission call site in `SessionDriver`. The new function walks `exc.__cause__` /
+  `__context__` up to depth 5; for each exception it checks (a) `status_code` /
+  `response.status_code` attributes (covers any SDK that exposes them), then (b) known
+  typed exceptions (`httpx.TimeoutException`, `httpx.HTTPStatusError`,
+  `asyncio.TimeoutError`, `ConnectionError`, `anthropic` / `openai` SDK classes —
+  all import-guarded), and only falls through to the existing substring heuristic table
+  when the chain is exhausted. A `classified_by: "type" | "heuristic"` key is attached
+  to every `ERROR` event's `data` dict for observability. `_is_retryable_error` and
+  `_is_auth_error` are kept as thin delegating wrappers for backward compatibility (T-1-8).
+
+- **Auto-checkpoint snapshots no longer block turn start** — `SessionDriver.run_turn()`
+  previously ran `checkpoint.snapshot()` (git `add -A` → write-tree, O(repo)) synchronously
+  before the model was even called. The snapshot now starts in a worker thread
+  (`asyncio.to_thread`) concurrently with the model call and is awaited only at the first
+  mutation gate — where an approved/auto-approved `write_file`/`edit_file`/`execute` (or a
+  `run_in_background` start) is about to execute — so no mutating tool ever runs against an
+  uncaptured tree while turn start stays responsive. The task is reaped at turn end and
+  detached to finish fire-and-forget (never leaked, never blocking) on a cancelled turn.
+- **`verify.gate` now runs once per turn, not once per file edit** — previously
+  `verify_after_edit` was invoked on every `write_file`/`edit_file` `TOOL_END`,
+  running the detected test suite once per file in a multi-edit turn. It is now
+  debounced: each edit marks a dirty flag, and a single verify call fires after the
+  final `astream` iteration (when no pending interrupts remain). Cancelled turns
+  (`asyncio.CancelledError`) and `/abort` naturally skip verify because they
+  propagate past the completion branch. Mode semantics are unchanged: `suggest`
+  emits one suggestion notice per turn; `auto` runs the command once per turn.
+- **Unified auto-compaction into one summarization path** — previously two systems
+  compacted at ~85%: deepagents' in-graph `SummarizationMiddleware` (main model, fixed
+  trigger) and JARN's controller trigger (summarizer model, `context.compact_at_pct`,
+  forked the thread). Now the built-in is excluded and replaced with a single in-graph
+  instance on the resolved `routing.summarizer` model; the controller's auto-compact
+  trigger is removed. `routing.summarizer` now actually drives automatic summarization,
+  and `context.auto_compact: false` disables automatic summarization entirely. Manual
+  `/compact` (summarize + continue in a fresh thread) is unchanged.
+- **`context.compact_at_pct` now actually bites** — the trigger is resolved to an
+  absolute token count from the **main** model's context window using JARN's own window
+  table (the ctx% gauge's source), instead of deepagents' fraction trigger (which it
+  resolved against the *summarizer* model and which silently degraded to a fixed 170k
+  tokens for models without a LangChain profile — e.g. JARN's OpenRouter defaults —
+  making the setting inert). When JARN can't size the main model, it falls back to the
+  170k default and `/compact status` says so, plainly stating the setting has no effect
+  until the window is known.
+- **General-purpose subagent keeps summarization** — the model-keyed exclusion of the
+  built-in middleware also stripped it from the auto-added `general-purpose` subagent
+  (same model), so long `task()` delegations could hard-fail on context overflow. JARN's
+  replacement is now injected through the harness profile's `extra_middleware`, which
+  covers the main agent, the GP subagent, and same-model declarative subagents alike —
+  restoring the `ContextOverflowError`→summarize recovery on delegated work.
+
 ## [0.5.0] - 2026-07-02
 
 ### Added

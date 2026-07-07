@@ -92,13 +92,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         group="Setup",
     ),
     CommandSpec(
-        "profile",
-        "Deprecated alias of /preset (kept working).",
-        "core",
-        usage="[<preset-name>]",
-        group="Setup",
-    ),
-    CommandSpec(
         "sandbox",
         "Show or toggle the execution backend (local/sandbox).",
         "core",

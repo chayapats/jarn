@@ -4,9 +4,35 @@ from __future__ import annotations
 
 import json
 
+import pytest
 import yaml
 
 from jarn.cli import main
+
+
+def test_profile_flag_removed_errors_with_preset_hint(capsys):
+    """`jarn --profile x` exits 2 with a clear error pointing at --preset.
+
+    T-1-9: the flag was removed in v0.6.0; without this guard argparse emits a
+    confusing 'invalid choice' error about the subcommand instead of naming the
+    removed flag and its replacement.
+    """
+    with pytest.raises(SystemExit) as exc:
+        main(["--profile", "trusted-repo"])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--profile" in err
+    assert "--preset" in err
+
+
+def test_profile_flag_equals_form_also_errors_with_hint(capsys):
+    """The `--profile=NAME` spelling gets the same clear removal error."""
+    with pytest.raises(SystemExit) as exc:
+        main(["--profile=ci"])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "removed in v0.6.0" in err
+    assert "--preset" in err
 
 
 def test_init_creates_jarn_md(tmp_path, monkeypatch, capsys):
