@@ -5,6 +5,8 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-07
+
 ### Added
 
 - **Public eval story — nightly badge + regression gate (T-4-9)** — "Reliable"
@@ -128,6 +130,10 @@ All notable changes to J.A.R.N. are documented here. Format follows
   key paste.  `jarn doctor` now shows the key source (env / keychain / file) for each
   provider.  See `SECURITY.md` for the PKCE + loopback threat model.
 
+## [0.7.0] - 2026-07-07
+
+### Added
+
 - **`--add-dir` multi-root workspaces (T-3-9)** — the agent's filesystem write scope
   generalizes from a single project root to a set of roots (primary first). Add extra
   writable roots at launch with `jarn --add-dir <dir>` (repeatable; each must exist and
@@ -233,6 +239,11 @@ All notable changes to J.A.R.N. are documented here. Format follows
   picker shows no extra confirm and behaves exactly as slice 1. New public API:
   `CheckpointManager.find_for_turn` / `restore_to` / `diff_stat` /
   `has_uncheckpointed_changes`; `Controller.fork_to_turn(..., restore_files=)`.
+
+## [0.6.0] - 2026-07-07
+
+### Added
+
 - **`/theme` command + terminal background auto-detection (T-2-10)** — new
   `/theme [dark|light|high-contrast|auto]` command: bare `/theme` opens an
   arrow-key picker (↑/↓ + Enter; Esc cancel) showing the four options with the
