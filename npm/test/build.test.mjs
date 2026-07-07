@@ -24,7 +24,7 @@ test('platformPackageJson stamps name, version and the right os/cpu', () => {
   assert.equal(pkg.version, '1.2.3')
   assert.deepEqual(pkg.os, ['darwin'])
   assert.deepEqual(pkg.cpu, ['arm64'])
-  assert.deepEqual(pkg.files, ['bin/jarn'])
+  assert.deepEqual(pkg.files, ['bin/jarn', 'LICENSE'])
 })
 
 test('platformPackageJson covers every target with valid os/cpu', () => {
