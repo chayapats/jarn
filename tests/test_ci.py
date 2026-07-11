@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import textwrap
 from pathlib import Path
 
 import yaml
@@ -177,6 +178,34 @@ def test_action_yaml_valid() -> None:
     assert expected_pin in install_step["run"], (
         f"action must pin '{expected_pin}' — got: {install_step['run']!r}"
     )
+
+
+def test_action_bootstraps_fresh_runner_config_without_inlining_secret() -> None:
+    """The composite action must satisfy headless's required-config contract."""
+    raw = ACTION_YML.read_text()
+    match = re.search(
+        r"cat > \"\$JARN_HOME/config\.yaml\" <<'JARN_CONFIG'\n"
+        r"(?P<body>.*?)\n\s+JARN_CONFIG",
+        raw,
+        re.DOTALL,
+    )
+    assert match is not None, "action must create JARN_HOME/config.yaml"
+    config_text = textwrap.dedent(match.group("body"))
+    config = yaml.safe_load(config_text)
+
+    assert config["default_profile"] == "openrouter"
+    assert config["providers"]["openrouter"]["api_key"] == "${OPENROUTER_API_KEY}"
+    assert not re.search(r"sk-[A-Za-z0-9]", config_text)
+    assert config["verify"]["gate"] == "auto"
+    assert config["verify"]["max_repair_rounds"] == 1
+    assert "JARN_HOME=$JARN_HOME" in raw
+
+
+def test_action_qualifies_openrouter_model_slug() -> None:
+    raw = ACTION_YML.read_text()
+    assert '--model "openrouter/$MODEL_OVERRIDE"' in raw
+    assert '[[ "$MODEL_OVERRIDE" == openrouter/* ]]' in raw
+    assert "--ignore-project-config" in raw
 
 
 def test_example_workflows_parse() -> None:

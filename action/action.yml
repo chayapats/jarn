@@ -11,22 +11,22 @@ inputs:
     required: true
   model:
     description: >
-      OpenRouter model slug (e.g. anthropic/claude-opus-4-8). Overrides the
+      OpenRouter model slug (e.g. anthropic/claude-opus-4.8). Overrides the
       model set in the project config for this run.
     required: false
     default: ""
   permission_mode:
     description: >
-      Permission mode: auto-edit (default), yolo, ask, or plan. This EXPLICIT
+      Permission mode: yolo (default inside Docker), auto-edit, ask, or plan. This EXPLICIT
       mode wins over the preset's default mode (explicit > preset > config), so
       e.g. preset 'trusted-repo' + permission_mode 'auto-edit' runs in auto-edit
       even though the preset's own default is ask.
     required: false
-    default: "auto-edit"
+    default: "yolo"
   max_turns:
-    description: "Maximum agent turns (default 15)."
+    description: "Compatibility limit for one complete headless task (default 1)."
     required: false
-    default: "15"
+    default: "1"
   preset:
     description: >
       Named policy preset. Default is 'ci' (yolo + Docker backend, fails
@@ -63,6 +63,33 @@ runs:
       shell: bash
       run: npm i -g jarn-cli@0.8
 
+    - name: Configure JARN for OpenRouter
+      shell: bash
+      run: |
+        set -euo pipefail
+        JARN_HOME="$RUNNER_TEMP/jarn-home"
+        mkdir -p "$JARN_HOME"
+        chmod 700 "$JARN_HOME"
+        # Keep the secret out of the file: JARN resolves this environment reference
+        # only inside the run step where OPENROUTER_API_KEY is present.
+        cat > "$JARN_HOME/config.yaml" <<'JARN_CONFIG'
+        default_profile: openrouter
+        default_model: openrouter/anthropic/claude-opus-4.8
+        providers:
+          openrouter:
+            type: openrouter
+            api_key: ${OPENROUTER_API_KEY}
+            base_url: https://openrouter.ai/api/v1
+        routing:
+          main: openrouter/anthropic/claude-opus-4.8
+        verify:
+          gate: auto
+          max_repair_rounds: 1
+          diagnostics: off
+        JARN_CONFIG
+        chmod 600 "$JARN_HOME/config.yaml"
+        echo "JARN_HOME=$JARN_HOME" >> "$GITHUB_ENV"
+
     - name: Run jarn headless
       id: run_jarn
       shell: bash
@@ -78,7 +105,13 @@ runs:
         # Build optional flags as an array so they aren't word-split / globbed.
         EXTRA_FLAGS=()
         if [ -n "$MODEL_OVERRIDE" ]; then
-          EXTRA_FLAGS+=(--model "$MODEL_OVERRIDE")
+          # The action's model input is an OpenRouter catalog slug. JARN model
+          # refs are <profile>/<model-id>, so qualify it unless already qualified.
+          if [[ "$MODEL_OVERRIDE" == openrouter/* ]]; then
+            EXTRA_FLAGS+=(--model "$MODEL_OVERRIDE")
+          else
+            EXTRA_FLAGS+=(--model "openrouter/$MODEL_OVERRIDE")
+          fi
         fi
         # Emit JSON envelope: {"result":…,"tokens":…,"cost":…,"turns":…,"tool_calls":…}
         JARN_OUTPUT=$(jarn -p "$PROMPT" \
@@ -86,6 +119,7 @@ runs:
           --preset "$PRESET" \
           --permission-mode "$PERMISSION_MODE" \
           --max-turns "$MAX_TURNS" \
+          --ignore-project-config \
           --cwd "$GITHUB_WORKSPACE" \
           "${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}")
         # Use a RANDOM heredoc delimiter around the (untrusted) model output so a

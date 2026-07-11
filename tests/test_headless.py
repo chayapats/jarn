@@ -192,9 +192,10 @@ def test_cmd_headless_stdin_prompt(tmp_path, monkeypatch, base_config, capsys):
 
     from jarn.cli import main
 
-    code = main(["-p", "-"])
+    code = main(["-p", "-", "--ignore-project-config"])
     assert code == 0
     assert calls[0]["prompt_arg"] == "-"
+    assert calls[0]["ignore_project_config"] is True
     out = capsys.readouterr().out
     assert "stdin answer" in out
 
@@ -295,8 +296,13 @@ def test_headless_gated_tool_exits_nonzero_and_prints_message(
 
 
 @pytest.mark.asyncio
-async def test_multi_turn_cap(tmp_path, monkeypatch, base_config):
-    """--max-turns bounds consecutive run_turn calls; stops when no tools fire."""
+async def test_completed_graph_is_not_reinvoked_after_tool_use(
+    tmp_path, monkeypatch, base_config
+):
+    """A SessionDriver turn already includes its complete model/tool loop.
+
+    Using a tool must not cause headless mode to invoke the completed graph again.
+    """
     from jarn.agent.session import Event
 
     calls: list[tuple[str, bool]] = []
@@ -318,11 +324,10 @@ async def test_multi_turn_cap(tmp_path, monkeypatch, base_config):
         "do the thing", base_config, tmp_path, max_turns=5,
     )
 
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert calls[0] == ("do the thing", False)
-    assert calls[1] == ("", True)
-    assert result.turns == 2
-    assert result.result == "step onefinal answer"
+    assert result.turns == 1
+    assert result.result == "step one"
     assert result.tool_calls == 1
 
 
@@ -367,6 +372,71 @@ def test_json_includes_tool_calls(tmp_path, monkeypatch, base_config, capsys):
     data = json.loads(capsys.readouterr().out)
     assert data["tool_calls"] == 2
     assert data["turns"] == 1
+
+
+def test_json_includes_successful_verification(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """The machine-readable success contract includes its acceptance result."""
+    from jarn.agent.session import Event
+
+    async def _verified(prompt, *, resume: bool = False):
+        yield Event(kind=EventKind.TEXT, text="done")
+        yield Event(
+            kind=EventKind.NOTICE,
+            data={"verify": {
+                "cmd": "pytest -q",
+                "ok": True,
+                "mode": "auto",
+                "summary": "12 passed",
+                "secs": 0.2,
+            }},
+        )
+        yield Event(kind=EventKind.DONE)
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _stub_controller(monkeypatch, run_turn_side_effect=_verified)
+
+    code = run_headless("fix it", base_config, tmp_path, as_json=True)
+
+    assert code == EXIT_SUCCESS
+    data = json.loads(capsys.readouterr().out)
+    assert data["verification"]["ok"] is True
+    assert data["verification"]["cmd"] == "pytest -q"
+
+
+def test_failed_verification_exits_nonzero_json(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """A terminal verification failure cannot be reported as headless success."""
+    from jarn.agent.session import Event
+
+    async def _failed(prompt, *, resume: bool = False):
+        verify = {
+            "cmd": "pytest -q",
+            "ok": False,
+            "mode": "auto",
+            "summary": "2 failed",
+            "secs": 0.2,
+        }
+        yield Event(kind=EventKind.TEXT, text="claimed success")
+        yield Event(kind=EventKind.NOTICE, data={"verify": verify})
+        yield Event(
+            kind=EventKind.ERROR,
+            text="verification failed: pytest -q — 2 failed",
+            data={"verification": verify, "retryable": False},
+        )
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _stub_controller(monkeypatch, run_turn_side_effect=_failed)
+
+    code = run_headless("fix it", base_config, tmp_path, as_json=True)
+
+    assert code == EXIT_ERROR
+    data = json.loads(capsys.readouterr().out)
+    assert data["error"]["kind"] == "verification"
+    assert data["error"]["verification"]["ok"] is False
+    assert data["error"]["verification"]["cmd"] == "pytest -q"
 
 
 def test_json_structured_error_on_refusal(tmp_path, monkeypatch, base_config, capsys):

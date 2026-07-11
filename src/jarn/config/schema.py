@@ -325,9 +325,15 @@ class VerifyConfig:
     ``diagnostics_ts``
         Run ``npx tsc --noEmit --pretty false`` as a diagnostics tool.  OFF by
         default: tsc runs project-wide and is slow — opt in explicitly.
+
+    ``max_repair_rounds``
+        Number of bounded same-turn repair attempts after an automatic verification
+        failure.  The failed command/output is fed back to the agent before each
+        attempt.  Default 1; set 0 to fail immediately without a repair attempt.
     """
 
     gate: str = "suggest"
+    max_repair_rounds: int = 1
     diagnostics: str = "suggest"
     diagnostics_max_rounds: int = 1
     diagnostics_ts: bool = False

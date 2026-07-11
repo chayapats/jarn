@@ -4,7 +4,7 @@
 > choosing where to contribute. Items marked `[x]` are implemented and in the
 > current release; `[ ]` items are scaffolded or documented but not yet shipped.
 
-Derived from [SPEC.md](../SPEC.md). Status as of **2026-07-02** (v0.5.0 released on PyPI + npm, Alpha).
+Derived from [SPEC.md](../SPEC.md). Status as of **2026-07-11** (v0.8.0 released on PyPI + npm, Alpha).
 
 ## v1 — implemented
 
@@ -57,7 +57,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-07-02** (v0.5.0 released
 - [x] `jarn` / `setup` / `init` / `doctor` (`--json`) CLI
 - [x] Strict config validation (typed bools, numeric ranges, unknown top-level keys rejected)
 - [x] Local rotating logs, opt-in LangSmith tracing
-- [x] `uv`/PyPI packaging, 1359 tests (+ packaging gate), clean lint + `mypy` CI
+- [x] `uv`/PyPI packaging, 1680 tests (+ packaging gate), clean lint + `mypy` CI
 - [x] `jarn doctor` extension diagnostics — skills, commands, subagents, hooks, MCP
   (shadowing, builtin renames, untrusted skips); `uv.lock` tracked for team installs
 

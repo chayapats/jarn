@@ -95,6 +95,8 @@ SETTINGS: tuple[Setting, ...] = (
     _s("verify.gate", "enum", "Behavior", "Verify gate",
        "After the agent edits files: suggest the test command, or run it.",
        ("off", "suggest", "auto")),
+    _s("verify.max_repair_rounds", "int", "Behavior", "Verify repair rounds",
+       "Bounded agent repair attempts after an automatic verification failure."),
     _s("verify.diagnostics", "enum", "Behavior", "Diagnostics",
        "Lint/type-check edited files: list findings, or auto-queue a fix round.",
        ("off", "suggest", "auto")),

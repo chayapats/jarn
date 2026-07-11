@@ -17,16 +17,16 @@ A TUI-first coding agent harness built on [DeepAgents](https://github.com/langch
 
 ![jarn demo](docs/assets/demo.gif)
 
-[![evals](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/chayapats/jarn/eval-results/evals/badge.json)](https://github.com/chayapats/jarn/blob/eval-results/evals/latest.json)
-
 </div>
 
 ---
 
 J.A.R.N. is a terminal coding agent in the spirit of Claude Code and Codex CLI, but
 built as its own opinionated harness on top of the DeepAgents library. Its defining
-trait is **reliability**: it plans before acting, verifies its own work, asks before
-doing anything risky, and never claims success on a guess.
+trait is **reliability**: it plans before acting, can enforce project verification,
+and asks before doing anything risky. With `verify.gate: auto`, a failed acceptance
+command triggers one bounded repair attempt and blocks successful completion if it
+still fails.
 
 It runs entirely in your terminal (a Web UI is on the roadmap, post-launch). Notable
 capabilities: **AGENTS.md / CLAUDE.md interop** (works out-of-the-box beside other
@@ -58,10 +58,12 @@ base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists 
 
 ## Why J.A.R.N.?
 
-- **Reliable by design** — plan → act → verify is baked into the system prompt, with
-  a self-verification loop that runs your project's build/test/lint before reporting done.
+- **Reliable by design** — plan → act → verify is baked into the system prompt. The
+  default `verify.gate: suggest` shows the detected acceptance command; opt-in
+  `verify.gate: auto` runs it before completion.
   The completion badge — `` ⎿ verified: pytest ✓ 214 passed · 3.2s `` — confirms the
-  result; it never claims success on a guess (`verify.gate: auto`). A diagnostics
+  result. A failure is fed back for a bounded repair round and, if still failing,
+  ends the turn/headless run as an error instead of success. A diagnostics
   feedback loop (LSP-lite) then lints/type-checks just the files each turn edited
   (ruff + pyright) and can queue one bounded auto-fix round, so the agent catches
   the type error it just introduced (`verify.diagnostics: auto`).
@@ -507,7 +509,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1673 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1680 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

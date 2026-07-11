@@ -50,8 +50,10 @@ in this shape:
 }
 ```
 
-`scripts/eval-badge.py <summary.json>` converts this to a shields.io ENDPOINT
-JSON (`{"schemaVersion":1, "label":"evals", "message":"4/4 nightly", "color":"green"}`).
+`scripts/eval-badge.py <summary.json>` can convert this to a shields.io ENDPOINT
+JSON. The project README intentionally does not publish that badge until a real
+live-model baseline replaces the placeholder below; four seed fixtures are a smoke
+signal, not comparative reliability evidence.
 
 ## Regression gate
 
@@ -95,16 +97,17 @@ git add evals/baseline.json && git commit -m "chore: refresh eval baseline"
    to the dedicated **`eval-results`** branch (keeps `main` clean). The branch is
    created as an orphan on first run.
 
-### README badge
+### Optional README badge
 
-The README badge reads from the `eval-results` branch:
+After a real baseline is captured and the suite is expanded, a README badge may
+read from the `eval-results` branch:
 
 ```markdown
 ![evals](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/chayapats/jarn/eval-results/evals/badge.json)
 ```
 
-It renders as **"evals: 4/4 nightly"** once the first nightly run completes and
-pushes `evals/badge.json`.
+Do not publish it as a reliability claim while `evals/baseline.json` is still the
+four-fixture placeholder.
 
 ### Forced-fail dry run
 

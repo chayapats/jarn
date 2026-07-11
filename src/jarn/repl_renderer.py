@@ -108,7 +108,13 @@ class TurnRenderer:
         width that is current *at render time*, not the width captured at startup.
         Rich Console.width is a settable property, so no reconstruction needed.
         """
+        # Rich's ``Console.size`` returns a hard-coded 80x25 for a dumb terminal
+        # before consulting a width-only override. Pinning the current height via
+        # the public setter makes the width override authoritative in redirected
+        # output/CI as well as a real TTY.
+        current_height = self.console.height
         self.console.width = _current_width()
+        self.console.height = current_height
 
     def _spin(self) -> None:
         if not self._spinner_enabled:
@@ -128,6 +134,7 @@ class TurnRenderer:
             self._status = None
 
     def _live_show(self) -> None:
+        self._refresh_width()
         if self._live_sink is not None:
             self._live_sink(self._buf)
             return
@@ -146,6 +153,7 @@ class TurnRenderer:
     def _live_show_reasoning(self) -> None:
         """Stream the in-progress thinking text into the live region so it appears
         as it arrives, instead of dumping the whole block when the phase ends."""
+        self._refresh_width()
         body = self._rbuf.strip()
         if not body:
             return
@@ -240,6 +248,7 @@ class TurnRenderer:
     def _show_subagent_status(self) -> None:
         """Render the live ``└ <name>: working… (N tool calls)`` status for every
         active subagent (one line each) into the shared live region."""
+        self._refresh_width()
         agents = self._subagent_names()
         if not agents:
             return

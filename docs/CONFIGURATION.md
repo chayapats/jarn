@@ -422,6 +422,9 @@ verify:
                            # the detected test command; auto runs it and renders
                            # a badge: ⎿ verified: pytest ✓ 214 passed · 3.2s
                            # (permissions + danger-guard still apply)
+  max_repair_rounds: 1      # after an auto verification failure, feed the
+                           # command/output back to the same agent and retry this
+                           # many times; persistent failure is terminal/non-zero
   diagnostics: suggest     # off | suggest | auto — diagnostics feedback loop
                            # (LSP-lite). After the verify gate, ruff + pyright
                            # run on the files THIS turn edited (never the whole
@@ -722,23 +725,23 @@ Run a single prompt without the TUI:
 jarn -p "summarize README.md"
 jarn -p - < prompt.txt          # read prompt from stdin
 jarn -p "fix tests" --json      # machine-readable output
-jarn -p "refactor" --max-turns 3 --permission-mode auto-edit
+jarn -p "refactor" --permission-mode auto-edit
 jarn -p "" --resume-session last          # continue the most recent session (no new prompt)
 jarn -p "follow up" --resume-session abc  # send a new message on thread abc
 ```
 
 `--json` prints one JSON object on stdout:
 
-- **Success:** `{result, tokens, cost, turns, tool_calls}` — `result` is a string, or a parsed JSON object when `--output-schema` is used.
-- **Failure:** `{error: {kind, message}}` (kinds include `error`, `refusal`,
-  `budget`, `timeout`, `schema`, `usage`)
+- **Success:** `{result, tokens, cost, turns, tool_calls, verification}` — `result` is a string, or a parsed JSON object when `--output-schema` is used; `verification` is the final structured acceptance result when configured.
+- **Failure:** `{error: {kind, message, verification?}}` (kinds include `error`, `refusal`,
+  `budget`, `timeout`, `verification`, `schema`, `usage`)
 
 **Exit codes:**
 
 | Code | Meaning |
 |------|---------|
 | `0` | Success |
-| `1` | Generic error (config, provider, unexpected failure) or `schema` — agent failed to satisfy `--output-schema` |
+| `1` | Generic error, persistent automatic verification failure, or `schema` — agent failed to satisfy `--output-schema` |
 | `2` | Approval refused (fail-closed in `ask`/`plan`, or danger-guard in auto modes), session budget hard-stop, or `usage` — bad/unreadable `--output-schema` file |
 | `124` | Timeout |
 
@@ -751,10 +754,14 @@ field contains the parsed object:
 jarn -p "list changed files" --output-schema files.schema.json --json | jq '.result.files[]'
 ```
 
-`--max-turns N` runs up to *N* agent turns on the same session thread. After the
-first turn, later turns resume without a new user message so the agent can keep
-working. The loop stops when the cap is reached or a turn finishes without any
-tool calls (final answer).
+`--max-turns N` remains accepted for compatibility, but one headless invocation is
+one complete user turn: `SessionDriver` already runs the entire model/tool graph to
+completion. JARN does not restart a completed graph merely because tools were used.
+
+`--ignore-project-config` loads only the user's/global configuration while keeping
+`--cwd` as the code workspace. This is intended for CI against untrusted checkouts:
+project-local hooks, MCP servers, providers, and permission rules cannot execute, and
+the non-interactive trust prompt cannot clamp the requested CI policy to plan mode.
 
 In `ask` or `plan` mode, gated tools are **refused** (exit `2`) rather than
 auto-approved. Use `--permission-mode auto-edit` or `yolo` only when you accept

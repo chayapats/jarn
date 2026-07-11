@@ -164,6 +164,8 @@ class SessionDriver:
     _committed_turn_text: str = ""
     #: Post-edit verify gate: ``off`` | ``suggest`` | ``auto`` (from config).
     verify_gate: str = "off"
+    #: Bounded same-turn repair attempts after an automatic verification failure.
+    verify_max_repair_rounds: int = 1
     #: Project root for capability detection (``None`` disables verify).
     project_root: Any = None
     #: Optional shell executor for ``verify.gate: auto`` (mock-friendly).
@@ -172,6 +174,8 @@ class SessionDriver:
     #: Cleared at turn start; triggers one deferred verify call when the turn
     #: completes without pending interrupts (see debounce logic in run_turn).
     _verify_dirty: bool = False
+    #: Repair attempts consumed by the current user turn.
+    _verify_repair_round: int = 0
     #: Paths edited this turn (populated from ``_last_edit_target`` on each
     #: write_file / edit_file TOOL_END). Scopes diagnostics to edited files only.
     _edited_paths: set[str] = field(default_factory=set)
@@ -269,6 +273,7 @@ class SessionDriver:
         self._turn_text = ""
         self._committed_turn_text = ""
         self._verify_dirty = False
+        self._verify_repair_round = 0
         self._edited_paths = set()
         # Fresh subagent-tagging state each turn (correlation is per-turn only).
         self._subagent_pending = []
@@ -498,6 +503,67 @@ class SessionDriver:
                     notice = await verify_after_edit(self, "write_file")
                     if notice is not None:
                         yield notice
+                        verify_data = notice.data.get("verify", {})
+                        verify_failed = (
+                            self.verify_gate == "auto"
+                            and verify_data.get("ok") is False
+                        )
+                        repairable = verify_data.get("mode") == "auto"
+                        if (
+                            verify_failed
+                            and repairable
+                            and self._verify_repair_round < self.verify_max_repair_rounds
+                        ):
+                            from langchain_core.messages import HumanMessage
+
+                            self._verify_repair_round += 1
+                            output = str(verify_data.get("full_output", ""))[-20_000:]
+                            repair_prompt = (
+                                "Automatic verification failed after your edits.\n"
+                                f"Command: {verify_data.get('cmd', '')}\n"
+                                f"Summary: {verify_data.get('summary', 'failed')}\n"
+                                f"Output:\n{output or '(no output)'}\n\n"
+                                "Fix the implementation. Do not merely describe the failure; "
+                                "edit the files so the verification command passes."
+                            )
+                            await self.agent.aupdate_state(
+                                self._config(),
+                                {"messages": [HumanMessage(content=repair_prompt)]},
+                            )
+                            if self.transcript is not None:
+                                self.transcript.write_user(
+                                    f"(verification repair) {repair_prompt}",
+                                    ts=_time.time(),
+                                )
+                            yield Event(
+                                EventKind.NOTICE,
+                                text=(
+                                    "verification failed — agent repair round "
+                                    f"{self._verify_repair_round}/"
+                                    f"{self.verify_max_repair_rounds}"
+                                ),
+                                data={"verification_repair": True},
+                            )
+                            # Re-enter the graph on the same thread with the injected
+                            # failure. Keep dirty true so verification runs again even
+                            # if a broken repair makes no file edit.
+                            self._verify_dirty = True
+                            payload = None
+                            continue
+                        if verify_failed:
+                            yield Event(
+                                EventKind.ERROR,
+                                text=(
+                                    f"verification failed: {verify_data.get('cmd', '')} — "
+                                    f"{verify_data.get('summary', 'failed')}"
+                                ),
+                                data={
+                                    "retryable": False,
+                                    "verification": verify_data,
+                                },
+                            )
+                            self._verify_dirty = False
+                            return
                     self._verify_dirty = False
                 # Deferred diagnostics: run ruff/pyright on the edited files and
                 # emit a NOTICE (suggest) or a queue-trigger (auto).

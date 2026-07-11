@@ -17,8 +17,6 @@ TUI-first coding agent harness ที่สร้างบน [DeepAgents](https
 
 ![jarn demo](docs/assets/demo.gif)
 
-[![evals](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/chayapats/jarn/eval-results/evals/badge.json)](https://github.com/chayapats/jarn/blob/eval-results/evals/latest.json)
-
 </div>
 
 ---
@@ -33,7 +31,7 @@ J.A.R.N. คือ terminal coding agent ที่ออกแบบในแน
 
 ## ทำไมต้องเลือก J.A.R.N.?
 
-- **Reliable by design** — flow แบบ plan → act → verify ฝังอยู่ใน system prompt พร้อม self-verification loop ที่รัน build/test/lint ของโปรเจกต์ก่อนรายงานว่าเสร็จ completion badge `` ⎿ verified: pytest ✓ 214 passed · 3.2s `` ยืนยันผลลัพธ์จริง ไม่ใช่แค่คาดเดา (`verify.gate: auto`) และมี diagnostics feedback loop (LSP-lite) ที่ lint/type-check เฉพาะไฟล์ที่เทิร์นนั้นแก้ (ruff + pyright) พร้อม queue รอบ auto-fix แบบจำกัดรอบได้ 1 รอบ ให้ agent จับ type error ที่เพิ่งสร้างเองได้ทันที (`verify.diagnostics: auto`)
+- **Reliable by design** — flow แบบ plan → act → verify ฝังอยู่ใน system prompt ค่าเริ่มต้น `verify.gate: suggest` จะแสดงคำสั่งตรวจสอบที่ตรวจพบ ส่วน `verify.gate: auto` จะรันคำสั่งนั้นก่อนจบงาน หากไม่ผ่าน ระบบจะส่งผลกลับให้ agent แก้แบบจำกัดรอบ และจบ headless run ด้วย error หากยังไม่ผ่าน completion badge `` ⎿ verified: pytest ✓ 214 passed · 3.2s `` จึงยืนยันผลที่รันจริง และมี diagnostics feedback loop (LSP-lite) สำหรับไฟล์ที่แก้ (`verify.diagnostics: auto`)
 - **ปลอดภัยเป็นค่าเริ่มต้น** — ระบบ permission หลายชั้น (coarse mode + fine-grained rules) คั่นกลางทุก file write และ shell command โดยมี *danger-guard* ที่ยืนยันการกระทำร้ายแรงเสมอ — แม้แต่ใน YOLO mode
 - **เลือก model เองได้ (Bring your own model)** — รองรับ 13 provider (OpenRouter, Anthropic, OpenAI, Google, Mistral, Groq, DeepSeek, Together, Fireworks, xAI, Ollama, LM Studio, และ generic OpenAI-compatible endpoint) พร้อม per-task routing ให้ subagent ใช้ model ที่ถูกกว่าได้
 - **สตรีม subagent แบบมีป้ายกำกับ** — output จาก subagent ที่ถูก delegate ผ่าน `task` จะถูกติดป้ายด้วย prefix สีจาง `┊ <name> ` และยุบเป็นบรรทัดสถานะเดียว `└ <name>: working… (N tool calls)` (ข้อความเต็มดูได้ใน pager ด้วย Ctrl+O) ทำให้ subagent ที่รันขนานกันไม่ปนกันแบบไม่มีชื่ออีกต่อไป
@@ -331,7 +329,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 1673 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 1680 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)

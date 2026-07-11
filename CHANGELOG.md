@@ -5,6 +5,27 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- GitHub Action now bootstraps an environment-referenced OpenRouter config on a
+  fresh runner, qualifies OpenRouter model slugs correctly, and defaults to the
+  Docker-backed `yolo` policy required for unattended verification. It uses the new
+  `--ignore-project-config` headless flag so PR-controlled project hooks/config are
+  neither auto-trusted nor allowed to clamp the CI run to plan mode.
+- `verify.gate: auto` is now an enforced completion contract: failures are fed
+  back into the same conversation for a bounded repair round, reverified, and
+  become terminal errors (including non-zero headless exit) if still failing.
+  Headless JSON includes the final structured `verification` result.
+- Headless mode no longer reinvokes a completed LangGraph task merely because it
+  used tools, preventing duplicated answers and unnecessary model cost.
+- Terminal resize width updates now work in redirected/dumb-terminal Rich output,
+  restoring the full test suite.
+
+### Changed
+
+- Removed the placeholder four-fixture eval badge from the README until a real
+  live-model baseline and broader comparative suite exist.
+
 ## [0.8.0] - 2026-07-07
 
 ### Added

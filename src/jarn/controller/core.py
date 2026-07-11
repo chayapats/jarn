@@ -590,6 +590,7 @@ class Controller:
             transcript=transcript,
             checkpoint=self.checkpoint_manager,
             verify_gate=self.config.verify.gate,
+            verify_max_repair_rounds=self.config.verify.max_repair_rounds,
             project_root=self.project_root,
             verify_executor=getattr(
                 getattr(self.runtime, "backend", None), "execute", None

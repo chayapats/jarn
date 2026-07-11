@@ -714,6 +714,7 @@ class PlanConfigModel(_StrictModel):
 
 class VerifyConfigModel(_StrictModel):
     gate: str = "suggest"
+    max_repair_rounds: int = 1
     diagnostics: str = "suggest"
     diagnostics_max_rounds: int = 1
     diagnostics_ts: bool = False
@@ -727,6 +728,16 @@ class VerifyConfigModel(_StrictModel):
         if raw not in _VALID_VERIFY_GATES:
             raise ConfigValidationError(
                 f"verify.gate must be one of {sorted(_VALID_VERIFY_GATES)} (got {raw!r})."
+            )
+        return raw
+
+    @field_validator("max_repair_rounds", mode="before")
+    @classmethod
+    def _max_repair_rounds(cls, value: Any) -> int:
+        raw = _coerce_int(value, "verify.max_repair_rounds")
+        if raw < 0:
+            raise ConfigValidationError(
+                f"verify.max_repair_rounds must be >= 0 (got {raw})."
             )
         return raw
 
@@ -1078,6 +1089,7 @@ def config_to_dataclass(model: ConfigModel) -> Config:
         plan=PlanConfig(exit_mode=model.plan.exit_mode),
         verify=VerifyConfig(
             gate=model.verify.gate,
+            max_repair_rounds=model.verify.max_repair_rounds,
             diagnostics=model.verify.diagnostics,
             diagnostics_max_rounds=model.verify.diagnostics_max_rounds,
             diagnostics_ts=model.verify.diagnostics_ts,

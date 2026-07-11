@@ -191,10 +191,12 @@ async def verify_after_edit(driver: SessionDriver, tool_name: str) -> Any | None
     """Apply the configured verify gate after a write/edit tool completes.
 
     Returns a :class:`~jarn.agent.events.Event` NOTICE to yield, or ``None``.
-    Structured events (``data={"verify": ...}``) are emitted for suggest/auto paths;
-    error/skip paths emit text-only NOTICEs so the badge renderer ignores them.
+    Structured events (``data={"verify": ...}``) are emitted for every configured
+    path, including denied/refused/unavailable auto verification. That lets the
+    session enforce auto verification as a completion contract rather than silently
+    dropping a skipped acceptance check.
     """
-    from jarn.agent.events import Event, EventKind
+    from jarn.agent.events import ApprovalRequest, Event, EventKind
     from jarn.permissions import Action, ActionKind, Decision
 
     gate = getattr(driver, "verify_gate", "off")
@@ -211,23 +213,54 @@ async def verify_after_edit(driver: SessionDriver, tool_name: str) -> Any | None
             data={"verify": {"cmd": cmd, "mode": "suggest"}},
         )
 
-    # auto — run when permissions allow.
+    # auto — run through the same permission policy as an agent shell command.
     action = Action(ActionKind.SHELL, target=cmd, tool="execute")
     result = driver.engine.evaluate(action)
-    if result.decision is not Decision.ALLOW:
+    if result.decision is Decision.DENY:
         return Event(
             EventKind.NOTICE,
-            text=(
-                f"verify: skipped `{cmd}` "
-                f"({result.decision.value}: {result.reason})"
-            ),
+            data={"verify": {
+                "cmd": cmd,
+                "ok": False,
+                "mode": "blocked",
+                "summary": f"verification denied: {result.reason}",
+                "secs": 0.0,
+            }},
         )
+    if result.decision is Decision.ASK:
+        reply = await driver.approver(
+            ApprovalRequest(
+                action=action,
+                result=result,
+                description=f"run verification command: {cmd}",
+                args={"command": cmd},
+            )
+        )
+        if not reply.approved:
+            reason = reply.message or result.reason
+            return Event(
+                EventKind.NOTICE,
+                data={"verify": {
+                    "cmd": cmd,
+                    "ok": False,
+                    "mode": "refused",
+                    "summary": f"verification refused: {reason}",
+                    "secs": 0.0,
+                }},
+            )
+        driver.engine.remember(action, reply.scope)
 
     executor: Callable[[str], Any] | None = getattr(driver, "verify_executor", None)
     if executor is None:
         return Event(
             EventKind.NOTICE,
-            text=f"verify: no execution backend for `{cmd}`",
+            data={"verify": {
+                "cmd": cmd,
+                "ok": False,
+                "mode": "unavailable",
+                "summary": "no verification execution backend",
+                "secs": 0.0,
+            }},
         )
 
     t0 = _time.monotonic()
@@ -242,6 +275,7 @@ async def verify_after_edit(driver: SessionDriver, tool_name: str) -> Any | None
     verify_data: dict[str, Any] = {
         "cmd": cmd,
         "ok": ok,
+        "mode": "auto",
         "summary": summary,
         "secs": float(secs),
     }

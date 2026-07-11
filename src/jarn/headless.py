@@ -56,9 +56,11 @@ class HeadlessResult:
     cost: float = 0.0
     """Total session cost in USD."""
     turns: int = 1
-    """How many agent turns completed (bounded by ``--max-turns``)."""
+    """How many complete user turns ran (one per headless invocation)."""
     tool_calls: int = 0
     """How many tool invocations the agent made across all turns."""
+    verification: dict[str, Any] | None = None
+    """Structured final verification outcome, when verification was requested."""
 
 
 class HeadlessRefusal(Exception):
@@ -79,11 +81,19 @@ class HeadlessRefusal(Exception):
 class HeadlessFailure(Exception):
     """Structured headless failure with a stable exit code and error kind."""
 
-    def __init__(self, kind: str, message: str, *, exit_code: int = EXIT_ERROR) -> None:
+    def __init__(
+        self,
+        kind: str,
+        message: str,
+        *,
+        exit_code: int = EXIT_ERROR,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.kind = kind
         self.message = message
         self.exit_code = exit_code
+        self.details = details or {}
 
 
 def _is_timeout_message(text: str) -> bool:
@@ -112,6 +122,13 @@ def _classify_exception(exc: BaseException) -> HeadlessFailure:
 
 def _error_from_event(text: str, data: dict[str, Any] | None) -> HeadlessFailure:
     payload = data or {}
+    if payload.get("verification"):
+        return HeadlessFailure(
+            "verification",
+            text,
+            exit_code=EXIT_ERROR,
+            details={"verification": payload["verification"]},
+        )
     if payload.get("budget"):
         return HeadlessFailure("budget", text, exit_code=EXIT_REFUSED)
     if _is_timeout_message(text):
@@ -126,7 +143,8 @@ def _emit_failure(
     hint: str | None = None,
 ) -> int:
     if as_json:
-        print(json.dumps({"error": {"kind": failure.kind, "message": failure.message}}))
+        error = {"kind": failure.kind, "message": failure.message, **failure.details}
+        print(json.dumps({"error": error}))
     else:
         print(f"error: {failure.message}", file=sys.stderr)
         if hint:
@@ -141,6 +159,7 @@ def _result_payload(result: HeadlessResult) -> dict[str, Any]:
         "cost": result.cost,
         "turns": result.turns,
         "tool_calls": result.tool_calls,
+        "verification": result.verification,
     }
 
 
@@ -190,12 +209,11 @@ async def _run_headless(
     response_format: Any | None = None,
     add_dirs: list[Path] | None = None,
 ) -> HeadlessResult:
-    """Async core: build the runtime, run up to ``max_turns``, return results.
+    """Async core: build the runtime, run one complete user turn, return results.
 
-    Each turn is one ``SessionDriver.run_turn`` call on the same thread. After
-    the first turn the driver resumes without appending a new user message so the
-    agent can keep working. The loop stops when the cap is reached or a turn
-    completes without any tool calls (the agent emitted a final answer).
+    ``max_turns`` remains accepted for CLI compatibility. A SessionDriver call
+    already contains the complete model/tool graph loop, so completed graphs are
+    never reinvoked based on whether they happened to use a tool.
 
     ``system_prompt_override`` is forwarded to the Controller / build_runtime for
     the eval harness's harness-prompt A/B (see build_runtime).
@@ -232,39 +250,43 @@ async def _run_headless(
 
         text_parts: list[str] = []
         tool_calls = 0
-        turns_completed = 0
+        turns_completed = 1
+        verification: dict[str, Any] | None = None
         resume = bool(resume_session and not prompt)
         turn_input = "" if resume else enriched
 
-        while turns_completed < max_turns:
-            turns_completed += 1
-            tool_calls_this_turn = 0
-            async for event in driver.run_turn(turn_input, resume=resume):
-                if event.kind is EventKind.TEXT:
-                    text_parts.append(event.text)
-                elif event.kind is EventKind.TOOL_START:
-                    tool_calls += 1
-                    tool_calls_this_turn += 1
-                elif event.kind is EventKind.ERROR:
-                    raise _error_from_event(event.text, event.data)
-                elif event.kind is EventKind.APPROVAL:
-                    lowered = event.text.lower()
-                    if lowered.startswith(("rejected", "blocked")):
-                        raise HeadlessRefusal(
-                            event.data.get("target", "tool"),
-                            event.text,
-                        )
-                    if "auto-denied" in lowered:
-                        raise HeadlessRefusal(
-                            event.data.get("target", "tool"),
-                            event.text,
-                        )
-
-            if tool_calls_this_turn == 0 or turns_completed >= max_turns:
-                break
-
-            turn_input = ""
-            resume = True
+        # One SessionDriver invocation already runs the complete LangGraph agent/tool
+        # loop through DONE (including bounded verification repairs). Re-invoking a
+        # completed graph because it happened to use a tool duplicated final answers
+        # and cost. ``max_turns`` remains accepted for CLI compatibility, but a
+        # headless prompt is one complete user turn.
+        async for event in driver.run_turn(turn_input, resume=resume):
+            if event.kind is EventKind.TEXT:
+                text_parts.append(event.text)
+            elif event.kind is EventKind.TOOL_START:
+                tool_calls += 1
+            elif event.kind is EventKind.NOTICE:
+                if event.data.get("verify"):
+                    verification = dict(event.data["verify"])
+                if event.data.get("verification_repair"):
+                    # The prose before this marker was generated before acceptance
+                    # checks failed. Return only the repaired/final answer in headless
+                    # mode; the transcript still retains the full audit trail.
+                    text_parts.clear()
+            elif event.kind is EventKind.ERROR:
+                raise _error_from_event(event.text, event.data)
+            elif event.kind is EventKind.APPROVAL:
+                lowered = event.text.lower()
+                if lowered.startswith(("rejected", "blocked")):
+                    raise HeadlessRefusal(
+                        event.data.get("target", "tool"),
+                        event.text,
+                    )
+                if "auto-denied" in lowered:
+                    raise HeadlessRefusal(
+                        event.data.get("target", "tool"),
+                        event.text,
+                    )
 
         reply_text = "".join(text_parts)
 
@@ -304,6 +326,7 @@ async def _run_headless(
             cost=cost,
             turns=turns_completed,
             tool_calls=tool_calls,
+            verification=verification,
         )
     finally:
         await controller.aclose()

@@ -8,9 +8,9 @@ Run J.A.R.N. in CI headless mode (`-p`) from any GitHub Actions workflow.
 |-------|----------|---------|-------------|
 | `prompt` | **yes** | — | The prompt to send to the agent. |
 | `api_key` | **yes** | — | LLM provider API key. **Always source from `secrets.*`** — never hardcode. |
-| `model` | no | _(project config)_ | OpenRouter model slug (e.g. `anthropic/claude-opus-4-8`). Overrides the project config model for this run. |
-| `permission_mode` | no | `auto-edit` | Permission mode: `auto-edit`, `yolo`, `ask`, or `plan`. |
-| `max_turns` | no | `15` | Maximum agent turns. |
+| `model` | no | `anthropic/claude-opus-4.8` | OpenRouter catalog slug. The Action qualifies it as a JARN `openrouter/...` model ref. |
+| `permission_mode` | no | `yolo` | Permission mode: `yolo`, `auto-edit`, `ask`, or `plan`. The default runs inside the required Docker backend. |
+| `max_turns` | no | `1` | Compatibility limit; one headless invocation already runs the complete agent/tool loop. |
 | `preset` | no | `ci` | Named policy preset. See [Preset note](#preset--docker-requirement) below. |
 
 ## Outputs
@@ -24,10 +24,16 @@ Run J.A.R.N. in CI headless mode (`-p`) from any GitHub Actions workflow.
 The action calls `jarn` with `--json`, which emits a JSON envelope:
 
 ```json
-{"result": "…", "tokens": {…}, "cost": 0.0042, "turns": 3, "tool_calls": 7}
+{"result": "…", "tokens": {…}, "cost": 0.0042, "turns": 1, "tool_calls": 7, "verification": {"cmd": "pytest -q", "ok": true}}
 ```
 
-`result` and `turns` are forwarded as-is; `cost` is exposed as `cost_usd`.
+`result` and `turns` are forwarded as-is; `cost` is exposed as `cost_usd`. The
+Action creates an isolated `$RUNNER_TEMP/jarn-home/config.yaml` that references
+`OPENROUTER_API_KEY` without writing the secret itself. Its `verify.gate: auto`
+acceptance command must pass; persistent verification failures exit non-zero.
+It also passes `--ignore-project-config`: repository files remain the workspace,
+but PR-controlled `.jarn/config.yaml` hooks, MCP servers, providers, and allow rules
+are not loaded or auto-trusted in CI.
 
 ## Preset & Docker requirement
 
@@ -133,15 +139,16 @@ check, on any issue — including issues opened by non-members.  Before enabling
 
 ## Versioning
 
-The action pins `jarn-cli@<major>.<minor>` (currently `jarn-cli@0.5`).  The
+The action pins `jarn-cli@<major>.<minor>` (currently `jarn-cli@0.8`).  The
 test `tests/test_ci.py::test_action_yaml_valid` asserts this pin matches
 `src/jarn/version.py` at all times — a drift guard that fails CI before a
 mis-matched package ships.
 
 ## actionlint
 
-The `.github/workflows/ci.yml` `actionlint` job lints `action/action.yml` and
-`examples/github/` on every push/PR using a pinned `actionlint` binary.  This
+The `.github/workflows/ci.yml` `actionlint` job lints the workflows under
+`examples/github/` on every push/PR using a pinned `actionlint` binary. Composite
+action metadata is validated by `tests/test_ci.py`. This
 job runs only in GitHub CI (not locally) because it downloads the binary via
 `curl`.  To run locally, install actionlint separately:
 

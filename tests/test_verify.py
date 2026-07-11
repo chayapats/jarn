@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -353,6 +356,194 @@ async def test_no_verify_after_cancel(tmp_path):
         async for _ in driver.run_turn("go"):
             pass
     assert ran == [], f"verify must not run after cancel; got calls={ran}"
+
+
+class _RepairingAgent:
+    """End-to-end fake graph: first edit fails verification, repair edit passes."""
+
+    def __init__(self) -> None:
+        self.stream_calls = 0
+        self.injected: list[str] = []
+
+    async def astream(self, payload, config, **kw):
+        self.stream_calls += 1
+        if self.stream_calls == 1:
+            msg = _FakeAIMsg()
+            msg.content = "Initial implementation is complete."
+            yield ("messages", (msg,))
+            yield ("messages", (_FakeToolMsg("write_file"),))
+            return
+        msg = _FakeAIMsg()
+        msg.content = "Repaired implementation passes verification."
+        yield ("messages", (msg,))
+        yield ("messages", (_FakeToolMsg("edit_file"),))
+
+    async def aupdate_state(self, config, values):
+        messages = values.get("messages", [])
+        self.injected.extend(str(getattr(m, "content", "")) for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_verification_failure_repairs_and_reverifies_end_to_end(tmp_path):
+    """A failing acceptance command is fed back, repaired, and must pass before DONE."""
+    from jarn.agent.events import EventKind
+    from jarn.agent.session import SessionDriver
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    (tmp_path / "go.mod").write_text("module example.com/x\n", encoding="utf-8")
+    agent = _RepairingAgent()
+    calls = 0
+
+    class _Resp:
+        def __init__(self, ok: bool) -> None:
+            self.exit_code = 0 if ok else 1
+            self.output = "1 passed" if ok else "1 failed\nassert 1 == 2"
+
+    def _executor(_cmd: str) -> _Resp:
+        nonlocal calls
+        calls += 1
+        return _Resp(ok=calls == 2)
+
+    driver = SessionDriver(
+        agent=agent,
+        engine=PermissionEngine(mode=PermissionMode.YOLO),
+        tracker=CostTracker(),
+        thread_id="verify-e2e",
+        verify_gate="auto",
+        verify_max_repair_rounds=1,
+        project_root=tmp_path,
+        verify_executor=_executor,
+    )
+
+    events = [event async for event in driver.run_turn("implement it")]
+    verify = [e.data["verify"] for e in events if e.data.get("verify")]
+
+    assert [item["ok"] for item in verify] == [False, True]
+    assert calls == 2
+    assert agent.stream_calls == 2
+    assert len(agent.injected) == 1
+    assert "assert 1 == 2" in agent.injected[0]
+    assert any(e.data.get("verification_repair") for e in events)
+    assert not any(e.kind is EventKind.ERROR for e in events)
+    assert events[-1].kind is EventKind.DONE
+
+
+@pytest.mark.asyncio
+async def test_verification_persistent_failure_blocks_done_end_to_end(tmp_path):
+    """After the bounded repair, a still-failing acceptance command is terminal."""
+    from jarn.agent.events import EventKind
+    from jarn.agent.session import SessionDriver
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    (tmp_path / "go.mod").write_text("module example.com/x\n", encoding="utf-8")
+    agent = _RepairingAgent()
+
+    class _Resp:
+        exit_code = 1
+        output = "2 failed"
+
+    driver = SessionDriver(
+        agent=agent,
+        engine=PermissionEngine(mode=PermissionMode.YOLO),
+        tracker=CostTracker(),
+        thread_id="verify-fail-e2e",
+        verify_gate="auto",
+        verify_max_repair_rounds=1,
+        project_root=tmp_path,
+        verify_executor=lambda _cmd: _Resp(),
+    )
+
+    events = [event async for event in driver.run_turn("implement it")]
+
+    assert sum(bool(e.data.get("verify")) for e in events) == 2
+    assert events[-1].kind is EventKind.ERROR
+    assert events[-1].data["verification"]["ok"] is False
+    assert not any(e.kind is EventKind.DONE for e in events)
+
+
+@pytest.mark.asyncio
+async def test_real_pytest_failure_repair_and_pass_acceptance_end_to_end(tmp_path):
+    """Real acceptance E2E: broken files -> pytest fails -> repair -> pytest passes."""
+    from jarn.agent.events import EventKind
+    from jarn.agent.session import SessionDriver
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\n", encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_calc.py").write_text(
+        "from calc import double\n\n"
+        "def test_double():\n"
+        "    assert double(3) == 6\n",
+        encoding="utf-8",
+    )
+
+    class _FilesystemRepairAgent:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.injected = ""
+
+        async def astream(self, payload, config, **kw):
+            self.calls += 1
+            if self.calls == 1:
+                (tmp_path / "calc.py").write_text(
+                    "def double(value):\n    return 4\n", encoding="utf-8"
+                )
+                yield ("messages", (_FakeToolMsg("write_file"),))
+                return
+            assert "1 failed" in self.injected
+            (tmp_path / "calc.py").write_text(
+                "def double(value):\n    return value * 2\n", encoding="utf-8"
+            )
+            yield ("messages", (_FakeToolMsg("edit_file"),))
+            msg = _FakeAIMsg()
+            msg.content = "Fixed double and verified the real test suite."
+            yield ("messages", (msg,))
+
+        async def aupdate_state(self, config, values):
+            self.injected = str(values["messages"][0].content)
+
+    def _execute(_cmd: str):
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        return SimpleNamespace(
+            exit_code=proc.returncode,
+            output=(proc.stdout or "") + (proc.stderr or ""),
+        )
+
+    agent = _FilesystemRepairAgent()
+    driver = SessionDriver(
+        agent=agent,
+        engine=PermissionEngine(mode=PermissionMode.YOLO),
+        tracker=CostTracker(),
+        thread_id="real-acceptance-e2e",
+        verify_gate="auto",
+        verify_max_repair_rounds=1,
+        project_root=tmp_path,
+        verify_executor=_execute,
+    )
+
+    events = [event async for event in driver.run_turn("implement double")]
+    outcomes = [e.data["verify"] for e in events if e.data.get("verify")]
+
+    assert [outcome["ok"] for outcome in outcomes] == [False, True]
+    assert "1 passed" in outcomes[-1]["summary"]
+    assert events[-1].kind is EventKind.DONE
+    assert (tmp_path / "calc.py").read_text(encoding="utf-8").endswith(
+        "return value * 2\n"
+    )
 
 
 # ---------------------------------------------------------------------------

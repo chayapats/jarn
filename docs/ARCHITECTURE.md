@@ -93,7 +93,11 @@ tracking, memory, the extensibility surfaces, and the terminal front-end (`jarn.
    - `DENY` → resume `{"type": "reject"}` with a reason,
    - `ASK` → call the UI `approver` (the approval modal) and resume accordingly.
 5. The driver resumes the graph with `Command(resume={"decisions": [...]})` and loops
-   until there are no more interrupts, then emits `DONE`.
+   until there are no more interrupts. For an edit turn with `verify.gate: auto`, it
+   then runs the detected acceptance command through the same permission engine. A
+   failure is appended to the conversation for up to `verify.max_repair_rounds`
+   bounded repair attempts and reverified. Only a passing result emits `DONE`;
+   persistent/refused/unavailable verification emits a terminal `ERROR`.
 
 This design keeps **all** authorization logic in J.A.R.N.'s engine; DeepAgents'
 interrupts are used purely as the pause/resume mechanism. That's why the danger-guard

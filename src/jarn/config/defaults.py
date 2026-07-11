@@ -224,6 +224,7 @@ observability:
 # Post-edit verification gate: off | suggest (default) | auto
 # verify:
 #   gate: suggest       # suggest emits detected test command; auto runs it
+#   max_repair_rounds: 1 # auto: bounded repair + reverify before failing completion
 
 # OpenRouter catalog network fetch (bundled prices still apply when off)
 # pricing:

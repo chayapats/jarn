@@ -59,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "With -p: emit JSON instead of plain text. On success: "
-            "{result, tokens, cost, turns, tool_calls}. On failure: "
+            "{result, tokens, cost, turns, tool_calls, verification}. On failure: "
             "{error: {kind, message}}."
         ),
     )
@@ -102,8 +102,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         metavar="N",
         help=(
-            "With -p: maximum agent turns on the same thread (default: 1). "
-            "Stops early when a turn completes without tool calls."
+            "With -p: compatibility limit (default: 1). A headless invocation "
+            "always runs one complete model/tool graph turn."
         ),
     )
     parser.add_argument(
@@ -111,6 +111,15 @@ def build_parser() -> argparse.ArgumentParser:
         dest="headless_cwd",
         metavar="PATH",
         help="Working directory for this headless run.",
+    )
+    parser.add_argument(
+        "--ignore-project-config",
+        dest="headless_ignore_project_config",
+        action="store_true",
+        help=(
+            "With -p: ignore <cwd>/.jarn/config.yaml while still operating on "
+            "the project files (safe for CI on untrusted checkouts)."
+        ),
     )
     parser.add_argument(
         "--resume-session",
@@ -259,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
             resume_session=args.headless_resume_session,
             output_schema=args.headless_output_schema,
             add_dirs=args.add_dir,
+            ignore_project_config=args.headless_ignore_project_config,
         )
 
     # Fix the macOS Caps Lock language-switch stray-character bug before any TUI
@@ -314,6 +324,7 @@ def _cmd_headless(
     resume_session: str | None = None,
     output_schema: str | None = None,
     add_dirs: list[str] | None = None,
+    ignore_project_config: bool = False,
 ) -> int:
     """Run a single non-interactive agent turn and print the result.
 
@@ -361,13 +372,20 @@ def _cmd_headless(
     # Use the same trust logic as the interactive launch. The project tier is
     # read once and passed forward so the fingerprinted content is exactly what
     # gets loaded (no TOCTOU between the trust decision and the load).
-    trusted, project_raw, trust_err = _resolve_project_trust(root)
-    if trust_err is not None:
-        print(f"error: {trust_err}", file=sys.stderr)
-        return 1
-    cfg = load_config(
-        project_root=root, project_trusted=trusted, project_raw=project_raw
-    )
+    if ignore_project_config:
+        # CI can work on an untrusted checkout without either auto-trusting its
+        # hooks/MCP/providers or being clamped to plan mode by the trust prompt.
+        trusted = True
+        project_raw: dict[str, Any] = {}
+        cfg = load_config(project_root=None, project_trusted=True)
+    else:
+        trusted, project_raw, trust_err = _resolve_project_trust(root)
+        if trust_err is not None:
+            print(f"error: {trust_err}", file=sys.stderr)
+            return 1
+        cfg = load_config(
+            project_root=root, project_trusted=trusted, project_raw=project_raw
+        )
     setup_logging(cfg.observability.log_level)
     configure_tracing(cfg.observability)
 
