@@ -246,7 +246,13 @@ async def _run_headless(
         approver: Approver = _make_fail_closed_approver(mode)
         driver = controller.make_driver(approver)
 
-        enriched = controller.enrich_turn_input(prompt) if prompt else ""
+        # Off the event loop: enrich_turn_input does synchronous memory-file reads
+        # + vector-index builds (mirrors the REPL turn path).
+        enriched = (
+            await asyncio.to_thread(controller.enrich_turn_input, prompt)
+            if prompt
+            else ""
+        )
 
         text_parts: list[str] = []
         tool_calls = 0

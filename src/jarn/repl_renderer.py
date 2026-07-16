@@ -284,7 +284,8 @@ class TurnRenderer:
             hint = " · ctrl+o" if self._subagent_prose.get(a, "").strip() else ""
             self.console.print(
                 f"[{palette.C_DIM}]┊ {esc(a)} ⎿ done · {n} tool calls{hint}"
-                f"[/{palette.C_DIM}]"
+                f"[/{palette.C_DIM}]",
+                highlight=False,
             )
         # One-shot: clear so a defensive second finish()/cancel() can't double-print.
         self._subagent_tools = {}
@@ -345,7 +346,7 @@ class TurnRenderer:
         arg_s = fmt_args(args)
         if arg_s:
             line += f"  [{palette.C_DIM}]{esc(arg_s)}[/{palette.C_DIM}]"
-        self.console.print(line)
+        self.console.print(line, highlight=False)
         self._tools[key] = ToolRenderState(name=name, args=args)
         if agent:
             self._show_subagent_status()
@@ -388,7 +389,8 @@ class TurnRenderer:
         prefix = self._agent_prefix(agent)
         indent = "" if agent else "  "
         self.console.print(
-            f"{prefix}{indent}[{palette.C_DIM}]⎿ {esc(summary)}{dur}[/{palette.C_DIM}]{hint}"
+            f"{prefix}{indent}[{palette.C_DIM}]⎿ {esc(summary)}{dur}[/{palette.C_DIM}]{hint}",
+            highlight=False,
         )
         if full:
             self.tool_outputs.append((name, full))
@@ -400,7 +402,7 @@ class TurnRenderer:
         self._unspin()
         self._refresh_width()
         self._sep("notice")
-        self.console.print(markup)
+        self.console.print(markup, highlight=False)
 
     def on_verify_badge(self, verify_data: dict) -> None:
         """Render the structured verify result as a badge line."""
@@ -417,7 +419,8 @@ class TurnRenderer:
         if mode == "suggest":
             self.console.print(
                 f"  [{_p.C_DIM}]⎿ verify: run {cmd} to confirm "
-                f"(verify.gate: auto to automate)[/{_p.C_DIM}]"
+                f"(verify.gate: auto to automate)[/{_p.C_DIM}]",
+                highlight=False,
             )
             return
 
@@ -430,13 +433,15 @@ class TurnRenderer:
             self.console.print(
                 f"  [{_p.C_DIM}]⎿ verified: {cmd} [/{_p.C_DIM}]"
                 f"[{_p.C_SUCCESS}]✓[/{_p.C_SUCCESS}]"
-                f"[{_p.C_DIM}] {summary} · {secs:.1f}s[/{_p.C_DIM}]"
+                f"[{_p.C_DIM}] {summary} · {secs:.1f}s[/{_p.C_DIM}]",
+                highlight=False,
             )
         else:
             self.console.print(
                 f"  [{_p.C_DIM}]⎿ verify: {cmd} [/{_p.C_DIM}]"
                 f"[{_p.C_ERROR}]✗[/{_p.C_ERROR}]"
-                f"[{_p.C_DIM}] {summary} · details ctrl+o[/{_p.C_DIM}]"
+                f"[{_p.C_DIM}] {summary} · details ctrl+o[/{_p.C_DIM}]",
+                highlight=False,
             )
             if full_output:
                 self.tool_outputs.append(("verify", full_output))
@@ -453,7 +458,7 @@ class TurnRenderer:
         self._commit_subagent_summaries()
         self._unspin()
         self._refresh_width()
-        self.console.print(f"\n[{palette.C_DIM}]cancelled[/{palette.C_DIM}]")
+        self.console.print(f"\n[{palette.C_DIM}]cancelled[/{palette.C_DIM}]", highlight=False)
 
 
 # Backward-compatible alias used in tests.

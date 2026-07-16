@@ -136,9 +136,45 @@ def _capture_tools(cfg, tmp_path, *, patch_backend=False):
     return {getattr(t, "name", "") for t in (captured.get("tools") or [])}
 
 
+def _capture_interrupts(cfg, tmp_path):
+    captured: dict = {}
+
+    def fake_cda(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    fake = GenericFakeChatModel(messages=iter([]))
+    from jarn.agent import builder
+
+    with (
+        patch("jarn.providers.models.ModelFactory.build", return_value=fake),
+        patch("deepagents.create_deep_agent", side_effect=fake_cda),
+    ):
+        builder.build_runtime(cfg, project_root=tmp_path)
+    return captured.get("interrupt_on") or {}
+
+
 def test_background_tools_registered_on_local(base_config, tmp_path):
     names = _capture_tools(base_config, tmp_path)
     assert "run_in_background" in names
+
+
+def test_control_tools_in_ungated_extra_tools():
+    """The background control tools are excluded from the runtime interrupt map."""
+    from jarn.agent.permissions_bridge import UNGATED_EXTRA_TOOLS
+
+    for name in ("check_background", "kill_background", "list_background"):
+        assert name in UNGATED_EXTRA_TOOLS
+    assert "run_in_background" not in UNGATED_EXTRA_TOOLS
+
+
+def test_build_runtime_gates_start_not_controls(base_config, tmp_path):
+    """run_in_background runs a shell command → gated; the check/kill/list controls
+    only touch processes the agent started → ungated (no graph round-trip)."""
+    interrupts = _capture_interrupts(base_config, tmp_path)
+    assert "run_in_background" in interrupts
+    for name in ("check_background", "kill_background", "list_background"):
+        assert name not in interrupts
 
 
 def test_background_tools_absent_when_disabled(base_config, tmp_path):

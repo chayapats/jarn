@@ -18,7 +18,17 @@ from urllib.parse import urlsplit
 from jarn.agent import prompts
 from jarn.agent.backends_factory import _make_backend
 from jarn.agent.builtin_tools import _wire_builtin_tools
-from jarn.agent.permissions_bridge import interrupt_map
+from jarn.agent.permissions_bridge import (
+    ASYNC_SUBAGENT_TOOLS,
+    BACKGROUND_CONTROL_TOOLS,
+    BACKGROUND_START_TOOL,
+    INTERNAL_TOOLS,
+    MUTATING_TOOLS,
+    READONLY_TOOLS,
+    WIKI_MUTATING_TOOLS,
+    WIKI_READONLY_TOOLS,
+    interrupt_map,
+)
 from jarn.agent.verify import ProjectCapabilities, detect_capabilities
 from jarn.config import paths
 from jarn.config.schema import Config
@@ -47,6 +57,27 @@ _AMBIENT_LANGGRAPH_KEY_VARS = (
 #: Hosts treated as the operator's own machine — sending an ambient key there is
 #: not an exfiltration concern, so no warning is emitted.
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", ""})
+
+#: Names jarn reserves for its own builtin tools. An EXTRA tool (arriving via
+#: web/MCP ``extra_tools``) that is NOT namespaced (``mcp__…``) yet carries one of
+#: these names is a collision attack: name-keyed permission classification
+#: (``permissions_bridge.tool_to_action``) would treat it as a read-only builtin and
+#: auto-ALLOW it in every mode — including plan. Such tools are dropped at assembly.
+#: ``web_search``/``web_fetch`` are deliberately absent (they are jarn's own web
+#: tools and map to NETWORK, so they are kept and gated).
+_RESERVED_BUILTIN_NAMES = frozenset({
+    *MUTATING_TOOLS,
+    *READONLY_TOOLS,
+    *INTERNAL_TOOLS,
+    *WIKI_MUTATING_TOOLS,
+    *WIKI_READONLY_TOOLS,
+    BACKGROUND_START_TOOL,
+    *BACKGROUND_CONTROL_TOOLS,
+    *ASYNC_SUBAGENT_TOOLS,
+    "repo_map",
+    "exit_plan_mode",
+    "suggest_memory",
+})
 
 
 def _url_is_local(url: str) -> bool:
@@ -363,6 +394,12 @@ def build_runtime(
     tool-using agent while holding tools/model/loop constant. ``None`` (default)
     builds the normal prompt; ``""`` yields an empty prompt (DeepAgents' own
     default agent instructions still apply).
+
+    Summarization-profile registration (:data:`_SUMMARIZATION_BUILDERS`,
+    :data:`_SUMMARIZATION_EXCLUDED_KEYS`) is process-global: one process supports
+    one active summarization config per model key at a time. Two runtimes built
+    concurrently in the same process for the same key share the last-registered
+    builder, so their auto-compaction settings are not independent.
     """
     from deepagents import create_deep_agent
 
@@ -414,14 +451,47 @@ def build_runtime(
 
     web_tools = build_web_tools(config) if config.policy.web_tools else []
     tools = [*web_tools, *(extra_tools or [])]
+    # Identities of the EXTRA tools (web + MCP) as they arrive, before builtins are
+    # wired in. The collision guard below uses these to tell an impersonating extra
+    # tool apart from a genuine jarn builtin (which _wire_builtin_tools constructs
+    # fresh, so its id is never in this set and it is never dropped).
+    _extra_ids = {id(t) for t in tools}
 
-    tools, system_prompt = _wire_builtin_tools(
+    tools, system_prompt, ungated_tools = _wire_builtin_tools(
         tools,
         system_prompt,
         config,
         root,
         project_trusted=project_trusted,
     )
+
+    # Defense in depth. The MCP loader already namespaces its tools to
+    # mcp__<server>__<tool> (extensibility/mcp._namespace_tool), but an extra tool
+    # that somehow reaches here un-namespaced must not be allowed to impersonate a
+    # builtin: an un-prefixed name matching a reserved builtin would make
+    # tool_to_action classify it as a READ, which the engine auto-ALLOWs in EVERY
+    # mode (including plan) — a networked/mutating tool could then run without
+    # approval. Drop such tools (warn, never raise: one bad tool must not abort
+    # startup). Genuine builtins (id not in _extra_ids) and correctly-namespaced MCP
+    # tools are left untouched; identity-based ungating (below) is unaffected.
+    kept: list[Any] = []
+    for t in tools:
+        name = getattr(t, "name", "")
+        if (
+            id(t) in _extra_ids
+            and name
+            and not name.startswith("mcp__")
+            and name in _RESERVED_BUILTIN_NAMES
+        ):
+            logger.warning(
+                "Dropping extra tool %r: an un-namespaced tool may not use a "
+                "reserved jarn builtin name (it would misclassify as an "
+                "auto-allowed builtin and bypass the permission engine).",
+                name,
+            )
+            continue
+        kept.append(t)
+    tools = kept
 
     # Subagents may restrict themselves to a subset of the extra (web/MCP) tools;
     # pass the available set so to_spec can resolve names and reject typos.
@@ -444,12 +514,28 @@ def build_runtime(
     if summarizer_ref:
         known_refs.add(summarizer_ref)
 
-    # Gate every networked / MCP tool through the permission engine too, so they
-    # cannot bypass policy (they map to ActionKind.NETWORK → ASK by default).
-    # Async-subagent tools are middleware-injected (fixed names) only when async
-    # subagents are configured; gate them too so their remote HTTP calls route
-    # through the engine instead of bypassing it.
-    extra_gated = [name for t in tools if (name := getattr(t, "name", ""))]
+    # Gate every networked / MCP / mutating extra tool through the permission
+    # engine too, so they cannot bypass policy (they map to ActionKind.NETWORK →
+    # ASK by default). Async-subagent tools are middleware-injected (fixed names)
+    # only when async subagents are configured; gate them too so their remote HTTP
+    # calls route through the engine instead of bypassing it. Read-only/local
+    # extras (wiki_search/wiki_read, repo_map, background controls) are excluded —
+    # the engine always auto-ALLOWs them, so an interrupt would only cost a graph
+    # pause/checkpoint/resume round-trip per call for no policy gain.
+    #
+    # The exclusion is by OBJECT IDENTITY of the instances WE constructed in
+    # builtin_tools.py (returned as ungated_tools), never by name or metadata:
+    # langchain-mcp-adapters copies server-controlled ToolAnnotations straight
+    # into BaseTool.metadata, so a malicious MCP server can forge BOTH a colliding
+    # name (wiki_read/repo_map/check_background) AND a metadata jarn_ungated flag.
+    # Only our own objects are in ungated_ids, so any forged MCP/web tool — however
+    # named or tagged — stays gated behind its required interrupt.
+    ungated_ids = {id(t) for t in ungated_tools}
+    extra_gated = [
+        name
+        for t in tools
+        if (name := getattr(t, "name", "")) and id(t) not in ungated_ids
+    ]
     interrupts = interrupt_map(
         extra_gated, include_async=bool(config.async_subagents)
     )

@@ -295,6 +295,79 @@ async def test_driver_records_tool_events(tmp_path: Path) -> None:
     assert "execute" in tool_names
 
 
+class _DyingAgent:
+    """Streams a partial assistant reply, then the provider connection dies mid-turn
+    (the turn never reaches DONE)."""
+
+    async def astream(self, payload, config, stream_mode=None, **kwargs):
+        yield (
+            (),
+            "messages",
+            (_FakeAIChunk("partial thought ", {"input_tokens": 1, "output_tokens": 1}),),
+        )
+        raise RuntimeError("provider connection reset")
+
+
+@pytest.mark.asyncio
+async def test_interrupted_turn_flushes_partial_assistant_text(tmp_path: Path) -> None:
+    """FIX D: a turn that dies before DONE (provider error) must still flush its
+    already-streamed partial assistant text to the transcript, marked interrupted —
+    losing streamed text is worse than an honest partial line."""
+    from jarn.agent.session import EventKind, SessionDriver
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    w = TranscriptWriter("interrupted", sessions_dir=tmp_path)
+    driver = SessionDriver(
+        agent=_DyingAgent(),
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="interrupted",
+        transcript=w,
+    )
+    events = [ev async for ev in driver.run_turn("go")]
+    w.close()
+
+    # The turn surfaced an ERROR and never reached DONE.
+    assert any(e.kind is EventKind.ERROR for e in events)
+    assert not any(e.kind is EventKind.DONE for e in events)
+
+    objs = [json.loads(ln) for ln in w.path.read_text(encoding="utf-8").splitlines()]
+    assistant = [o for o in objs if o["type"] == "assistant"]
+    assert len(assistant) == 1, objs
+    assert assistant[0]["text"] == "partial thought \n…(turn interrupted)"
+    # _turn_text is cleared after the interrupted flush (no re-flush on a retry).
+    assert driver._turn_text == ""
+
+
+@pytest.mark.asyncio
+async def test_completed_turn_does_not_double_flush(tmp_path: Path) -> None:
+    """FIX D companion: a turn that reaches DONE writes exactly ONE assistant line —
+    the DONE flush clears _turn_text so the run_turn finally does not re-emit it."""
+    from jarn.agent.session import SessionDriver
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    w = TranscriptWriter("nodup", sessions_dir=tmp_path)
+    driver = SessionDriver(
+        agent=_SimpleAgent("All done."),
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="nodup",
+        transcript=w,
+    )
+    async for _ in driver.run_turn("go"):
+        pass
+    w.close()
+
+    objs = [json.loads(ln) for ln in w.path.read_text(encoding="utf-8").splitlines()]
+    assistant = [o for o in objs if o["type"] == "assistant"]
+    assert len(assistant) == 1
+    assert assistant[0]["text"] == "All done."
+
+
 # ---------------------------------------------------------------------------
 # transcript=False: nothing written
 # ---------------------------------------------------------------------------
@@ -447,6 +520,30 @@ def test_logging_redacts_secrets(tmp_path: Path, monkeypatch) -> None:
     assert records
     assert secret not in records[-1]
     assert "sk-…" in records[-1]
+
+
+def test_logging_suppresses_unformattable_record() -> None:
+    """A record whose interpolation raises is replaced with the suppression
+    placeholder, never emitted raw (that raw msg may carry an interpolated secret)."""
+    import logging
+
+    from jarn.observability.logging import RedactingFilter
+
+    secret = "sk-ant-api03-" + "W" * 40
+    # Too few args for the format string: getMessage() raises TypeError.
+    record = logging.LogRecord(
+        name="jarn.test.badfmt",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="key=%s ctx=%s " + secret,
+        args=("only-one",),
+        exc_info=None,
+    )
+    assert RedactingFilter().filter(record) is True
+    assert record.args == ()
+    assert record.getMessage() == "<unformattable log record - suppressed for redaction safety>"
+    assert secret not in record.getMessage()
 
 
 def test_no_env_var_leaks_into_transcript(tmp_path: Path, monkeypatch) -> None:

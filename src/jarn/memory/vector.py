@@ -15,6 +15,7 @@ import hashlib
 import json
 import math
 import re
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -121,7 +122,10 @@ class VectorIndex:
             self._vectors[key] = vec
             self._memories[key] = mem
             new_cache[key] = {"digest": digest, "embedder": self.embedder.name, "vector": vec}
-        self._save_cache(new_cache)
+        # Only touch disk when the cache actually changed: an unchanged rebuild
+        # (every digest hit) must not rewrite .vectors.json on each turn.
+        if new_cache != cache:
+            self._save_cache(new_cache)
         return len(self._vectors)
 
     def search(self, query: str, k: int = 5) -> list[RecallHit]:
@@ -186,6 +190,16 @@ def recall_block(
     lines = ["# Relevant memories"]
     for hit in top:
         lines.append(f"- **{hit.memory.name}** — {hit.memory.description}")
+        # Name + description alone carry almost no recall signal; append a capped
+        # body excerpt (ellipsis suffix only when truncated, no trailing space).
+        body = hit.memory.body.strip()
+        if body:
+            excerpt = body[:400]
+            if len(body) > 400:
+                excerpt += "…"
+            # Indent EVERY line: an unindented continuation line (bullet, heading)
+            # would otherwise escape this block into the top level of the prompt.
+            lines.append(textwrap.indent(excerpt, "  "))
     return "\n".join(lines)
 
 

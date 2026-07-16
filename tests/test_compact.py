@@ -96,6 +96,164 @@ async def test_compact_preview_empty_thread_returns_blank(tmp_path, monkeypatch)
     ctrl.close()
 
 
+# -- FIX C: bounded transcript (per-message cap + window trim) ----------------
+
+
+class _CapturingSummarizer:
+    """Records the prompt it is handed so tests can inspect what the summarizer
+    actually received."""
+
+    def __init__(self):
+        self.prompt: str | None = None
+
+    async def ainvoke(self, prompt):
+        self.prompt = prompt
+        return AIMessage(content="SUMMARY: ok.")
+
+
+def _capturing_controller(tmp_path, monkeypatch, messages):
+    ctrl = _controller(tmp_path, monkeypatch, messages)
+    cap = _CapturingSummarizer()
+    ctrl.runtime.factory = SimpleNamespace(
+        build_summarizer=lambda: cap, build_main=lambda: cap
+    )
+    return ctrl, cap
+
+
+@pytest.mark.asyncio
+async def test_compact_preview_caps_oversized_message(tmp_path, monkeypatch):
+    """A single huge message (e.g. a giant tool result) is capped per-message so it
+    cannot dominate the summarizer prompt; the drop is announced inline."""
+    body = "START" + ("x" * 5000) + "ENDMARKER"  # 5014 chars → capped at 4000
+    ctrl, cap = _capturing_controller(
+        tmp_path, monkeypatch, [HumanMessage(content=body)]
+    )
+
+    await ctrl.compact_preview()
+
+    assert cap.prompt is not None
+    assert "…[+1014 chars]" in cap.prompt  # 5014 - 4000 dropped chars announced
+    assert "ENDMARKER" not in cap.prompt   # tail beyond the cap never sent
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_compact_preview_trims_long_thread_under_budget(tmp_path, monkeypatch):
+    """A 150k+ token thread is window-trimmed so the summarizer prompt stays within
+    budget (head + tail kept, middle dropped behind a marker) rather than overflowing
+    the summarizer exactly when /compact is most needed."""
+    from jarn.memory.tokens import count_tokens
+
+    # summarizer runs on the unknown ref "x" → context_window 0 → 60_000 budget.
+    messages = []
+    for i in range(300):
+        line = f"turn {i}: " + " ".join(f"token{i}_{j}" for j in range(400))
+        messages.append(
+            HumanMessage(content=line) if i % 2 == 0 else AIMessage(content=line)
+        )
+    ctrl, cap = _capturing_controller(tmp_path, monkeypatch, messages)
+
+    await ctrl.compact_preview()
+
+    assert cap.prompt is not None
+    assert "…[trimmed" in cap.prompt  # the dropped middle is marked
+    # The full untrimmed transcript is far over budget; the sent prompt is not.
+    assert count_tokens(cap.prompt) <= 62_000  # ~60k budget + instruction preamble
+    # Head (original goal) and tail (latest state) both survive the trim.
+    assert "turn 0:" in cap.prompt
+    assert "turn 299:" in cap.prompt
+    ctrl.close()
+
+
+def test_trim_to_window_never_exceeds_budget(monkeypatch):
+    """BLOCKER 3: _trim_to_window GUARANTEES count_tokens(result) <= budget AND
+    the shrink loop preserves the NEWEST lines (the 70% tail's whole purpose).
+
+    Determinism: _trim_to_window imports count_tokens from jarn.memory.tokens, and
+    the batch-shrink path only triggers under the len//4 fallback tokenizer (with
+    tiktoken loaded the per-line accounting is exact and the loop never runs). We
+    monkeypatch that counter to the len//4 approximation so the shrink path ALWAYS
+    runs — otherwise the reviewer's bug (shrinking the tail from its END, dropping
+    the newest lines) hides on machines where tiktoken loads."""
+    import jarn.memory.tokens as tokens_mod
+    from jarn.controller.core import _trim_to_window
+
+    def _approx(text: str) -> int:
+        return len(text) // 4  # non-additive under floor division → shrink triggers
+
+    monkeypatch.setattr(tokens_mod, "count_tokens", _approx)
+
+    budget = 60_000
+    lines = [f"line {i}: " + " ".join(f"w{i}_{j}" for j in range(30)) for i in range(4000)]
+    text = "\n".join(lines)
+    assert _approx(text) > budget  # the input genuinely overflows
+
+    result = _trim_to_window(text, budget)
+
+    assert _approx(result) <= budget  # the invariant the reviewer's repro broke
+    assert "…[trimmed" in result  # the dropped middle is marked
+    assert result.strip()  # non-empty for non-empty input
+    # The LAST source line survives — the newest state the tail exists to keep.
+    assert "line 3999:" in result
+    # Head (beginning) precedes tail (latest state).
+    assert result.index("line 0:") < result.index("line 3999:")
+
+
+def test_trim_to_window_single_oversized_line_char_cut():
+    """A single line far over budget is hard-cut by chars (no newline to split on),
+    still yielding non-empty content within budget."""
+    from jarn.controller.core import _trim_to_window
+    from jarn.memory.tokens import count_tokens
+
+    budget = 1_000
+    text = "x" * 500_000  # one giant line, no separators
+    result = _trim_to_window(text, budget)
+    assert count_tokens(result) <= budget
+    assert result  # non-empty
+
+
+def test_trim_to_window_char_cut_keeps_newest_suffix(monkeypatch):
+    """BLOCKER 3: when no whole line fits, the char-cut fallback keeps the NEWEST
+    SUFFIX (the newest-tail contract) — NOT the oldest prefix. Determinism: force
+    the len//4 fallback tokenizer so the char-cut path always runs."""
+    import jarn.memory.tokens as tokens_mod
+    from jarn.controller.core import _trim_to_window
+
+    def _approx(text: str) -> int:
+        return len(text) // 4
+
+    monkeypatch.setattr(tokens_mod, "count_tokens", _approx)
+
+    budget = 50
+    oldest = "OLDEST_MARKER " + "a" * 4000
+    newest = "b" * 4000 + " NEWEST_MARKER"
+    text = oldest + "\n" + newest  # two oversized "messages", neither line fits
+
+    result = _trim_to_window(text, budget)
+
+    assert _approx(result) <= budget  # within budget
+    assert result.strip()  # non-empty for non-empty input
+    assert "NEWEST_MARKER" in result  # newest content survives
+    assert "OLDEST_MARKER" not in result  # oldest prefix discarded
+
+
+def test_trim_to_window_zero_budget_never_empty(monkeypatch):
+    """BLOCKER 3: a zero budget (int(window*0.6) can round to 0 for a tiny window)
+    is treated as 1 and NEVER trims a non-empty input to empty."""
+    import jarn.memory.tokens as tokens_mod
+    from jarn.controller.core import _trim_to_window
+
+    def _approx(text: str) -> int:
+        return len(text) // 4
+
+    monkeypatch.setattr(tokens_mod, "count_tokens", _approx)
+
+    result = _trim_to_window("nonempty", 0)
+
+    assert result  # non-empty in → non-empty out
+    assert _approx(result) <= 1  # within the max(1, budget) floor
+
+
 @pytest.mark.asyncio
 async def test_compact_apply_seeds_fresh_thread(tmp_path, monkeypatch):
     """compact_apply starts a fresh thread seeded with the given summary."""

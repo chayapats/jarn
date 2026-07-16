@@ -647,3 +647,101 @@ def test_repo_map_is_read_only_never_prompts():
     action = tool_to_action("repo_map", {"focus": "agent"})
     assert action.kind is ActionKind.READ
     assert PermissionEngine(mode=PermissionMode.ASK).evaluate(action).decision.value == "allow"
+
+
+def test_repo_map_in_ungated_extra_tools():
+    """repo_map is excluded from the runtime interrupt map (always auto-ALLOWed)."""
+    from jarn.agent.permissions_bridge import UNGATED_EXTRA_TOOLS
+
+    assert "repo_map" in UNGATED_EXTRA_TOOLS
+
+
+def test_build_runtime_does_not_gate_repo_map_tool(tmp_path: Path) -> None:
+    """With repo_map='tool', the repo_map tool is registered but NOT gated behind
+    an interrupt — gating a read-only local tool only costs a graph round-trip."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from jarn.agent.builder import build_runtime
+    from jarn.config.schema import (
+        Config,
+        ContextConfig,
+        ProviderConfig,
+        ProviderType,
+        RoutingConfig,
+    )
+
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(
+            type=ProviderType.OPENROUTER, api_key="sk-test",
+            base_url="http://localhost:9999/v1",
+        )},
+        routing=RoutingConfig(main="openrouter/anthropic/claude-opus-4-8"),
+        context=ContextConfig(repo_map="tool", repo_map_tokens=512),
+    )
+
+    captured: dict = {}
+
+    def _fake_create_agent(**kwargs):
+        captured["interrupt_on"] = kwargs.get("interrupt_on") or {}
+        captured["tools"] = kwargs.get("tools") or []
+        import deepagents
+        return deepagents.create_deep_agent(**kwargs)
+
+    fake = GenericFakeChatModel(messages=iter([]))
+    with (
+        patch("jarn.providers.models.ModelFactory.build", return_value=fake),
+        patch("deepagents.create_deep_agent", side_effect=_fake_create_agent),
+        contextlib.suppress(Exception),
+    ):
+        build_runtime(cfg, project_root=tmp_path)
+
+    tool_names = {getattr(t, "name", "") for t in captured.get("tools", [])}
+    assert "repo_map" in tool_names  # registered
+    assert "repo_map" not in captured.get("interrupt_on", {})  # but not gated
+
+
+def test_repo_map_block_appended_as_suffix(tmp_path: Path) -> None:
+    """In repo_map='auto', the volatile map block is appended after the stable
+    persona (suffix, never prefix) to preserve the server-side prefix cache."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from jarn.agent.builder import build_runtime
+    from jarn.config.schema import (
+        Config,
+        ContextConfig,
+        ProviderConfig,
+        ProviderType,
+        RoutingConfig,
+    )
+
+    (tmp_path / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(
+            type=ProviderType.OPENROUTER, api_key="sk-test",
+            base_url="http://localhost:9999/v1",
+        )},
+        routing=RoutingConfig(main="openrouter/anthropic/claude-opus-4-8"),
+        context=ContextConfig(repo_map="auto", repo_map_tokens=2000),
+    )
+
+    captured: dict = {}
+
+    def _fake_create_agent(**kwargs):
+        captured["system_prompt"] = kwargs.get("system_prompt", "")
+        import deepagents
+        return deepagents.create_deep_agent(**kwargs)
+
+    fake = GenericFakeChatModel(messages=iter([]))
+    with (
+        patch("jarn.providers.models.ModelFactory.build", return_value=fake),
+        patch("deepagents.create_deep_agent", side_effect=_fake_create_agent),
+        contextlib.suppress(Exception),
+    ):
+        build_runtime(cfg, project_root=tmp_path)
+
+    sp = captured.get("system_prompt", "")
+    assert "<repo_map>" in sp
+    assert not sp.lstrip().startswith("<repo_map>")
+    assert sp.rstrip().endswith("</repo_map>")

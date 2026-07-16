@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jarn.agent.session import ApprovalRequest, EventKind
+from jarn.agent.session import ApprovalRequest, Event, EventKind
 from jarn.config.schema import PermissionMode
 from jarn.headless import (
     EXIT_ERROR,
@@ -108,6 +108,40 @@ async def test_run_headless_returns_model_text(tmp_path, monkeypatch, base_confi
     assert isinstance(result, HeadlessResult)
     assert result.result == "The answer is 42."
     assert result.turns == 1
+
+
+@pytest.mark.asyncio
+async def test_run_headless_enriches_off_the_event_loop(tmp_path, monkeypatch, base_config):
+    """Headless enriches the prompt via asyncio.to_thread (matching the REPL path):
+    the sync memory-file reads run off the loop, and the enriched text is still what
+    the driver receives."""
+    import threading
+
+    import jarn.headless as headless_mod
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    fake_driver = _stub_controller(monkeypatch)
+
+    seen: dict = {}
+
+    async def _run_turn(prompt, *, resume: bool = False):
+        seen["prompt"] = prompt
+        yield Event(kind=EventKind.TEXT, text="ok")
+        yield Event(kind=EventKind.DONE)
+    fake_driver.run_turn = _run_turn
+
+    main_thread = threading.current_thread()
+    ran_on: list[threading.Thread] = []
+
+    def _enrich(self, text: str) -> str:
+        ran_on.append(threading.current_thread())
+        return f"MEM\n\n{text}"
+    monkeypatch.setattr(headless_mod.Controller, "enrich_turn_input", _enrich)
+
+    await _run_headless("hi", base_config, tmp_path)
+
+    assert seen["prompt"] == "MEM\n\nhi"          # enriched text reaches the driver
+    assert ran_on and ran_on[0] is not main_thread  # ran in a worker thread
 
 
 @pytest.mark.asyncio

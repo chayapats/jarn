@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -91,3 +92,26 @@ def configure_tracing(obs: ObservabilityConfig, *, project: str = "jarn") -> boo
     if backend == "otel":
         return configure_otel()
     return configure_langsmith(obs.langsmith, project=project)
+
+
+@contextmanager
+def span(name: str, **attrs: Any):
+    """Emit an OTel span; a no-op when opentelemetry is not installed.
+
+    The seam that lets any module record spans unconditionally — callers never
+    guard on backend or install state. When ``opentelemetry`` is absent this
+    yields ``None`` and does nothing; when present it opens ``name`` as the
+    current span with each ``attrs`` value coerced to ``str``. A later agent
+    wires this into the session driver (``jarn.turn`` spans); this module only
+    provides the seam.
+    """
+    try:
+        from opentelemetry import trace
+    except ImportError:
+        yield None
+        return
+    tracer = trace.get_tracer("jarn")
+    with tracer.start_as_current_span(name) as s:
+        for k, v in attrs.items():
+            s.set_attribute(k, str(v))
+        yield s

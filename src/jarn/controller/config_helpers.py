@@ -46,7 +46,11 @@ def _apply_reloaded_config(ctrl: Controller) -> None:
     ctrl._candidates = ([main] if main else []) + list(ctrl.config.routing.fallback)
     ctrl._candidate_idx = 0
     _invalidate_model_cache(ctrl)
-    ctrl.runtime = None  # rebuild with the new config
+    # The config (and possibly its mcp_servers) was fully reloaded — drop the MCP
+    # tool cache so the rebuild re-loads servers from the new config, and bump the
+    # build generation so a build already in flight (with the OLD, possibly
+    # broader MCP tool set) disposes its result rather than committing revoked tools.
+    ctrl._invalidate_runtime(drop_mcp_cache=True)
 
 
 def set_setting(ctrl: Controller, key: str, raw: str) -> tuple[bool, str]:
@@ -157,7 +161,7 @@ def set_provider_key(
     with contextlib.suppress(Exception):
         ConfigStore(paths.global_config_path()).set(f"providers.{prov}.api_key", ref)
     _invalidate_model_cache(ctrl)
-    ctrl.runtime = None  # force rebuild on next turn with the new key
+    ctrl._invalidate_runtime()  # force rebuild on next turn with the new key
     notice = file_fallback_notice(
         stored,
         provider=prov,

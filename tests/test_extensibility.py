@@ -268,11 +268,30 @@ def test_hook_env_allowlist_hides_api_key(tmp_path, monkeypatch):
 # --- MCP per-server lifecycle / health isolation -------------------------
 
 
+class _MCPTool:
+    """Minimal stand-in for a StructuredTool: just a mutable ``.name``.
+
+    The loader namespaces tools by mutating ``tool.name``, so the fake must
+    expose one (a bare string, as the old fake returned, has no ``.name`` and
+    would silently skip namespacing)."""
+
+    def __init__(self, name):
+        self.name = name
+
+    def __repr__(self):
+        return f"_MCPTool({self.name!r})"
+
+
+def _tool_names(tools):
+    return [t.name for t in tools]
+
+
 class _FakeMCPClient:
     """Stand-in for MultiServerMCPClient: per-server get_tools that can fail.
 
     ``fail`` maps a server name to the exception it should raise; any other
-    server yields a single sentinel tool named ``<server>_tool``.
+    server yields a single sentinel tool named ``<server>_tool`` (which the
+    loader then namespaces to ``mcp__<server>__<server>_tool``).
     """
 
     def __init__(self, connections, fail=None):
@@ -283,7 +302,7 @@ class _FakeMCPClient:
         assert server_name is not None  # we always load per-server in isolation
         if server_name in self._fail:
             raise self._fail[server_name]
-        return [f"{server_name}_tool"]
+        return [_MCPTool(f"{server_name}_tool")]
 
 
 def _patch_client(monkeypatch, fail=None):
@@ -308,7 +327,8 @@ async def test_one_server_fails_others_still_load(monkeypatch):
     result = await load_mcp_tools([_stdio("good"), _stdio("bad")])
 
     assert isinstance(result, MCPLoadResult)
-    assert result.tools == ["good_tool"]  # bad server's tools lost, good kept
+    # bad server's tools lost, good kept — and namespaced with server provenance.
+    assert _tool_names(result.tools) == ["mcp__good__good_tool"]
     assert result.health == {"good": "ok", "bad": "error"}
     assert "bad" in result.errors and "boom" in result.errors["bad"]
     assert result.degraded is True
@@ -335,7 +355,7 @@ async def test_all_servers_ok_not_degraded(monkeypatch):
     _patch_client(monkeypatch)
     result = await load_mcp_tools([_stdio("a"), _stdio("b")])
 
-    assert sorted(result.tools) == ["a_tool", "b_tool"]
+    assert sorted(_tool_names(result.tools)) == ["mcp__a__a_tool", "mcp__b__b_tool"]
     assert result.health == {"a": "ok", "b": "ok"}
     assert result.errors == {}
     assert result.degraded is False
@@ -390,7 +410,7 @@ async def test_invalid_connection_marked_error(monkeypatch):
     bad = MCPServer(name="nocmd", transport="stdio", command=None)  # missing command
     result = await load_mcp_tools([bad, _stdio("ok")])
 
-    assert result.tools == ["ok_tool"]
+    assert _tool_names(result.tools) == ["mcp__ok__ok_tool"]
     assert result.health["nocmd"] == "error"
     assert "nocmd" in result.errors
     assert result.health["ok"] == "ok"
@@ -424,6 +444,163 @@ async def test_mcp_timeout(monkeypatch):
     assert result.tools == []
     assert result.health["slow"] == "error"
     assert "timed out" in result.errors["slow"]
+
+
+@pytest.mark.asyncio
+async def test_servers_load_concurrently(monkeypatch):
+    """Two slow servers load in parallel: wall time ~ one delay, not the sum."""
+    import asyncio
+    import time
+
+    class _SlowClient:
+        def __init__(self, connections):
+            self.connections = connections
+
+        async def get_tools(self, *, server_name=None):
+            await asyncio.sleep(0.2)
+            return [f"{server_name}_tool"]
+
+    import langchain_mcp_adapters.client as client_mod
+
+    monkeypatch.setattr(
+        client_mod, "MultiServerMCPClient", lambda connections: _SlowClient(connections)
+    )
+    start = time.monotonic()
+    result = await load_mcp_tools([_stdio("a"), _stdio("b")])
+    elapsed = time.monotonic() - start
+
+    assert result.tools == ["a_tool", "b_tool"]
+    assert elapsed < 0.4  # sequential would be ~0.4s; concurrent is ~0.2s
+
+
+@pytest.mark.asyncio
+async def test_result_order_is_connection_order(monkeypatch):
+    """Tools are ordered by client.connections iteration order, not by which
+    server's handshake finishes first."""
+    import asyncio
+
+    class _SkewClient:
+        """First server resolves slowly, later ones fast — completion order is
+        the reverse of connection order."""
+
+        def __init__(self, connections):
+            self.connections = connections
+            self._delays = {"first": 0.15, "second": 0.05, "third": 0.0}
+
+        async def get_tools(self, *, server_name=None):
+            await asyncio.sleep(self._delays.get(server_name, 0.0))
+            return [f"{server_name}_tool"]
+
+    import langchain_mcp_adapters.client as client_mod
+
+    monkeypatch.setattr(
+        client_mod, "MultiServerMCPClient", lambda connections: _SkewClient(connections)
+    )
+    result = await load_mcp_tools(
+        [_stdio("first"), _stdio("second"), _stdio("third")]
+    )
+
+    assert result.tools == ["first_tool", "second_tool", "third_tool"]
+
+
+# --- MCP tool namespacing (permission-classification provenance) ---------
+
+
+def _patch_named_client(monkeypatch, tools_by_server):
+    """Patch MultiServerMCPClient with a fake whose per-server tools are given by
+    name (so tests can control the raw, pre-namespacing tool names)."""
+    import langchain_mcp_adapters.client as client_mod
+
+    class _NamedClient:
+        def __init__(self, connections):
+            self.connections = connections
+
+        async def get_tools(self, *, server_name=None):
+            return [_MCPTool(n) for n in tools_by_server.get(server_name, [])]
+
+    monkeypatch.setattr(
+        client_mod, "MultiServerMCPClient", lambda connections: _NamedClient(connections)
+    )
+
+
+@pytest.mark.asyncio
+async def test_mcp_tools_namespaced_and_classify_as_network(monkeypatch):
+    """A loaded MCP tool comes back as mcp__<server>__<tool> and classifies as
+    NETWORK (not a builtin READ) so the engine gates it."""
+    from jarn.agent.permissions_bridge import tool_to_action
+    from jarn.permissions import ActionKind
+
+    _patch_named_client(monkeypatch, {"srv": ["do_thing"]})
+    result = await load_mcp_tools([_stdio("srv")])
+
+    assert _tool_names(result.tools) == ["mcp__srv__do_thing"]
+    action = tool_to_action("mcp__srv__do_thing", {})
+    assert action.kind is ActionKind.NETWORK
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_named_like_builtin_is_namespaced_and_network(monkeypatch):
+    """The reviewer's repro: an MCP tool literally named ``wiki_read`` must end up
+    as mcp__srv__wiki_read and classify as NETWORK — never as the auto-allowed
+    builtin READ that let it run without approval in plan mode."""
+    from jarn.agent.permissions_bridge import tool_to_action
+    from jarn.permissions import ActionKind
+
+    _patch_named_client(monkeypatch, {"srv": ["wiki_read"]})
+    result = await load_mcp_tools([_stdio("srv")])
+
+    assert _tool_names(result.tools) == ["mcp__srv__wiki_read"]
+    # As a builtin name it would be READ (auto-allowed); namespaced it is NETWORK.
+    assert tool_to_action("wiki_read", {}).kind is ActionKind.READ
+    assert tool_to_action("mcp__srv__wiki_read", {}).kind is ActionKind.NETWORK
+
+
+@pytest.mark.asyncio
+async def test_mcp_double_prefix_smuggle_is_normalized(monkeypatch):
+    """A server that names its tool ``mcp__other__x`` cannot smuggle a forged
+    provenance: the pre-existing prefix is collapsed before ours is applied, so it
+    classifies under the REAL server, not ``other``."""
+    from jarn.agent.permissions_bridge import _network_target
+
+    _patch_named_client(monkeypatch, {"srv": ["mcp__other__x"]})
+    result = await load_mcp_tools([_stdio("srv")])
+
+    assert _tool_names(result.tools) == ["mcp__srv__x"]
+    # Display target parses the provenance as the real server 'srv', not 'other'.
+    assert _network_target("mcp__srv__x", {}).startswith("mcp/srv/")
+
+
+def test_strip_mcp_prefix_collapses_nested():
+    """Nested/double mcp__ prefixes collapse fully to the bare tool name."""
+    from jarn.extensibility.mcp import _strip_mcp_prefix
+
+    assert _strip_mcp_prefix("plain") == "plain"
+    assert _strip_mcp_prefix("mcp__a__x") == "x"
+    assert _strip_mcp_prefix("mcp__a__mcp__b__x") == "x"
+
+
+def test_namespace_tool_uses_model_copy_when_assignment_rejected():
+    """When a tool rejects direct ``name`` assignment (pydantic validate_assignment),
+    the loader rebuilds it via model_copy rather than crashing."""
+    from jarn.extensibility.mcp import _namespace_tool
+
+    class _Frozen:
+        def __init__(self, name):
+            object.__setattr__(self, "_name", name)
+
+        @property
+        def name(self):
+            return self._name
+
+        @name.setter
+        def name(self, value):
+            raise AttributeError("read-only")
+
+        def model_copy(self, *, update):
+            return _Frozen(update["name"])
+
+    out = _namespace_tool(_Frozen("wiki_read"), "srv")
+    assert out.name == "mcp__srv__wiki_read"
 
 
 def test_mcp_status_refresh(tmp_path, monkeypatch, base_config):

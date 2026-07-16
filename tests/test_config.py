@@ -191,6 +191,17 @@ def test_zero_budget_valid(tmp_path):
     assert cfg.budget.per_session_usd == 0
 
 
+@pytest.mark.parametrize("token", [".nan", ".inf", "-.inf"])
+def test_nonfinite_budget_raises(tmp_path, token):
+    """A non-finite per_session_usd (NaN/inf) is rejected at config validation: it
+    would make every later budget comparison False, silently disabling the hard
+    stop. ``raw < 0`` alone misses NaN (all NaN comparisons are False)."""
+    gp = tmp_path / "g.yaml"
+    gp.write_text(f"budget:\n  per_session_usd: {token}\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="per_session_usd"):
+        load_config(global_path=gp, project_path=None)
+
+
 @pytest.mark.parametrize("pct", [-5, 150, 101])
 def test_pct_out_of_range_raises(tmp_path, pct):
     gp = tmp_path / "g.yaml"

@@ -67,7 +67,7 @@ def cmd_preset(ctrl, args: str) -> CommandResult:
     except ConfigError:
         return CommandResult(f"Unknown preset {choice!r}. Choose one of: {available}")
     ctrl.engine.mode = ctrl.config.permission_mode
-    ctrl.runtime = None  # mode/sandbox/web-tools changes require a rebuild
+    ctrl._invalidate_runtime()  # mode/sandbox/web-tools changes require a rebuild
     # Echo the expansion so the user sees what the preset actually set.
     expansion = (
         f"mode={ctrl.config.permission_mode.value}, "
@@ -105,7 +105,7 @@ def cmd_sandbox(ctrl, args: str) -> CommandResult:
         ctrl.config.execution.backend = "local"
     else:
         return CommandResult("Usage: /sandbox docker|on|off")
-    ctrl.runtime = None  # backend changes require a rebuild
+    ctrl._invalidate_runtime()  # backend changes require a rebuild
     return CommandResult(
         f"Execution backend set to {ctrl.config.execution.backend} (rebuilding). "
         "A sandbox/docker backend requires an available runtime; fails closed "
@@ -118,7 +118,7 @@ def cmd_model(ctrl, args: str) -> CommandResult:
         return CommandResult(f"Current model: {ctrl.config.resolved_main_model()}")
     ctrl.config.routing.main = args.strip()
     ctrl.config.default_model = args.strip()
-    ctrl.runtime = None  # force rebuild on next turn
+    ctrl._invalidate_runtime()  # force rebuild on next turn
     return CommandResult(f"Model set to {args.strip()} (rebuilding).", rebuilt=True)
 
 def cmd_mode(ctrl, args: str) -> CommandResult:
@@ -204,7 +204,11 @@ def cmd_trust(ctrl, args: str) -> CommandResult:
     resolve_effective_profile(ctrl.config, project_trusted=True, cli_profile=None)
     ctrl.engine.mode = ctrl.config.permission_mode
     ctrl.engine.rules = ctrl.config.permissions
-    ctrl.runtime = None  # rebuild so trust-gated state is reapplied
+    # Trusting re-injects the project's stripped mcp_servers, so drop the MCP tool
+    # cache (and bump the build generation so an in-flight build with the stripped
+    # tool set is disposed rather than committed); the rebuilt runtime then loads
+    # the now-active project MCP servers.
+    ctrl._invalidate_runtime(drop_mcp_cache=True)
 
     note = ""
     if danger:

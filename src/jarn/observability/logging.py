@@ -30,6 +30,10 @@ class RedactingFilter(logging.Filter):
         try:
             formatted = record.getMessage()
         except Exception:  # noqa: BLE001 - never let logging itself crash a turn
+            # A record whose interpolation raised is the most likely to carry an
+            # unredacted secret in its raw msg/args; suppress rather than emit it.
+            record.msg = "<unformattable log record - suppressed for redaction safety>"
+            record.args = ()
             return True
         record.msg = redact_secrets(formatted)
         record.args = ()
