@@ -3090,7 +3090,12 @@ def test_commit_width_tracks_resize(monkeypatch):
         _shutil, "get_terminal_size",
         lambda *_a, **_k: os.terminal_size((120, 24)),
     )
-    console = Console(file=StringIO(), force_terminal=True, width=80)
+    # legacy_windows=False: Rich's width getter reserves one column on a legacy
+    # Windows console (returns set width - 1), which is Rich's quirk — this test
+    # asserts jarn's capping logic, so pin the modern-console behavior.
+    console = Console(
+        file=StringIO(), force_terminal=True, width=80, legacy_windows=False
+    )
     r = TurnRenderer(console, live_sink=lambda _: None, spinner=False)
 
     r.on_text("first commit text")
@@ -3112,7 +3117,9 @@ def test_commit_width_tracks_resize(monkeypatch):
     assert console.width == 60, f"expected 60 after resize, got {console.width}"
 
     # Phase 3: wide terminal (250 cols) → width still capped at 100.
-    console3 = Console(file=StringIO(), force_terminal=True, width=80)
+    console3 = Console(
+        file=StringIO(), force_terminal=True, width=80, legacy_windows=False
+    )
     monkeypatch.setattr(
         _shutil, "get_terminal_size",
         lambda *_a, **_k: os.terminal_size((250, 24)),

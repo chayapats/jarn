@@ -470,13 +470,20 @@ def test_xref_linear(tmp_path: Path) -> None:
     small_entries = _build_entries(small, list((small / "pkg").glob("*.py")))
     large_entries = _build_entries(large, list((large / "pkg").glob("*.py")))
 
-    t0 = _time.perf_counter()
-    _build_xref_counts(small_entries)
-    small_elapsed = _time.perf_counter() - t0
+    # Best-of-3 per size: a single sample on a loaded CI runner mixes scheduler
+    # noise into the ratio (observed 21x on shared macOS runners for an O(n)
+    # build). The minimum approximates the true cost; the linearity assertion
+    # is unchanged.
+    def _best_of_3(entries) -> float:
+        best = float("inf")
+        for _ in range(3):
+            t0 = _time.perf_counter()
+            _build_xref_counts(entries)
+            best = min(best, _time.perf_counter() - t0)
+        return best
 
-    t1 = _time.perf_counter()
-    _build_xref_counts(large_entries)
-    large_elapsed = _time.perf_counter() - t1
+    small_elapsed = _best_of_3(small_entries)
+    large_elapsed = _best_of_3(large_entries)
 
     ratio = large_elapsed / max(small_elapsed, 1e-9)
     assert ratio < 12, f"xref build looks super-linear: ratio={ratio:.1f}"

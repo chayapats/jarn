@@ -602,9 +602,11 @@ def test_yaml_cache_invalidates_on_mtime_change(tmp_path, monkeypatch):
     os.utime(pf, ns=(1_000_000_000, 1_000_000_000))
     assert pricing.lookup("mtok-model").input_per_mtok == 1.0
 
-    # New content, NEW mtime_ns one nanosecond later → cache invalidates.
+    # New content, NEW mtime_ns → cache invalidates. Jump a full 2 seconds, not
+    # 1 ns: NTFS quantizes timestamps to 100 ns ticks (and FAT to 2 s), so a
+    # sub-tick bump reads back as the SAME st_mtime_ns on Windows CI.
     pf.write_text("mtok-model:\n  input: 9.0\n  output: 2.0\n", encoding="utf-8")
-    os.utime(pf, ns=(1_000_000_001, 1_000_000_001))
+    os.utime(pf, ns=(3_000_000_000, 3_000_000_000))
     assert pricing.lookup("mtok-model").input_per_mtok == 9.0
 
 
