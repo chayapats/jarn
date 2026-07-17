@@ -426,7 +426,9 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         if note_edits and self._turn_made_edits():
             note = self.controller.cancel_edit_note()
             if note:
-                self.console.print(f"[{palette.C_DIM}]{_rich_escape(note)}[/{palette.C_DIM}]")
+                self.console.print(
+                    f"[{palette.C_DIM}]{_rich_escape(note)}[/{palette.C_DIM}]", highlight=False
+                )
 
     def _turn_made_edits(self) -> bool:
         """Whether the just-cancelled turn applied a file edit (write/edit) —
@@ -912,6 +914,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 f"{paths.global_logs_dir() / 'jarn.log'}"
                 f" — report: jarn bug[/{palette.C_DIM}]",
                 soft_wrap=True,
+                highlight=False,
             )
         finally:
             self._turn_task = None

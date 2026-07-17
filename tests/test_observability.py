@@ -7,7 +7,12 @@ import os
 
 from jarn.config.schema import ObservabilityConfig, TracingConfig
 from jarn.observability.logging import setup_logging
-from jarn.observability.tracing import configure_langsmith, configure_otel, configure_tracing
+from jarn.observability.tracing import (
+    configure_langsmith,
+    configure_otel,
+    configure_tracing,
+    span,
+)
 
 
 def test_setup_logging_writes_to_file(isolated_home):
@@ -66,3 +71,35 @@ def test_otel_backend():
     spans = exporter.get_finished_spans()
     assert len(spans) == 1
     assert spans[0].name == "test-span"
+
+
+def test_span_is_no_op_safe():
+    """span() is usable as a context manager even with no tracer configured."""
+    with span("standalone", detail="x") as s:
+        # Yields either a live span or None; never raises regardless of backend.
+        assert s is None or s is not None
+
+
+def test_span_emits_named_span_with_string_attrs():
+    """With a test span_processor, span() produces a named span and stringifies attrs."""
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    # The global TracerProvider is set-once per process; reset the guard so this
+    # test installs its own in-memory provider regardless of test ordering.
+    trace._TRACER_PROVIDER_SET_ONCE = trace.Once()
+    trace._TRACER_PROVIDER = None
+
+    exporter = InMemorySpanExporter()
+    assert configure_otel(span_processor=SimpleSpanProcessor(exporter)) is True
+
+    with span("jarn.turn", turn=3, mode="ask"):
+        pass
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].name == "jarn.turn"
+    # Attributes are coerced to strings.
+    assert spans[0].attributes["turn"] == "3"
+    assert spans[0].attributes["mode"] == "ask"

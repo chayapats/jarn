@@ -124,3 +124,26 @@ def test_make_driver_skips_transcript_when_disabled(tmp_path, monkeypatch, base_
     driver = ctrl.make_driver(approver=lambda *a, **k: None)
     assert driver.transcript is None, "transcript should be off when disabled"
     ctrl.close()
+
+
+def test_make_driver_shares_one_date_state_across_turns(tmp_path, monkeypatch, base_config):
+    """The per-turn drivers minted by make_driver must all share the controller's
+    ONE ``date_state`` dict; otherwise each fresh driver gets a new dict and
+    re-injects the date system message every turn (once-per-day de-dup broken)."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+
+    ctrl = Controller(base_config, root)
+    ctrl.runtime = SimpleNamespace(agent=object(), main_model_ref="m", known_model_refs=())
+
+    d1 = ctrl.make_driver(approver=lambda *a, **k: None)
+    d2 = ctrl.make_driver(approver=lambda *a, **k: None)
+    # Same object identity, and the object the controller holds — a session-lifetime
+    # dict, not a per-driver default_factory instance.
+    assert d1.date_state is ctrl._date_state
+    assert d2.date_state is ctrl._date_state
+    # A write by the first turn's driver is visible to the next turn's driver.
+    d1.date_state["last"] = "Current date: sentinel."
+    assert d2.date_state.get("last") == "Current date: sentinel."
+    ctrl.close()

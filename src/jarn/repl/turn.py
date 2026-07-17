@@ -134,11 +134,14 @@ async def _run_turn(
             else ""
         )
         console.print(
-            f"[{_warn_color}]{_glyph} {_rich_escape(controller.last_error)}[/{_warn_color}]{_doctor_hint}"
+            f"[{_warn_color}]{_glyph} {_rich_escape(controller.last_error)}[/{_warn_color}]{_doctor_hint}",
+            highlight=False,
         )
 
     controller.record_session_title(text, when=time.time())
-    turn_text = controller.enrich_turn_input(text)
+    # enrich_turn_input does synchronous memory-file reads + vector-index builds;
+    # run it off the event loop so the REPL stays responsive during a turn.
+    turn_text = await asyncio.to_thread(controller.enrich_turn_input, text)
 
     async def approver(req: ApprovalRequest) -> ApprovalReply:
         if title_hook is not None:

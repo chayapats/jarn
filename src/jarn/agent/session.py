@@ -57,6 +57,7 @@ from jarn.agent.stream_handlers import (
     resolve_model_ref,
 )
 from jarn.cost import BudgetExceeded, CostTracker
+from jarn.observability.tracing import span as _span
 from jarn.permissions import PermissionEngine
 
 __all__ = [
@@ -150,8 +151,17 @@ class SessionDriver:
     checkpoint: Any = None
     #: Most recent write/edit file path, so post_edit hooks can scope by path.
     _last_edit_target: str = ""
-    #: Last date block injected into the agent payload (per-turn re-injection).
-    _last_date: str | None = field(default=None, repr=False)
+    #: Per-thread last-injected local day, keyed by ``thread_id``. Drivers are
+    #: recreated per turn, so a per-driver dict would re-inject the date every turn;
+    #: the controller passes ONE shared dict across a session (see
+    #: ``Controller._date_state`` / ``make_driver``) so the date system message is
+    #: injected once per local day. Keying by ``thread_id`` (not a single ``"last"``
+    #: slot) is load-bearing: /clear, /compact, /rewind, and /resume mint a NEW
+    #: thread whose fresh history has no date message — a shared single-value slot
+    #: would let a prior thread's stamp suppress it, leaving the new thread dateless
+    #: (and, past midnight, carrying a stale launch-day date). The ``default_factory``
+    #: is the fallback for drivers built without an explicit ``date_state``.
+    date_state: dict = field(default_factory=dict, repr=False)
     #: Accumulates assistant TEXT chunks for the current turn so a single
     #: ``assistant`` event is written per turn rather than one per streaming token.
     _turn_text: str = ""
@@ -190,8 +200,11 @@ class SessionDriver:
     #: turn by the controller; incremented in the REPL when an auto-queue event
     #: fires.
     _diag_round: int = 0
-    #: Last cumulative usage seen per (thread, model) — streaming providers resend totals.
-    _last_usage_totals: dict[tuple[str, str], tuple[int, int, int, int]] = field(
+    #: Last cumulative usage seen per (thread, subgraph-namespace, model) —
+    #: streaming providers resend cumulative totals, and two parallel same-model
+    #: subagents interleave their streams, so the namespace is part of the key to
+    #: keep each stream's deltas separate (see record_usage).
+    _last_usage_totals: dict[tuple[str, str, str], tuple[int, int, int, int]] = field(
         default_factory=dict, repr=False
     )
     #: T-3-5 subagent stream tagging (display-only). ``_subagent_pending`` is a FIFO
@@ -251,12 +264,18 @@ class SessionDriver:
         the pre-existing path, byte-for-byte unchanged.
         """
         self.tracker.check_or_raise()
+        _log.info(
+            "turn start thread=%s model=%s resume=%s",
+            self.thread_id, self.main_model_ref, resume,
+        )
 
         messages: list[dict[str, Any]] = []
         date_block = date_context()
-        if self._last_date != date_block:
+        # Dedup PER THREAD: a new thread (after /clear, /compact, /rewind, /resume)
+        # must get its own date message even if another thread already stamped today.
+        if self.date_state.get(self.thread_id) != date_block:
             messages.append({"role": "system", "content": date_block})
-            self._last_date = date_block
+            self.date_state[self.thread_id] = date_block
 
         if resume:
             payload: Any = {"messages": messages}
@@ -312,22 +331,34 @@ class SessionDriver:
             turn_index = await self._current_turn_index()
             self._start_snapshot(user_input[:80], _time.time(), turn_index=turn_index)
 
-        try:
-            async for ev in self._stream_turn(payload):
-                yield ev
-            # Turn-end reap (reached only on a NON-cancelled completion): wait for
-            # the snapshot so it is guaranteed to have landed and any failure is
-            # recorded. This runs at turn END only (never turn start) and is
-            # typically instant — the snapshot overlapped the whole model response.
-            # A failure discovered here is past the turn's last yield, so its NOTICE
-            # is deferred to the start of the next turn.
-            await self._ensure_snapshot()
-        finally:
-            # Never leak the snapshot task: a cancelled/closed turn skips the reap
-            # above (GeneratorExit/CancelledError propagates past it), so settle it
-            # here without blocking — detach it to finish in its worker thread (the
-            # snapshot still lands; any failure surfaces on the next turn).
-            self._detach_pending_snapshot()
+        with _span("jarn.turn", thread_id=self.thread_id, model=self.main_model_ref):
+            try:
+                async for ev in self._stream_turn(payload):
+                    yield ev
+                # Turn-end reap (reached only on a NON-cancelled completion): wait for
+                # the snapshot so it is guaranteed to have landed and any failure is
+                # recorded. This runs at turn END only (never turn start) and is
+                # typically instant — the snapshot overlapped the whole model response.
+                # A failure discovered here is past the turn's last yield, so its NOTICE
+                # is deferred to the start of the next turn.
+                await self._ensure_snapshot()
+            finally:
+                # Never leak the snapshot task: a cancelled/closed turn skips the reap
+                # above (GeneratorExit/CancelledError propagates past it), so settle it
+                # here without blocking — detach it to finish in its worker thread (the
+                # snapshot still lands; any failure surfaces on the next turn).
+                self._detach_pending_snapshot()
+                # Transcript fidelity: flush any streamed-but-unflushed assistant text
+                # of a turn that died (provider error) or was cancelled — the DONE path
+                # clears ``_turn_text`` after its flush, so a non-empty value here means
+                # the turn never reached DONE. Tradeoff: a retried turn re-streams the
+                # full reply as a second line — noisy but honest; losing streamed text
+                # (the old behaviour) is worse.
+                if self.transcript is not None and self._turn_text:
+                    self.transcript.write_assistant(
+                        self._turn_text + "\n…(turn interrupted)", ts=_time.time()
+                    )
+                    self._turn_text = ""
 
     async def _stream_turn(self, payload: Any):
         """Stream one turn's model output and resolve HITL interrupts.
@@ -460,6 +491,8 @@ class SessionDriver:
                                 steered = True
                                 break
                         for ev in self._handle_update_chunk(chunk, interrupts, namespace):
+                            if ev.kind is EventKind.TOOL_START:
+                                _log.debug("tool start %s args=%.200r", ev.text, ev.data.get("args"))
                             # Write tool-start events incrementally.
                             if ev.kind is EventKind.TOOL_START and self.transcript is not None:
                                 self.transcript.write_tool(
@@ -484,6 +517,11 @@ class SessionDriver:
                 data: dict[str, Any] = classify_error(exc)
                 if data.get("auth"):
                     data["provider"] = _provider_of_ref(self.main_model_ref)
+                _log.warning(
+                    "turn error thread=%s retryable=%s auth=%s classified_by=%s: %.300s",
+                    self.thread_id, data.get("retryable"), data.get("auth"),
+                    data.get("classified_by"), str(exc),
+                )
                 yield Event(EventKind.ERROR, text=str(exc), data=data)
                 return
 
@@ -572,8 +610,12 @@ class SessionDriver:
                     if diag_ev is not None:
                         yield diag_ev
                 # Flush the accumulated assistant reply as a single transcript line.
+                # Clear ``_turn_text`` after the flush so the run_turn finally's
+                # interrupted-flush does not double-write it (FIX D).
                 if self.transcript is not None and self._turn_text:
                     self.transcript.write_assistant(self._turn_text, ts=_time.time())
+                    self._turn_text = ""
+                _log.info("turn done thread=%s %s", self.thread_id, self.tracker.summary_line())
                 yield Event(EventKind.DONE, data={"usage": self.tracker.summary_line()})
                 return
 
@@ -862,8 +904,8 @@ class SessionDriver:
     ):
         yield from handle_update_chunk(self, chunk, interrupts, namespace)
 
-    def _record_usage(self, msg: Any) -> None:
-        record_usage(self, msg)
+    def _record_usage(self, msg: Any, namespace: Any = ()) -> None:
+        record_usage(self, msg, namespace)
 
     def _resolve_model_ref(self, msg: Any) -> str:
         return resolve_model_ref(self, msg)

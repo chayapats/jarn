@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -523,6 +524,379 @@ async def test_ensure_runtime_stays_healthy_when_all_mcp_ok(
     assert ctrl.mcp_health == {"a": "ok"}
     assert ctrl.mcp_errors == {}
     assert seen["extra_tools"] == ["a_tool"]
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_loaded_once_across_rebuilds_and_reset_on_invalidate(
+    tmp_path, monkeypatch, base_config
+):
+    """FIX B: MCP servers are spawned once and reused across runtime rebuilds; a
+    mode/model rebuild must NOT re-load them, and invalidating the cache re-loads."""
+    import jarn.controller.core as controller_mod
+    from jarn.config.schema import MCPServer
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    base_config.mcp_servers = [MCPServer(name="a", command="x")]
+
+    calls = {"load": 0, "build": 0}
+
+    async def _counting_loader(servers):
+        calls["load"] += 1
+        return MCPLoadResult(tools=["a_tool"], health={"a": "ok"}, errors={})
+
+    async def _fake_checkpointer(db_path):
+        return object(), None
+
+    def _fake_build_runtime(config, **kwargs):
+        calls["build"] += 1
+        from types import SimpleNamespace
+
+        return SimpleNamespace(agent=object(), main_model_ref="m")
+
+    monkeypatch.setattr(controller_mod, "load_mcp_tools", _counting_loader)
+    monkeypatch.setattr(controller_mod, "create_async_checkpointer", _fake_checkpointer)
+    monkeypatch.setattr(controller_mod, "build_runtime", _fake_build_runtime)
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    await ctrl.ensure_runtime()
+    assert ctrl.runtime is not None  # to_thread(partial(build_runtime, ...)) path works
+    # A mode change drops the runtime (but not the MCP cache) → rebuild reuses MCP.
+    ctrl.apply_mode("plan")
+    await ctrl.ensure_runtime()
+    assert calls["load"] == 1  # MCP spawned ONCE across two rebuilds
+    assert calls["build"] == 2  # runtime genuinely rebuilt both times
+
+    # Invalidating the cache (as a config reload does) forces a fresh MCP load.
+    ctrl._mcp_cache = None
+    ctrl.runtime = None
+    await ctrl.ensure_runtime()
+    assert calls["load"] == 2
+    ctrl.close()
+
+
+def test_mcp_refresh_updates_cache_so_rebuild_keeps_fresh_health(
+    tmp_path, monkeypatch, base_config
+):
+    """`/mcp refresh` replaces the runtime MCP cache, so a later rebuild mirrors
+    the refreshed (recovered) health instead of reverting to the stale degraded
+    values ensure_runtime would otherwise re-apply on a cache hit."""
+    import asyncio
+
+    import jarn.controller.commands.diagnostics as diag_mod
+    from jarn.config.schema import MCPServer
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    base_config.mcp_servers = [MCPServer(name="s", command="x")]
+    degraded = MCPLoadResult(tools=[], health={"s": "error"}, errors={"s": "boom"})
+    _stub_runtime_build(monkeypatch, degraded)
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    asyncio.run(ctrl.ensure_runtime())
+    assert ctrl.health == "degraded"
+    assert ctrl.last_error is not None and "boom" in ctrl.last_error
+
+    # The server recovers; `/mcp refresh` re-probes and must also refresh the cache.
+    healthy = MCPLoadResult(tools=["s_tool"], health={"s": "ok"}, errors={})
+
+    async def _healthy_loader(servers):
+        return healthy
+
+    monkeypatch.setattr(diag_mod, "load_mcp_tools", _healthy_loader)
+    ctrl.handle_command("mcp", "refresh")
+    assert ctrl._mcp_cache is healthy
+    assert ctrl.mcp_health == {"s": "ok"}
+
+    # A rebuild (model rotation, mode change, /config set) reuses the fresh cache:
+    # health recovers to ok and the stale MCP degradation is cleared, not re-applied.
+    ctrl.runtime = None
+    asyncio.run(ctrl.ensure_runtime())
+    assert ctrl.mcp_health == {"s": "ok"}
+    assert ctrl.health == "ok"
+    assert ctrl.last_error is None
+    ctrl.close()
+
+
+# --- single-flight / cancellation / invalidation safety (BLOCKERS 1 & 2) -----
+
+
+@pytest.mark.asyncio
+async def test_cancel_midbuild_never_starts_a_second_concurrent_build(
+    tmp_path, monkeypatch, base_config
+):
+    """BLOCKER 1: cancelling a caller mid-build (the live turn-cancel path) must
+    NOT let the next ensure_runtime start a SECOND concurrent build racing the
+    process-global deepagents profile registry. At most one build worker runs at
+    a time; the second caller reuses the in-flight worker and gets its runtime."""
+    import threading
+    from types import SimpleNamespace
+
+    import jarn.controller.core as controller_mod
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    gate = threading.Event()
+    lock = threading.Lock()
+    st = {"calls": 0, "concurrent": 0, "max_concurrent": 0}
+
+    async def _fake_loader(servers):
+        return MCPLoadResult(tools=[], health={}, errors={})
+
+    async def _fake_checkpointer(db_path):
+        return object(), None
+
+    def _fake_build_runtime(config, **kwargs):
+        with lock:
+            st["calls"] += 1
+            st["concurrent"] += 1
+            st["max_concurrent"] = max(st["max_concurrent"], st["concurrent"])
+        gate.wait(5)  # block so the build is genuinely in flight
+        with lock:
+            st["concurrent"] -= 1
+        return SimpleNamespace(agent=object(), main_model_ref="m", backend=None)
+
+    monkeypatch.setattr(controller_mod, "load_mcp_tools", _fake_loader)
+    monkeypatch.setattr(controller_mod, "create_async_checkpointer", _fake_checkpointer)
+    monkeypatch.setattr(controller_mod, "build_runtime", _fake_build_runtime)
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    first = asyncio.create_task(ctrl.ensure_runtime())
+    while st["calls"] == 0:  # wait until the worker thread entered build_runtime
+        await asyncio.sleep(0.01)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    # A second caller arrives while the first build's THREAD is still running.
+    second = asyncio.create_task(ctrl.ensure_runtime())
+    await asyncio.sleep(0.05)  # let it reach the shielded await
+    gate.set()  # release the single in-flight worker
+    rt = await second
+
+    assert rt is not None and ctrl.runtime is rt
+    assert st["max_concurrent"] == 1  # never two concurrent builds
+    assert st["calls"] == 1  # the worker was NOT duplicated by the cancel
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_invalidation_midbuild_disposes_stale_and_reloads_mcp(
+    tmp_path, monkeypatch, base_config
+):
+    """BLOCKER 2: if a config reload invalidates (drops the MCP cache + bumps the
+    generation) while a build worker is in flight, the stale runtime — built with
+    the OLD, now-revoked MCP tools — must be DISPOSED, never assigned. The rebuild
+    then re-loads MCP and yields a runtime with only the new tools."""
+    import threading
+    from types import SimpleNamespace
+
+    import jarn.controller.core as controller_mod
+    from jarn.config.schema import MCPServer
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    base_config.mcp_servers = [MCPServer(name="a", command="x")]
+    results = [
+        MCPLoadResult(tools=["revoked_tool"], health={"a": "ok"}, errors={}),
+        MCPLoadResult(tools=["new_tool"], health={"a": "ok"}, errors={}),
+    ]
+    load = {"n": 0}
+
+    async def _fake_loader(servers):
+        i = min(load["n"], len(results) - 1)
+        load["n"] += 1
+        return results[i]
+
+    async def _fake_checkpointer(db_path):
+        return object(), None
+
+    gate = threading.Event()
+    started = threading.Event()
+    build = {"n": 0}
+    closed = {"n": 0}
+
+    def _fake_build_runtime(config, *, extra_tools, **kwargs):
+        n = build["n"]
+        build["n"] += 1
+        if n == 0:
+            started.set()
+            gate.wait(5)  # first build blocks so we can invalidate mid-build
+        backend = SimpleNamespace(close=lambda: closed.__setitem__("n", closed["n"] + 1))
+        return SimpleNamespace(
+            agent=object(), main_model_ref="m", backend=backend, tools=list(extra_tools)
+        )
+
+    monkeypatch.setattr(controller_mod, "load_mcp_tools", _fake_loader)
+    monkeypatch.setattr(controller_mod, "create_async_checkpointer", _fake_checkpointer)
+    monkeypatch.setattr(controller_mod, "build_runtime", _fake_build_runtime)
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    first = asyncio.create_task(ctrl.ensure_runtime())
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+
+    # Config reload invalidates mid-build: drops the MCP cache and bumps the gen.
+    ctrl._apply_reloaded_config()
+    gate.set()  # let the now-stale build finish
+
+    rt = await first
+    assert rt.tools == ["new_tool"]  # stale (revoked_tool) build was NOT committed
+    assert ctrl.runtime is rt
+    assert load["n"] == 2  # MCP loader re-ran after the cache was dropped
+    assert build["n"] == 2  # stale build + fresh rebuild
+    assert closed["n"] == 1  # the stale runtime's backend was disposed, not leaked
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_ensure_runtime_builds_once(
+    tmp_path, monkeypatch, base_config
+):
+    """Plain concurrent callers still single-flight: gather(ensure, ensure)
+    builds exactly one runtime and both callers see the same object."""
+    from types import SimpleNamespace
+
+    import jarn.controller.core as controller_mod
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    calls = {"build": 0}
+
+    async def _fake_loader(servers):
+        return MCPLoadResult(tools=[], health={}, errors={})
+
+    async def _fake_checkpointer(db_path):
+        return object(), None
+
+    def _fake_build_runtime(config, **kwargs):
+        calls["build"] += 1
+        return SimpleNamespace(agent=object(), main_model_ref="m", backend=None)
+
+    monkeypatch.setattr(controller_mod, "load_mcp_tools", _fake_loader)
+    monkeypatch.setattr(controller_mod, "create_async_checkpointer", _fake_checkpointer)
+    monkeypatch.setattr(controller_mod, "build_runtime", _fake_build_runtime)
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    r1, r2 = await asyncio.gather(ctrl.ensure_runtime(), ctrl.ensure_runtime())
+
+    assert r1 is r2 is ctrl.runtime
+    assert calls["build"] == 1
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_ensure_runtime_single_flight_under_concurrency(
+    tmp_path, monkeypatch, base_config
+):
+    """MAJOR: two concurrent ensure_runtime() callers must build the runtime ONCE
+    and share the result. build_runtime mutates process-global deepagents profile
+    state, so a second racing build both wastes work and leaks an instance. Without
+    the _ensure_lock single-flight, both callers pass the runtime-is-None check on
+    separate to_thread workers → two builds. The lock serializes them so the second
+    caller sees the first build via the double-checked None guard."""
+    import asyncio
+
+    import jarn.controller.core as controller_mod
+    from jarn.config.schema import MCPServer
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    base_config.mcp_servers = [MCPServer(name="a", command="x")]
+
+    calls = {"build": 0}
+
+    async def _fake_loader(servers):
+        return MCPLoadResult(tools=["a_tool"], health={"a": "ok"}, errors={})
+
+    async def _fake_checkpointer(db_path):
+        return object(), None
+
+    def _slow_build_runtime(config, **kwargs):
+        # Sleep on the worker thread so, absent the lock, the second caller would
+        # slip past the None check and start its own build before this returns.
+        import time
+        from types import SimpleNamespace
+
+        calls["build"] += 1
+        time.sleep(0.1)
+        return SimpleNamespace(agent=object(), main_model_ref="m")
+
+    monkeypatch.setattr(controller_mod, "load_mcp_tools", _fake_loader)
+    monkeypatch.setattr(controller_mod, "create_async_checkpointer", _fake_checkpointer)
+    monkeypatch.setattr(controller_mod, "build_runtime", _slow_build_runtime)
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    rt_a, rt_b = await asyncio.gather(ctrl.ensure_runtime(), ctrl.ensure_runtime())
+
+    assert calls["build"] == 1  # single-flight: built exactly once
+    assert rt_a is rt_b is ctrl.runtime  # both callers share the one runtime
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_refresh_from_running_loop_stores_cache(
+    tmp_path, monkeypatch, base_config
+):
+    """BLOCKER 1: the sync /mcp refresh handler runs FROM the async REPL's running
+    loop, where asyncio.run() raises. The loop-aware path probes on a worker thread
+    and still stores the fresh probe into _mcp_cache (the sync test would miss this)."""
+    import jarn.controller.commands.diagnostics as diag_mod
+    from jarn.config.schema import MCPServer
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    base_config.mcp_servers = [MCPServer(name="s", command="x")]
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    healthy = MCPLoadResult(tools=["s_tool"], health={"s": "ok"}, errors={})
+
+    async def _healthy_loader(servers):
+        return healthy
+
+    monkeypatch.setattr(diag_mod, "load_mcp_tools", _healthy_loader)
+
+    # A running loop is active (this coroutine); the sync handler must not raise.
+    ctrl.handle_command("mcp", "refresh")
+
+    assert ctrl._mcp_cache is healthy
+    assert ctrl.mcp_health == {"s": "ok"}
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_failure_never_clobbers_sandbox_degradation(
+    tmp_path, monkeypatch, base_config
+):
+    """BLOCKER 2: an MCP failure must not overwrite a non-MCP last_error (the
+    sandbox-fell-back-to-host reason), and MCP recovery — scoped to the MCP prefix —
+    must not clear it. The sandbox degradation is still true, so health stays
+    degraded across both the failure and the recovery."""
+    from jarn.config.schema import MCPServer
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    base_config.mcp_servers = [MCPServer(name="s", command="x")]
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    # A prior sandbox fallback degraded the session with a non-MCP reason.
+    sandbox_reason = "sandbox unavailable, running on host (opted in): boom"
+    ctrl.health = "degraded"
+    ctrl.last_error = sandbox_reason
+
+    # MCP fails on this rebuild: health stays degraded but the sandbox reason wins.
+    _stub_runtime_build(
+        monkeypatch, MCPLoadResult(tools=[], health={"s": "error"}, errors={"s": "bad"})
+    )
+    ctrl._mcp_cache = None
+    ctrl.runtime = None
+    await ctrl.ensure_runtime()
+    assert ctrl.health == "degraded"
+    assert ctrl.last_error == sandbox_reason  # survives the MCP failure
+
+    # MCP recovers: recovery is scoped to the MCP prefix, so it leaves the sandbox
+    # reason and the degraded health intact (it must not erase a live degradation).
+    _stub_runtime_build(
+        monkeypatch, MCPLoadResult(tools=["s_tool"], health={"s": "ok"}, errors={})
+    )
+    ctrl._mcp_cache = None
+    ctrl.runtime = None
+    await ctrl.ensure_runtime()
+    assert ctrl.health == "degraded"
+    assert ctrl.last_error == sandbox_reason  # not cleared by MCP recovery
     ctrl.close()
 
 
@@ -1501,3 +1875,170 @@ def test_shell_context_disabled_by_config(tmp_path, monkeypatch, base_config):
     result = ctrl.enrich_turn_input("hello")
     assert "<shell-escape context" not in result
     ctrl.close()
+
+
+# ---------------------------------------------------------------------------
+# Shutdown = generation boundary: aclose must not leak a backend built by an
+# in-flight (or committed) runtime after the session exits.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cancel_midbuild_then_aclose_never_leaks_backend(
+    tmp_path, monkeypatch, base_config
+):
+    """SHUTDOWN BLOCKER: a caller's ensure_runtime cancelled mid-build leaves the
+    shielded worker running. aclose() must make shutdown a generation boundary so
+    the surviving worker DISPOSES (closes its backend) instead of committing
+    self.runtime after close — no backend (e.g. a Docker sandbox container) may
+    outlive aclose. A post-close ensure_runtime is refused."""
+    import threading
+    from types import SimpleNamespace
+
+    import jarn.controller.core as controller_mod
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    gate = threading.Event()
+    started = threading.Event()
+    closed = {"n": 0}
+
+    async def _fake_loader(servers):
+        return MCPLoadResult(tools=[], health={}, errors={})
+
+    async def _fake_checkpointer(db_path):
+        return object(), None
+
+    def _slow_build_runtime(config, **kwargs):
+        started.set()
+        gate.wait(5)  # block so the build is genuinely in flight at cancel + aclose
+        backend = SimpleNamespace(close=lambda: closed.__setitem__("n", closed["n"] + 1))
+        return SimpleNamespace(agent=object(), main_model_ref="m", backend=backend)
+
+    monkeypatch.setattr(controller_mod, "load_mcp_tools", _fake_loader)
+    monkeypatch.setattr(controller_mod, "create_async_checkpointer", _fake_checkpointer)
+    monkeypatch.setattr(controller_mod, "build_runtime", _slow_build_runtime)
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    first = asyncio.create_task(ctrl.ensure_runtime())
+    while not started.is_set():  # wait until the worker thread entered build_runtime
+        await asyncio.sleep(0.01)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    # The shielded worker is still blocked in build_runtime. aclose() only returns
+    # after settling it, so release the gate from a timer armed BEFORE awaiting
+    # aclose — otherwise the settle step would deadlock waiting on the gate.
+    timer = threading.Timer(0.1, gate.set)
+    timer.start()
+    try:
+        await ctrl.aclose()
+    finally:
+        timer.cancel()
+
+    # Shutdown was a generation boundary: the worker disposed (never committed).
+    assert ctrl.runtime is None
+    assert closed["n"] == 1  # backend closed exactly once, by the dispose path
+    with pytest.raises(RuntimeError):
+        await ctrl.ensure_runtime()
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_committed_runtime_backend(
+    tmp_path, monkeypatch, base_config
+):
+    """A committed runtime's backend is still torn down by aclose: the shutdown
+    invalidation nulls self.runtime, so aclose closes the CAPTURED runtime's backend
+    itself — otherwise self.close() would see None and the Docker sandbox container
+    would outlive the session (closed exactly once: no leak, no double close)."""
+    from types import SimpleNamespace
+
+    import jarn.controller.core as controller_mod
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    closed = {"n": 0}
+
+    async def _fake_loader(servers):
+        return MCPLoadResult(tools=[], health={}, errors={})
+
+    async def _fake_checkpointer(db_path):
+        return object(), None
+
+    def _fake_build_runtime(config, **kwargs):
+        backend = SimpleNamespace(close=lambda: closed.__setitem__("n", closed["n"] + 1))
+        return SimpleNamespace(agent=object(), main_model_ref="m", backend=backend)
+
+    monkeypatch.setattr(controller_mod, "load_mcp_tools", _fake_loader)
+    monkeypatch.setattr(controller_mod, "create_async_checkpointer", _fake_checkpointer)
+    monkeypatch.setattr(controller_mod, "build_runtime", _fake_build_runtime)
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    rt = await ctrl.ensure_runtime()
+    assert ctrl.runtime is rt  # committed, no build in flight
+    await ctrl.aclose()
+
+    assert ctrl.runtime is None
+    assert closed["n"] == 1  # committed backend closed exactly once (not leaked)
+
+
+@pytest.mark.asyncio
+async def test_aclose_serializes_after_live_caller_no_post_close_build(
+    tmp_path, monkeypatch, base_config
+):
+    """SHUTDOWN INTERLEAVING: a LIVE (uncancelled) ensure_runtime caller holds
+    _ensure_lock across its whole build loop. aclose() must serialize behind that
+    lock — otherwise it bumps the generation mid-loop, the in-flight build disposes,
+    and the still-live loop starts a SECOND build that commits (backend leaks) after
+    aclose returns. With the lock the caller commits first and aclose then disposes
+    that committed runtime: exactly one build runs, runtime is None, its backend is
+    closed once, and a later ensure_runtime is refused."""
+    import threading
+    from types import SimpleNamespace
+
+    import jarn.controller.core as controller_mod
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    gate = threading.Event()
+    started = threading.Event()
+    build = {"n": 0}
+    closed = {"n": 0}
+
+    async def _fake_loader(servers):
+        return MCPLoadResult(tools=[], health={}, errors={})
+
+    async def _fake_checkpointer(db_path):
+        return object(), None
+
+    def _slow_build_runtime(config, **kwargs):
+        build["n"] += 1
+        started.set()
+        gate.wait(5)  # block so the live caller is genuinely mid-build at aclose
+        backend = SimpleNamespace(close=lambda: closed.__setitem__("n", closed["n"] + 1))
+        return SimpleNamespace(agent=object(), main_model_ref="m", backend=backend)
+
+    monkeypatch.setattr(controller_mod, "load_mcp_tools", _fake_loader)
+    monkeypatch.setattr(controller_mod, "create_async_checkpointer", _fake_checkpointer)
+    monkeypatch.setattr(controller_mod, "build_runtime", _slow_build_runtime)
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    first = asyncio.create_task(ctrl.ensure_runtime())
+    while not started.is_set():  # wait until the live caller entered build_runtime
+        await asyncio.sleep(0.01)
+
+    # first holds _ensure_lock, blocked mid-build. aclose() blocks on that lock, so
+    # release the gate from a timer armed BEFORE awaiting: the build commits → first
+    # frees the lock → aclose acquires it and disposes the just-committed runtime.
+    timer = threading.Timer(0.1, gate.set)
+    timer.start()
+    try:
+        aclose_task = asyncio.create_task(ctrl.aclose())
+        await first          # the live caller commits its runtime first
+        await aclose_task    # aclose then runs, serialized after the caller
+    finally:
+        timer.cancel()
+
+    assert build["n"] == 1       # NO second build created after the generation bump
+    assert ctrl.runtime is None  # aclose invalidated the committed runtime
+    assert closed["n"] == 1      # committed backend closed once by aclose (no leak)
+    with pytest.raises(RuntimeError):
+        await ctrl.ensure_runtime()

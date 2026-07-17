@@ -86,10 +86,13 @@ def _add_wiki_tools(
     *,
     project_trusted: bool,
     wiki_index_tokens: int | None = None,
-) -> tuple[list[Any], str]:
+) -> tuple[list[Any], str, list[Any]]:
     """Register the four wiki tools and optionally inject the wiki index.
 
-    Returns ``(updated_tools, updated_system_prompt)``.
+    Returns ``(updated_tools, updated_system_prompt, ungated_wiki)`` where
+    ``ungated_wiki`` is the exact read-only tool OBJECTS created here
+    (``wiki_search``, ``wiki_read``) — the runtime exempts them from the
+    interrupt map by object identity, never by name (names are forgeable).
 
     Trust gate mirrors project JARN.md / skills: project-tier wiki content is
     only injected into the system prompt when ``project_trusted`` is ``True``
@@ -175,6 +178,10 @@ def _add_wiki_tools(
         except ValueError as exc:
             return f"wiki_append error: {exc}"
 
+    # Read-only wiki tools are ungated by provenance: we return the exact
+    # instances so the runtime can exempt them by object identity. The mutating
+    # ones stay gated so the engine evaluates their writes.
+    ungated_wiki = [wiki_search, wiki_read]
     new_tools = [*tools, wiki_search, wiki_read, wiki_write, wiki_append]
 
     # Inject wiki index into the system prompt when pages exist.
@@ -196,10 +203,13 @@ def _add_wiki_tools(
         index_parts.append(index_text.strip())
 
     if index_parts:
-        block = "\n\n<wiki_index>\n" + "\n\n".join(index_parts) + "\n</wiki_index>\n\n"
-        system_prompt = block + system_prompt
+        # Append after the stable persona (never prepend): the wiki index is
+        # volatile, so keeping it as a suffix preserves the server-side
+        # cross-session prefix cache when repo content shifts.
+        block = "\n\n<wiki_index>\n" + "\n\n".join(index_parts) + "\n</wiki_index>"
+        system_prompt = system_prompt + block
 
-    return new_tools, system_prompt
+    return new_tools, system_prompt, ungated_wiki
 
 
 def _build_repo_map_tool(root: Path | None, *, token_budget: int):
@@ -234,14 +244,18 @@ def _build_repo_map_tool(root: Path | None, *, token_budget: int):
         except Exception as exc:  # noqa: BLE001
             return f"repo_map failed: {exc}"
 
+    # Read-only local codebase overview — the caller exempts this exact instance
+    # from the interrupt map by object identity (provenance), not by name.
     return repo_map
 
 
 def _inject_repo_map(system_prompt: str, root: Path, *, token_budget: int) -> str:
-    """Prepend a repo map block to *system_prompt* (for ``context.repo_map: auto``).
+    """Append a repo map block to *system_prompt* (for ``context.repo_map: auto``).
 
-    Failures are silently swallowed — a missing map should never prevent the
-    agent from starting.
+    The block is a suffix, never a prefix: the repo map is volatile, so appending
+    it keeps the stable persona at the front and preserves the server-side
+    cross-session prefix cache when repo content shifts. Failures are silently
+    swallowed — a missing map should never prevent the agent from starting.
     """
     from jarn.agent.repomap import build_repo_map
 
@@ -250,11 +264,11 @@ def _inject_repo_map(system_prompt: str, root: Path, *, token_budget: int) -> st
         if not map_text.strip():
             return system_prompt
         block = (
-            "<repo_map>\n"
+            "\n\n<repo_map>\n"
             + map_text
-            + "\n</repo_map>\n\n"
+            + "\n</repo_map>"
         )
-        return block + system_prompt
+        return system_prompt + block
     except Exception:  # noqa: BLE001
         return system_prompt
 
@@ -266,15 +280,24 @@ def _wire_builtin_tools(
     root: Path | None,
     *,
     project_trusted: bool,
-) -> tuple[list[Any], str]:
+) -> tuple[list[Any], str, tuple[Any, ...]]:
+    """Wire built-in tools and return ``(tools, system_prompt, ungated_tools)``.
+
+    ``ungated_tools`` is a tuple of the EXACT read-only tool objects this module
+    constructed (wiki reads, repo_map, background controls). The runtime exempts
+    them from the interrupt map by object identity — never by name or metadata,
+    both of which an MCP server can forge.
+    """
+    ungated: list[Any] = []
     if config.wiki.enabled:
-        tools, system_prompt = _add_wiki_tools(
+        tools, system_prompt, ungated_wiki = _add_wiki_tools(
             tools,
             system_prompt,
             root,
             project_trusted=project_trusted,
             wiki_index_tokens=config.context.wiki_index_tokens,
         )
+        ungated.extend(ungated_wiki)
 
     repo_map_mode = config.context.repo_map
     if repo_map_mode in ("tool", "auto"):
@@ -282,6 +305,7 @@ def _wire_builtin_tools(
             root, token_budget=config.context.repo_map_tokens
         )
         tools = [*tools, repo_map_tool]
+        ungated.append(repo_map_tool)
 
     if repo_map_mode == "auto" and root is not None:
         system_prompt = _inject_repo_map(
@@ -290,12 +314,20 @@ def _wire_builtin_tools(
 
     if config.execution.backend == "local" and config.execution.background:
         from jarn.agent.background import build_background_tools
+        from jarn.agent.permissions_bridge import BACKGROUND_CONTROL_TOOLS
 
-        tools = [*tools, *build_background_tools(
+        bg_tools = build_background_tools(
             root or Path.cwd(),
             max_concurrent=config.execution.background_max_concurrent,
             max_lifetime_secs=config.execution.background_max_lifetime_secs,
-        )]
+        )
+        # Collect the read-only control INSTANCES by provenance — matching names
+        # within the list we just built is safe (these are our own objects, and
+        # run_in_background is never in BACKGROUND_CONTROL_TOOLS so it stays gated).
+        ungated.extend(
+            t for t in bg_tools if getattr(t, "name", "") in BACKGROUND_CONTROL_TOOLS
+        )
+        tools = [*tools, *bg_tools]
 
     tools = [*tools, _exit_plan_mode_tool(), _suggest_memory_tool()]
-    return tools, system_prompt
+    return tools, system_prompt, tuple(ungated)

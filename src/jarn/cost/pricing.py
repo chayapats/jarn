@@ -25,9 +25,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -74,9 +77,10 @@ class Price:
 # stale entries are intentionally NOT kept here. Keys match as substrings of the
 # model id (longest wins), so "anthropic/claude-opus-4-8" matches "claude-opus-4-8".
 _BUILTIN: dict[str, Price] = {
-    "claude-opus-4-8": Price(5.0, 25.0),
-    "claude-sonnet-4-5": Price(3.0, 15.0),
-    "claude-haiku-4-5": Price(1.0, 5.0),
+    # Anthropic prompt-cache multipliers over input: read = 0.1x, write (5m) = 1.25x.
+    "claude-opus-4-8": Price(5.0, 25.0, cache_read_rate=0.5, cache_write_rate=6.25),
+    "claude-sonnet-4-5": Price(3.0, 15.0, cache_read_rate=0.3, cache_write_rate=3.75),
+    "claude-haiku-4-5": Price(1.0, 5.0, cache_read_rate=0.1, cache_write_rate=1.25),
     # Local models are free.
     "ollama": Price(0.0, 0.0),
     "lmstudio": Price(0.0, 0.0),
@@ -103,30 +107,207 @@ def _match_substr[T](table: dict[str, T], model_id: str) -> T | None:
     return max(matches, key=lambda kv: len(kv[0]))[1]
 
 
-def _load_price_overrides() -> dict[str, Price]:
-    path = paths.global_home() / "pricing.yaml"
-    if not path.is_file():
-        return {}
+# mtime-memoized override parses, keyed by absolute path string. The override
+# loaders run on the per-token cost hot path (twice per ``tracker.record`` under
+# the tracker lock), so re-reading + re-parsing the YAML on every lookup is a
+# needless syscall+parse storm; this caches the parsed result and re-parses only
+# when the file changes.
+_YAML_CACHE: dict[str, tuple[int, Any]] = {}
+
+
+def _cached_load(path: Path, loader: Callable[[Path], Any]) -> Any:
+    """Return ``loader(path)`` memoized by ``path``'s ``st_mtime_ns``.
+
+    Invariant: the parse is recomputed only when the file's mtime changes.
+    ``st_mtime_ns`` (not ``st_mtime``) is required so a rewrite within the same
+    wall-clock second — as in the tests — still invalidates the cache. A missing
+    file (``stat`` raises ``OSError``) yields ``{}`` and is never cached."""
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        mtime_ns = path.stat().st_mtime_ns
+    except OSError:
+        return {}
+    hit = _YAML_CACHE.get(str(path))
+    if hit is not None and hit[0] == mtime_ns:
+        return hit[1]
+    data = loader(path)
+    _YAML_CACHE[str(path)] = (mtime_ns, data)
+    return data
+
+
+def _valid_rate(x: Any) -> float:
+    """Parse a USD rate, rejecting bool / NaN / inf / negative values.
+
+    ``float()`` alone happily accepts ``.nan``, ``.inf`` and negatives — but a NaN
+    rate poisons the whole cost to NaN, and since *every* comparison against NaN is
+    False, a configured hard-stop budget would then NEVER fire. Require a finite,
+    non-negative value so an invalid rate raises ``ValueError`` (and is skipped)
+    rather than silently disabling the budget guard.
+
+    ``bool`` is rejected explicitly BEFORE ``float()``: ``float(False) == 0.0`` and
+    ``float(True) == 1.0`` would otherwise admit a boolean as a valid rate — a bool
+    in a required-rate field means the value is unknown, not a legitimate $0."""
+    if isinstance(x, bool):
+        raise ValueError(f"rate must be a number, not a bool, got {x!r}")
+    v = float(x)
+    if not math.isfinite(v) or v < 0:
+        raise ValueError(f"rate must be finite and non-negative, got {x!r}")
+    return v
+
+
+def _safe_cache_rate(raw: Any, slug: str) -> float | None:
+    """Validate an OPTIONAL cache rate ($/Mtok) already in processed form.
+
+    An absent rate is ``None`` (fall back to input). An invalid one (NaN / inf /
+    negative / unparseable) is warned about and treated as absent rather than
+    propagated into cost — never a hard error, since the rate is optional."""
+    if raw is None:
+        return None
+    try:
+        return _valid_rate(raw)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid cache rate for %r; treating as absent", slug)
+        return None
+
+
+def _validate_catalog(raw: Any) -> dict[str, dict]:
+    """Validate a *processed* catalog mapping (slug -> {input, output, context,
+    cache_read?, cache_write?}), dropping any invalid entry with a warning.
+
+    This is the SINGLE per-entry boundary shared by both catalog sources — the
+    network fetch (post-conversion) and the on-disk cache — so a poisoned value
+    (e.g. a legacy JSON ``NaN`` rate, which every comparison treats as False and
+    would silently disable a hard-stop budget) can never reach ``cost_of`` from
+    either path. A non-mapping root yields ``{}``."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for slug, entry in raw.items():
+        # A non-string / empty id would break substring lookups (``k in model_id``).
+        if not isinstance(slug, str) or not slug:
+            logger.warning("Ignoring catalog entry with non-string id %r", slug)
+            continue
+        if not isinstance(entry, dict):
+            logger.warning("Ignoring non-mapping catalog entry for %r", slug)
+            continue
+        # Required rates: invalid (missing / NaN / inf / negative) -> SKIP the whole
+        # entry so the model stays UNPRICED (counted by the tracker), never admitted
+        # at $0 which would leave a hard-stop budget OK under unlimited real usage.
+        try:
+            inp = _valid_rate(entry.get("input"))
+            outp = _valid_rate(entry.get("output"))
+        except (TypeError, ValueError):
+            logger.warning("Ignoring catalog entry %r with invalid required rate", slug)
+            continue
+        ctx_raw = entry.get("context") or 0
+        try:
+            ctx = int(ctx_raw) if ctx_raw else 0
+        except (TypeError, ValueError):
+            ctx = 0
+        out[slug] = {
+            "input": inp,
+            "output": outp,
+            "context": ctx,
+            "cache_read": _safe_cache_rate(entry.get("cache_read"), slug),
+            "cache_write": _safe_cache_rate(entry.get("cache_write"), slug),
+        }
+    return out
+
+
+def _parse_price_overrides(path: Path) -> dict[str, Price]:
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError):
+        # Swallow but name the file: a typo in pricing.yaml would otherwise
+        # discard every override silently, leaving the user's prices unapplied.
+        logger.warning("Ignoring unparseable price overrides at %s", path)
+        return {}
+    # Only an EMPTY document (None) maps silently to {}. A valid-YAML but
+    # non-mapping root (a top-level list, or a FALSY scalar like [], 0, false)
+    # has no .items(): ``or {}`` would coerce the falsy ones to {} without a
+    # warning — name the file and bail so the user sees why nothing applied.
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        logger.warning("Ignoring non-mapping price overrides at %s", path)
         return {}
     out: dict[str, Price] = {}
     for key, val in raw.items():
-        if isinstance(val, dict) and "input" in val and "output" in val:
-            out[key] = Price(float(val["input"]), float(val["output"]))
+        # A non-string key (e.g. a numeric YAML key ``1:``) would be admitted here
+        # and later crash every _match_substr lookup (``k in model_id`` needs a str
+        # left operand). Reject it inside the per-entry boundary — skip only it.
+        if not isinstance(key, str):
+            logger.warning(
+                "Ignoring non-string price override key %r in pricing.yaml", key
+            )
+            continue
+        # A dict entry missing (or misspelling) the required input/output keys —
+        # or a non-mapping value entirely — must warn + skip, never silently drop
+        # so a typo leaves the user wondering why their price never applied.
+        if not (isinstance(val, dict) and "input" in val and "output" in val):
+            logger.warning(
+                "Ignoring price override for %r in pricing.yaml (needs input+output)", key
+            )
+            continue
+        # Per-entry boundary: a bad number in one entry (e.g. cache_read: nope, or a
+        # non-finite .nan/.inf/negative rate) must skip only that entry, never
+        # discard every other override — and the rate conversions (via _valid_rate,
+        # which also rejects NaN/inf/negative) must live INSIDE the boundary.
+        try:
+            cr = val.get("cache_read")
+            cw = val.get("cache_write")
+            out[key] = Price(
+                _valid_rate(val["input"]),
+                _valid_rate(val["output"]),
+                cache_read_rate=_valid_rate(cr) if cr is not None else None,
+                cache_write_rate=_valid_rate(cw) if cw is not None else None,
+            )
+        except (TypeError, ValueError):
+            logger.warning("Ignoring bad price override for %r in pricing.yaml", key)
+    return out
+
+
+def _load_price_overrides() -> dict[str, Price]:
+    return _cached_load(paths.global_home() / "pricing.yaml", _parse_price_overrides)
+
+
+def _parse_window_overrides(path: Path) -> dict[str, int]:
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        logger.warning("Ignoring unparseable context-window overrides at %s", path)
+        return {}
+    # Only an EMPTY document (None) maps silently to {}. A non-mapping root (a
+    # top-level list, or a falsy scalar like [], 0, false) has no .items():
+    # ``or {}`` would hide the falsy ones — warn and bail instead.
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        logger.warning("Ignoring non-mapping context-window overrides at %s", path)
+        return {}
+    out: dict[str, int] = {}
+    for k, v in raw.items():
+        # A non-string key would later crash _match_substr (``k in model_id``).
+        if not isinstance(k, str):
+            logger.warning("Ignoring non-string context-window override key %r", k)
+            continue
+        # Per-entry boundary: one unparseable window must not discard the rest.
+        # A window must be a POSITIVE token count — 0 / negative is invalid (a
+        # 1-token or 0 window elsewhere collapses the compact budget to 0), so
+        # ``int(v) > 0`` is required; anything else warns + skips only that entry.
+        try:
+            iv = int(v)
+            if iv <= 0:
+                raise ValueError(f"context window must be positive, got {iv}")
+            out[k] = iv
+        except (TypeError, ValueError):
+            logger.warning("Ignoring bad context-window override for %r", k)
     return out
 
 
 def _load_window_overrides() -> dict[str, int]:
-    path = paths.global_home() / "context_windows.yaml"
-    if not path.is_file():
-        return {}
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
-        return {}
-    return {k: int(v) for k, v in raw.items() if isinstance(v, (int, float))}
+    return _cached_load(
+        paths.global_home() / "context_windows.yaml", _parse_window_overrides
+    )
 
 
 # -- OpenRouter catalog (the long tail) -------------------------------------
@@ -149,9 +330,14 @@ def _read_disk_cache() -> dict | None:
         if not path.is_file():
             return None
         raw = json.loads(path.read_text(encoding="utf-8"))
-        return raw if isinstance(raw, dict) else None
     except (OSError, ValueError):
         return None
+    if not isinstance(raw, dict):
+        return None
+    # A disk cache is untrusted (a legacy or hand-edited file may carry JSON NaN):
+    # route it through the SAME per-entry validator as the network fetch so a
+    # poisoned entry is dropped with a warning before it can memoize into cost.
+    return _validate_catalog(raw)
 
 
 def _disk_cache_fresh() -> bool:
@@ -162,6 +348,21 @@ def _disk_cache_fresh() -> bool:
         return False
 
 
+def _per_mtok(raw: Any) -> float | None:
+    """OpenRouter per-token USD (string) -> $/Mtok, or ``None`` when absent.
+
+    Same unit convention as ``prompt``/``completion``; an absent or unparseable
+    field stays ``None`` so cost_of falls back to the plain input rate."""
+    if raw is None:
+        return None
+    try:
+        # _valid_rate rejects NaN/inf/negative too, so a poisoned catalog rate is
+        # treated as absent (None) rather than propagated into cost as NaN.
+        return _valid_rate(raw) * 1_000_000
+    except (TypeError, ValueError):
+        return None
+
+
 def _fetch_openrouter() -> dict[str, dict]:
     """Fetch + parse the OpenRouter model catalog. Returns {} on any failure."""
     try:
@@ -170,22 +371,67 @@ def _fetch_openrouter() -> dict[str, dict]:
         resp = httpx.get(_OPENROUTER_MODELS_URL, timeout=10.0)
         resp.raise_for_status()
         data = resp.json().get("data", [])
-    except Exception:  # noqa: BLE001 - network/parse errors must never propagate
+    except Exception as exc:  # noqa: BLE001 - network/parse errors must never propagate
+        # Never propagate, but do not swallow silently: a failed fetch leaves the
+        # long tail unpriced, and the user deserves a breadcrumb for why.
+        logger.warning(
+            "OpenRouter catalog fetch failed (%s); long-tail models stay unpriced", exc
+        )
         return {}
     out: dict[str, dict] = {}
+    # A non-list ``data`` (malformed response) has no per-entry iteration to do:
+    # bail rather than blow up in the loop.
+    if not isinstance(data, list):
+        logger.warning("OpenRouter catalog 'data' is not a list; long-tail stays unpriced")
+        return {}
     for entry in data:
-        mid = entry.get("id")
-        if not mid:
-            continue
-        pr = entry.get("pricing") or {}
-        try:  # OpenRouter quotes USD *per token* as strings, e.g. "0.000005".
-            inp = float(pr.get("prompt", 0) or 0) * 1_000_000
-            outp = float(pr.get("completion", 0) or 0) * 1_000_000
-        except (TypeError, ValueError):
-            inp = outp = 0.0
-        ctx = entry.get("context_length") or 0
-        out[mid] = {"input": inp, "output": outp, "context": int(ctx) if ctx else 0}
-    return out
+        # Per-entry boundary: one malformed record — a non-mapping element, or
+        # context_length: "unknown" — must skip only that model, never abort the
+        # whole healthy catalog and kill the background pricing thread. EVERYTHING
+        # per-entry (mapping check, id extraction, rate/context parsing) lives
+        # INSIDE the try so a bad element can't crash the loop before the boundary.
+        mid: Any = None
+        try:
+            if not isinstance(entry, dict):
+                raise TypeError("catalog entry is not a mapping")
+            mid = entry.get("id")
+            # Require a non-empty STRING id: a non-string id would later crash every
+            # substring lookup (``k in model_id``); an empty one is unusable.
+            if not isinstance(mid, str) or not mid:
+                raise ValueError("catalog entry id is missing or non-string")
+            pr = entry.get("pricing")
+            if not isinstance(pr, dict):
+                raise TypeError("catalog entry pricing is not a mapping")
+            # OpenRouter quotes USD *per token* as strings, e.g. "0.000005". The
+            # REQUIRED prompt/completion rates are checked by KEY PRESENCE and passed
+            # RAW (no default, no ``or 0``): a `.get(..., 0) or 0` would coerce a
+            # missing / empty / bool rate into a valid $0, silently pricing an unknown
+            # model — which leaves a hard-stop budget OK under unlimited real usage.
+            # CRITICAL DISTINCTION: a PRESENT rate of "0"/0 is a legitimate free-model
+            # price (OpenRouter ``:free`` variants) and MUST stay priced at $0; a
+            # MISSING key means unknown, so raise -> the whole entry is SKIPPED and the
+            # model stays UNPRICED (counted by the tracker). An invalid present value
+            # (empty / NaN / inf / negative / bool / unparseable) likewise raises here.
+            if "prompt" not in pr or "completion" not in pr:
+                raise ValueError("catalog entry pricing missing required prompt/completion")
+            inp = _valid_rate(pr.get("prompt")) * 1_000_000
+            outp = _valid_rate(pr.get("completion")) * 1_000_000
+            ctx = entry.get("context_length") or 0
+            out[mid] = {
+                "input": inp,
+                "output": outp,
+                "context": int(ctx) if ctx else 0,
+                # Optional cache rates: invalid -> absent (None) via _per_mtok.
+                "cache_read": _per_mtok(pr.get("input_cache_read")),
+                "cache_write": _per_mtok(pr.get("input_cache_write")),
+            }
+        except (TypeError, ValueError, AttributeError):
+            # Name the id if we got a usable one, else a truncated repr of the raw element.
+            label = mid if isinstance(mid, str) and mid else repr(entry)[:80]
+            logger.warning("Ignoring malformed OpenRouter catalog entry %r", label)
+    # Final guard: route the converted catalog through the SAME per-entry validator
+    # the disk cache uses, so both paths share one finiteness/shape boundary.
+    return _validate_catalog(out)
 
 
 def _catalog() -> dict[str, dict]:
@@ -275,7 +521,13 @@ def lookup(model_id: str) -> Price | None:
         return builtin
     entry = _catalog_entry(model_id)
     if entry is not None:
-        return Price(entry["input"], entry["output"])
+        # ``.get`` so a catalog cached before cache rates were parsed still resolves.
+        return Price(
+            entry["input"],
+            entry["output"],
+            cache_read_rate=entry.get("cache_read"),
+            cache_write_rate=entry.get("cache_write"),
+        )
     return None
 
 

@@ -8,10 +8,12 @@ testable on its own.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jarn.agent.builder import JarnRuntime, build_runtime
 from jarn.agent.checkpoint import CheckpointManager
@@ -28,6 +30,9 @@ from jarn.memory import (
 )
 from jarn.permissions import PermissionEngine
 from jarn.tui import palette
+
+if TYPE_CHECKING:
+    from jarn.extensibility.mcp import MCPLoadResult
 
 _log = logging.getLogger("jarn")
 
@@ -122,6 +127,13 @@ class Controller:
         # Per-server MCP health, populated by ensure_runtime: name -> "ok"/"error".
         self.mcp_health: dict[str, str] = {}
         self.mcp_errors: dict[str, str] = {}
+        # Cached MCP load result (each server is a process spawn + handshake).
+        # Reused across runtime rebuilds so a rebuild triggered only by a
+        # main-model / mode / backend change does NOT re-spawn every MCP server.
+        # Invalidated (set None) wherever config reloads or MCP config mutates
+        # (see _apply_reloaded_config and cmd_trust); the health-mirroring block
+        # in ensure_runtime still runs on EVERY rebuild off this cached result.
+        self._mcp_cache: MCPLoadResult | None = None
         # Ordered model candidates for turn-level fallback: main + configured chain.
         main = config.resolved_main_model()
         self._candidates = ([main] if main else []) + list(config.routing.fallback)
@@ -136,6 +148,27 @@ class Controller:
         # the runtime is first ready, session_end on close.
         self._hooks_runner = None
         self._session_started = False
+        # Single-flight guard for ensure_runtime: build_runtime mutates
+        # process-global deepagents summarization-profile state, so concurrent
+        # callers must not both build (double build, leaked runtime, registry
+        # race). Plain attribute — a 3.12 asyncio.Lock needs no running loop at
+        # construction and binds to the loop on first ``async with``.
+        self._ensure_lock = asyncio.Lock()
+        # Generation counter + single in-flight build task backing the
+        # single-flight, cancellation-safe, invalidation-safe build (see
+        # _invalidate_runtime, _run_build, and ensure_runtime). Every
+        # invalidation bumps the generation; a build worker commits its result
+        # only if the generation is unchanged when it finishes, so a config /
+        # MCP / model / mode change mid-build disposes the stale runtime rather
+        # than assigning one built with revoked tools. Plain attributes — the
+        # task binds to the running loop when ensure_runtime first creates it.
+        self._runtime_generation = 0
+        self._build_task: asyncio.Task[JarnRuntime | None] | None = None
+        # Set True by aclose(): shutdown is a generation boundary. Once closed,
+        # ensure_runtime refuses to start or serve a build, and any in-flight
+        # worker has been awaited there (disposed, never committed) so no backend
+        # outlives the session.
+        self._closed = False
         # Non-fatal lifecycle-hook notice to surface once (e.g. a failed
         # session_start hook, or the global-hooks-trust gate refusing to run).
         self._lifecycle_notice: str | None = None
@@ -157,6 +190,11 @@ class Controller:
         # drivers minted per turn/retry; single-shot (cleared on pull) so a steer is
         # never double-applied across a model-rotation retry.
         self._steer_slot: str | None = None
+        # Session-lifetime holder for the last injected date block. Drivers are
+        # recreated per turn, so this ONE shared dict is passed to every per-turn
+        # SessionDriver (see make_driver) — that is what makes the date system
+        # message injected once per local day rather than re-injected every turn.
+        self._date_state: dict = {}
 
     # -- multi-root scope ---------------------------------------------------
 
@@ -210,7 +248,7 @@ class Controller:
         self.engine.roots = tuple(self.extra_roots)
         # Rebuild the runtime on the next turn so the backend FS guard + sandbox
         # bind/writable set pick up the new root (kept in sync with the engine).
-        self.runtime = None
+        self._invalidate_runtime()
         return (
             True,
             f"Added {path} to this session's write scope "
@@ -223,35 +261,102 @@ class Controller:
     # -- lifecycle ----------------------------------------------------------
 
     async def ensure_runtime(self) -> JarnRuntime:
+        """Build (or return) the session runtime, single-flighted per controller.
+
+        Raises ``RuntimeError`` once the controller is closed: aclose() is a
+        generation boundary, so no build is started or served after shutdown.
+        """
+        # Single-flight: build_runtime mutates process-global deepagents profile
+        # state, so builds must run one-at-a-time per controller. Holding the lock
+        # across the whole body makes the None checks below a double-check —
+        # concurrent callers serialize and reuse the first build's runtime.
+        async with self._ensure_lock:
+            # Refuse after shutdown: aclose() bumped the generation and awaited any
+            # in-flight worker, so starting or serving a build now would resurrect
+            # a backend past teardown.
+            if self._closed:
+                raise RuntimeError("controller is closed")
+            return await self._ensure_runtime_locked()
+
+    async def _ensure_runtime_locked(self) -> JarnRuntime:
         if self._saver is None:
             self._saver, self._saver_cm = await create_async_checkpointer(self._db_path)
-        if self.runtime is None:
-            from jarn.agent.builder import AmbientKeyLeakError, SandboxUnavailable
+        # Build via a controller-owned, generation-tagged worker task. Invariants:
+        # (i) at most one build worker exists at a time — a caller that arrives
+        # while a build is in flight (even after a previous caller was cancelled)
+        # reuses the stored task via asyncio.shield instead of starting a SECOND
+        # build (build_runtime mutates process-global deepagents profile state);
+        # (ii) a result is committed only if no invalidation happened since the
+        # build started (_run_build's generation check); (iii) caller cancellation
+        # (a cancelled turn) neither cancels the shared worker — an OS thread
+        # can't be stopped anyway — nor orphans an uncommitted runtime. A stale
+        # build leaves runtime None, so this loop rebuilds fresh (re-loading MCP,
+        # which the invalidator dropped).
+        while self.runtime is None:
+            # Belt-and-suspenders: aclose() holds _ensure_lock across its whole
+            # teardown, so _closed cannot flip mid-loop today — but re-check each
+            # iteration so a future refactor that weakens that mutual exclusion
+            # still can't resurrect a build (and its backend) after shutdown.
+            if self._closed:
+                raise RuntimeError("controller is closed")
+            task = self._build_task
+            if task is None:
+                gen = self._runtime_generation
+                task = asyncio.create_task(self._run_build(gen))
+                self._build_task = task
+            # shield: cancelling this caller must not cancel the shared worker,
+            # which commits-or-disposes exactly once regardless.
+            await asyncio.shield(task)
+        if not self._session_started:
+            self._fire_lifecycle("session_start")
+            self._session_started = True
+        return self.runtime
 
-            mcp = await load_mcp_tools(self.config.mcp_servers)
+    async def _run_build(self, gen: int) -> JarnRuntime | None:
+        """The single build worker: load MCP + build the runtime off-thread, then
+        commit the result ONLY if the generation is unchanged since ``gen`` was
+        captured. Invariants: (i) at most one worker runs at a time (ensure_runtime
+        reuses the stored task via shield); (ii) a result is committed only when
+        no invalidation (generation bump) happened mid-build — otherwise the fresh
+        runtime is disposed (backend closed, best-effort) and NOT assigned, and
+        the MCP cache is left untouched so a cache the invalidator dropped is never
+        resurrected with revoked tools; (iii) caller cancellation never orphans an
+        uncommitted runtime — the worker still commits-or-disposes exactly once.
+        Clears its own task slot last so the next ensure_runtime rebuilds fresh."""
+        from jarn.agent.builder import AmbientKeyLeakError, SandboxUnavailable
+
+        try:
+            # Load MCP servers once per session and reuse across rebuilds: a
+            # rebuild triggered only by a main-model / mode / backend change must
+            # not re-spawn every MCP server. Loaded into a LOCAL and committed to
+            # self._mcp_cache only on a matching-generation commit, so an
+            # invalidation that dropped the cache mid-build can't be undone by a
+            # stale worker re-caching the old (revoked-tool) result.
+            mcp = self._mcp_cache
+            if mcp is None:
+                mcp = await load_mcp_tools(self.config.mcp_servers)
             tools = mcp.tools
-            self.mcp_health = dict(mcp.health)
-            self.mcp_errors = dict(mcp.errors)
-            # Mirror per-server health onto the config entries so status/UI can
-            # read it without re-loading; degrade the session if any failed.
-            for server in self.config.mcp_servers:
-                if server.name in self.mcp_health:
-                    server.health = self.mcp_health[server.name]
-            if mcp.degraded:
-                self.health = "degraded"
-                failed = ", ".join(sorted(mcp.errors))
-                first = next(iter(sorted(mcp.errors)))
-                self.last_error = f"MCP server(s) failed: {failed} ({mcp.errors[first]})"
             try:
-                self.runtime = build_runtime(
-                    self.config,
-                    project_root=self.project_root,
-                    project_trusted=self.project_trusted,
-                    checkpointer=self._saver,
-                    extra_tools=tools,
-                    system_prompt_override=self.system_prompt_override,
-                    response_format=self.response_format,
-                    extra_roots=self.extra_roots,
+                # build_runtime is pure-sync and does O(repo) file I/O (skills /
+                # commands / subagents scan, JARN.md, wiki index, capability
+                # detection, repo-map). Run it off the event loop so a rebuild
+                # (model rotation, mode change, /add-dir) never freezes the TUI.
+                # Built into a LOCAL; committed to self.runtime only under the
+                # generation check below. functools.partial resolves the
+                # module-level build_runtime name at call time, so tests
+                # monkeypatching it keep working.
+                runtime = await asyncio.to_thread(
+                    functools.partial(
+                        build_runtime,
+                        self.config,
+                        project_root=self.project_root,
+                        project_trusted=self.project_trusted,
+                        checkpointer=self._saver,
+                        extra_tools=tools,
+                        system_prompt_override=self.system_prompt_override,
+                        response_format=self.response_format,
+                        extra_roots=self.extra_roots,
+                    )
                 )
             except AmbientKeyLeakError as exc:
                 self.health = "error"
@@ -273,20 +378,96 @@ class Controller:
                 self.last_error = f"sandbox unavailable, running on host (opted in): {exc}"
                 self.health = "degraded"
                 self.config.execution.backend = "local"
-                self.runtime = build_runtime(
-                    self.config,
-                    project_root=self.project_root,
-                    project_trusted=self.project_trusted,
-                    checkpointer=self._saver,
-                    extra_tools=tools,
-                    system_prompt_override=self.system_prompt_override,
-                    response_format=self.response_format,
-                    extra_roots=self.extra_roots,
+                # Off the event loop for the same reason as the primary build above.
+                runtime = await asyncio.to_thread(
+                    functools.partial(
+                        build_runtime,
+                        self.config,
+                        project_root=self.project_root,
+                        project_trusted=self.project_trusted,
+                        checkpointer=self._saver,
+                        extra_tools=tools,
+                        system_prompt_override=self.system_prompt_override,
+                        response_format=self.response_format,
+                        extra_roots=self.extra_roots,
+                    )
                 )
-        if not self._session_started:
-            self._fire_lifecycle("session_start")
-            self._session_started = True
-        return self.runtime
+            # Commit-or-dispose exactly once, gated on the generation. The commit
+            # section has NO await, so no invalidation can interleave between the
+            # check and the assignment.
+            if self._runtime_generation != gen:
+                # An invalidation superseded this build (config / MCP / model /
+                # mode changed mid-build): dispose the fresh runtime so its
+                # backend isn't leaked, and leave runtime None (and the MCP cache
+                # untouched) so ensure_runtime rebuilds fresh from the new config.
+                self._dispose_runtime(runtime)
+                return None
+            self._mcp_cache = mcp
+            self._mirror_mcp_health(mcp)
+            self.runtime = runtime
+            return runtime
+        finally:
+            # Free the slot last so the next ensure_runtime starts a new worker
+            # for a stale (uncommitted) or failed build. Safe to clear
+            # unconditionally: the commit/dispose above ran without awaiting, so
+            # no concurrent caller could have installed a different task.
+            self._build_task = None
+
+    def _mirror_mcp_health(self, mcp: MCPLoadResult) -> None:
+        """Mirror an MCP load result's per-server health onto the config entries
+        and session state (called at build commit so status/UI can read it
+        without re-loading). Invariant: MCP may never clobber or clear another
+        subsystem's degradation reason — it owns ``last_error`` only when that is
+        empty or already an MCP reason, so a live sandbox/other reason survives."""
+        self.mcp_health = dict(mcp.health)
+        self.mcp_errors = dict(mcp.errors)
+        for server in self.config.mcp_servers:
+            if server.name in self.mcp_health:
+                server.health = self.mcp_health[server.name]
+        _MCP_PREFIX = "MCP server(s) failed:"
+        if mcp.degraded:
+            self.health = "degraded"
+            if not self.last_error or self.last_error.startswith(_MCP_PREFIX):
+                failed = ", ".join(sorted(mcp.errors))
+                first = next(iter(sorted(mcp.errors)))
+                self.last_error = f"{_MCP_PREFIX} {failed} ({mcp.errors[first]})"
+        elif self.health == "degraded" and (self.last_error or "").startswith(
+            _MCP_PREFIX
+        ):
+            # A prior MCP failure degraded the session; a now-healthy cache
+            # (e.g. after `/mcp refresh` recovered the server) clears it on
+            # rebuild — symmetric with the degrade above, so recovery sticks
+            # instead of the session staying degraded forever. Scoped to the
+            # MCP last_error so we never stomp a sandbox/other degradation.
+            self.health = "ok"
+            self.last_error = None
+
+    @staticmethod
+    def _dispose_runtime(runtime: JarnRuntime | None) -> None:
+        """Best-effort teardown of a built-but-not-committed runtime (a stale
+        build superseded by an invalidation) so its backend — e.g. a Docker
+        sandbox container — is not leaked. Mirrors :meth:`close`'s teardown."""
+        import contextlib
+
+        backend = getattr(runtime, "backend", None)
+        backend_close = getattr(backend, "close", None)
+        if callable(backend_close):
+            with contextlib.suppress(Exception):
+                backend_close()
+
+    def _invalidate_runtime(self, *, drop_mcp_cache: bool = False) -> None:
+        """The single choke point that invalidates the built runtime.
+
+        Bumps the build generation so any worker still in flight disposes (rather
+        than commits) its result, drops the runtime so the next ensure_runtime
+        rebuilds, and — when the MCP config itself changed — drops the MCP tool
+        cache so the rebuild re-loads servers (a stale worker must never resurrect
+        revoked MCP tools). Every raw ``runtime = None`` invalidation routes
+        through here so the generation guard can't be bypassed."""
+        self._runtime_generation += 1
+        self.runtime = None
+        if drop_mcp_cache:
+            self._mcp_cache = None
 
     def _hook_runner(self):
         """Lazily build the lifecycle :class:`HookRunner` (None if no hooks).
@@ -369,7 +550,6 @@ class Controller:
         if not messages:
             return ""
 
-        transcript = _render_transcript(messages)
         summarizer = rt.factory.build_summarizer() or rt.factory.build_main()
         # Resolve the model ref the summarizer actually runs on so its usage is
         # attributed correctly; fall back to the main model (which is what
@@ -380,6 +560,20 @@ class Controller:
             or self.config.resolved_main_model()
             or "unknown"
         )
+        # Bound the transcript to the summarizer's context so /compact does not
+        # overflow the summarizer exactly when the thread is largest (the moment
+        # /compact is most needed). Per-message capping stops one huge tool result
+        # from dominating; the window trim keeps head (goal) + tail (latest state)
+        # within budget. 0.6 leaves room for the instruction prompt and the summary
+        # output; 60_000 is a conservative floor when the window is unknown.
+        from jarn.cost.pricing import context_window
+
+        window = context_window(summarizer_ref)
+        # Clamp to at least 1 token: a tiny known window can make int(window * 0.6)
+        # round to 0, and _trim_to_window must never be handed a zero budget (it
+        # would otherwise have nothing it may keep). 60_000 is the unknown-window floor.
+        budget = max(1, int(window * 0.6)) if window > 0 else 60_000
+        transcript = _trim_to_window(_render_transcript(messages), budget)
         prompt = (
             "Summarize the following coding-assistant conversation so work can "
             "continue in a fresh context. Capture: the goal, decisions made, files "
@@ -600,6 +794,7 @@ class Controller:
             diagnostics_ts=self.config.verify.diagnostics_ts,
             _diag_round=self._diag_chain_round,
             steer_source=self._pop_steer_slot,
+            date_state=self._date_state,
         )
         # Retain for settle_snapshot: the /undo, /redo, and /abort paths await this
         # driver's pending turn-start snapshot before mutating the checkpoint stack.
@@ -631,18 +826,52 @@ class Controller:
                 backend_close()
 
     async def aclose(self) -> None:
-        """Async cleanup: fire session_end, flush telemetry, close checkpointer."""
+        """Async cleanup: settle any in-flight build, fire session_end, flush
+        telemetry, close checkpointer. Safe after a cancelled turn."""
         import contextlib
 
-        if self._session_started:
-            self._fire_lifecycle("session_end")
-            self._session_started = False
-        self.close()
-        if self._saver_cm is not None:
-            with contextlib.suppress(Exception):
-                await self._saver_cm.__aexit__(None, None, None)
-            self._saver_cm = None
-            self._saver = None
+        # Serialize shutdown with the build machinery: hold _ensure_lock across the
+        # entire teardown so aclose and ensure_runtime are MUTUALLY EXCLUSIVE. A
+        # live caller holds this lock across its whole build loop, so aclose runs
+        # only AFTER that caller finishes — possibly having committed a runtime,
+        # which the committed-runtime capture below then disposes. Without this,
+        # aclose could bump the generation mid-loop, the in-flight build would
+        # dispose, and the still-live loop would start a replacement build that
+        # commits (leaking its backend) after aclose returned.
+        async with self._ensure_lock:
+            # Shutdown is a generation boundary. Flip the closed flag so
+            # ensure_runtime refuses further builds, and bump the generation (via
+            # the single invalidation choke point) so a build worker still in flight
+            # disposes its result instead of committing self.runtime after close.
+            # Capture any already-committed runtime FIRST: the invalidation nulls
+            # self.runtime, so without this its backend would slip past self.close()
+            # and leak.
+            self._closed = True
+            committed = self.runtime
+            self._invalidate_runtime(drop_mcp_cache=True)
+            # Await the in-flight worker so it has committed-or-disposed before
+            # teardown. The generation bump above forces its dispose path; shield
+            # keeps our await from cancelling the shared worker (which does NOT take
+            # _ensure_lock, so awaiting it while holding the lock cannot deadlock),
+            # suppress swallows its build error. This guarantees no backend (e.g. a
+            # Docker sandbox container) outlives aclose.
+            task = self._build_task
+            if task is not None and not task.done():
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(task)
+            if self._session_started:
+                self._fire_lifecycle("session_end")
+                self._session_started = False
+            self.close()
+            # self.close() saw the invalidated None; tear down the captured
+            # committed runtime's backend too (best-effort, no double close — a
+            # committed runtime and an in-flight build never coexist).
+            self._dispose_runtime(committed)
+            if self._saver_cm is not None:
+                with contextlib.suppress(Exception):
+                    await self._saver_cm.__aexit__(None, None, None)
+                self._saver_cm = None
+                self._saver = None
 
     # -- thread management --------------------------------------------------
 
@@ -666,7 +895,7 @@ class Controller:
         new_ref = self._candidates[self._candidate_idx]
         self.config.routing.main = new_ref
         self.config.default_model = new_ref
-        self.runtime = None  # rebuild with the new model
+        self._invalidate_runtime()  # rebuild with the new model
         return new_ref
 
     def reset_model_rotation(self) -> None:
@@ -675,7 +904,7 @@ class Controller:
             self._candidate_idx = 0
             self.config.routing.main = self._candidates[0]
             self.config.default_model = self._candidates[0]
-            self.runtime = None
+            self._invalidate_runtime()
 
     def _ref_has_resolvable_key(self, ref: str) -> bool:
         """True if ``ref``'s provider has a usable (resolvable, non-empty) key.
@@ -733,7 +962,7 @@ class Controller:
                 self._candidate_idx = idx
                 self.config.routing.main = cand
                 self.config.default_model = cand
-                self.runtime = None  # rebuild with the new model
+                self._invalidate_runtime()  # rebuild with the new model
                 return cand
             idx += 1
         return None
@@ -905,7 +1134,7 @@ class Controller:
         self.config.default_model = ref
         self._candidates = [ref] + list(self.config.routing.fallback)
         self._candidate_idx = 0
-        self.runtime = None
+        self._invalidate_runtime()
 
     def apply_mode(self, value: str) -> str:
         """Apply a permission mode, clamped to the untrusted floor.
@@ -920,7 +1149,7 @@ class Controller:
             target = PermissionMode.PLAN
         self.config.permission_mode = target
         self.engine.mode = target
-        self.runtime = None
+        self._invalidate_runtime()
         return target.value
 
     def peek_next_mode(self) -> str:
@@ -1120,15 +1349,120 @@ class Controller:
     def autocheckpoint_off_hint(self) -> str | None:
         return session_helpers.autocheckpoint_off_hint(self)
 
-def _render_transcript(messages: list) -> str:
-    """Render LangChain messages to a compact text transcript for summarization."""
+def _render_transcript(messages: list, *, max_msg_chars: int = 4_000) -> str:
+    """Render LangChain messages to a compact text transcript for summarization.
+
+    Each message's content is capped at ``max_msg_chars`` (suffixing
+    ``" …[+N chars]"`` with the truncated count) so one oversized tool result can
+    neither dominate nor overflow the summarizer prompt."""
     lines = []
     for msg in messages:
         role = getattr(msg, "type", None) or getattr(msg, "role", "?")
         content = _content_text(msg)
-        if content:
-            lines.append(f"{role}: {content}")
+        if not content:
+            continue
+        if len(content) > max_msg_chars:
+            dropped = len(content) - max_msg_chars
+            content = f"{content[:max_msg_chars]} …[+{dropped} chars]"
+        lines.append(f"{role}: {content}")
     return "\n".join(lines)
+
+
+def _trim_to_window(text: str, token_budget: int) -> str:
+    """Trim a rendered transcript to ``token_budget`` tokens for the summarizer.
+
+    Returns ``text`` unchanged when it already fits. Otherwise keeps head lines up
+    to 30% of the budget (the original goal) and tail lines up to 70% (the latest
+    state, which matters most), joined by a marker line carrying the count of
+    dropped lines — so the summarizer still sees where the work began and where it
+    stands even when the middle is too large to fit.
+
+    Invariant: ``count_tokens(result) <= max(1, token_budget)`` for ANY input,
+    and a non-empty ``text`` never trims to empty. A ``token_budget <= 0`` is
+    treated as 1 (the caller clamps too, but this is the hard floor). Per-line
+    accounting includes each line's ``"\n"`` separator and reserves the marker
+    cost up front, but tokenization is not additive, so the assembled result is
+    re-measured and shrunk in batches until it provably fits."""
+    from jarn.memory.tokens import count_tokens
+
+    # Hard floor: a zero/negative budget still has to keep at least 1 token of the
+    # newest content, so a non-empty transcript never trims to nothing.
+    budget = max(1, token_budget)
+    if count_tokens(text) <= budget:
+        return text
+    lines = text.splitlines()
+
+    def _marker(n: int) -> str:
+        return f"…[trimmed {n} lines]…"
+
+    # Reserve the marker's cost (worst-case dropped count) so it can never itself
+    # push the result over budget; split the remainder 30% head / 70% tail.
+    marker_reserve = count_tokens(_marker(len(lines)) + "\n")
+    body_budget = max(0, budget - marker_reserve)
+    head_budget = int(body_budget * 0.3)
+    head: list[str] = []
+    used = 0
+    for line in lines:
+        c = count_tokens(line + "\n")  # cost the separator, not just the line
+        if used + c > head_budget:
+            break
+        head.append(line)
+        used += c
+    tail: list[str] = []
+    used = 0
+    for line in reversed(lines[len(head):]):
+        c = count_tokens(line + "\n")
+        if used + c > body_budget - head_budget:
+            break
+        tail.append(line)
+        used += c
+    tail.reverse()
+
+    def _assemble() -> str:
+        dropped = len(lines) - len(head) - len(tail)
+        return "\n".join([*head, _marker(dropped), *tail])
+
+    # Re-measure the joined result and drop whole batches (tail first, then head)
+    # until it fits — closes the gap left by non-additive tokenization.
+    # Invariant: preserve the NEWEST state. Shrink the tail from its BEGINNING
+    # (oldest tail lines) so the latest transcript lines — the whole point of the
+    # 70% tail allocation — survive; only once the tail is empty do we shrink the
+    # head from its END, keeping the earliest goal lines at the front.
+    candidate = _assemble()
+    while count_tokens(candidate) > budget and (head or tail):
+        batch = 32
+        if tail:
+            del tail[:batch]
+        else:
+            del head[max(0, len(head) - batch):]
+        candidate = _assemble()
+    if (head or tail) and count_tokens(candidate) <= budget:
+        return candidate
+    # No whole line fit head or tail (a single oversized line), or the budget is
+    # below the marker: hard-cut by characters, keeping the NEWEST SUFFIX (the
+    # newest-tail contract) — NOT the oldest prefix. Prefer prepending the trim
+    # marker; drop the marker (never the content) if not even marker + 1 char fits,
+    # so a non-empty input still yields non-empty content within budget.
+    marker = "…[trimmed tail]…"
+    if count_tokens(marker + text[-1:]) <= budget:
+        lo, hi = 1, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if count_tokens(marker + text[-mid:]) <= budget:
+                lo = mid
+            else:
+                hi = mid - 1
+        return marker + text[-lo:]
+    # Even marker + 1 char overflows: drop the marker and keep the largest newest
+    # suffix that fits (at least 1 char, so non-empty stays non-empty).
+    lo, hi = 1, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if count_tokens(text[-mid:]) <= budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[-lo:]
 
 def _content_text(msg) -> str:
     content = getattr(msg, "content", msg)

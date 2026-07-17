@@ -153,7 +153,7 @@ class CommandMixin:
             await self.controller.settle_snapshot()
             # abort_rollback runs a blocking git restore; offload it so the event
             # loop stays responsive.
-            c.print(await asyncio.to_thread(self.controller.abort_rollback))
+            c.print(await asyncio.to_thread(self.controller.abort_rollback), highlight=False)
             return
         if name == "key":
             await self._cmd_key(args)
@@ -189,7 +189,10 @@ class CommandMixin:
             self._clear_scrollback()
         c.print(result.text)
         if result.rebuilt:
-            self.controller.runtime = None
+            # Route through the generation-bumping choke point: a raw
+            # ``runtime = None`` would let a build worker still in flight
+            # commit a stale runtime after this invalidation.
+            self.controller._invalidate_runtime()
         if result.quit and self.app is not None:
             self.app.exit()
 
@@ -263,7 +266,8 @@ class CommandMixin:
         result = self.controller.set_provider_key(secret, provider=provider)
         c.print(result.text)
         if result.rebuilt:
-            self.controller.runtime = None
+            # Same generation-bump routing as _command's rebuilt path.
+            self.controller._invalidate_runtime()
 
     async def _cmd_add_dir(self, args: str) -> None:
         """`/add-dir <path>`: add a directory to this session's write scope.
@@ -332,7 +336,7 @@ class CommandMixin:
                 c.print(f"[{palette.C_DIM}]Queue empty.[/{palette.C_DIM}]")
                 return
             for i, item in enumerate(items, 1):
-                c.print(f"  {i}. {_rich_escape(item.display)}")
+                c.print(f"  {i}. {_rich_escape(item.display)}", highlight=False)
             return
         if sub == "clear":
             n = q.clear()
@@ -763,7 +767,9 @@ class CommandMixin:
         if self._turn_made_edits():
             hint = self.controller.autocheckpoint_off_hint()
             if hint:
-                self.console.print(f"[{palette.C_DIM}]{_rich_escape(hint)}[/{palette.C_DIM}]")
+                self.console.print(
+                    f"[{palette.C_DIM}]{_rich_escape(hint)}[/{palette.C_DIM}]", highlight=False
+                )
 
     async def _render_todos(self) -> None:
         """Print the current plan checklist into scrollback after a turn, de-duped

@@ -6,6 +6,7 @@ boundary in :mod:`jarn.config.loader`.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 from urllib.parse import urlparse
@@ -215,6 +216,13 @@ class BudgetConfigModel(_StrictModel):
         if value is None:
             return None
         raw = _coerce_float(value, "budget.per_session_usd")
+        # Reject NaN/inf: a non-finite limit makes every later budget comparison
+        # (frac >= 1.0, etc.) False, silently disabling the hard stop. ``raw < 0``
+        # alone misses NaN (all NaN comparisons are False), so guard finiteness first.
+        if not math.isfinite(raw):
+            raise ConfigValidationError(
+                f"budget.per_session_usd must be a finite number (got {raw})."
+            )
         if raw < 0:
             raise ConfigValidationError(f"budget.per_session_usd must be >= 0 (got {raw}).")
         return raw

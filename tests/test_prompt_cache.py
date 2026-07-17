@@ -194,3 +194,16 @@ def test_system_prompt_is_pure_and_stable():
     assert prompts.build_system_prompt(*blocks) == prompts.build_system_prompt(*blocks)
     # The stamp itself is deterministic for a fixed instant (no per-call drift).
     assert prompts.date_context(now) == stamp
+    # Day granularity — no clock time, so two instants on the same day share the
+    # same stamp (a minute-granular stamp would re-inject the date every turn).
+    assert "09:00" not in stamp
+    later = datetime(2026, 6, 17, 14, 45).astimezone()
+    assert prompts.date_context(later) == stamp
+    # DATE ONLY, no timezone abbreviation: a DST transition on one local calendar
+    # day (EST->EDT) must not perturb the cached prefix / re-inject the date.
+    from zoneinfo import ZoneInfo
+
+    ny = ZoneInfo("America/New_York")
+    est = datetime(2026, 3, 8, 1, 30, tzinfo=ny)  # before 02:00 DST start
+    edt = datetime(2026, 3, 8, 3, 30, tzinfo=ny)  # after DST start, same date
+    assert prompts.date_context(est) == prompts.date_context(edt)

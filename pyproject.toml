@@ -52,6 +52,9 @@ dev = [
     "mypy>=1.11",
     "opentelemetry-sdk>=1.27",
     "opentelemetry-exporter-otlp-proto-http>=1.27",
+    # Windows has no system IANA tz database; zoneinfo needs this for the
+    # DST-boundary date tests to run (not skip) on Windows CI.
+    "tzdata>=2024.1; sys_platform == 'win32'",
 ]
 build = [
     "pyinstaller==6.21.0",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -114,6 +116,43 @@ def test_record_usage_captures_cache_tokens():
     assert tracker.total.cache_creation_tokens == 200
 
 
+def test_record_usage_ttl_scoped_cache_write_billed_as_cache():
+    """langchain-anthropic zeroes the generic ``cache_creation`` when TTL-specific
+    fields are present, putting the write tokens under ``ephemeral_5m_input_tokens``
+    / ``ephemeral_1h_input_tokens``. record_usage must fall back to summing those so
+    the write bills at the cache-write rate, not the full input rate.
+
+    Repro (opus, cache_write 6.25/Mtok): input 1000, 800 ephemeral_5m ->
+    plain 200@5 ($0.001) + write 800@6.25 ($0.005) = $0.006. The bug recorded 0
+    cache_creation -> 1000@5 = $0.005."""
+    tracker = CostTracker()
+    driver = SessionDriver(
+        agent=None,
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=tracker,
+        thread_id="t1",
+        main_model_ref="claude-opus-4-8",
+    )
+    msg = type("AIMessage", (), {
+        "usage_metadata": {
+            "input_tokens": 1000,
+            "output_tokens": 0,
+            "input_token_details": {
+                "cache_read": 0,
+                "cache_creation": 0,  # generic field zeroed by langchain-anthropic
+                "ephemeral_5m_input_tokens": 800,
+            },
+        },
+        "response_metadata": {"model": "claude-opus-4-8"},
+        "tool_calls": [],
+    })()
+
+    driver._record_usage(msg)
+
+    assert tracker.total.cache_creation_tokens == 800
+    assert tracker.total.cost_usd == pytest.approx(0.006)
+
+
 def test_handle_update_chunk_unwraps_overwrite_messages():
     driver = SessionDriver(
         agent=None,
@@ -193,6 +232,43 @@ def test_subagent_different_model_does_not_move_gauge() -> None:
     assert tracker.context_tokens == 0
 
 
+def test_parallel_same_model_subagents_do_not_over_count() -> None:
+    """Two parallel subagents on the SAME model interleave their CUMULATIVE usage
+    streams. Keyed only by (thread, model) their streams collapse onto one entry —
+    the monotonic check flip-flops and each chunk is mis-deltaed. The namespace in
+    the key (record_usage) separates the streams so each is deltaed against its own
+    prior total: the exact per-subagent cumulative sum is billed, no over/under-count."""
+    tracker = CostTracker()
+    driver = SessionDriver(
+        agent=None,
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=tracker,
+        thread_id="t1",
+        main_model_ref="claude-opus-4-8",
+        known_model_refs=("claude-opus-4-8",),
+    )
+
+    def _chunk(inp: int, out: int):
+        # Same model id on every chunk → resolve_model_ref returns the main ref for
+        # both subagents; only the namespace distinguishes the two streams.
+        return SimpleNamespace(
+            usage_metadata={"input_tokens": inp, "output_tokens": out},
+            response_metadata={"model_name": "claude-opus-4-8"},
+            tool_calls=[],
+            tool_call_chunks=[],
+        )
+
+    # Interleaved cumulative totals: A and B each grow 100→200 (input), 50→100 (out).
+    driver._record_usage(_chunk(100, 50), _NS_A)
+    driver._record_usage(_chunk(100, 50), _NS_B)
+    driver._record_usage(_chunk(200, 100), _NS_A)
+    driver._record_usage(_chunk(200, 100), _NS_B)
+
+    # Each subagent's final cumulative is 200/100, so the honest total is 400/200.
+    assert tracker.total.input_tokens == 400
+    assert tracker.total.output_tokens == 200
+
+
 @pytest.mark.asyncio
 async def test_last_usage_totals_cleared_at_turn_start() -> None:
     """_last_usage_totals is fully cleared at the start of each turn.
@@ -219,11 +295,13 @@ async def test_last_usage_totals_cleared_at_turn_start() -> None:
         thread_id="main_thread",
     )
 
-    # Simulate stale keys from two other threads (100 /clears pattern).
+    # Simulate stale keys from two other threads (100 /clears pattern). Keys are
+    # (thread_id, subgraph-namespace, model_ref) 3-tuples (the "" namespace is the
+    # main graph — see record_usage).
     for i in range(100):
-        driver._last_usage_totals[("other_thread_a", f"model-{i}")] = (100, 10, 0, 0)
-        driver._last_usage_totals[("other_thread_b", f"model-{i}")] = (200, 20, 0, 0)
-    driver._last_usage_totals[("main_thread", "model-0")] = (300, 30, 0, 0)
+        driver._last_usage_totals[("other_thread_a", "", f"model-{i}")] = (100, 10, 0, 0)
+        driver._last_usage_totals[("other_thread_b", "", f"model-{i}")] = (200, 20, 0, 0)
+    driver._last_usage_totals[("main_thread", "", "model-0")] = (300, 30, 0, 0)
 
     assert len(driver._last_usage_totals) == 201  # 200 other + 1 current
 
@@ -1210,3 +1288,138 @@ async def test_steer_real_checkpointer_adjacency_invariant(tmp_path):
     finally:
         if saver_cm is not None:
             await saver_cm.__aexit__(None, None, None)
+
+
+# -- turn observability: jarn.turn span + turn-path log records --------------
+#
+# run_turn wraps each turn in the ``jarn.turn`` span (session.py ~334) and emits
+# turn-path log records — turn start (info), tool start (debug), turn done (info),
+# and a classified turn error (warning). The unit tests above exercise the stream
+# handlers directly; nothing drove the span/log instrumentation THROUGH
+# SessionDriver, so deleting it kept every other test green. These two integration
+# tests pin it end-to-end.
+
+
+@contextlib.contextmanager
+def _capture_jarn(level: int = logging.DEBUG):
+    """Capture records emitted on the "jarn" logger at *level*.
+
+    Attaches a handler DIRECTLY to the jarn logger (not caplog's root handler):
+    setup_logging() sets propagate=False elsewhere in the suite, so a root-level
+    capture would miss these records (mirrors test_snapshot_failure_notice_once).
+    Also lowers the jarn logger level so DEBUG records are actually emitted,
+    restoring it afterwards."""
+    logger = logging.getLogger("jarn")
+    records: list[logging.LogRecord] = []
+
+    class _Cap(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Cap(level=level)
+    old_level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(level)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+
+
+@pytest.mark.asyncio
+async def test_turn_span_and_log_records_on_success(monkeypatch) -> None:
+    """A successful turn enters the ``jarn.turn`` span exactly once (with the
+    driver's thread_id + model), and logs a ``turn start`` (info, carrying the
+    thread id), a ``tool start`` (debug, when the model emits a tool call), and a
+    ``turn done`` (info) record — all driven THROUGH SessionDriver."""
+    import jarn.agent.session as session_mod
+
+    # Record each _span entry as (name, kwargs) via a recording contextmanager.
+    spans: list[tuple[str, dict]] = []
+
+    @contextlib.contextmanager
+    def _recording_span(name, **kwargs):
+        spans.append((name, kwargs))
+        yield
+
+    monkeypatch.setattr(session_mod, "_span", _recording_span)
+
+    # One main-graph tool-call super-step (→ TOOL_START) then a text reply (→ DONE).
+    agent = _NSAgent([
+        ((), "updates", {"model": {"messages": [
+            SimpleNamespace(tool_calls=[
+                {"name": "read_file", "args": {"file_path": "x"}, "id": "c1"}
+            ])
+        ]}}),
+        ((), "messages", (_AIChunk("all done"),)),
+    ])
+    driver = SessionDriver(
+        agent=agent,
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="obs-thread",
+        main_model_ref="claude-opus-4-8",
+    )
+
+    with _capture_jarn() as records:
+        events = [ev async for ev in driver.run_turn("go")]
+
+    # Span: entered once, wrapping the turn, with the driver's identifiers.
+    assert len(spans) == 1
+    name, kwargs = spans[0]
+    assert name == "jarn.turn"
+    assert kwargs == {"thread_id": "obs-thread", "model": "claude-opus-4-8"}
+
+    def _at(lvl: int, needle: str) -> list[logging.LogRecord]:
+        return [r for r in records if r.levelno == lvl and needle in r.getMessage()]
+
+    starts = _at(logging.INFO, "turn start")
+    assert len(starts) == 1
+    assert "obs-thread" in starts[0].getMessage()  # thread id carried on the record
+    assert _at(logging.DEBUG, "tool start"), "no tool-start debug record"
+    assert _at(logging.INFO, "turn done"), "no turn-done info record"
+    # Sanity: the turn actually reached completion.
+    assert any(e.kind is EventKind.DONE for e in events)
+
+
+@pytest.mark.asyncio
+async def test_turn_error_logs_classification() -> None:
+    """A classified provider error raised inside astream is logged at WARNING with
+    the retryable / auth / classified_by fields (driven THROUGH SessionDriver), and
+    surfaced as a tagged ERROR event."""
+
+    class _RateLimited(Exception):
+        # status_code=429 → classify_error → retryable=True, auth=False, by "type".
+        status_code = 429
+
+    class _BoomAgent:
+        async def astream(self, payload, config, stream_mode=None, **kwargs):
+            raise _RateLimited("rate limited")
+            yield  # pragma: no cover - makes this an async generator function
+
+    driver = SessionDriver(
+        agent=_BoomAgent(),
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="err-thread",
+        main_model_ref="claude-opus-4-8",
+    )
+
+    with _capture_jarn(logging.WARNING) as records:
+        events = [ev async for ev in driver.run_turn("go")]
+
+    warnings = [
+        r for r in records
+        if r.levelno == logging.WARNING and "turn error" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+    msg = warnings[0].getMessage()
+    # The classification fields are all present on the record.
+    assert "retryable=True" in msg
+    assert "auth=False" in msg
+    assert "classified_by=type" in msg
+    # The classified error also surfaces as a retryable ERROR event.
+    errors = [e for e in events if e.kind is EventKind.ERROR]
+    assert errors and errors[0].data.get("retryable") is True
+    assert errors[0].data.get("classified_by") == "type"

@@ -78,9 +78,28 @@ def cmd_mcp(ctrl, args: str) -> CommandResult:
         return CommandResult("Usage: /mcp [status] [--refresh|refresh]")
     refresh = sub == "refresh" or "--refresh" in parts
     if refresh:
-        mcp = asyncio.run(load_mcp_tools(ctrl.config.mcp_servers))
+        # The sync command registry is invoked FROM the async REPL's running
+        # loop, so asyncio.run() here would raise. Probe on a one-shot worker
+        # thread (its own loop) when a loop is already running; only outside a
+        # loop (e.g. tests calling the handler directly) can we asyncio.run.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            mcp = asyncio.run(load_mcp_tools(ctrl.config.mcp_servers))
+        else:
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                mcp = ex.submit(
+                    asyncio.run, load_mcp_tools(ctrl.config.mcp_servers)
+                ).result()
         ctrl.mcp_health = dict(mcp.health)
         ctrl.mcp_errors = dict(mcp.errors)
+        # Replace the runtime's MCP cache with this fresh probe so the NEXT
+        # rebuild (auto model rotation, mode change, /config set) mirrors the
+        # refreshed health/tools instead of reverting to the stale cached values
+        # ensure_runtime would otherwise re-apply on a cache hit.
+        ctrl._mcp_cache = mcp
         for server in ctrl.config.mcp_servers:
             if server.name in ctrl.mcp_health:
                 server.health = ctrl.mcp_health[server.name]

@@ -220,17 +220,31 @@ class CostTracker:
 
     def fraction_used(self) -> float:
         with self._lock:
-            if not self.limit:
+            # ``None`` means "no limit configured"; a CONFIGURED $0 limit is a real
+            # constraint ("nothing may be spent"), so it is fully used at 100% —
+            # ``not self.limit`` would wrongly conflate the two.
+            if self.limit is None:
                 return 0.0
+            if self.limit == 0:
+                return 1.0
             return self.total.cost_usd / self.limit
 
     def status(self) -> BudgetStatus:
         with self._lock:
-            if not self.limit:
+            if self.limit is None:
                 return BudgetStatus.OK
+            # A configured $0 hard cap means nothing may be spent — any session is
+            # already EXCEEDED (and avoids a divide-by-zero below).
+            if self.limit == 0:
+                return BudgetStatus.EXCEEDED
             frac = self.total.cost_usd / self.limit
             if frac >= 1.0:
                 return BudgetStatus.EXCEEDED
+            # Invariant: unpriced calls accrue $0, so the real spend is unknown —
+            # a hard-capped budget must at least WARN rather than report OK, since
+            # a silent $0 could hide true overspend the hard stop can never bind.
+            if self.total.unpriced_calls > 0 and self.budget.hard_stop:
+                return BudgetStatus.WARN
             if frac * 100 >= self.budget.warn_at_pct:
                 return BudgetStatus.WARN
             return BudgetStatus.OK

@@ -68,7 +68,7 @@ def handle_message_chunk(
     driver: SessionDriver, chunk: Any, namespace: Any = ()
 ) -> Event | None:
     msg = chunk[0] if isinstance(chunk, tuple) else chunk
-    record_usage(driver, msg)
+    record_usage(driver, msg, namespace)
     agent = _agent_for_namespace(driver, namespace)
     mtype = getattr(msg, "type", "")
     # Tool results (ToolMessage) — e.g. a fetched web page — must not be
@@ -184,7 +184,7 @@ def handle_update_chunk(
                 yield Event(EventKind.TOOL_START, text=name, data=data)
 
 
-def record_usage(driver: SessionDriver, msg: Any) -> None:
+def record_usage(driver: SessionDriver, msg: Any, namespace: Any = ()) -> None:
     usage = getattr(msg, "usage_metadata", None)
     if not usage:
         return
@@ -192,14 +192,33 @@ def record_usage(driver: SessionDriver, msg: Any) -> None:
     # (``cache_read`` / ``cache_creation``); absent for providers/turns
     # without caching, in which case both default to 0.
     details = usage.get("input_token_details") or {}
+    # Provider quirk: current langchain-anthropic, when TTL-specific cache fields
+    # are present, puts the cache-write tokens under ``ephemeral_5m_input_tokens``
+    # / ``ephemeral_1h_input_tokens`` and ZEROES the generic ``cache_creation``.
+    # Reading only ``cache_creation`` would then bill those writes at the full input
+    # rate instead of the cache-write rate. Prefer the generic field when nonzero,
+    # otherwise sum the TTL-specific fields.
+    cc = int(details.get("cache_creation", 0))
+    if not cc:
+        cc = int(details.get("ephemeral_5m_input_tokens", 0)) + int(
+            details.get("ephemeral_1h_input_tokens", 0)
+        )
     cumulative = (
         int(usage.get("input_tokens", 0)),
         int(usage.get("output_tokens", 0)),
         int(details.get("cache_read", 0)),
-        int(details.get("cache_creation", 0)),
+        cc,
     )
     model_ref = resolve_model_ref(driver, msg)
-    usage_key = (driver.thread_id, model_ref)
+    # The subgraph namespace is part of the dedup key because two PARALLEL
+    # subagents on the SAME model each stream their own CUMULATIVE totals; keyed
+    # only by (thread, model) their interleaved streams collapse onto one entry,
+    # the monotonic check flip-flops, every chunk looks like a fresh absolute call
+    # and usage/cost over-counts. ``namespace[0]`` (``""`` for the main graph)
+    # separates each stream so its cumulative deltas are computed against its own
+    # prior total.
+    ns = namespace[0] if isinstance(namespace, (tuple, list)) and namespace else ""
+    usage_key = (driver.thread_id, str(ns), model_ref)
     prev = driver._last_usage_totals.get(usage_key)
     is_continuation = False
     if prev is not None:

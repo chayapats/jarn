@@ -85,9 +85,36 @@ def interrupt_map(
 BACKGROUND_START_TOOL = "run_in_background"
 BACKGROUND_CONTROL_TOOLS = ("check_background", "kill_background", "list_background")
 
+#: Canonical NAMES of the read-only/local builtin tools the engine would
+#: auto-ALLOW in every mode, so gating them buys no policy and costs a full graph
+#: pause/checkpoint/resume per call. This set is used ONLY to select which
+#: locally-built tool instances ``builtin_tools._wire_builtin_tools`` collects as
+#: ungated; enforcement in the runtime is by OBJECT IDENTITY of those instances,
+#: never by matching names at gate time. Names — and metadata — are both forgeable
+#: by an MCP server (langchain-mcp-adapters copies server ToolAnnotations into
+#: BaseTool.metadata), so a server exposing ``wiki_read``/``repo_map``/
+#: ``check_background`` (or tagging itself ungated) stays gated: it is not one of
+#: the objects we constructed.
+UNGATED_EXTRA_TOOLS = frozenset({
+    *WIKI_READONLY_TOOLS,
+    "repo_map",
+    *BACKGROUND_CONTROL_TOOLS,
+})
+
 
 def tool_to_action(tool_name: str, args: dict[str, Any]) -> Action:
-    """Map a tool call to an Action the permission engine can evaluate."""
+    """Map a tool call to an Action the permission engine can evaluate.
+
+    Classification is name-keyed, and that is SOUND because MCP-provided tools can
+    never reach here under a builtin name: the loader namespaces every MCP tool to
+    ``mcp__<server>__<tool>`` (:func:`jarn.extensibility.mcp._namespace_tool`), and
+    the runtime drops any un-prefixed extra tool whose name collides with a reserved
+    builtin table (:data:`jarn.agent.runtime._RESERVED_BUILTIN_NAMES`). So a
+    non-prefixed name matching a builtin table below is only ever produced by jarn
+    itself; a ``mcp__``-prefixed name falls through to ``ActionKind.NETWORK`` and is
+    gated. This closes the plan-mode bypass where an MCP tool named ``wiki_read``
+    would classify as READ and be auto-allowed.
+    """
     if tool_name == "execute":
         command = args.get("command") or args.get("cmd") or _stringify(args)
         return Action(ActionKind.SHELL, target=str(command), tool=tool_name)

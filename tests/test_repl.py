@@ -108,6 +108,38 @@ async def test_run_turn_enriches_payload_once(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_turn_enriches_off_the_event_loop(tmp_path, monkeypatch):
+    """enrich_turn_input runs via asyncio.to_thread (its sync memory-file reads +
+    vector-index builds must not block the loop) yet its result is still injected."""
+    import threading
+
+    from jarn import repl
+
+    ctrl = _controller(tmp_path, monkeypatch)
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+
+    main_thread = threading.current_thread()
+    ran_on: list[threading.Thread] = []
+
+    def _enrich(text: str) -> str:
+        ran_on.append(threading.current_thread())
+        return f"MEMORY\n\n{text}"
+    monkeypatch.setattr(ctrl, "enrich_turn_input", _enrich)
+    driver = _FakeDriver([Event(EventKind.TEXT, "ok"), Event(EventKind.DONE)])
+    monkeypatch.setattr(ctrl, "make_driver", lambda approver: driver)
+
+    console = Console(file=StringIO(), width=80)
+    await repl._run_turn(console, ctrl, "hi", _ask_returning(""))
+
+    assert driver.text == "MEMORY\n\nhi"  # still injected
+    assert ran_on and ran_on[0] is not main_thread  # ran in a worker thread
+    ctrl.close()
+
+
+@pytest.mark.asyncio
 async def test_auto_compact_controller_path_removed(tmp_path, monkeypatch):
     """The controller-side auto-compact trigger is gone: a completed turn never
     calls controller.compact(). Auto-compaction now happens in-graph via the
@@ -3058,7 +3090,12 @@ def test_commit_width_tracks_resize(monkeypatch):
         _shutil, "get_terminal_size",
         lambda *_a, **_k: os.terminal_size((120, 24)),
     )
-    console = Console(file=StringIO(), force_terminal=True, width=80)
+    # legacy_windows=False: Rich's width getter reserves one column on a legacy
+    # Windows console (returns set width - 1), which is Rich's quirk — this test
+    # asserts jarn's capping logic, so pin the modern-console behavior.
+    console = Console(
+        file=StringIO(), force_terminal=True, width=80, legacy_windows=False
+    )
     r = TurnRenderer(console, live_sink=lambda _: None, spinner=False)
 
     r.on_text("first commit text")
@@ -3080,7 +3117,9 @@ def test_commit_width_tracks_resize(monkeypatch):
     assert console.width == 60, f"expected 60 after resize, got {console.width}"
 
     # Phase 3: wide terminal (250 cols) → width still capped at 100.
-    console3 = Console(file=StringIO(), force_terminal=True, width=80)
+    console3 = Console(
+        file=StringIO(), force_terminal=True, width=80, legacy_windows=False
+    )
     monkeypatch.setattr(
         _shutil, "get_terminal_size",
         lambda *_a, **_k: os.terminal_size((250, 24)),

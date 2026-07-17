@@ -60,19 +60,23 @@ NOT a web page; format for readability there):
 
 
 def date_context(now: datetime | None = None) -> str:
-    """A context block stating the current local date/time.
+    """A context block stating the current local date.
 
     The model's training has a cutoff and otherwise has no idea what "today" is,
     which makes time-sensitive requests ("find today's news") unreliable. Also
     re-injected at the start of each agent turn (and when the local date rolls
-    over mid-session) via :class:`jarn.agent.session.SessionDriver`."""
+    over mid-session) via :class:`jarn.agent.session.SessionDriver`.
+
+    Stamped at DAY granularity — DATE ONLY, no clock time and no timezone: a
+    minute-granular stamp changed every turn, so the per-day de-dup in
+    ``SessionDriver`` never matched and each turn appended a fresh date system
+    message, bloating history. Appending the timezone abbreviation reintroduced the
+    same bug across a DST transition (e.g. EDT->EST on one local calendar day
+    changed the block and double-injected), so the stamp carries no timezone."""
     dt = now or datetime.now().astimezone()
-    stamp = f"{dt:%A, %Y-%m-%d %H:%M}".rstrip()
-    tz = f"{dt:%Z}".strip()
-    if tz:
-        stamp = f"{stamp} {tz}"
+    stamp = f"{dt:%A, %Y-%m-%d}"
     return (
-        f"Current date and time: {stamp}. "
+        f"Current date: {stamp}. "
         'Treat this as "today"/"now" — do not rely on your training cutoff for the date.'
     )
 

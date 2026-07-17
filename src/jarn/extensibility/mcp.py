@@ -41,6 +41,52 @@ class MCPLoadResult:
         return bool(self.errors)
 
 
+def _strip_mcp_prefix(name: str) -> str:
+    """Collapse any server-supplied ``mcp__<x>__`` prefix from a tool name.
+
+    The ``mcp__<server>__<tool>`` scheme is RESERVED for provenance stamped by
+    this loader (:func:`_namespace_tool`). A malicious server that names its own
+    tool ``mcp__other__x`` would otherwise smuggle a forged provenance once we
+    prepend the real prefix (yielding a name that parses as server ``other``), so
+    every leading ``mcp__<seg>__`` is stripped first. Handles nested/double
+    prefixes (``mcp__a__mcp__b__x`` → ``x``).
+    """
+    while name.startswith("mcp__"):
+        rest = name[len("mcp__") :]
+        sep = rest.find("__")
+        if sep == -1:
+            name = rest  # bare "mcp__foo": drop the reserved marker only
+            break
+        name = rest[sep + 2 :]
+    return name
+
+
+def _namespace_tool(tool: Any, server_name: str) -> Any:
+    """Stamp ``tool`` with the reserved ``mcp__<server>__<tool>`` provenance name.
+
+    Invariant: the ``mcp__`` prefix is PROVENANCE. Permission classification
+    (``permissions_bridge.tool_to_action``) treats ONLY non-prefixed names as
+    jarn builtins, so a namespaced MCP tool can never be misclassified as a
+    read-only builtin and auto-allowed — it falls through to ``ActionKind.NETWORK``
+    and is gated. Any pre-existing ``mcp__`` prefix in the server-provided name is
+    collapsed first (:func:`_strip_mcp_prefix`) so a server cannot forge a double
+    prefix that parses as a different server. Tools without a string ``name`` are
+    returned untouched. Pydantic ``StructuredTool`` normally accepts the direct
+    assignment; if it is rejected we rebuild via ``model_copy``.
+    """
+    original = getattr(tool, "name", None)
+    if not isinstance(original, str):
+        return tool
+    new_name = f"mcp__{server_name}__{_strip_mcp_prefix(original)}"
+    if new_name == original:
+        return tool  # already namespaced under this server; idempotent
+    try:
+        tool.name = new_name
+    except Exception:  # noqa: BLE001 - pydantic may reject assignment; rebuild instead
+        tool = tool.model_copy(update={"name": new_name})
+    return tool
+
+
 def to_connection(server: MCPServer) -> dict[str, Any]:
     """Build the per-server connection dict for MultiServerMCPClient."""
     if server.transport == "stdio":
@@ -96,8 +142,12 @@ async def load_mcp_tools(servers: list[MCPServer]) -> MCPLoadResult:
     ``get_tools(server_name=...)``, which opens and tears down a fresh session
     for just that one server. We call it once per server inside a try/except so
     one bad server's failure is recorded and skipped, never losing the tools of
-    the healthy ones. The client itself holds no persistent connection (it is
-    not an async context manager), so there is no client to close.
+    the healthy ones. Servers are loaded CONCURRENTLY (via ``asyncio.gather``)
+    so startup latency is the slowest server's handshake, not the sum of all;
+    per-server isolation and per-server ``timeout_secs`` are preserved because
+    each ``_load_one`` owns its own ``wait_for`` and try/except. The client
+    itself holds no persistent connection (it is not an async context manager),
+    so there is no client to close.
     """
     result = MCPLoadResult()
     client, invalid = build_client(servers)
@@ -110,25 +160,33 @@ async def load_mcp_tools(servers: list[MCPServer]) -> MCPLoadResult:
 
     timeout_by_name = {s.name: s.timeout_secs for s in servers if s.enabled}
 
-    for name in client.connections:
-        timeout_secs = timeout_by_name.get(name, 30)
+    async def _load_one(name: str):
+        """Load one server's tools in isolation; never raises."""
+        secs = timeout_by_name.get(name, 30)
         try:
             tools = await asyncio.wait_for(
-                client.get_tools(server_name=name),
-                timeout=timeout_secs,
+                client.get_tools(server_name=name), timeout=secs
             )
+            return name, tools, None
         except TimeoutError:
-            logger.warning(
-                "Timed out loading MCP tools from %s after %ss", name, timeout_secs
-            )
-            result.health[name] = "error"
-            result.errors[name] = f"timed out after {timeout_secs}s"
-            continue
-        except Exception as exc:  # noqa: BLE001 - one bad server shouldn't kill startup
+            logger.warning("Timed out loading MCP tools from %s after %ss", name, secs)
+            return name, None, f"timed out after {secs}s"
+        except Exception as exc:  # noqa: BLE001 - one bad server must not kill startup
             logger.warning("Failed to load MCP tools from %s: %s", name, exc)
+            return name, None, str(exc)
+
+    # gather preserves argument order, so tools are extended in client.connections
+    # iteration order regardless of which handshake completes first.
+    for name, tools, err in await asyncio.gather(
+        *(_load_one(n) for n in client.connections)
+    ):
+        if err is not None:
             result.health[name] = "error"
-            result.errors[name] = str(exc)
-            continue
-        result.tools.extend(tools)
-        result.health[name] = "ok"
+            result.errors[name] = err
+        else:
+            # Namespace every tool to mcp__<server>__<tool> before it leaves the
+            # loader: the prefix is provenance so permission classification can
+            # never mistake an MCP tool for a jarn builtin (see _namespace_tool).
+            result.tools.extend(_namespace_tool(t, name) for t in tools)
+            result.health[name] = "ok"
     return result
