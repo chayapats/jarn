@@ -1,4 +1,4 @@
-# Release process — v0.9.0 alpha
+# Release process — v0.9.1 alpha
 
 Checklist for publishing J.A.R.N. to PyPI, npm, and GitHub Releases.
 
@@ -28,8 +28,8 @@ Run on a **fresh machine or clean venv** with a real API key. Record date + resu
 
 | Step | Command / action | Pass? |
 |------|------------------|-------|
-| 1 | `uv tool install jarn` or `pip install jarn==0.9.0` (or `npm install -g jarn-cli`) | ☐ |
-| 2 | `jarn --version` → `jarn 0.9.0` | ☐ |
+| 1 | `uv tool install jarn` or `pip install jarn==0.9.1` (or `npm install -g jarn-cli`) | ☐ |
+| 2 | `jarn --version` → `jarn 0.9.1` | ☐ |
 | 3 | `jarn setup` — wizard completes, `~/.jarn/config.yaml` created | ☐ |
 | 4 | `jarn doctor` — providers OK, extensions section renders | ☐ |
 | 5 | `cd <project>` → `jarn` — REPL launches, splash visible | ☐ |
@@ -61,8 +61,8 @@ Optional binary smoke (maintainer):
 3. Tag and push (the tag drives the whole release):
 
 ```bash
-git tag v0.9.0
-git push origin v0.9.0
+git tag v0.9.1
+git push origin v0.9.1
 ```
 
 4. GitHub Actions `Release` workflow then, from that tag:

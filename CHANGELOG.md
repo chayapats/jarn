@@ -5,6 +5,15 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-07-17
+
+### Security
+
+- Bumped the `mcp` SDK to 1.28.1 (CVE-2026-59950). PyPI installs already
+  resolve the fixed version on their own; this patch release exists so the
+  standalone binaries and npm packages — which embed the locked dependency —
+  ship it too.
+
 ## [0.9.0] - 2026-07-17
 
 Hardening release: 17 fixes from a full self-improvement audit plus 30 further
