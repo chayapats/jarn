@@ -38,9 +38,13 @@ agents), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcrip
 base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists to
 `~/.jarn/config.yaml`), and per-server **MCP health** (`/mcp status`).
 
-> **Status:** v0.8.0 (Alpha) — on PyPI (`pip install jarn`) and npm (`npm install -g
-> jarn-cli` — a standalone binary, no Python). Three releases (v0.6.0–v0.8.0) land four
-> improvement waves: **engine reliability**; **UX parity with Claude Code** (live
+> **Status:** v0.9.0 (Alpha) — on PyPI (`pip install jarn`) and npm (`npm install -g
+> jarn-cli` — a standalone binary, no Python). v0.9.0 is a **hardening release**: a
+> full self-improvement audit plus adversarial multi-model review (47 repro-verified
+> fixes across permissions, cost integrity, concurrency, compaction, and
+> observability; MCP tools are now namespaced `mcp__<server>__<tool>` — see
+> CHANGELOG for the breaking note). The three releases before it (v0.6.0–v0.8.0)
+> landed four improvement waves: **engine reliability**; **UX parity with Claude Code** (live
 > in-place streaming, `/theme`, `@git:`/`@url:` mentions, word-level diffs, ghost
 > autosuggest, conversation `/rewind` with file restore); **differentiators**
 > (`--add-dir` multi-root, inline images, headless `--output-schema`, labelled subagent

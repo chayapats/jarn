@@ -5,8 +5,86 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-17
+
+Hardening release: 17 fixes from a full self-improvement audit plus 30 further
+defects surfaced by adversarial review (a multi-agent review panel plus seven
+rounds of cross-model re-review, every finding backed by a runnable repro or
+executed test), converging at zero findings. Test suite grew 1,714 → 1,775.
+
+### Security
+
+- **MCP tools are namespaced `mcp__<server>__<tool>` at load time.** Server-
+  provided `mcp__` prefixes are collapsed first (no forged provenance), and any
+  un-prefixed extra tool colliding with a reserved builtin name is dropped with
+  a warning — so name-keyed permission classification is provenance-sound. An
+  MCP server exposing a tool literally named `wiki_read` could previously
+  execute without approval **even in plan mode**.
+- Interrupt-map exclusion of read-only builtins (`wiki_search`/`wiki_read`,
+  `repo_map`, background controls) is now by object identity of the instances
+  jarn itself constructs — tool names and metadata are forgeable by MCP servers
+  and are never trusted.
+- Bumped `langchain-anthropic` to 1.4.8 (PYSEC-2026-2556).
+
+### Added
+
+- `jarn.turn` OpenTelemetry span plus turn-path logging (turn start / tool
+  start / classified turn error / turn done) wired through the session driver —
+  the `otel` tracing backend now actually emits spans, and the wiring is
+  regression-tested through the driver.
+- Prompt-cache-rate-aware pricing: cache read/write rates on the Claude
+  anchors, optional `cache_read`/`cache_write` keys in `pricing.yaml`,
+  OpenRouter catalog cache rates, and Anthropic TTL-scoped cache-creation
+  fields (`ephemeral_5m/1h_input_tokens`) folded into cost.
+- Concurrent MCP server loading (per-server isolation and stable ordering
+  preserved) and a per-session MCP tool cache reused across runtime rebuilds.
+- Per-turn memory recall now carries an indented 400-char body excerpt per hit.
+
+### Changed
+
+- **BREAKING:** MCP tool names are prefixed `mcp__<server>__<tool>`; subagent
+  frontmatter `tools:` lists must reference the prefixed names.
+- Runtime builds run off the event loop as a single-flight, generation-tagged,
+  cancellation-safe task (no more UI freeze on rebuild; caller cancellation
+  never duplicates a build; invalidation mid-build can never resurrect revoked
+  MCP tools; `aclose()` is serialized so no backend outlives shutdown).
+  `enrich_turn_input` (memory recall) also moved off the event loop.
+- Budget semantics hardened: `per_session_usd: 0` is a real hard cap
+  (EXCEEDED), `None` means unset, non-finite values are rejected at config
+  validation, and unpriced calls under a hard-stop budget surface as WARN.
+- Manual `/compact` caps each rendered message (4k chars) and trims the
+  transcript head-30/tail-70 to 0.6× the summarizer window with a strict
+  token-budget guarantee that preserves the newest lines.
+- Wiki-index and repo-map blocks append after the stable persona (better
+  cross-session prefix caching); the date system message is injected once per
+  local day per thread (date-only stamp, no DST double-injection).
+- Removed the placeholder four-fixture eval badge from the README until a real
+  live-model baseline and broader comparative suite exist.
+
 ### Fixed
 
+- Cost accounting: parallel same-model subagents can no longer corrupt
+  cumulative-usage dedup (key now includes the subgraph namespace); pricing
+  overrides, the OpenRouter catalog, and its disk cache all pass one per-entry
+  validator (invalid required rates leave a model unpriced instead of priced
+  at $0; NaN can no longer poison cost totals or disable the budget stop;
+  present-zero remains a valid free-model price); override YAML loads are
+  mtime-memoized off the hot path.
+- `/mcp refresh` works from the running TUI event loop (probe runs on a worker
+  thread) and stores its result into the session cache; an MCP failure no
+  longer clobbers a non-MCP degradation reason, and MCP recovery is scoped so
+  it cannot erase a live sandbox degradation.
+- Interrupted or failed turns flush their partial assistant text to the
+  transcript with an interruption marker; the DONE path clears the buffer so
+  nothing double-writes.
+- `RedactingFilter` suppresses unformattable log records instead of emitting
+  them raw (a secret-redaction bypass on exactly the malformed lines most
+  likely to carry one).
+- Read-only builtin tools no longer pay a HITL interrupt round-trip per call;
+  vector-index cache writes only when content changed.
+- Cross-platform test determinism: NTFS mtime-tick quantization, Windows
+  `tzdata` for zoneinfo, Rich legacy-Windows console width, and timing-ratio
+  noise on shared CI runners.
 - GitHub Action now bootstraps an environment-referenced OpenRouter config on a
   fresh runner, qualifies OpenRouter model slugs correctly, and defaults to the
   Docker-backed `yolo` policy required for unattended verification. It uses the new
@@ -20,11 +98,6 @@ All notable changes to J.A.R.N. are documented here. Format follows
   used tools, preventing duplicated answers and unnecessary model cost.
 - Terminal resize width updates now work in redirected/dumb-terminal Rich output,
   restoring the full test suite.
-
-### Changed
-
-- Removed the placeholder four-fixture eval badge from the README until a real
-  live-model baseline and broader comparative suite exist.
 
 ## [0.8.0] - 2026-07-07
 
