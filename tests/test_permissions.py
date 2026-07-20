@@ -25,6 +25,81 @@ def test_reads_always_allowed():
         assert r.decision is Decision.ALLOW
 
 
+# -- Sensitive-path READ gating (secret-exfiltration defense) ---------------
+#
+# A read of a secret store (.env / ssh key / aws creds / private key) must be
+# CONFIRMED, not silently auto-allowed — otherwise the agent can read the file
+# and ship its contents out through an allowed network tool with no gate. Normal
+# reads keep the fast auto-ALLOW (no approval flood).
+
+
+def test_sensitive_read_asks_in_every_mode():
+    """A read matching a default sensitive glob is ASK in every mode (even YOLO).
+
+    This is the exfiltration gap: before the fix these all auto-ALLOWed.
+    """
+    sensitive = [
+        ".env", "config/.env", ".env.local", "/proj/.env.local",
+        "/home/u/.ssh/id_rsa", ".ssh/id_rsa", "id_rsa",
+        "/proj/.aws/credentials", ".aws/credentials",
+        "/proj/.git/config", "server.pem", "/proj/certs/server.pem",
+        "server.key", "/proj/id_ed25519", "id_ed25519",
+    ]
+    for mode in PermissionMode:
+        eng = _engine(mode)
+        for path in sensitive:
+            r = eng.evaluate(Action(ActionKind.READ, path))
+            assert r.decision is Decision.ASK, f"{mode.value} {path} -> {r.decision}"
+
+
+def test_normal_reads_still_auto_allowed():
+    """Non-sensitive reads keep the fast auto-ALLOW — no approval flood.
+
+    Includes near-miss false-positive traps: a plain ``config`` must NOT match
+    ``**/.git/config``; a plain ``credentials`` must NOT match ``**/.aws/credentials``.
+    """
+    eng = _engine(PermissionMode.ASK)
+    for path in (
+        "src/app.py", "README.md", "config", "credentials",
+        "any.py", ".github/config", "notes.txt",
+    ):
+        r = eng.evaluate(Action(ActionKind.READ, path))
+        assert r.decision is Decision.ALLOW, f"{path} -> {r.decision}"
+
+
+def test_explicit_deny_rule_enforced_for_reads():
+    """(fix b) A ``permissions.deny`` rule blocks a read once it reaches the engine.
+
+    Deny takes precedence over the sensitive-glob ASK and over the mode.
+    """
+    eng = _engine(PermissionMode.YOLO, rules=PermissionRules(deny=["**/secrets.txt"]))
+    assert eng.evaluate(
+        Action(ActionKind.READ, "/proj/secrets.txt")
+    ).decision is Decision.DENY
+    # Deny wins over the sensitive-glob ASK too.
+    eng2 = _engine(PermissionMode.YOLO, rules=PermissionRules(deny=["**/.env"]))
+    assert eng2.evaluate(
+        Action(ActionKind.READ, "/proj/.env")
+    ).decision is Decision.DENY
+
+
+def test_allow_rule_overrides_sensitive_read_ask():
+    """An explicit allow rule opts a specific secret path back into ALLOW."""
+    eng = _engine(PermissionMode.ASK, rules=PermissionRules(allow=[".env"]))
+    assert eng.evaluate(Action(ActionKind.READ, ".env")).decision is Decision.ALLOW
+
+
+def test_sensitive_read_globs_configurable_off():
+    """Empty ``sensitive_read_globs`` disables the extra gating (opt-out)."""
+    eng = _engine(PermissionMode.ASK, rules=PermissionRules(sensitive_read_globs=[]))
+    assert eng.evaluate(Action(ActionKind.READ, ".env")).decision is Decision.ALLOW
+
+
+def test_sensitive_read_globs_default_populated():
+    """The default rules ship the sensitive-path glob list (default-safe)."""
+    assert PermissionRules().sensitive_read_globs  # non-empty by default
+
+
 def test_plan_mode_denies_writes_and_shell():
     eng = _engine(PermissionMode.PLAN)
     assert eng.evaluate(Action(ActionKind.WRITE, "a.py")).decision is Decision.DENY

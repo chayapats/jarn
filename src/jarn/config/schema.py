@@ -245,16 +245,48 @@ class PolicyConfig:
     web_tools: bool = True
 
 
+#: Default glob patterns for sensitive paths whose *reads* must be confirmed.
+#: Reads are normally auto-allowed (so approvals aren't flooded), but reading a
+#: secret store and shipping it out through an allowed network tool is a real
+#: exfiltration path. A read whose target matches any of these routes to ASK
+#: (unless an explicit ``allow`` rule covers it, or a ``deny`` rule forces DENY).
+#: fnmatch's ``*`` spans ``/``, so ``*.pem`` matches a .pem file at any depth;
+#: the ``**/``-anchored forms also catch bare relative targets (see the engine's
+#: ``_is_sensitive_read``). Set ``sensitive_read_globs: []`` to opt out.
+DEFAULT_SENSITIVE_READ_GLOBS: tuple[str, ...] = (
+    ".env",
+    ".env.*",
+    "**/.env",
+    "**/.env.*",
+    "**/.ssh/**",
+    "**/.aws/credentials",
+    "**/.git/config",
+    "*_rsa",
+    "*.pem",
+    "**/id_*",
+    "**/*.key",
+)
+
+
 @dataclass(slots=True)
 class PermissionRules:
     """Persisted fine-grained allow/deny rules layered under the coarse mode.
 
     Patterns are shell-glob-style and matched against the normalized command
     string for shell, or the path for filesystem writes.
+
+    ``sensitive_read_globs`` gates *reads* of secret stores: a read matching one
+    of these is confirmed (ASK) rather than silently auto-allowed, closing the
+    "read ``.env`` then exfiltrate over an allowed network tool" gap. It defaults
+    to :data:`DEFAULT_SENSITIVE_READ_GLOBS`; an empty list disables the extra
+    gating (reads then behave exactly as before).
     """
 
     allow: list[str] = field(default_factory=list)
     deny: list[str] = field(default_factory=list)
+    sensitive_read_globs: list[str] = field(
+        default_factory=lambda: list(DEFAULT_SENSITIVE_READ_GLOBS)
+    )
 
 
 @dataclass(slots=True)

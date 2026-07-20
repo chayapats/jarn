@@ -176,6 +176,17 @@ class PermissionEngine:
     def _mode_decision(self, action: Action) -> PermissionResult:
         mode = self.mode
         if action.kind is ActionKind.READ:
+            # Reads reaching here already cleared the deny check (line ~121) and
+            # the allow check (line ~132), so an explicit deny/allow rule wins.
+            # Otherwise reads auto-ALLOW EXCEPT for sensitive secret stores: those
+            # are confirmed (ASK) in every mode — including YOLO — so the agent
+            # cannot silently read ``.env``/``id_rsa``/``.aws/credentials`` and
+            # exfiltrate them through an allowed network tool. An explicit allow
+            # rule (checked earlier) is the escape hatch for a specific path.
+            if self._is_sensitive_read(action):
+                return PermissionResult(
+                    Decision.ASK, "sensitive-path read requires confirmation"
+                )
             return PermissionResult(Decision.ALLOW, "reads are always permitted")
 
         if mode is PermissionMode.PLAN:
@@ -259,6 +270,28 @@ class PermissionEngine:
             # Otherwise generalize to program + subcommand so "npm test" reruns.
             return f"{parts[0]} {first_arg}"
         return action.target
+
+    def _is_sensitive_read(self, action: Action) -> bool:
+        """True when a READ target matches a configured sensitive-path glob.
+
+        Matching runs against the raw normalized target AND a leading-slash form,
+        so a ``**/``-anchored pattern also catches a bare relative target
+        (``.env`` vs ``**/.env``) WITHOUT the false positives a basename-only
+        match would create (a plain ``config`` must not match ``**/.git/config``).
+        ``fnmatch``'s ``*`` spans ``/``, so ``*.pem`` matches a .pem file at any
+        depth. An empty ``sensitive_read_globs`` disables the check entirely.
+        """
+        globs = self.rules.sensitive_read_globs
+        target = action.target
+        if not globs or not target:
+            return False
+        norm = target.replace("\\", "/")
+        candidates = {norm, norm if norm.startswith("/") else "/" + norm}
+        return any(
+            fnmatch.fnmatch(cand, pattern)
+            for pattern in globs
+            for cand in candidates
+        )
 
     def _matches(self, action: Action, patterns: list[str]) -> bool:
         candidates = {action.target, self._rule_for(action)}
