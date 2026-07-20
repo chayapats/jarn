@@ -17,6 +17,7 @@ _HANDLERS: dict[str, CommandHandler] = {
     # meta
     "help": meta.cmd_help,
     "init": meta.cmd_init,
+    "skill": meta.cmd_skill,
     "skills": meta.cmd_skills,
     # config
     "config": config.cmd_config,
