@@ -55,10 +55,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--output-format",
+        dest="headless_output_format",
+        choices=["text", "json", "stream-json"],
+        default=None,
+        metavar="FORMAT",
+        help=(
+            "With -p: output format (text|json|stream-json; default text). "
+            "'json' emits one buffered final object; 'stream-json' emits NDJSON — "
+            "one JSON object per event as the turn runs, then a terminal "
+            "{\"type\":\"result\",...} line (with thread_id) — mirroring "
+            "`claude -p --output-format stream-json`."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help=(
-            "With -p: emit JSON instead of plain text. On success: "
+            "With -p: legacy alias for --output-format json. On success: "
             "{result, tokens, cost, turns, tool_calls, verification}. On failure: "
             "{error: {kind, message}}."
         ),
@@ -255,11 +269,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.headless_output_schema is not None and args.headless_prompt is None:
         parser.error("--output-schema requires -p / --print")
 
+    # Resolve the effective output format. --json is a legacy alias for
+    # --output-format json; the two may co-occur only when they agree, otherwise
+    # it is a usage error (explicit conflicting intent).
+    output_format = args.headless_output_format
+    if args.json:
+        if output_format is not None and output_format != "json":
+            parser.error(
+                f"--json conflicts with --output-format {output_format} "
+                "(--json is an alias for --output-format json)"
+            )
+        output_format = "json"
+    if output_format is None:
+        output_format = "text"
+
     # Headless one-shot: dispatch before any TUI setup.
     if args.headless_prompt is not None:
         return _cmd_headless(
             prompt_arg=args.headless_prompt,
-            as_json=args.json,
+            output_format=output_format,
             model_override=args.headless_model,
             permission_mode_override=args.headless_permission_mode,
             max_turns=args.headless_max_turns,
@@ -315,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
 def _cmd_headless(
     *,
     prompt_arg: str,
-    as_json: bool = False,
+    output_format: str = "text",
     model_override: str | None = None,
     permission_mode_override: str | None = None,
     max_turns: int = 1,
@@ -439,7 +467,7 @@ def _cmd_headless(
     if output_schema is not None:
         import json as _json
 
-        from jarn.headless import HeadlessFailure, _emit_failure
+        from jarn.headless import HeadlessFailure, _emit_headless_failure
 
         schema_path = Path(output_schema)
         try:
@@ -450,7 +478,7 @@ def _cmd_headless(
                 f"--output-schema: cannot read/parse {schema_path}: {exc}",
                 exit_code=2,
             )
-            return _emit_failure(failure, as_json=as_json)
+            return _emit_headless_failure(failure, output_format=output_format)
         response_format = {"type": "json_schema", "schema": schema_dict}
 
     from jarn.headless import run_headless
@@ -460,7 +488,7 @@ def _cmd_headless(
         cfg,
         root,
         project_trusted=trusted,
-        as_json=as_json,
+        output_format=output_format,
         max_turns=max_turns,
         resume_session=resume_session,
         response_format=response_format,

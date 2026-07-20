@@ -55,6 +55,9 @@ def _stub_controller(
 
     fake_driver = MagicMock()
     fake_driver.run_turn = _fake_run_turn
+    # No transcript writer in the stub (keeps stream-json terminal lines clean;
+    # a real driver sets this only when observability.transcript is enabled).
+    fake_driver.transcript = None
 
     import jarn.headless as headless_mod
 
@@ -833,3 +836,199 @@ def test_schema_validation_failure_exit(tmp_path, monkeypatch, base_config, caps
     assert code == EXIT_ERROR
     data = json.loads(capsys.readouterr().out)
     assert data["error"]["kind"] == "schema"
+
+
+# ---------------------------------------------------------------------------
+# Streaming JSON output (--output-format stream-json)
+# ---------------------------------------------------------------------------
+
+
+def _parse_ndjson(out: str) -> list[dict]:
+    """Parse NDJSON stdout, asserting every non-blank line is valid JSON."""
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    return [json.loads(ln) for ln in lines]
+
+
+def test_stream_json_emits_events_then_result(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """stream-json: ≥1 event line (each valid JSON) then exactly one terminal
+    ``{"type":"result",...}`` line carrying the envelope + thread_id."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _stub_controller(monkeypatch, text="streamed answer", tool_events=1)
+
+    code = run_headless(
+        "do it", base_config, tmp_path, output_format="stream-json"
+    )
+    assert code == EXIT_SUCCESS
+
+    records = _parse_ndjson(capsys.readouterr().out)  # each line valid JSON
+
+    # Exactly one terminal result line, and it is the last line.
+    results = [r for r in records if r.get("type") == "result"]
+    assert len(results) == 1
+    assert records[-1]["type"] == "result"
+
+    # At least one non-result event line streamed before it.
+    event_lines = [r for r in records if r.get("type") != "result"]
+    assert len(event_lines) >= 1
+    kinds = {r["type"] for r in event_lines}
+    assert "text" in kinds
+    assert "tool_start" in kinds
+
+    # Terminal line carries the full envelope + thread_id (the CI-resume gap fix).
+    terminal = results[0]
+    assert terminal["result"] == "streamed answer"
+    for key in ("tokens", "cost", "turns", "tool_calls", "verification"):
+        assert key in terminal
+    assert isinstance(terminal["thread_id"], str) and terminal["thread_id"]
+
+
+def test_stream_json_includes_transcript_path_when_available(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """When the driver has a transcript writer, its path is added to the result."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    fake_driver = _stub_controller(monkeypatch, text="ok")
+    fake_driver.transcript = SimpleNamespace(path=tmp_path / "sessions" / "t.jsonl")
+
+    code = run_headless("q", base_config, tmp_path, output_format="stream-json")
+    assert code == EXIT_SUCCESS
+
+    records = _parse_ndjson(capsys.readouterr().out)
+    terminal = records[-1]
+    assert terminal["type"] == "result"
+    assert terminal["transcript_path"] == str(tmp_path / "sessions" / "t.jsonl")
+
+
+def test_event_to_json_is_generic(base_config):
+    """_event_to_json serializes any event by kind + attributes — no whitelist,
+    so a REASONING event (never special-cased) and arbitrary data still flow."""
+    from jarn.agent.session import Event
+    from jarn.headless import _event_to_json
+
+    ev = Event(kind=EventKind.REASONING, text="thinking", data={"future_key": 1})
+    out = _event_to_json(ev)
+    assert out["type"] == "reasoning"
+    assert out["text"] == "thinking"
+    assert out["data"] == {"future_key": 1}
+
+
+def test_stream_json_error_emits_error_line(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """stream-json error path: emits a terminal error line + the refusal exit code."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+
+    async def _raising_run_turn(prompt, *, resume: bool = False):
+        raise HeadlessRefusal("execute", "ask mode requires confirmation")
+        yield  # pragma: no cover - makes this an async generator
+
+    fake_driver = MagicMock()
+    fake_driver.run_turn = _raising_run_turn
+    fake_driver.transcript = None
+
+    import jarn.headless as headless_mod
+
+    async def _fake_ensure_runtime(self):
+        pass
+
+    async def _fake_aclose(self):
+        pass
+
+    monkeypatch.setattr(headless_mod.Controller, "ensure_runtime", _fake_ensure_runtime)
+    monkeypatch.setattr(headless_mod.Controller, "make_driver", lambda self, a: fake_driver)
+    monkeypatch.setattr(headless_mod.Controller, "validate", lambda self: (True, "ready"))
+    monkeypatch.setattr(headless_mod.Controller, "enrich_turn_input", lambda self, t: t)
+    monkeypatch.setattr(headless_mod.Controller, "aclose", _fake_aclose)
+
+    code = run_headless("risky", base_config, tmp_path, output_format="stream-json")
+
+    assert code == EXIT_REFUSED
+    records = _parse_ndjson(capsys.readouterr().out)
+    assert records[-1]["type"] == "error"
+    assert records[-1]["error"]["kind"] == "refusal"
+    assert "confirmation" in records[-1]["error"]["message"]
+
+
+def test_stream_json_error_event_streams_then_terminal(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """An ERROR event streams as an event line AND closes with a terminal error
+    line carrying the correct (timeout) exit code."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    from jarn.agent.session import Event
+
+    async def _timeout(prompt, *, resume: bool = False):
+        yield Event(kind=EventKind.ERROR, text="request timed out after 30s", data={})
+
+    _stub_controller(monkeypatch, run_turn_side_effect=_timeout)
+
+    code = run_headless("x", base_config, tmp_path, output_format="stream-json")
+    assert code == EXIT_TIMEOUT
+    records = _parse_ndjson(capsys.readouterr().out)
+    assert any(r.get("type") == "error" for r in records)
+    assert records[-1]["type"] == "error"
+
+
+def test_output_format_json_matches_as_json(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """output_format='json' emits the buffered envelope unchanged (no streaming
+    schema, no thread_id leak into the buffered json contract)."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _stub_controller(monkeypatch, text="buf")
+
+    code = run_headless("q", base_config, tmp_path, output_format="json")
+    assert code == EXIT_SUCCESS
+
+    data = json.loads(capsys.readouterr().out)
+    assert data["result"] == "buf"
+    assert "type" not in data       # buffered json is NOT the streaming schema
+    assert "thread_id" not in data  # json mode is unchanged
+
+
+def test_output_format_text_matches_default(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """output_format='text' prints plain text (unchanged from the default)."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _stub_controller(monkeypatch, text="plain")
+
+    code = run_headless("q", base_config, tmp_path, output_format="text")
+    assert code == EXIT_SUCCESS
+    assert capsys.readouterr().out.strip() == "plain"
+
+
+def test_output_format_cli_alias_and_conflict(tmp_path, monkeypatch, base_config):
+    """--json is a legacy alias for --output-format json; conflicting combos error."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    import jarn.cli as cli_mod
+
+    seen: list[dict] = []
+
+    def _recording(**kw):
+        seen.append(kw)
+        return 0
+
+    monkeypatch.setattr(cli_mod, "_cmd_headless", _recording)
+    from jarn.cli import main
+
+    assert main(["-p", "hi", "--json"]) == 0
+    assert seen[-1]["output_format"] == "json"
+
+    assert main(["-p", "hi", "--output-format", "stream-json"]) == 0
+    assert seen[-1]["output_format"] == "stream-json"
+
+    # Consistent alias (--json + --output-format json) is accepted.
+    assert main(["-p", "hi", "--json", "--output-format", "json"]) == 0
+    assert seen[-1]["output_format"] == "json"
+
+    # Default is text.
+    assert main(["-p", "hi"]) == 0
+    assert seen[-1]["output_format"] == "text"
+
+    # Conflicting combo → argparse usage error (SystemExit 2).
+    with pytest.raises(SystemExit) as exc:
+        main(["-p", "hi", "--json", "--output-format", "stream-json"])
+    assert exc.value.code == 2
