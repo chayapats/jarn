@@ -334,7 +334,9 @@ class Controller:
             # stale worker re-caching the old (revoked-tool) result.
             mcp = self._mcp_cache
             if mcp is None:
-                mcp = await load_mcp_tools(self.config.mcp_servers)
+                mcp = await load_mcp_tools(
+                    self.config.mcp_servers, self.config.permissions.network
+                )
             tools = mcp.tools
             try:
                 # build_runtime is pure-sync and does O(repo) file I/O (skills /

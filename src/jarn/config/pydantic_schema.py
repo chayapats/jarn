@@ -23,6 +23,7 @@ from jarn.config.schema import (
     GitConfig,
     HookSpec,
     MCPServer,
+    NetworkPolicy,
     ObservabilityConfig,
     PermissionMode,
     PermissionRules,
@@ -387,9 +388,29 @@ class PolicyConfigModel(_StrictModel):
         return _normalize_bool(value, "policy.web_tools")
 
 
+class NetworkPolicyModel(_StrictModel):
+    """Per-host network egress allow/deny (host globs)."""
+
+    allow: list[str] = Field(default_factory=list)
+    deny: list[str] = Field(default_factory=list)
+
+    @field_validator("allow", "deny", mode="before")
+    @classmethod
+    def _host_globs(cls, value: Any, info: Any) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ConfigValidationError(
+                f"permissions.network.{info.field_name} must be a list of host "
+                f"globs (got {value!r})."
+            )
+        return [str(h) for h in value]
+
+
 class PermissionRulesModel(_StrictModel):
     allow: list[str] = Field(default_factory=list)
     deny: list[str] = Field(default_factory=list)
+    network: NetworkPolicyModel = Field(default_factory=NetworkPolicyModel)
 
 
 class HookSpecModel(_StrictModel):
@@ -1032,6 +1053,10 @@ def config_to_dataclass(model: ConfigModel) -> Config:
         permissions=PermissionRules(
             allow=list(model.permissions.allow),
             deny=list(model.permissions.deny),
+            network=NetworkPolicy(
+                allow=list(model.permissions.network.allow),
+                deny=list(model.permissions.network.deny),
+            ),
         ),
         hooks=[
             HookSpec(

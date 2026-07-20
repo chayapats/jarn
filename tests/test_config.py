@@ -96,6 +96,48 @@ def test_permission_rules_concatenate(tmp_path):
     assert cfg.permissions.deny == ["rm *"]
 
 
+def test_network_policy_round_trip(tmp_path):
+    """permissions.network host globs load through pydantic → dataclass (Wave B)."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"permissions": {"network": {"allow": ["*.github.com"], "deny": ["evil.com"]}}})
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.permissions.network.allow == ["*.github.com"]
+    assert cfg.permissions.network.deny == ["evil.com"]
+
+
+def test_network_policy_merges_across_tiers(tmp_path):
+    """Both tiers' network allow/deny concatenate (project extends global)."""
+    gp = tmp_path / "g.yaml"
+    pp = tmp_path / "p.yaml"
+    _write(gp, {"permissions": {"network": {"allow": ["*.github.com"]}}})
+    _write(pp, {"permissions": {"network": {"allow": ["*.pypi.org"], "deny": ["evil.com"]}}})
+    cfg = load_config(global_path=gp, project_path=pp)
+    assert cfg.permissions.network.allow == ["*.github.com", "*.pypi.org"]
+    assert cfg.permissions.network.deny == ["evil.com"]
+
+
+def test_network_policy_defaults_empty(tmp_path):
+    cfg = load_config(
+        global_path=tmp_path / "none-g.yaml", project_path=tmp_path / "none-p.yaml"
+    )
+    assert cfg.permissions.network.allow == []
+    assert cfg.permissions.network.deny == []
+
+
+def test_network_policy_coexists_with_allow_deny(tmp_path):
+    """A permissions block can carry allow/deny AND network without losing either."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {
+        "permissions": {
+            "allow": ["git status"],
+            "network": {"deny": ["evil.com"]},
+        }
+    })
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.permissions.allow == ["git status"]
+    assert cfg.permissions.network.deny == ["evil.com"]
+
+
 def test_hooks_and_mcp_extend(tmp_path):
     gp = tmp_path / "g.yaml"
     pp = tmp_path / "p.yaml"

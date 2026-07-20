@@ -246,6 +246,29 @@ class PolicyConfig:
 
 
 @dataclass(slots=True)
+class NetworkPolicy:
+    """Unified per-host network egress allow/deny policy (host globs).
+
+    Applied uniformly to ``web_fetch``, MCP http/sse endpoints, and — best
+    effort — shell ``curl``/``wget``. Semantics: ``deny`` always wins; an empty
+    ``allow`` means allow-all (back-compat); a non-empty ``allow`` restricts
+    egress to hosts matching one of its globs. Globs are shell-style and matched
+    case-insensitively against the resolved target host (e.g. ``*.github.com``
+    matches ``api.github.com`` but not the bare ``github.com``).
+
+    Composition with the legacy ``JARN_WEB_FETCH_ALLOW_HOSTS`` env var: that var
+    still governs the web_fetch SSRF private-IP bypass, and for web_fetch its
+    hosts are additionally treated as permitted egress (union) so existing
+    setups keep working. A config ``deny`` overrides the env var — deny always
+    wins. When both ``allow`` and ``deny`` are empty the policy is inert and
+    default behaviour is unchanged.
+    """
+
+    allow: list[str] = field(default_factory=list)
+    deny: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class PermissionRules:
     """Persisted fine-grained allow/deny rules layered under the coarse mode.
 
@@ -255,6 +278,9 @@ class PermissionRules:
 
     allow: list[str] = field(default_factory=list)
     deny: list[str] = field(default_factory=list)
+    #: Per-host network egress allow/deny policy (see :class:`NetworkPolicy`).
+    #: Enforced across web_fetch, MCP endpoints, and best-effort shell egress.
+    network: NetworkPolicy = field(default_factory=NetworkPolicy)
 
 
 @dataclass(slots=True)

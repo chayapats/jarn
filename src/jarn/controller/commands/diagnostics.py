@@ -82,16 +82,17 @@ def cmd_mcp(ctrl, args: str) -> CommandResult:
         # loop, so asyncio.run() here would raise. Probe on a one-shot worker
         # thread (its own loop) when a loop is already running; only outside a
         # loop (e.g. tests calling the handler directly) can we asyncio.run.
+        net = ctrl.config.permissions.network
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            mcp = asyncio.run(load_mcp_tools(ctrl.config.mcp_servers))
+            mcp = asyncio.run(load_mcp_tools(ctrl.config.mcp_servers, net))
         else:
             import concurrent.futures
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
                 mcp = ex.submit(
-                    asyncio.run, load_mcp_tools(ctrl.config.mcp_servers)
+                    asyncio.run, load_mcp_tools(ctrl.config.mcp_servers, net)
                 ).result()
         ctrl.mcp_health = dict(mcp.health)
         ctrl.mcp_errors = dict(mcp.errors)
