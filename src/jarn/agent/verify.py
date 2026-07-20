@@ -158,6 +158,26 @@ def primary_test_command(project_root: Path | None) -> str | None:
     return caps.test[0] if caps.test else None
 
 
+def gate_commands(project_root: Path | None) -> list[str]:
+    """Ordered command set the verify gate runs: all tests, then build, then lint.
+
+    Why a fuller set than :func:`primary_test_command`: a change can pass the tests
+    yet break the build or fail lint/typecheck. If the gate runs only ``test[0]``
+    those regressions pass the reliability gate silently. Running every detected
+    acceptance command closes that hole. Order is test -> build -> lint (typecheck
+    is bucketed into lint at detection time), preserving detection order and
+    deduping so the common test-only project behaves exactly as before.
+    """
+    if not project_root:
+        return []
+    caps = detect_capabilities(project_root)
+    cmds: list[str] = []
+    for cmd in (*caps.test, *caps.build, *caps.lint):
+        if cmd not in cmds:
+            cmds.append(cmd)
+    return cmds
+
+
 def summarize_output(cmd: str, output: str, *, exit_code: int = 0) -> str:
     """Extract a one-line summary from command output.
 
@@ -187,6 +207,84 @@ def summarize_output(cmd: str, output: str, *, exit_code: int = 0) -> str:
         return f"exit {exit_code}"
 
 
+@dataclass(slots=True, frozen=True)
+class _CommandOutcome:
+    """One command's verify result, folded together by :func:`_aggregate_outcomes`."""
+
+    cmd: str
+    ok: bool
+    summary: str
+    output: str
+    secs: float
+
+
+def _aggregate_outcomes(outcomes: list[_CommandOutcome]) -> dict[str, Any]:
+    """Fold per-command results into one pass/fail ``verify`` payload.
+
+    Every command must pass for ``ok``. On failure the payload names and shows only
+    the *failing* commands so the existing one-shot repair loop receives a focused,
+    combined signal. Field shape matches the single-command payload (``cmd``,
+    ``ok``, ``mode``, ``summary``, ``secs``, optional ``full_output``) so downstream
+    consumers (session repair loop, renderer, headless) need no changes.
+    """
+    total_secs = round(sum(o.secs for o in outcomes), 1)
+    failed = [o for o in outcomes if not o.ok]
+    if not failed:
+        summary = (
+            outcomes[0].summary
+            if len(outcomes) == 1
+            else f"{len(outcomes)} checks passed"
+        )
+        return {
+            "cmd": " && ".join(o.cmd for o in outcomes),
+            "ok": True,
+            "mode": "auto",
+            "summary": summary,
+            "secs": float(total_secs),
+        }
+
+    summary = (
+        failed[0].summary
+        if len(failed) == 1
+        else "; ".join(f"{o.cmd}: {o.summary}" for o in failed)
+    )
+    data: dict[str, Any] = {
+        "cmd": " && ".join(o.cmd for o in failed),
+        "ok": False,
+        "mode": "auto",
+        "summary": summary,
+        "secs": float(total_secs),
+    }
+    full_output = "\n\n".join(f"$ {o.cmd}\n{o.output}" for o in failed if o.output)
+    if full_output:
+        # Cap output to avoid attaching megabytes to NOTICE; tail-20k for pager display.
+        data["full_output"] = full_output[-20_000:]
+    return data
+
+
+async def _execute_and_aggregate(
+    executor: Callable[[str], Any], cmds: list[str]
+) -> dict[str, Any]:
+    """Run each command in order and aggregate into a single verify payload."""
+    outcomes: list[_CommandOutcome] = []
+    for cmd in cmds:
+        t0 = _time.monotonic()
+        resp = await asyncio.to_thread(executor, cmd)
+        secs = round(_time.monotonic() - t0, 1)
+        exit_code = int(getattr(resp, "exit_code", 1))
+        output = (getattr(resp, "output", "") or "").strip()
+        outcomes.append(
+            _CommandOutcome(
+                cmd=cmd,
+                ok=exit_code == 0,
+                summary=summarize_output(cmd, output, exit_code=exit_code),
+                output=output,
+                secs=float(secs),
+            )
+        )
+    return _aggregate_outcomes(outcomes)
+
+
 async def verify_after_edit(driver: SessionDriver, tool_name: str) -> Any | None:
     """Apply the configured verify gate after a write/edit tool completes.
 
@@ -203,59 +301,65 @@ async def verify_after_edit(driver: SessionDriver, tool_name: str) -> Any | None
     if gate == "off" or tool_name not in ("write_file", "edit_file"):
         return None
 
-    cmd = primary_test_command(getattr(driver, "project_root", None))
-    if not cmd:
+    cmds = gate_commands(getattr(driver, "project_root", None))
+    if not cmds:
         return None
+
+    # Joined display for suggest/unavailable badges; the copy-pasteable full set.
+    display = " && ".join(cmds)
 
     if gate == "suggest":
         return Event(
             EventKind.NOTICE,
-            data={"verify": {"cmd": cmd, "mode": "suggest"}},
+            data={"verify": {"cmd": display, "mode": "suggest"}},
         )
 
-    # auto — run through the same permission policy as an agent shell command.
-    action = Action(ActionKind.SHELL, target=cmd, tool="execute")
-    result = driver.engine.evaluate(action)
-    if result.decision is Decision.DENY:
-        return Event(
-            EventKind.NOTICE,
-            data={"verify": {
-                "cmd": cmd,
-                "ok": False,
-                "mode": "blocked",
-                "summary": f"verification denied: {result.reason}",
-                "secs": 0.0,
-            }},
-        )
-    if result.decision is Decision.ASK:
-        reply = await driver.approver(
-            ApprovalRequest(
-                action=action,
-                result=result,
-                description=f"run verification command: {cmd}",
-                args={"command": cmd},
-            )
-        )
-        if not reply.approved:
-            reason = reply.message or result.reason
+    # auto — every command runs through the same permission policy as an agent
+    # shell command. Pre-authorize the whole set before running any, so the gate
+    # stays atomic: a single denied/refused command blocks without half-running.
+    for cmd in cmds:
+        action = Action(ActionKind.SHELL, target=cmd, tool="execute")
+        result = driver.engine.evaluate(action)
+        if result.decision is Decision.DENY:
             return Event(
                 EventKind.NOTICE,
                 data={"verify": {
                     "cmd": cmd,
                     "ok": False,
-                    "mode": "refused",
-                    "summary": f"verification refused: {reason}",
+                    "mode": "blocked",
+                    "summary": f"verification denied: {result.reason}",
                     "secs": 0.0,
                 }},
             )
-        driver.engine.remember(action, reply.scope)
+        if result.decision is Decision.ASK:
+            reply = await driver.approver(
+                ApprovalRequest(
+                    action=action,
+                    result=result,
+                    description=f"run verification command: {cmd}",
+                    args={"command": cmd},
+                )
+            )
+            if not reply.approved:
+                reason = reply.message or result.reason
+                return Event(
+                    EventKind.NOTICE,
+                    data={"verify": {
+                        "cmd": cmd,
+                        "ok": False,
+                        "mode": "refused",
+                        "summary": f"verification refused: {reason}",
+                        "secs": 0.0,
+                    }},
+                )
+            driver.engine.remember(action, reply.scope)
 
     executor: Callable[[str], Any] | None = getattr(driver, "verify_executor", None)
     if executor is None:
         return Event(
             EventKind.NOTICE,
             data={"verify": {
-                "cmd": cmd,
+                "cmd": display,
                 "ok": False,
                 "mode": "unavailable",
                 "summary": "no verification execution backend",
@@ -263,23 +367,5 @@ async def verify_after_edit(driver: SessionDriver, tool_name: str) -> Any | None
             }},
         )
 
-    t0 = _time.monotonic()
-    resp = await asyncio.to_thread(executor, cmd)
-    secs = round(_time.monotonic() - t0, 1)
-
-    exit_code = int(getattr(resp, "exit_code", 1))
-    output = (getattr(resp, "output", "") or "").strip()
-    ok = exit_code == 0
-    summary = summarize_output(cmd, output, exit_code=exit_code)
-
-    verify_data: dict[str, Any] = {
-        "cmd": cmd,
-        "ok": ok,
-        "mode": "auto",
-        "summary": summary,
-        "secs": float(secs),
-    }
-    if not ok and output:
-        # Cap output to avoid attaching megabytes to NOTICE; tail-20k is fine for pager display.
-        verify_data["full_output"] = output[-20_000:]
+    verify_data = await _execute_and_aggregate(executor, cmds)
     return Event(EventKind.NOTICE, data={"verify": verify_data})
