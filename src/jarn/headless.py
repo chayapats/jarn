@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -211,9 +212,11 @@ async def _run_headless(
 ) -> HeadlessResult:
     """Async core: build the runtime, run one complete user turn, return results.
 
-    ``max_turns`` remains accepted for CLI compatibility. A SessionDriver call
-    already contains the complete model/tool graph loop, so completed graphs are
-    never reinvoked based on whether they happened to use a tool.
+    Headless is single-turn BY DESIGN: a SessionDriver call already contains the
+    complete model/tool graph loop and runs it to DONE, so ``--max-turns`` can only
+    ever be ``1``. Rather than silently accepting ``--max-turns > 1`` and still
+    reporting ``turns == 1`` (which would misrepresent what ran), values other than
+    1 are rejected up front with a clear message.
 
     ``system_prompt_override`` is forwarded to the Controller / build_runtime for
     the eval harness's harness-prompt A/B (see build_runtime).
@@ -222,6 +225,20 @@ async def _run_headless(
         raise HeadlessFailure(
             "error",
             f"--max-turns must be >= 1, got {max_turns}",
+            exit_code=EXIT_ERROR,
+        )
+    if max_turns > 1:
+        # Honest failure over a silent no-op: headless runs exactly one complete
+        # turn (the SessionDriver already drives the full model/tool graph to
+        # completion), so it cannot honour a request for more than one turn.
+        raise HeadlessFailure(
+            "error",
+            (
+                f"--max-turns > 1 is not supported in headless mode (got {max_turns}). "
+                "A headless invocation runs exactly one complete turn — the agent's "
+                "model/tool graph already loops to completion within it. "
+                "Re-run without --max-turns (or with --max-turns 1)."
+            ),
             exit_code=EXIT_ERROR,
         )
 
@@ -264,8 +281,7 @@ async def _run_headless(
         # One SessionDriver invocation already runs the complete LangGraph agent/tool
         # loop through DONE (including bounded verification repairs). Re-invoking a
         # completed graph because it happened to use a tool duplicated final answers
-        # and cost. ``max_turns`` remains accepted for CLI compatibility, but a
-        # headless prompt is one complete user turn.
+        # and cost, so a headless prompt is one complete user turn.
         async for event in driver.run_turn(turn_input, resume=resume):
             if event.kind is EventKind.TEXT:
                 text_parts.append(event.text)
@@ -295,6 +311,14 @@ async def _run_headless(
                     )
 
         reply_text = "".join(text_parts)
+
+        # Record per-turn telemetry now that the driver's complete model/tool graph
+        # has run to DONE — mirroring the REPL turn path (repl/turn.py). Headless is
+        # the most common real usage (unattended / CI), so without this the buffer
+        # flushed at aclose() is always empty and telemetry never fires. record_turn
+        # is a hard no-op when telemetry is opt-out/off, so this respects the
+        # default-OFF policy exactly like the REPL (the gate lives in Telemetry).
+        controller.record_turn(when=time.time())
 
         # When a schema was requested, extract the structured result from the
         # agent's final graph state instead of using the free-text reply.

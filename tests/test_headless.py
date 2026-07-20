@@ -15,6 +15,7 @@ from jarn.headless import (
     EXIT_REFUSED,
     EXIT_SUCCESS,
     EXIT_TIMEOUT,
+    HeadlessFailure,
     HeadlessRefusal,
     HeadlessResult,
     _make_fail_closed_approver,
@@ -355,7 +356,7 @@ async def test_completed_graph_is_not_reinvoked_after_tool_use(
     _stub_controller(monkeypatch, run_turn_side_effect=_multi_run_turn)
 
     result = await _run_headless(
-        "do the thing", base_config, tmp_path, max_turns=5,
+        "do the thing", base_config, tmp_path, max_turns=1,
     )
 
     assert len(calls) == 1
@@ -363,6 +364,38 @@ async def test_completed_graph_is_not_reinvoked_after_tool_use(
     assert result.turns == 1
     assert result.result == "step one"
     assert result.tool_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_max_turns_above_one_rejected(tmp_path, monkeypatch, base_config):
+    """Headless is single-turn by design, so --max-turns > 1 is refused up front.
+
+    Silently accepting > 1 while still reporting ``turns == 1`` would misrepresent
+    what actually ran; an honest, clear error is emitted instead.
+    """
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _stub_controller(monkeypatch, text="unused")
+
+    with pytest.raises(HeadlessFailure) as exc_info:
+        await _run_headless("do the thing", base_config, tmp_path, max_turns=5)
+
+    assert exc_info.value.kind == "error"
+    assert exc_info.value.exit_code == EXIT_ERROR
+    assert "max-turns" in str(exc_info.value).lower()
+
+
+def test_max_turns_above_one_exits_error_via_run_headless(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """The sync entry point surfaces the --max-turns > 1 rejection as exit 1 + message."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _stub_controller(monkeypatch, text="unused")
+
+    code = run_headless("do the thing", base_config, tmp_path, max_turns=3)
+
+    assert code == EXIT_ERROR
+    err = capsys.readouterr().err
+    assert "max-turns" in err.lower()
 
 
 @pytest.mark.asyncio
@@ -388,6 +421,79 @@ async def test_multi_turn_cap_respects_limit(tmp_path, monkeypatch, base_config)
     assert len(calls) == 1
     assert result.turns == 1
     assert result.tool_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# Telemetry (opt-in) is recorded in the headless turn path
+# ---------------------------------------------------------------------------
+
+
+def _spy_controller_init(monkeypatch, captured: dict) -> None:
+    """Spy Controller.__init__ so a test can inspect the real instance afterwards.
+
+    The real __init__ still runs (it wires up ``self.telemetry`` / ``self.tracker``);
+    the spy just captures ``self`` once it is built.
+    """
+    import jarn.headless as headless_mod
+
+    orig_init = headless_mod.Controller.__init__
+
+    def _spy_init(self, *a, **k):
+        orig_init(self, *a, **k)
+        captured["controller"] = self
+
+    monkeypatch.setattr(headless_mod.Controller, "__init__", _spy_init)
+
+
+@pytest.mark.asyncio
+async def test_headless_records_turn_telemetry_when_enabled(
+    tmp_path, monkeypatch, base_config
+):
+    """Headless records one per-turn telemetry event when telemetry is opted in.
+
+    This mirrors the REPL turn path (repl/turn.py ``controller.record_turn``).
+    Without it, unattended / CI runs — the most common headless usage — record
+    nothing and flush an empty buffer at shutdown.
+    """
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    base_config.observability.telemetry = True
+
+    captured: dict = {}
+    _spy_controller_init(monkeypatch, captured)
+    _stub_controller(monkeypatch, text="done")
+
+    await _run_headless("do the thing", base_config, tmp_path)
+
+    ctrl = captured["controller"]
+    assert ctrl.telemetry.enabled
+    # aclose is stubbed to a no-op, so the recorded event is still buffered.
+    turn_events = [row for row in ctrl.telemetry._buffer if row.get("event") == "turn"]
+    assert len(turn_events) == 1, (
+        "headless must record exactly one 'turn' telemetry event, like the REPL"
+    )
+
+
+@pytest.mark.asyncio
+async def test_headless_telemetry_off_records_nothing(
+    tmp_path, monkeypatch, base_config
+):
+    """With telemetry opt-out (the default), the headless path records nothing.
+
+    The default-OFF / opt-in policy must be respected exactly as in the REPL — the
+    gate lives inside Telemetry, so calling record_turn is a hard no-op when off.
+    """
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    # base_config.observability.telemetry defaults to False (opt-in).
+
+    captured: dict = {}
+    _spy_controller_init(monkeypatch, captured)
+    _stub_controller(monkeypatch, text="done")
+
+    await _run_headless("do the thing", base_config, tmp_path)
+
+    ctrl = captured["controller"]
+    assert not ctrl.telemetry.enabled
+    assert ctrl.telemetry._buffer == []
 
 
 # ---------------------------------------------------------------------------
