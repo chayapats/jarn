@@ -1415,8 +1415,12 @@ def test_main_context_window_queries_local_once_and_caches(tmp_path, monkeypatch
 # -- conversation rewind (fork to an earlier turn) --------------------------
 
 
-def _rewind_runtime(messages):
-    """A fake runtime whose agent records aupdate_state and serves `messages`."""
+def _rewind_runtime(messages, todos=None):
+    """A fake runtime whose agent records aupdate_state and serves `messages`.
+
+    ``todos`` (when given) is served as the graph's ``todos`` channel so a test can
+    assert the structured plan survives a fork; ``None`` keeps the channel absent,
+    the byte-identical no-plan shape the pre-todos tests rely on."""
     from types import SimpleNamespace
 
     class _Agent:
@@ -1425,7 +1429,10 @@ def _rewind_runtime(messages):
             self.updated_config = None
 
         async def aget_state(self, config):
-            return SimpleNamespace(values={"messages": list(messages)})
+            values = {"messages": list(messages)}
+            if todos is not None:
+                values["todos"] = list(todos)
+            return SimpleNamespace(values=values)
 
         async def aupdate_state(self, config, values):
             self.updated_config = config
@@ -1497,6 +1504,55 @@ async def test_fork_to_turn_starts_new_thread_with_prefix(tmp_path, monkeypatch,
     assert recorded[0].id == REMOVE_ALL_MESSAGES
     # remainder is exactly the kept prefix, in order
     assert [m.content for m in recorded[1:]] == ["first", "ans1"]
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_fork_to_turn_preserves_todos(tmp_path, monkeypatch, base_config):
+    """A conversation rewind forks onto a fresh thread (empty ``todos`` channel),
+    so the current plan must be carried over — otherwise rewinding to an earlier
+    turn silently wipes the agent's checklist. Messages seeding is unchanged."""
+    from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
+    from langgraph.graph.message import REMOVE_ALL_MESSAGES
+
+    todos = [
+        {"content": "do X", "status": "completed"},
+        {"content": "do Y", "status": "in_progress"},
+    ]
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    msgs = [
+        HumanMessage(content="first"),
+        AIMessage(content="ans1"),
+        HumanMessage(content="second"),
+        AIMessage(content="ans2"),
+    ]
+    agent, ctrl.runtime = _rewind_runtime(msgs, todos=todos)
+
+    cut = await ctrl.fork_to_turn(2)  # keep messages[:2]
+
+    assert cut == 2
+    assert agent.updated["todos"] == todos  # plan carried onto the new branch
+    # Message seeding is untouched by the todos fix.
+    recorded = agent.updated["messages"]
+    assert isinstance(recorded[0], RemoveMessage)
+    assert recorded[0].id == REMOVE_ALL_MESSAGES
+    assert [m.content for m in recorded[1:]] == ["first", "ans1"]
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_fork_to_turn_no_todos_seeds_only_messages(tmp_path, monkeypatch, base_config):
+    """With no active plan the fork seed stays messages-only (no empty ``todos``
+    key), keeping the pre-fix payload byte-identical."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    msgs = [HumanMessage(content="first"), AIMessage(content="ans1")]
+    agent, ctrl.runtime = _rewind_runtime(msgs, todos=[])
+
+    await ctrl.fork_to_turn(2)
+
+    assert "todos" not in agent.updated
     ctrl.close()
 
 
