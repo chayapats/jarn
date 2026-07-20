@@ -447,7 +447,7 @@ def _stub_runtime_build(monkeypatch, mcp_result):
 
     seen = {}
 
-    async def _fake_loader(servers):
+    async def _fake_loader(servers, network_policy=None):
         assert isinstance(mcp_result, MCPLoadResult)
         return mcp_result
 
@@ -541,7 +541,7 @@ async def test_mcp_loaded_once_across_rebuilds_and_reset_on_invalidate(
 
     calls = {"load": 0, "build": 0}
 
-    async def _counting_loader(servers):
+    async def _counting_loader(servers, network_policy=None):
         calls["load"] += 1
         return MCPLoadResult(tools=["a_tool"], health={"a": "ok"}, errors={})
 
@@ -599,7 +599,7 @@ def test_mcp_refresh_updates_cache_so_rebuild_keeps_fresh_health(
     # The server recovers; `/mcp refresh` re-probes and must also refresh the cache.
     healthy = MCPLoadResult(tools=["s_tool"], health={"s": "ok"}, errors={})
 
-    async def _healthy_loader(servers):
+    async def _healthy_loader(servers, network_policy=None):
         return healthy
 
     monkeypatch.setattr(diag_mod, "load_mcp_tools", _healthy_loader)
@@ -638,7 +638,7 @@ async def test_cancel_midbuild_never_starts_a_second_concurrent_build(
     lock = threading.Lock()
     st = {"calls": 0, "concurrent": 0, "max_concurrent": 0}
 
-    async def _fake_loader(servers):
+    async def _fake_loader(servers, network_policy=None):
         return MCPLoadResult(tools=[], health={}, errors={})
 
     async def _fake_checkpointer(db_path):
@@ -700,7 +700,7 @@ async def test_invalidation_midbuild_disposes_stale_and_reloads_mcp(
     ]
     load = {"n": 0}
 
-    async def _fake_loader(servers):
+    async def _fake_loader(servers, network_policy=None):
         i = min(load["n"], len(results) - 1)
         load["n"] += 1
         return results[i]
@@ -759,7 +759,7 @@ async def test_concurrent_ensure_runtime_builds_once(
 
     calls = {"build": 0}
 
-    async def _fake_loader(servers):
+    async def _fake_loader(servers, network_policy=None):
         return MCPLoadResult(tools=[], health={}, errors={})
 
     async def _fake_checkpointer(db_path):
@@ -801,7 +801,7 @@ async def test_ensure_runtime_single_flight_under_concurrency(
 
     calls = {"build": 0}
 
-    async def _fake_loader(servers):
+    async def _fake_loader(servers, network_policy=None):
         return MCPLoadResult(tools=["a_tool"], health={"a": "ok"}, errors={})
 
     async def _fake_checkpointer(db_path):
@@ -845,7 +845,7 @@ async def test_mcp_refresh_from_running_loop_stores_cache(
 
     healthy = MCPLoadResult(tools=["s_tool"], health={"s": "ok"}, errors={})
 
-    async def _healthy_loader(servers):
+    async def _healthy_loader(servers, network_policy=None):
         return healthy
 
     monkeypatch.setattr(diag_mod, "load_mcp_tools", _healthy_loader)
@@ -1958,7 +1958,7 @@ async def test_cancel_midbuild_then_aclose_never_leaks_backend(
     started = threading.Event()
     closed = {"n": 0}
 
-    async def _fake_loader(servers):
+    async def _fake_loader(servers, network_policy=None):
         return MCPLoadResult(tools=[], health={}, errors={})
 
     async def _fake_checkpointer(db_path):
@@ -2014,7 +2014,7 @@ async def test_aclose_closes_committed_runtime_backend(
 
     closed = {"n": 0}
 
-    async def _fake_loader(servers):
+    async def _fake_loader(servers, network_policy=None):
         return MCPLoadResult(tools=[], health={}, errors={})
 
     async def _fake_checkpointer(db_path):
@@ -2059,7 +2059,7 @@ async def test_aclose_serializes_after_live_caller_no_post_close_build(
     build = {"n": 0}
     closed = {"n": 0}
 
-    async def _fake_loader(servers):
+    async def _fake_loader(servers, network_policy=None):
         return MCPLoadResult(tools=[], health={}, errors={})
 
     async def _fake_checkpointer(db_path):
