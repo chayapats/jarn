@@ -98,7 +98,8 @@ async def test_gate_suggest(tmp_path):
     ev = await verify_after_edit(driver, "write_file")
     assert ev is not None
     assert ev.kind is EventKind.NOTICE
-    assert ev.data.get("verify", {}).get("cmd") == "go test ./..."
+    # Suggest surfaces the full detected set (test + build), not just test[0].
+    assert ev.data.get("verify", {}).get("cmd") == "go test ./... && go build ./..."
 
 
 @pytest.mark.asyncio
@@ -131,10 +132,154 @@ async def test_gate_auto_runs_detected_command(tmp_path):
         verify_executor=_executor,
     )
     ev = await verify_after_edit(driver, "edit_file")
-    assert ran == ["go test ./..."]
+    # The gate runs the full detected set (test + build), in order, not just test[0].
+    assert ran == ["go test ./...", "go build ./..."]
     assert ev is not None
     assert ev.kind is EventKind.NOTICE
     assert ev.data.get("verify", {}).get("ok") is True
+
+
+@pytest.mark.asyncio
+async def test_gate_runs_build_and_lint_not_just_test(tmp_path):
+    """A change that breaks the build but keeps tests green must fail the gate.
+
+    Regression guard: the gate previously ran only ``caps.test[0]``, so a broken
+    build or failing lint slipped through. It must now run the fuller detected set.
+    """
+    from jarn.agent.session import SessionDriver
+    from jarn.agent.verify import verify_after_edit
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    # go.mod detects both `go test ./...` and `go build ./...`.
+    (tmp_path / "go.mod").write_text("module example.com/x\n", encoding="utf-8")
+    ran: list[str] = []
+
+    def _executor(cmd: str):
+        ran.append(cmd)
+        # tests pass, build fails
+        ok = "test" in cmd
+        return SimpleNamespace(exit_code=0 if ok else 1, output="" if ok else "build error")
+
+    driver = SessionDriver(
+        agent=None,
+        engine=PermissionEngine(mode=PermissionMode.YOLO),
+        tracker=CostTracker(),
+        thread_id="t",
+        verify_gate="auto",
+        project_root=tmp_path,
+        verify_executor=_executor,
+    )
+    ev = await verify_after_edit(driver, "edit_file")
+    assert ran == ["go test ./...", "go build ./..."], f"build must run too; got {ran}"
+    assert ev.data["verify"]["ok"] is False, "build failure must fail the gate"
+    assert "go build ./..." in ev.data["verify"]["cmd"]
+
+
+@pytest.mark.asyncio
+async def test_gate_runs_all_test_commands(tmp_path):
+    """Every detected test command runs, not just the first (test[0])."""
+    from jarn.agent.session import SessionDriver
+    from jarn.agent.verify import verify_after_edit
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    (tmp_path / "package.json").write_text(
+        '{"scripts": {"test": "vitest run", "test:unit": "vitest unit"}}',
+        encoding="utf-8",
+    )
+    ran: list[str] = []
+
+    def _executor(cmd: str):
+        ran.append(cmd)
+        return SimpleNamespace(exit_code=0, output="ok")
+
+    driver = SessionDriver(
+        agent=None,
+        engine=PermissionEngine(mode=PermissionMode.YOLO),
+        tracker=CostTracker(),
+        thread_id="t",
+        verify_gate="auto",
+        project_root=tmp_path,
+        verify_executor=_executor,
+    )
+    ev = await verify_after_edit(driver, "write_file")
+    assert ran == ["npm run test", "npm run test:unit"], f"all test cmds must run; got {ran}"
+    assert ev.data["verify"]["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_gate_lint_failure_blocks(tmp_path):
+    """A lint failure (tests green) must fail the gate."""
+    from jarn.agent.session import SessionDriver
+    from jarn.agent.verify import verify_after_edit
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\n[tool.ruff]\n", encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
+    ran: list[str] = []
+
+    def _executor(cmd: str):
+        ran.append(cmd)
+        ok = "pytest" in cmd  # tests pass, lint fails
+        return SimpleNamespace(exit_code=0 if ok else 1, output="" if ok else "E501 line too long")
+
+    driver = SessionDriver(
+        agent=None,
+        engine=PermissionEngine(mode=PermissionMode.YOLO),
+        tracker=CostTracker(),
+        thread_id="t",
+        verify_gate="auto",
+        project_root=tmp_path,
+        verify_executor=_executor,
+    )
+    ev = await verify_after_edit(driver, "edit_file")
+    assert ran == ["pytest -q", "ruff check ."], f"lint must run too; got {ran}"
+    vd = ev.data["verify"]
+    assert vd["ok"] is False, "lint failure must fail the gate"
+    assert "ruff check ." in vd["cmd"]
+    assert "E501" in vd.get("full_output", ""), "failing lint output must be fed back"
+
+
+@pytest.mark.asyncio
+async def test_build_failure_blocks_done_end_to_end(tmp_path):
+    """Tests-pass-but-build-fails is terminal: it must block DONE, not slip through."""
+    from jarn.agent.events import EventKind
+    from jarn.agent.session import SessionDriver
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    (tmp_path / "go.mod").write_text("module example.com/x\n", encoding="utf-8")
+    agent = _RepairingAgent()
+
+    def _executor(cmd: str):
+        ok = "test" in cmd  # tests always pass; build always fails (repair can't fix)
+        return SimpleNamespace(exit_code=0 if ok else 1, output="" if ok else "build error")
+
+    driver = SessionDriver(
+        agent=agent,
+        engine=PermissionEngine(mode=PermissionMode.YOLO),
+        tracker=CostTracker(),
+        thread_id="build-blocks-e2e",
+        verify_gate="auto",
+        verify_max_repair_rounds=1,
+        project_root=tmp_path,
+        verify_executor=_executor,
+    )
+    events = [event async for event in driver.run_turn("implement it")]
+
+    # One repair round is attempted, then the still-failing build is terminal.
+    assert events[-1].kind is EventKind.ERROR
+    assert events[-1].data["verification"]["ok"] is False
+    assert "go build ./..." in events[-1].data["verification"]["cmd"]
+    assert not any(e.kind is EventKind.DONE for e in events)
 
 
 # ---------------------------------------------------------------------------
@@ -203,8 +348,9 @@ async def test_verify_runs_once_per_turn(tmp_path):
         verify_executor=_executor,
     )
     _events = [ev async for ev in driver.run_turn("fix it")]
-    assert ran == ["go test ./..."], (
-        f"executor must be called exactly once per turn; got calls={ran}"
+    # The full detected set runs exactly once per turn (debounced), not once per edit.
+    assert ran == ["go test ./...", "go build ./..."], (
+        f"command set must run exactly once per turn; got calls={ran}"
     )
 
 
@@ -278,7 +424,7 @@ async def test_verify_badge_event_emitted_after_final_text(tmp_path):
         f"verify notice index {verify_idx} should be > max text index {max_text_idx}"
     )
 
-    assert vd["cmd"] == "go test ./...", f"Expected cmd='go test ./...', got: {vd}"
+    assert vd["cmd"] == "go test ./... && go build ./...", f"Expected joined cmd, got: {vd}"
     assert vd["ok"] is True, f"Expected ok=True, got: {vd}"
     assert isinstance(vd["secs"], float), f"Expected secs to be float, got: {type(vd['secs'])}"
 
@@ -392,7 +538,12 @@ async def test_verification_failure_repairs_and_reverifies_end_to_end(tmp_path):
     from jarn.cost import CostTracker
     from jarn.permissions import PermissionEngine
 
-    (tmp_path / "go.mod").write_text("module example.com/x\n", encoding="utf-8")
+    # Single-command project (pytest only): keeps this repair-loop test focused on
+    # the loop mechanics; multi-command aggregation is covered by dedicated tests.
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\n", encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
     agent = _RepairingAgent()
     calls = 0
 
