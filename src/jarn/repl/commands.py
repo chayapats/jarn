@@ -185,6 +185,24 @@ class CommandMixin:
             # /abort path guards above). Cheap no-op when nothing is pending.
             await self.controller.settle_snapshot()
         result = self.controller.handle_command(name, args)
+        if result.seed_turn:
+            # A command (e.g. /skill) whose text is instructions the model should
+            # act on: seed an agent turn with it — same path as custom commands
+            # and /commit,/review — rather than just printing it.
+            self._last_tool_outputs = []
+            await repl_turn._run_turn(
+                c, self.controller, result.text, self._ask,
+                pick=self._pick_approval, view=self._view_full_diff,
+                edit=self._edit_before_apply,
+                live_sink=self._set_stream, spinner=False,
+                tool_sink=self._last_tool_outputs,
+                token_sink=self._count_stream_chars,
+                todos_sink=self._on_todos_live,
+                queue_sink=self._input_queue.append,
+            )
+            await self._render_todos()
+            self._maybe_autocheckpoint_hint()
+            return
         if result.clear_screen:
             self._clear_scrollback()
         c.print(result.text)

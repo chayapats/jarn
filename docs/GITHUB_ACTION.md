@@ -10,7 +10,7 @@ Run J.A.R.N. in CI headless mode (`-p`) from any GitHub Actions workflow.
 | `api_key` | **yes** | — | LLM provider API key. **Always source from `secrets.*`** — never hardcode. |
 | `model` | no | `anthropic/claude-opus-4.8` | OpenRouter catalog slug. The Action qualifies it as a JARN `openrouter/...` model ref. |
 | `permission_mode` | no | `yolo` | Permission mode: `yolo`, `auto-edit`, `ask`, or `plan`. The default runs inside the required Docker backend. |
-| `max_turns` | no | `1` | Compatibility limit; one headless invocation already runs the complete agent/tool loop. |
+| `max_turns` | no | `1` | Must be `1` (the default); values >1 are rejected. One headless invocation already runs the complete agent/tool loop. |
 | `preset` | no | `ci` | Named policy preset. See [Preset note](#preset--docker-requirement) below. |
 
 ## Outputs
@@ -95,7 +95,6 @@ permissions:
     prompt: "Review this diff: …"
     preset: "review-only"
     permission_mode: "plan"
-    max_turns: "5"
     api_key: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 

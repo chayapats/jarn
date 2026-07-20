@@ -2180,6 +2180,9 @@ async def test_skill_command_invokes_manual_skill(tmp_path, monkeypatch):
     assert "Step 1. Run the tests." in result.text
     assert "Step 2. Ship it." in result.text
     assert "deploy" in result.text
+    # A resolved skill seeds an agent turn (the model acts on the body), rather
+    # than merely printing it — the REPL routes seed_turn results to _run_turn.
+    assert result.seed_turn is True
 
     # Case-insensitive resolution.
     assert "Step 1. Run the tests." in app.controller.handle_command("skill", "DEPLOY").text
@@ -2188,10 +2191,12 @@ async def test_skill_command_invokes_manual_skill(tmp_path, monkeypatch):
     err = app.controller.handle_command("skill", "nope")
     assert "nope" in err.text
     assert "Unknown skill" in err.text
+    assert err.seed_turn is False  # errors print, never seed a turn
 
     # Missing argument: usage hint, not a crash.
     usage = app.controller.handle_command("skill", "")
     assert "/skill" in usage.text
+    assert usage.seed_turn is False
 
     app.controller.close()
 

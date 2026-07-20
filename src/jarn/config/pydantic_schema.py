@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from jarn.config.schema import (
+    DEFAULT_SENSITIVE_READ_GLOBS,
     AsyncSubagentSpec,
     BudgetConfig,
     CompatConfig,
@@ -390,6 +391,10 @@ class PolicyConfigModel(_StrictModel):
 class PermissionRulesModel(_StrictModel):
     allow: list[str] = Field(default_factory=list)
     deny: list[str] = Field(default_factory=list)
+    # Reads matching these globs are gated (ASK) even in yolo; [] opts out.
+    sensitive_read_globs: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_SENSITIVE_READ_GLOBS)
+    )
 
 
 class HookSpecModel(_StrictModel):
@@ -1032,6 +1037,7 @@ def config_to_dataclass(model: ConfigModel) -> Config:
         permissions=PermissionRules(
             allow=list(model.permissions.allow),
             deny=list(model.permissions.deny),
+            sensitive_read_globs=list(model.permissions.sensitive_read_globs),
         ),
         hooks=[
             HookSpec(

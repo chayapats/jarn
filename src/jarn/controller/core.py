@@ -46,6 +46,9 @@ class CommandResult:
     rebuilt: bool = False
     clear_screen: bool = False
     quit: bool = False
+    # When True, `text` is instructions the model should act on (e.g. /skill):
+    # the REPL seeds an agent turn with it instead of just printing it.
+    seed_turn: bool = False
 
 
 @dataclass(slots=True)

@@ -102,8 +102,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         metavar="N",
         help=(
-            "With -p: compatibility limit (default: 1). A headless invocation "
-            "always runs one complete model/tool graph turn."
+            "With -p: must be 1 (the default); values >1 are rejected. A headless "
+            "invocation always runs exactly one complete model/tool graph turn."
         ),
     )
     parser.add_argument(

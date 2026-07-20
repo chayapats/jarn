@@ -55,7 +55,7 @@ def cmd_skill(ctrl: Controller, args: str) -> CommandResult:
             f"Unknown skill: {name!r}. Available: {available or 'none'}. "
             "Run /skills to list them."
         )
-    return CommandResult(render_skill_invocation(skill))
+    return CommandResult(render_skill_invocation(skill), seed_turn=True)
 
 
 def cmd_skills(ctrl: Controller, args: str) -> CommandResult:

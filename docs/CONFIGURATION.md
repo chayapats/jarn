@@ -754,9 +754,10 @@ field contains the parsed object:
 jarn -p "list changed files" --output-schema files.schema.json --json | jq '.result.files[]'
 ```
 
-`--max-turns N` remains accepted for compatibility, but one headless invocation is
-one complete user turn: `SessionDriver` already runs the entire model/tool graph to
-completion. JARN does not restart a completed graph merely because tools were used.
+`--max-turns N` must be `1` (the default); values >1 are rejected with a clear
+error, because one headless invocation is one complete user turn: `SessionDriver`
+already runs the entire model/tool graph to completion. JARN does not restart a
+completed graph merely because tools were used.
 
 `--ignore-project-config` loads only the user's/global configuration while keeping
 `--cwd` as the code workspace. This is intended for CI against untrusted checkouts:
