@@ -58,6 +58,27 @@ def test_sanitize_strips_dangerous_keeps_benign():
     assert safe["permissions"] == {"deny": ["git push"]}
 
 
+def test_sanitize_strips_network_allow_keeps_network_deny():
+    # An untrusted repo's network.allow could widen egress past a restrictive
+    # global allowlist — strip it while keeping the safety-increasing deny.
+    raw = {
+        "permissions": {
+            "network": {"allow": ["*"], "deny": ["evil.com"]},
+        }
+    }
+    safe = sanitize_project(raw)
+    assert safe["permissions"]["network"] == {"deny": ["evil.com"]}
+    # ...and it is surfaced as needing trust (so it's fingerprinted/prompted).
+    danger = project_dangerous(raw)
+    assert danger["permissions.network.allow"] == ["*"]
+
+
+def test_sanitize_drops_permissions_when_only_network_allow():
+    # If network.allow is the only permission, the whole block collapses away.
+    safe = sanitize_project({"permissions": {"network": {"allow": ["*"]}}})
+    assert "permissions" not in safe
+
+
 def test_load_config_untrusted_drops_project_capabilities(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "real-secret")
     gp = tmp_path / "global.yaml"

@@ -79,9 +79,15 @@ def project_dangerous(raw: dict[str, Any]) -> dict[str, Any]:
     (surfaced separately from the safety-increasing ``permissions.deny``).
     """
     danger: dict[str, Any] = {k: raw[k] for k in raw if k not in SAFE_PROJECT_KEYS}
-    allow = (raw.get("permissions") or {}).get("allow")
+    perms = raw.get("permissions") or {}
+    allow = perms.get("allow")
     if allow:
         danger["permissions.allow"] = allow
+    net_allow = (perms.get("network") or {}).get("allow")
+    if net_allow:
+        # An untrusted repo could *widen* egress past a restrictive global
+        # allowlist — surface it so trust is required (and it's fingerprinted).
+        danger["permissions.network.allow"] = net_allow
     return danger
 
 
@@ -93,10 +99,19 @@ def sanitize_project(raw: dict[str, Any]) -> dict[str, Any]:
     """
     safe = {k: v for k, v in raw.items() if k in SAFE_PROJECT_KEYS}
     perms = safe.get("permissions")
-    if isinstance(perms, dict) and "allow" in perms:
-        # ``allow`` pre-approves commands without a prompt — never honour it
-        # from an untrusted project. Keep ``deny`` (safety-increasing).
+    if isinstance(perms, dict):
+        # ``allow`` pre-approves commands without a prompt, and ``network.allow``
+        # would *widen* egress past a restrictive global allowlist — never honour
+        # either from an untrusted project. Keep the safety-increasing ``deny``
+        # and ``network.deny``.
         trimmed = {k: v for k, v in perms.items() if k != "allow"}
+        net = trimmed.get("network")
+        if isinstance(net, dict) and "allow" in net:
+            net_trimmed = {k: v for k, v in net.items() if k != "allow"}
+            if net_trimmed:
+                trimmed["network"] = net_trimmed
+            else:
+                trimmed.pop("network", None)
         if trimmed:
             safe["permissions"] = trimmed
         else:
