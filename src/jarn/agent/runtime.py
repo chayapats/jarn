@@ -84,7 +84,24 @@ _RESERVED_BUILTIN_NAMES = frozenset({
     "repo_map",
     "exit_plan_mode",
     "suggest_memory",
+    "spawn_parallel_tasks",
 })
+
+
+def _parallel_fanout_enabled(config: Config) -> bool:
+    """Whether the ``spawn_parallel_tasks`` fan-out tool is registered.
+
+    OFF by default so default tool availability is unchanged. Opt in via a config
+    field (``execution.parallel_subagents`` — read defensively with ``getattr`` so
+    a future schema addition Just Works without this module owning the schema) or
+    the ``JARN_PARALLEL_SUBAGENTS`` env var. The config field, when present, wins.
+    """
+    flag = getattr(getattr(config, "execution", None), "parallel_subagents", None)
+    if flag is not None:
+        return bool(flag)
+    return os.environ.get("JARN_PARALLEL_SUBAGENTS", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
 
 def _url_is_local(url: str) -> bool:
@@ -666,6 +683,46 @@ def build_runtime(
             # auto-summarization on every stack for this key).
             _SUMMARIZATION_BUILDERS.pop(excluded_key, None)
 
+    # Parallel subagent fan-out (opt-in). The `spawn_parallel_tasks` tool runs
+    # several subagents CONCURRENTLY and returns one aggregated roll-up. It reuses
+    # the EXACT gated sub-graphs deepagents builds for the `task` tool (extracted
+    # after compilation into ``_fanout_graphs``) so a fanned-out subagent is
+    # constructed, gated, and billed identically to a `task`-spawned one. Added to
+    # `tools` AFTER the interrupt map is built so the orchestration tool itself is
+    # ungated (like `task`); its subagents carry their own interrupt gates.
+    _fanout_graphs: dict[str, Any] = {}
+    _fanout_enabled = _parallel_fanout_enabled(config)
+    if _fanout_enabled:
+        from langchain_core.messages import HumanMessage
+
+        from jarn.agent.fanout import build_spawn_parallel_tasks_tool
+
+        fanout_names = {
+            name
+            for s in subagent_specs
+            if (name := s.get("name")) and "graph_id" not in s
+        }
+        fanout_names.add("general-purpose")  # deepagents auto-adds it
+
+        async def _fanout_invoke(subagent_type: str, description: str) -> Any:
+            """Invoke one gated sub-graph by name (reused from the `task` tool)."""
+            runnable = _fanout_graphs.get(subagent_type)
+            if runnable is None:
+                raise KeyError(f"subagent {subagent_type!r} is not available")
+            return await runnable.ainvoke(
+                {"messages": [HumanMessage(content=description)]},
+                {"configurable": {"ls_agent_type": "subagent"}},
+            )
+
+        tools = [
+            *tools,
+            build_spawn_parallel_tasks_tool(
+                invoke=_fanout_invoke,
+                available_subagents=sorted(fanout_names),
+                default_model_ref=subagent_ref or main_ref or "",
+            ),
+        ]
+
     agent = create_deep_agent(
         model=model,
         backend=backend,
@@ -676,6 +733,15 @@ def build_runtime(
         tools=tools or None,
         response_format=response_format,
     )
+
+    # Populate the fan-out graph holder from the compiled agent so the tool shares
+    # the task tool's gated runnables by reference. Empty extraction (deepagents
+    # internals shifted) leaves the tool present but reporting "unavailable" rather
+    # than silently bypassing any gate.
+    if _fanout_enabled:
+        from jarn.agent.fanout import extract_subagent_graphs
+
+        _fanout_graphs.update(extract_subagent_graphs(agent))
 
     return JarnRuntime(
         agent=agent,
