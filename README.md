@@ -387,6 +387,7 @@ runs as the next turn (never lost). Disable with `ui.steering: false` (hides the
 | `/sessions` | List and resume previous sessions. |
 | `/resume` | Pick a previous session to resume. |
 | `/rewind` | Rewind to an earlier turn and continue (forks a new thread); optionally restore files to that turn too. A second arrow-key confirm reverts the working tree to that turn's checkpoint (shown as a `git diff --stat` preview), so conversation and files rewind together. |
+| `/skill <name>` | Invoke a skill by name, injecting its instructions into the turn. |
 | `/skills` | List available skills. |
 | `/memory [search\|show\|add\|update\|delete\|dump] ...` | List, search, show, add, update, delete, or dump long-term memory. |
 | `/permissions` | Show current permission rules and allowlist. |

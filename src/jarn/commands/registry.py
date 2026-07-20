@@ -132,6 +132,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         usage="status",
         group="Setup",
     ),
+    CommandSpec(
+        "skill",
+        "Invoke a skill by name, injecting its instructions into the turn.",
+        "core",
+        usage="<name>",
+        group="Setup",
+    ),
     CommandSpec("skills", "List available skills.", "core", group="Setup"),
     CommandSpec("init", "Create a JARN.md project context file.", "core", group="Setup"),
     CommandSpec("permissions", "Show current permission rules and allowlist.", "core", group="Setup"),

@@ -2135,6 +2135,67 @@ async def test_skills_available_after_ensure_extensions(tmp_path, monkeypatch):
     app.controller.close()
 
 
+@pytest.mark.asyncio
+async def test_skill_command_invokes_manual_skill(tmp_path, monkeypatch):
+    """`/skill <name>` resolves a manual skill and injects its body; unknown
+    names and a missing argument fail cleanly (no exception)."""
+    from jarn import repl
+    from jarn.agent.builder import JarnRuntime
+    from jarn.extensibility.skills import Skill
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    skill = Skill(
+        name="deploy",
+        description="Deploy safely",
+        body="Step 1. Run the tests.\nStep 2. Ship it.",
+        trigger="manual",
+        scope="project",
+    )
+
+    async def _fake_ensure():
+        app.controller.runtime = JarnRuntime(
+            agent=object(),
+            config=cfg,
+            factory=object(),
+            project_root=root,
+            system_prompt="",
+            capabilities=object(),
+            skills={"deploy": skill},
+        )
+
+    monkeypatch.setattr(app.controller, "ensure_runtime", _fake_ensure)
+    await app._ensure_extensions()
+
+    # Known manual skill: resolves and injects the full body (so the model
+    # follows it — manual skills are excluded from the auto catalog).
+    result = app.controller.handle_command("skill", "deploy")
+    assert "Step 1. Run the tests." in result.text
+    assert "Step 2. Ship it." in result.text
+    assert "deploy" in result.text
+
+    # Case-insensitive resolution.
+    assert "Step 1. Run the tests." in app.controller.handle_command("skill", "DEPLOY").text
+
+    # Unknown name: clean error naming the skill and pointing at /skills.
+    err = app.controller.handle_command("skill", "nope")
+    assert "nope" in err.text
+    assert "Unknown skill" in err.text
+
+    # Missing argument: usage hint, not a crash.
+    usage = app.controller.handle_command("skill", "")
+    assert "/skill" in usage.text
+
+    app.controller.close()
+
+
 def test_pastes_cleared_after_expand(tmp_path, monkeypatch):
     from jarn import repl
 

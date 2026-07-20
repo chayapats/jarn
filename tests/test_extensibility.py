@@ -8,7 +8,13 @@ from jarn.config.schema import HookSpec, MCPServer
 from jarn.extensibility.commands import load_commands, parse_input
 from jarn.extensibility.hooks import HookEvent, HookRunner
 from jarn.extensibility.mcp import MCPLoadResult, load_mcp_tools
-from jarn.extensibility.skills import auto_skill_catalog, load_skills
+from jarn.extensibility.skills import (
+    Skill,
+    auto_skill_catalog,
+    find_skill,
+    load_skills,
+    render_skill_invocation,
+)
 from jarn.extensibility.subagents import load_subagents
 
 
@@ -40,6 +46,31 @@ def test_manual_skill_excluded_from_auto_catalog(monkeypatch, tmp_path, project_
     assert "autoskill" in catalog
     assert "manualskill" not in catalog
     assert skills["manualskill"].is_manual
+
+
+def test_find_skill_exact_and_case_insensitive():
+    skills = {
+        "Deploy": Skill(name="Deploy", description="d", body="b", trigger="manual"),
+        "lint": Skill(name="lint", description="l", body="b2", trigger="auto"),
+    }
+    assert find_skill(skills, "Deploy") is skills["Deploy"]  # exact
+    assert find_skill(skills, "deploy") is skills["Deploy"]  # case-insensitive
+    assert find_skill(skills, "  lint ") is skills["lint"]   # trimmed
+    assert find_skill(skills, "missing") is None
+
+
+def test_render_skill_invocation_includes_name_and_body():
+    skill = Skill(
+        name="deploy",
+        description="Deploy safely",
+        body="Step 1. Test.\nStep 2. Ship.",
+        trigger="manual",
+    )
+    out = render_skill_invocation(skill)
+    assert "deploy" in out
+    assert "Deploy safely" in out
+    assert "Step 1. Test." in out
+    assert "Step 2. Ship." in out
 
 
 def test_parse_input_command_vs_chat():
