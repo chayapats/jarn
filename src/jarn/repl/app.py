@@ -47,7 +47,11 @@ from jarn.repl.commands import CommandMixin, format_todos
 from jarn.repl.completer import _ShellEscapeLexer, _SlashFileCompleter
 from jarn.repl.keys import KeysMixin
 from jarn.repl.overlays import OverlayMixin
-from jarn.repl_renderer import REASONING_STREAM_PREFIX, _current_width
+from jarn.repl_renderer import (
+    REASONING_STREAM_PREFIX,
+    TOOL_PROGRESS_STREAM_PREFIX,
+    _current_width,
+)
 from jarn.repl_renderer import esc as _esc
 from jarn.tui import palette
 from jarn.tui.completion import CompletionProvider
@@ -163,6 +167,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         # True while the live region holds a reasoning block (render it plain dim,
         # not markdown — see _set_stream / _stream_control).
         self._stream_is_reasoning = False
+        # True while the live region holds a running tool's output tail (also plain
+        # dim; raw command output is not markdown). Mutually exclusive with the
+        # reasoning flag — both route to the same dim renderer in _stream_control.
+        self._stream_is_progress = False
         self._turn_start: float | None = None     # for the elapsed timer
         # One stable thinking word per session (don't re-roll every turn — the
         # churning label reads as noise). Shared with the renderer spinner.
@@ -440,9 +448,12 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         """Show ``text`` in the live region above the input (in-progress prose or
         an approval/picker prompt). Empty string collapses the region."""
         self._stream_text = text
-        # Reasoning blocks arrive through this same sink with a sentinel prefix;
-        # flag them so _stream_control renders them plain (not markdown-collapsed).
+        # Reasoning blocks and running-tool output tails arrive through this same
+        # sink with a sentinel prefix; flag them so _stream_control renders them
+        # plain dim (not markdown — reasoning collapses soft breaks, and raw tool
+        # output must show verbatim).
         self._stream_is_reasoning = text.startswith(REASONING_STREAM_PREFIX)
+        self._stream_is_progress = text.startswith(TOOL_PROGRESS_STREAM_PREFIX)
         if self.app is not None:
             self.app.invalidate()
 
@@ -514,6 +525,11 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 # the soft break onto one line).
                 if self._stream_is_reasoning:
                     rendered = self._render_dim_ansi(self._stream_text)
+                elif self._stream_is_progress:
+                    # Strip the routing sentinel; show the raw tail dim + verbatim.
+                    rendered = self._render_dim_ansi(
+                        self._stream_text[len(TOOL_PROGRESS_STREAM_PREFIX):]
+                    )
                 else:
                     rendered = self._render_stream_md(self._stream_text)
                 footer = self._render_dim_ansi(
@@ -596,6 +612,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self._stream_text = ""
         self._stream_md_cache = None
         self._stream_is_reasoning = False
+        self._stream_is_progress = False
         self._last_tool_outputs = []
         self._last_todos_sig = None
         self._live_todos = None

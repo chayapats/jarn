@@ -21,15 +21,22 @@ regex, enforces write isolation. ``"off"`` (the default) preserves the original
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import queue
 import subprocess
 import threading
+import time
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from deepagents.backends import LocalShellBackend
 from deepagents.backends.filesystem import _raise_if_symlink_loop
 from deepagents.backends.protocol import ExecuteResponse
 
+from jarn.agent.events import ToolProgress
 from jarn.agent.process_util import terminate_process_group
 
 logger = logging.getLogger("jarn.agent.local_backend")
@@ -37,6 +44,79 @@ logger = logging.getLogger("jarn.agent.local_backend")
 #: One-time warning state: emitted at most once per process per backend instance
 #: when ``sandbox_mode="auto"`` and no sandbox is available.
 _WARNED_SANDBOX_UNAVAILABLE: set[int] = set()
+
+#: Defaults for live foreground-``execute`` progress (only active when a
+#: ``progress_sink`` is wired). Heartbeat cadence is intentionally coarse — a
+#: quiet build should reassure ("still running… 30s"), not spam.
+_DEFAULT_HEARTBEAT_SECS = 5.0
+_DEFAULT_TAIL_LINES = 10
+_DEFAULT_POLL_SECS = 0.2
+
+
+@dataclass(slots=True)
+class _TailTracker:
+    """Rolling output tail + heartbeat bookkeeping for a streaming ``execute``.
+
+    Kept separate from the subprocess plumbing so the *timing* decisions (elapsed
+    seconds, whether a quiet spell warrants a heartbeat) are pure and unit-testable
+    with an injected ``clock`` — no process needs to be spawned to exercise them.
+    ``on_output`` feeds a new stdout/stderr chunk (updating the bounded tail and
+    stamping "last activity"); ``maybe_heartbeat`` is polled while the queue is
+    quiet and returns a heartbeat :class:`ToolProgress` only once ``heartbeat_secs``
+    have elapsed since the last emit."""
+
+    clock: Callable[[], float]
+    start: float
+    heartbeat_secs: float = _DEFAULT_HEARTBEAT_SECS
+    tail_lines: int = _DEFAULT_TAIL_LINES
+    command: str = ""
+    tool_name: str = "execute"
+    _lines: deque[str] = field(init=False, repr=False)
+    #: Monotonic time of the last emitted progress OR heartbeat — the quiet-window
+    #: anchor. Seeded to ``start`` so the first heartbeat is measured from launch.
+    _last_emit: float = field(init=False, default=0.0)
+
+    def __post_init__(self) -> None:
+        self._lines = deque(maxlen=max(1, self.tail_lines))
+        self._last_emit = self.start
+
+    def elapsed(self) -> float:
+        return max(0.0, self.clock() - self.start)
+
+    def _tail_text(self) -> str:
+        # Lines retain their trailing newline, so a plain join reconstructs the
+        # visible tail exactly (the deque already bounds it to ``tail_lines``).
+        return "".join(self._lines)
+
+    def on_output(self, text: str) -> ToolProgress:
+        """Record a new output chunk and return a (non-heartbeat) progress record."""
+        for line in text.splitlines(keepends=True):
+            self._lines.append(line)
+        now = self.clock()
+        self._last_emit = now
+        return ToolProgress(
+            command=self.command,
+            chunk=text,
+            tail=self._tail_text(),
+            elapsed=max(0.0, now - self.start),
+            heartbeat=False,
+            tool_name=self.tool_name,
+        )
+
+    def maybe_heartbeat(self) -> ToolProgress | None:
+        """Return a heartbeat record iff output has been quiet for ``heartbeat_secs``."""
+        now = self.clock()
+        if now - self._last_emit < self.heartbeat_secs:
+            return None
+        self._last_emit = now
+        return ToolProgress(
+            command=self.command,
+            chunk="",
+            tail=self._tail_text(),
+            elapsed=max(0.0, now - self.start),
+            heartbeat=True,
+            tool_name=self.tool_name,
+        )
 
 
 class CancellableLocalShellBackend(LocalShellBackend):
@@ -76,6 +156,11 @@ class CancellableLocalShellBackend(LocalShellBackend):
         sandbox_allow_network: bool = True,
         sandbox_extra_writable: list[Path] | None = None,
         extra_roots: list[Path] | None = None,
+        progress_sink: Callable[[ToolProgress], None] | None = None,
+        clock: Callable[[], float] | None = None,
+        progress_heartbeat_secs: float = _DEFAULT_HEARTBEAT_SECS,
+        progress_tail_lines: int = _DEFAULT_TAIL_LINES,
+        progress_poll_secs: float = _DEFAULT_POLL_SECS,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -88,6 +173,16 @@ class CancellableLocalShellBackend(LocalShellBackend):
         self._extra_roots: list[Path] = [
             Path(p).resolve() for p in (extra_roots or [])
         ]
+        # Live foreground-``execute`` progress. When ``progress_sink`` is ``None``
+        # (the default, and every existing call site) ``execute`` takes the original
+        # blocking ``communicate`` path BYTE-FOR-BYTE — the hot path is untouched.
+        # The clock is injected so progress/heartbeat timing is deterministic in
+        # tests; it defaults to ``time.monotonic``.
+        self._progress_sink = progress_sink
+        self._clock: Callable[[], float] = clock or time.monotonic
+        self._progress_heartbeat_secs = progress_heartbeat_secs
+        self._progress_tail_lines = progress_tail_lines
+        self._progress_poll_secs = progress_poll_secs
 
     def _resolve_path(self, key: str) -> Path:
         """Extend the virtual-mode FS guard to also accept added roots.
@@ -181,9 +276,36 @@ class CancellableLocalShellBackend(LocalShellBackend):
                 truncated=False,
             )
 
+        proc = self._spawn(command, sandbox_argv)
+        with self._live_lock:
+            self._live.add(proc)
+        try:
+            # A ``progress_sink`` opts into incremental tailing (a live tail +
+            # heartbeat while the command runs). Without one — every existing call
+            # site — this is the original blocking ``communicate`` path, unchanged.
+            if self._progress_sink is not None:
+                outcome = self._communicate_streaming(proc, command, effective_timeout)
+            else:
+                outcome = self._communicate_blocking(proc, effective_timeout)
+        finally:
+            with self._live_lock:
+                self._live.discard(proc)
+
+        if outcome is None:  # timed out (killed + reaped inside the communicator)
+            return ExecuteResponse(
+                output=f"Error: Command timed out after {effective_timeout} seconds.",
+                exit_code=124, truncated=False,
+            )
+        stdout, stderr = outcome
+        return self._finalize_output(stdout, stderr, proc.returncode or 0)
+
+    def _spawn(self, command: str, sandbox_argv: list[str] | None) -> subprocess.Popen:
+        """Start the command in its own process session (killable tree). Identical
+        Popen shape as before; only extracted so both the blocking and streaming
+        communicators share one spawn site."""
         if sandbox_argv is not None:
             # Sandboxed: argv is fully constructed; do NOT use shell=True.
-            proc = subprocess.Popen(  # noqa: S603
+            return subprocess.Popen(  # noqa: S603
                 sandbox_argv,
                 shell=False,
                 stdout=subprocess.PIPE,
@@ -194,34 +316,122 @@ class CancellableLocalShellBackend(LocalShellBackend):
                 cwd=str(self.cwd),
                 start_new_session=True,  # own process group → whole tree is killable
             )
-        else:
-            proc = subprocess.Popen(  # noqa: S602
-                command,
-                shell=True,  # parity with the base backend (LLM-controlled shell)
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL,
-                text=True,
-                env=self._env,
-                cwd=str(self.cwd),
-                start_new_session=True,  # own process group → whole tree is killable
-            )
-        with self._live_lock:
-            self._live.add(proc)
-        try:
-            try:
-                stdout, stderr = proc.communicate(timeout=effective_timeout)
-            except subprocess.TimeoutExpired:
-                self._kill(proc)
-                proc.communicate()  # reap
-                return ExecuteResponse(
-                    output=f"Error: Command timed out after {effective_timeout} seconds.",
-                    exit_code=124, truncated=False,
-                )
-        finally:
-            with self._live_lock:
-                self._live.discard(proc)
+        return subprocess.Popen(  # noqa: S602
+            command,
+            shell=True,  # parity with the base backend (LLM-controlled shell)
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            env=self._env,
+            cwd=str(self.cwd),
+            start_new_session=True,  # own process group → whole tree is killable
+        )
 
+    def _communicate_blocking(
+        self, proc: subprocess.Popen, timeout: float
+    ) -> tuple[str, str] | None:
+        """Original path: block until the command finishes. Returns ``(stdout,
+        stderr)``, or ``None`` on timeout (after killing + reaping the tree)."""
+        try:
+            return proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self._kill(proc)
+            proc.communicate()  # reap
+            return None
+
+    def _communicate_streaming(
+        self, proc: subprocess.Popen, command: str, timeout: float
+    ) -> tuple[str, str] | None:
+        """Incremental path: drain stdout/stderr through reader threads while the
+        command runs, surfacing a live tail + heartbeat via ``progress_sink``.
+
+        stdout and stderr are pumped by two daemon threads into separate buffers
+        (so the final ``[stderr]``-prefixed combining is byte-identical to the
+        blocking path) AND onto a shared queue that this thread drains: each line
+        refreshes the tail and emits progress; a quiet spell (queue idle) emits a
+        heartbeat once ``heartbeat_secs`` pass. The whole-command timeout is enforced
+        against the injected clock. Returns ``(stdout, stderr)``, or ``None`` on
+        timeout (after killing + reaping)."""
+        out_buf: list[str] = []
+        err_buf: list[str] = []
+        q: queue.Queue[tuple[str, str | None]] = queue.Queue()
+
+        def pump(stream, buf: list[str], tag: str) -> None:
+            try:
+                for line in iter(stream.readline, ""):
+                    buf.append(line)
+                    q.put((tag, line))
+            finally:
+                # Best-effort close; the sentinel tells the drain this stream ended.
+                with contextlib.suppress(Exception):
+                    stream.close()
+                q.put((tag, None))
+
+        threads = [
+            threading.Thread(target=pump, args=(proc.stdout, out_buf, "out"), daemon=True),
+            threading.Thread(target=pump, args=(proc.stderr, err_buf, "err"), daemon=True),
+        ]
+        for t in threads:
+            t.start()
+
+        start = self._clock()
+        tracker = _TailTracker(
+            clock=self._clock,
+            start=start,
+            heartbeat_secs=self._progress_heartbeat_secs,
+            tail_lines=self._progress_tail_lines,
+            command=command,
+        )
+        # Poll no coarser than the heartbeat cadence, else a heartbeat can't fire on
+        # time (it is only checked when the queue goes idle for one poll).
+        poll = max(0.01, min(self._progress_poll_secs, self._progress_heartbeat_secs))
+        eofs = 0
+        timed_out = False
+        while eofs < 2:
+            if tracker.elapsed() >= timeout:
+                timed_out = True
+                break
+            try:
+                _tag, line = q.get(timeout=poll)
+            except queue.Empty:
+                self._emit_progress(tracker.maybe_heartbeat())
+                continue
+            if line is None:
+                eofs += 1
+                continue
+            self._emit_progress(tracker.on_output(line))
+
+        if timed_out:
+            self._kill(proc)
+            for t in threads:
+                t.join(timeout=1.0)
+            # Reap best-effort; a wedged wait must never hang the turn.
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=5)
+            return None
+
+        for t in threads:
+            t.join(timeout=1.0)
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=5)
+        return "".join(out_buf), "".join(err_buf)
+
+    def _emit_progress(self, progress: ToolProgress | None) -> None:
+        """Hand a progress record to the sink; a sink error must never break the
+        command (progress is a display affordance, not part of execution)."""
+        if progress is None or self._progress_sink is None:
+            return
+        try:
+            self._progress_sink(progress)
+        except Exception:  # noqa: BLE001 - best-effort; log and keep running
+            logger.debug("progress sink raised", exc_info=True)
+
+    def _finalize_output(
+        self, stdout: str, stderr: str, code: int
+    ) -> ExecuteResponse:
+        """Combine stdout/stderr, truncate, and append a nonzero exit code —
+        identical to the base backend so streamed and blocking runs read the same."""
         parts: list[str] = []
         if stdout:
             parts.append(stdout)
@@ -235,7 +445,6 @@ class CancellableLocalShellBackend(LocalShellBackend):
             output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
             truncated = True
 
-        code = proc.returncode or 0
         if code != 0:
             output = f"{output.rstrip()}\n\nExit code: {code}"
         return ExecuteResponse(output=output, exit_code=code, truncated=truncated)

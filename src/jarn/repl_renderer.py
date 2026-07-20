@@ -20,6 +20,14 @@ from jarn.tui import palette
 # as PLAIN dim text (markdown would collapse the "✻ thinking\n…" soft break).
 REASONING_STREAM_PREFIX = "✻ thinking\n"
 
+# Sentinel prefix a live tool-output tail is pushed with (same shared live sink),
+# so the inline app renders it as PLAIN dim text — raw command output is not
+# markdown and must show verbatim. Stripped by the app before display.
+TOOL_PROGRESS_STREAM_PREFIX = "\x00tool-progress\x00"
+
+# How many trailing lines of a running tool's output to show in the live tail.
+_PROGRESS_TAIL_LINES = 10
+
 
 def _current_width() -> int:
     """Return the current terminal width, capped at 100.
@@ -91,6 +99,10 @@ class TurnRenderer:
         self._prev: str | None = None
         self._seen_starts: set[str] = set()
         self._tools: dict[str, ToolRenderState] = {}
+        # Tool keys (tool_call_id, else name) currently showing a live output tail in
+        # the live region, so on_tool_end knows to clear that tail before committing
+        # the final result line.
+        self._progress_active: set[str] = set()
         self.tool_outputs: list[tuple[str, str]] = tool_sink if tool_sink is not None else []
         # T-3-5 subagent tagging (display-only). Per-turn state: tool-call count and
         # accumulated (collapsed) prose per subagent name, plus the pager index that
@@ -352,6 +364,55 @@ class TurnRenderer:
             self._show_subagent_status()
         self._spin()
 
+    def _format_tool_progress(
+        self, name: str, tail: str, elapsed: float, *, heartbeat: bool
+    ) -> str:
+        """Compose the live tail body: the last few output lines (width-capped) above
+        a ``still running… Ns`` heartbeat footer. Returns RAW text — the live sink /
+        Rich Live path both render it dim without markup interpretation."""
+        width = _current_width()
+        lines = tail.splitlines()[-_PROGRESS_TAIL_LINES:]
+        capped = [ln if len(ln) <= width else ln[: width - 1] + "…" for ln in lines]
+        footer = f"⎿ {name}: still running… {int(elapsed)}s"
+        return "\n".join([*capped, footer]) if capped else footer
+
+    def on_tool_progress(
+        self,
+        name: str,
+        tail: str,
+        elapsed: float,
+        *,
+        tool_call_id: str | None = None,
+        heartbeat: bool = False,
+        agent: str | None = None,
+    ) -> None:
+        """Show a live-updating tail of a still-running tool under its ⏺ line.
+
+        Renders into the shared live region (the same transient region the in-progress
+        prose uses) so it never touches scrollback; ``on_tool_end`` clears it and
+        commits the final result exactly as today. A no-op body only ever REPLACES the
+        live region — it is never committed — so it can't double-render."""
+        key = tool_call_id or name
+        self._progress_active.add(key)
+        body = self._format_tool_progress(name, tail, elapsed, heartbeat=heartbeat)
+        self._refresh_width()
+        if self._live_sink is not None:
+            self._live_sink(f"{TOOL_PROGRESS_STREAM_PREFIX}{body}")
+            return
+        if not self.console.is_terminal:
+            return
+        # Rich Live fallback (no inline app): swap the spinner for the tail.
+        self._unspin()
+        if self._live is None:
+            self._live = Live(
+                console=self.console,
+                transient=True,
+                refresh_per_second=12,
+                vertical_overflow="visible",
+            )
+            self._live.start()
+        self._live.update(Text(body, style=palette.C_DIM))
+
     def _resolve_tool_state(
         self, name: str, tool_call_id: str | None
     ) -> tuple[str, ToolRenderState | None]:
@@ -377,6 +438,11 @@ class TurnRenderer:
             return
         self._unspin()
         self._refresh_width()
+        # A tool that streamed a live tail: clear that transient region before the
+        # final result lands in scrollback, so the tail is REPLACED (not stacked).
+        if self._progress_active:
+            self._progress_active.discard(tool_call_id or name)
+            self._live_clear()
         hint = f" [{palette.C_DIM}]· ctrl+o[/{palette.C_DIM}]" if full else ""
         dur = ""
         key, state = self._resolve_tool_state(name, tool_call_id)

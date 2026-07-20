@@ -1423,3 +1423,44 @@ async def test_turn_error_logs_classification() -> None:
     errors = [e for e in events if e.kind is EventKind.ERROR]
     assert errors and errors[0].data.get("retryable") is True
     assert errors[0].data.get("classified_by") == "type"
+
+
+# --- TOOL_PROGRESS event construction (live tool-output streaming) ----------
+
+
+def test_make_tool_progress_event_carries_tail_and_identity():
+    """A backend ToolProgress record becomes a TOOL_PROGRESS Event with the tail,
+    elapsed, heartbeat flag, and correlating tool_call_id in its data."""
+    from jarn.agent.events import ToolProgress
+    from jarn.agent.stream_handlers import make_tool_progress_event
+
+    p = ToolProgress(
+        command="make build",
+        chunk="compiling bar.c\n",
+        tail="compiling foo.c\ncompiling bar.c\n",
+        elapsed=3.0,
+        heartbeat=False,
+        tool_name="execute",
+    )
+    ev = make_tool_progress_event(p, tool_call_id="call-1")
+    assert ev.kind is EventKind.TOOL_PROGRESS
+    assert ev.text == "execute"
+    assert ev.data["tail"] == "compiling foo.c\ncompiling bar.c\n"
+    assert ev.data["chunk"] == "compiling bar.c\n"
+    assert ev.data["elapsed"] == 3.0
+    assert ev.data["heartbeat"] is False
+    assert ev.data["tool_call_id"] == "call-1"
+    assert ev.data["command"] == "make build"
+
+
+def test_make_tool_progress_event_heartbeat_and_agent_tag():
+    """A quiet-time heartbeat and a subagent tag both round-trip into the event."""
+    from jarn.agent.events import ToolProgress
+    from jarn.agent.stream_handlers import make_tool_progress_event
+
+    p = ToolProgress(tail="still building\n", elapsed=10.0, heartbeat=True)
+    ev = make_tool_progress_event(p, agent="builder")
+    assert ev.kind is EventKind.TOOL_PROGRESS
+    assert ev.data["heartbeat"] is True
+    assert ev.data["elapsed"] == 10.0
+    assert ev.data["agent"] == "builder"

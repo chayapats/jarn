@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 from langgraph.types import Overwrite
 
-from jarn.agent.events import Event, EventKind
+from jarn.agent.events import Event, EventKind, ToolProgress
 
 if TYPE_CHECKING:
     from jarn.agent.session import SessionDriver
@@ -182,6 +182,47 @@ def handle_update_chunk(
                 if agent:
                     data["agent"] = agent
                 yield Event(EventKind.TOOL_START, text=name, data=data)
+
+
+def make_tool_progress_event(
+    progress: ToolProgress,
+    *,
+    tool_call_id: str | None = None,
+    agent: str | None = None,
+) -> Event:
+    """Translate a backend :class:`ToolProgress` record into a ``TOOL_PROGRESS``
+    :class:`Event` for the renderer — the same seam that builds ``TOOL_START`` /
+    ``TOOL_END`` events from LangGraph chunks.
+
+    Backend progress originates OFF the LangGraph stream (a foreground ``execute``
+    tails its own stdout in a worker thread), so it is emitted through an injected
+    ``progress_sink`` rather than surfacing as an ``astream`` chunk. This helper is
+    the shared constructor the sink wiring uses so a ``TOOL_PROGRESS`` event carries
+    the same ``tool_call_id`` / ``agent`` tagging as the surrounding tool events; it
+    prefers an explicitly-passed ``tool_call_id`` (known to the wiring layer that
+    correlates the running tool) over the one on the record.
+
+    NOTE: pumping these onto the driver's live event stream requires a small drain
+    in :class:`~jarn.agent.session.SessionDriver` (a thread-safe queue the backend
+    sink writes to and the stream loop reads); that cross-file wiring is a follow-up
+    — this function and the backend/renderer layers below it are complete and tested
+    in isolation."""
+    cid = tool_call_id or progress.tool_call_id
+    data: dict[str, Any] = {
+        "tail": progress.tail,
+        "chunk": progress.chunk,
+        "elapsed": progress.elapsed,
+        "heartbeat": progress.heartbeat,
+    }
+    if cid:
+        data["tool_call_id"] = str(cid)
+    if progress.command:
+        data["command"] = progress.command
+    if agent:
+        data["agent"] = agent
+    return Event(
+        EventKind.TOOL_PROGRESS, text=progress.tool_name or "execute", data=data
+    )
 
 
 def record_usage(driver: SessionDriver, msg: Any, namespace: Any = ()) -> None:
