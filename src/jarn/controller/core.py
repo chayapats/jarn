@@ -597,15 +597,31 @@ class Controller:
     async def compact_apply(self, summary: str) -> None:
         """Replace the conversation thread with ``summary``: start a fresh
         thread and seed it with the summary. The destructive half of compaction
-        — call only after the user confirms (manual) or unconditionally (auto)."""
+        — call only after the user confirms (manual) or unconditionally (auto).
+
+        The structured ``todos`` plan is a separate graph-state channel from
+        ``messages`` (see :meth:`todos`), and the fresh thread starts with an
+        empty one. Capture the current plan BEFORE minting the new thread and
+        seed it back, or the agent's checklist silently resets to empty on every
+        compaction — losing its plan on a long task exactly when compaction
+        fires mid-work."""
         rt = await self.ensure_runtime()
+        # Read the plan off the OLD thread while its config is still current.
+        todos = await self.todos()
         self.new_thread()
         from langchain_core.messages import HumanMessage
 
-        await rt.agent.aupdate_state(
-            self._config(),
-            {"messages": [HumanMessage(content=f"[Summary of prior conversation]\n{summary}")]},
-        )
+        seed: dict[str, Any] = {
+            "messages": [
+                HumanMessage(content=f"[Summary of prior conversation]\n{summary}")
+            ]
+        }
+        # Only carry a non-empty plan across: an empty list has nothing to
+        # preserve, so keep the seed messages-only (byte-identical to before)
+        # rather than writing an empty channel value.
+        if todos:
+            seed["todos"] = todos
+        await rt.agent.aupdate_state(self._config(), seed)
 
     async def compact(self) -> str:
         """One-shot summarize-and-fork primitive: generate a summary via
@@ -688,13 +704,18 @@ class Controller:
         scratch — not a no-op (that's the 2-turn / first-turn rewind case)."""
         rt = await self.ensure_runtime()
         state = await rt.agent.aget_state(self._config())
-        messages = (getattr(state, "values", {}) or {}).get("messages", []) or []
+        values = getattr(state, "values", {}) or {}
+        messages = values.get("messages", []) or []
         if not messages or keep_count < 0:
             return None
 
         import asyncio
 
         kept_prefix = list(messages[:keep_count])  # empty when keep_count == 0
+        # Carry the structured plan onto the new branch: ``todos`` is a distinct
+        # graph-state channel from ``messages``, and the forked thread starts with
+        # an empty one, so a rewind would otherwise wipe the agent's checklist.
+        todos = list(values.get("todos", []) or [])
         original_thread = self.thread_id
 
         # Slice 2: revert the working tree to the chosen turn's checkpoint before
@@ -726,10 +747,14 @@ class Controller:
         self.checkpoint_manager.register_thread_alias(
             self.thread_id, original_thread, _kept_turns
         )
-        await rt.agent.aupdate_state(
-            self._config(),
-            {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *kept_prefix]},
-        )
+        seed: dict[str, Any] = {
+            "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *kept_prefix]
+        }
+        # Only seed a non-empty plan (an empty channel value is a no-op we skip
+        # to keep the payload byte-identical to the pre-fix behavior).
+        if todos:
+            seed["todos"] = todos
+        await rt.agent.aupdate_state(self._config(), seed)
         return keep_count
 
     # TODO(rewind-conversation) slice 3: in-place/destructive rewind on the same
