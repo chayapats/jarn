@@ -120,9 +120,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         "mcp",
-        "Show configured MCP servers with per-server health and last error.",
+        "Show MCP server health; list and invoke server prompts; list and read server resources.",
         "core",
-        usage="[status] [--refresh|refresh]",
+        usage="[status|refresh|prompts|prompt <server> <name>|resources|read <server> <uri>]",
         group="Setup",
     ),
     CommandSpec(

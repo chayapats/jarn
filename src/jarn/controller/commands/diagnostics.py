@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from rich.markup import escape as _escape_markup
 
 from jarn.controller.core import CommandResult
-from jarn.extensibility.mcp import load_mcp_tools
+from jarn.extensibility.mcp import load_mcp_tools, run_blocking
 from jarn.tui import palette
 
 if TYPE_CHECKING:
@@ -66,33 +66,44 @@ def cmd_permissions(ctrl, args: str) -> CommandResult:
     return CommandResult("\n".join(lines))
 
 def cmd_mcp(ctrl, args: str) -> CommandResult:
-    """Show configured MCP servers with per-server health + last error.
+    """Show MCP server health, and list/invoke prompts + list/read resources.
 
-    Usage: ``/mcp``, ``/mcp status``, ``/mcp refresh``, or ``/mcp status --refresh``
-    to re-probe servers and refresh health maps."""
-    import asyncio
-
+    Subcommands:
+      ``/mcp [status] [--refresh|refresh]``  per-server health + last error
+      ``/mcp prompts``                       list server prompts and register each
+                                             as an invokable ``/mcp__<server>__<p>``
+      ``/mcp prompt <server> <name> [k=v …]`` fetch a prompt's text (and register)
+      ``/mcp resources``                     list server resources
+      ``/mcp read <server> <uri>``           read a resource's content into view
+    """
     parts = args.strip().split()
     sub = parts[0].lower() if parts else ""
-    if sub and sub not in ("status", "refresh"):
-        return CommandResult("Usage: /mcp [status] [--refresh|refresh]")
+    rest = parts[1:]
+    if sub == "prompts":
+        return _mcp_prompts(ctrl)
+    if sub == "prompt":
+        return _mcp_prompt(ctrl, rest)
+    if sub in ("resources", "resource"):
+        return _mcp_resources(ctrl)
+    if sub == "read":
+        return _mcp_read(ctrl, rest)
+    if sub not in ("", "status", "refresh") and "--refresh" not in parts:
+        return CommandResult(
+            "Usage: /mcp [status|refresh|prompts|prompt <server> <name> [k=v …]"
+            "|resources|read <server> <uri>]"
+        )
+    return _mcp_status(ctrl, parts)
+
+
+def _mcp_status(ctrl, parts: list[str]) -> CommandResult:
+    """Per-server health + last error; ``refresh``/``--refresh`` re-probes."""
+    sub = parts[0].lower() if parts else ""
     refresh = sub == "refresh" or "--refresh" in parts
     if refresh:
         # The sync command registry is invoked FROM the async REPL's running
-        # loop, so asyncio.run() here would raise. Probe on a one-shot worker
-        # thread (its own loop) when a loop is already running; only outside a
-        # loop (e.g. tests calling the handler directly) can we asyncio.run.
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            mcp = asyncio.run(load_mcp_tools(ctrl.config.mcp_servers))
-        else:
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                mcp = ex.submit(
-                    asyncio.run, load_mcp_tools(ctrl.config.mcp_servers)
-                ).result()
+        # loop; run_blocking probes on a one-shot worker thread there, and
+        # asyncio.run inline when no loop is running (tests / headless).
+        mcp = run_blocking(load_mcp_tools(ctrl.config.mcp_servers))
         ctrl.mcp_health = dict(mcp.health)
         ctrl.mcp_errors = dict(mcp.errors)
         # Replace the runtime's MCP cache with this fresh probe so the NEXT
@@ -127,6 +138,150 @@ def cmd_mcp(ctrl, args: str) -> CommandResult:
             f"loads the servers.[/{palette.C_DIM}]"
         )
     return CommandResult("\n".join(lines))
+
+
+def _append_mcp_errors(lines: list[str], errors: dict) -> None:
+    """Append one dimmed line per per-server discovery error (isolation aware)."""
+    for name in sorted(errors):
+        lines.append(
+            f"  [{palette.C_ERROR}]✗[/{palette.C_ERROR}] {_escape_markup(name)}: "
+            f"[{palette.C_DIM}]{_escape_markup(errors[name])}[/{palette.C_DIM}]"
+        )
+
+
+def _register_prompt_commands(ctrl, prompts: dict) -> None:
+    """Register discovered MCP prompts into the live runtime's command table.
+
+    The REPL dispatches ``rt.commands[name].render(args)`` into a turn, so adding
+    the MCP prompt commands here makes ``/mcp__<server>__<prompt>`` inject the
+    prompt text through the EXISTING turn path — no REPL change. The entries are
+    wiped on the next runtime rebuild (model/mode change); re-run ``/mcp prompts``
+    to refresh. Follow-up: merge these in ``build_runtime`` so they survive
+    rebuilds and appear in tab-completion without a manual ``/mcp prompts``."""
+    rt = ctrl.runtime
+    if rt is None or not prompts:
+        return
+    rt.commands.update(prompts)
+
+
+def _mcp_prompts(ctrl) -> CommandResult:
+    """List server prompts and register each as an invokable slash command."""
+    servers = ctrl.config.mcp_servers
+    if not servers:
+        return CommandResult("No MCP servers configured.")
+    from jarn.extensibility.mcp import load_mcp_prompts
+
+    res = run_blocking(load_mcp_prompts(servers))
+    _register_prompt_commands(ctrl, res.prompts)
+    lines = ["[b]MCP prompts[/b]"]
+    if res.prompts:
+        lines.append(
+            f"[{palette.C_DIM}]invoke with /<name> — injects the prompt into your "
+            f"turn[/{palette.C_DIM}]"
+        )
+        for name in sorted(res.prompts):
+            cmd = res.prompts[name]
+            args = (
+                f" [{palette.C_DIM}]({', '.join(cmd.argument_names)})[/{palette.C_DIM}]"
+                if cmd.argument_names
+                else ""
+            )
+            desc = f" — {_escape_markup(cmd.description)}" if cmd.description else ""
+            lines.append(f"  [cyan]/{_escape_markup(name)}[/cyan]{args}{desc}")
+    else:
+        lines.append(f"[{palette.C_DIM}]No prompts available.[/{palette.C_DIM}]")
+    _append_mcp_errors(lines, res.errors)
+    if res.prompts and not ctrl.runtime:
+        lines.append(
+            f"[{palette.C_DIM}]Prompts become invokable after the first turn "
+            f"builds the runtime — re-run /mcp prompts then.[/{palette.C_DIM}]"
+        )
+    return CommandResult("\n".join(lines))
+
+
+def _mcp_prompt(ctrl, rest: list[str]) -> CommandResult:
+    """Fetch a single prompt's text (and register it for direct invocation)."""
+    if len(rest) < 2:
+        return CommandResult("Usage: /mcp prompt <server> <name> [key=value …]")
+    server, pname = rest[0], rest[1]
+    arg_str = " ".join(rest[2:])
+    if not any(s.name == server and s.enabled for s in ctrl.config.mcp_servers):
+        return CommandResult(f"No enabled MCP server named {server!r}.")
+    from jarn.config.secrets import redact_secrets
+    from jarn.extensibility.mcp import load_mcp_prompts
+
+    res = run_blocking(load_mcp_prompts(ctrl.config.mcp_servers))
+    key = f"mcp__{server}__{pname}"
+    cmd = res.prompts.get(key)
+    if cmd is None:
+        available = ", ".join(sorted(res.prompts)) or "(none discovered)"
+        return CommandResult(f"No MCP prompt {key!r}. Available: {available}")
+    _register_prompt_commands(ctrl, res.prompts)
+    try:
+        text = cmd.render(arg_str)
+    except Exception as exc:  # noqa: BLE001 - surface a clean, redacted message
+        return CommandResult(redact_secrets(f"Failed to fetch prompt {key}: {exc}"))
+    if not text.strip():
+        return CommandResult(f"Prompt {key} returned no text.")
+    note = (
+        f"[{palette.C_DIM}]{_escape_markup(key)} — invoke /{_escape_markup(key)} "
+        f"to inject this into a turn[/{palette.C_DIM}]"
+    )
+    return CommandResult(f"{note}\n{_escape_markup(text)}")
+
+
+def _mcp_resources(ctrl) -> CommandResult:
+    """List resources published by every enabled MCP server."""
+    servers = ctrl.config.mcp_servers
+    if not servers:
+        return CommandResult("No MCP servers configured.")
+    from jarn.extensibility.mcp import list_mcp_resources
+
+    res = run_blocking(list_mcp_resources(servers))
+    lines = ["[b]MCP resources[/b]"]
+    if res.resources:
+        lines.append(
+            f"[{palette.C_DIM}]read with /mcp read <server> <uri>[/{palette.C_DIM}]"
+        )
+        for r in res.resources:
+            label = _escape_markup(r.name or r.description or "")
+            mime = (
+                f" [{palette.C_DIM}]{_escape_markup(r.mime_type)}[/{palette.C_DIM}]"
+                if r.mime_type
+                else ""
+            )
+            tail = f" — {label}" if label else ""
+            lines.append(
+                f"  [cyan]{_escape_markup(r.server)}[/cyan] "
+                f"{_escape_markup(r.uri)}{mime}{tail}"
+            )
+    else:
+        lines.append(f"[{palette.C_DIM}]No resources available.[/{palette.C_DIM}]")
+    _append_mcp_errors(lines, res.errors)
+    return CommandResult("\n".join(lines))
+
+
+def _mcp_read(ctrl, rest: list[str]) -> CommandResult:
+    """Read one resource's content into view."""
+    if len(rest) < 2:
+        return CommandResult("Usage: /mcp read <server> <uri>")
+    server, uri = rest[0], rest[1]
+    from jarn.config.secrets import redact_secrets
+    from jarn.extensibility.mcp import read_mcp_resource
+
+    try:
+        content = run_blocking(read_mcp_resource(ctrl.config.mcp_servers, server, uri))
+    except Exception as exc:  # noqa: BLE001 - surface a clean, redacted message
+        return CommandResult(
+            redact_secrets(f"Failed to read {uri} from {server}: {exc}")
+        )
+    if not content.strip():
+        return CommandResult(f"Resource {uri} on {server} returned no content.")
+    header = (
+        f"[b]{_escape_markup(server)}[/b] "
+        f"[{palette.C_DIM}]{_escape_markup(uri)}[/{palette.C_DIM}]"
+    )
+    return CommandResult(f"{header}\n{_escape_markup(content)}")
 
 def cmd_telemetry(ctrl, args: str) -> CommandResult:
     """Show telemetry opt-in status and local sink stats."""

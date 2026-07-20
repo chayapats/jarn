@@ -391,7 +391,7 @@ runs as the next turn (never lost). Disable with `ui.steering: false` (hides the
 | `/skills` | List available skills. |
 | `/memory [search\|show\|add\|update\|delete\|dump] ...` | List, search, show, add, update, delete, or dump long-term memory. |
 | `/permissions` | Show current permission rules and allowlist. |
-| `/mcp [status] [--refresh]` | Show configured MCP servers with per-server health and last error. |
+| `/mcp [status\|refresh\|prompts\|prompt <server> <name>\|resources\|read <server> <uri>]` | Show MCP server health; list and invoke server prompts; list and read server resources. |
 | `/trust` | Trust this project root and lift the untrusted review-only floor. |
 | `/add-dir <path>` | Add a directory to this session's write scope (multi-root; approval-gated). |
 | `/queue [clear\|cancel <n>\|move <from> <to>\|steer <n>]` | Show or manage queued input lines (while a turn is running). |
