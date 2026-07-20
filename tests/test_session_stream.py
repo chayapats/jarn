@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -1464,3 +1465,174 @@ def test_make_tool_progress_event_heartbeat_and_agent_tag():
     assert ev.data["heartbeat"] is True
     assert ev.data["elapsed"] == 10.0
     assert ev.data["agent"] == "builder"
+
+
+# --- TOOL_PROGRESS end-to-end: backend → queue → driver stream --------------
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell")
+@pytest.mark.asyncio
+async def test_execute_progress_streams_onto_driver_stream(tmp_path):
+    """END-TO-END: a running foreground ``execute`` surfaces TOOL_PROGRESS events on
+    the driver's event stream, correlated to the execute call and ordered BEFORE the
+    execute TOOL_END.
+
+    Wires the REAL local backend (progress_sink → a thread-safe queue) to a
+    SessionDriver's ``progress_queue`` and drives a fake astream that actually runs
+    the backend in a worker thread — the same seam production uses — so this exercises
+    the full sink → queue → drain → make_tool_progress_event → Event path, not a mock.
+    Deterministic: the backend joins its reader threads before ``execute`` returns, so
+    every progress record is enqueued before the ToolMessage chunk and the merge loop
+    drains them all before yielding it. A constant clock keeps elapsed fixed and
+    suppresses heartbeats, so only line-driven progress appears."""
+    import asyncio
+    import queue as _queue
+
+    from jarn.agent.local_backend import CancellableLocalShellBackend
+
+    pq: _queue.Queue = _queue.Queue()
+    # Constant clock → elapsed is always 0 and no heartbeat can fire (0 < heartbeat
+    # window), so the only progress records are the per-line ones we assert on.
+    backend = CancellableLocalShellBackend(
+        root_dir=str(tmp_path),
+        virtual_mode=True,
+        progress_sink=pq.put,
+        clock=lambda: 0.0,
+    )
+    command = "printf 'compiling foo\\ncompiling bar\\ncompiling baz\\n'"
+
+    class _ExecAgent:
+        """Fake astream: announce the execute call (updates), actually run it in a
+        worker thread (feeding progress → pq), then surface its result (messages)."""
+
+        async def astream(self, payload, config, *, stream_mode=None, subgraphs=False):
+            yield ((), "updates", {"model": {"messages": [SimpleNamespace(
+                tool_calls=[{"name": "execute",
+                             "args": {"command": command}, "id": "call-exec"}]
+            )]}})
+            res = await asyncio.to_thread(backend.execute, command)
+            yield ((), "messages", (ToolMessage(
+                content=res.output, tool_call_id="call-exec", name="execute"
+            ),))
+
+    driver = SessionDriver(
+        agent=_ExecAgent(),
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="t",
+        main_model_ref="claude-opus-4-8",
+        progress_queue=pq,
+    )
+
+    events = [ev async for ev in driver.run_turn("build it")]
+
+    progress = [e for e in events if e.kind is EventKind.TOOL_PROGRESS]
+    assert progress, "no TOOL_PROGRESS events reached the driver stream"
+    # Every progress event is correlated to the running execute call.
+    assert all(e.data.get("tool_call_id") == "call-exec" for e in progress)
+    assert all(e.text == "execute" for e in progress)
+    # The streamed command output reached the live tail.
+    assert any("compiling baz" in e.data.get("tail", "") for e in progress)
+
+    # Ordering: execute TOOL_START ≺ all TOOL_PROGRESS ≺ execute TOOL_END.
+    start_idx = next(i for i, e in enumerate(events)
+                     if e.kind is EventKind.TOOL_START and e.text == "execute")
+    end_idx = next(i for i, e in enumerate(events)
+                   if e.kind is EventKind.TOOL_END and e.text == "execute")
+    prog_idxs = [i for i, e in enumerate(events) if e.kind is EventKind.TOOL_PROGRESS]
+    assert start_idx < min(prog_idxs)
+    assert max(prog_idxs) < end_idx
+    # The turn still completes normally (progress never displaces DONE).
+    assert any(e.kind is EventKind.DONE for e in events)
+    # After the execute finished, its correlation id is cleared.
+    assert driver._active_execute_call_id is None
+
+
+@pytest.mark.asyncio
+async def test_no_progress_queue_is_byte_identical_stream(tmp_path):
+    """A driver with ``progress_queue=None`` never engages the merge wrapper: the raw
+    astream is iterated directly and no TOOL_PROGRESS events appear (the hot path is
+    unchanged for every existing call site)."""
+    agent = _NSAgent([
+        ((), "updates", {"model": {"messages": [SimpleNamespace(
+            tool_calls=[{"name": "execute", "args": {"command": "ls"}, "id": "c1"}])]}}),
+        ((), "messages", (_AIChunk("done"),)),
+    ])
+    driver = _ns_driver(agent)  # no progress_queue
+    assert driver.progress_queue is None
+    events = [ev async for ev in driver.run_turn("go")]
+    assert not any(e.kind is EventKind.TOOL_PROGRESS for e in events)
+    assert any(e.kind is EventKind.DONE for e in events)
+
+
+@pytest.mark.asyncio
+async def test_progress_wrapper_cancel_tears_down_cleanly(caplog):
+    """Cancelling a turn while the progress-merge wrapper awaits the next chunk of a
+    still-running tool must (a) return promptly — the live tail surfaced without the
+    stream deadlocking — and (b) not leak the pending inner read task: the wrapper's
+    ``finally`` cancels it and closes the inner astream. Teardown on cancel runs via
+    the async-gen finalizer (an ``async for`` does not aclose its iterator on
+    GeneratorExit — the same reliance the raw astream path has today), so the inner
+    close is polled for after a GC, mirroring test_snapshot_task_not_leaked_*."""
+    import asyncio
+    import gc
+    import logging
+    import queue as _queue
+
+    from jarn.agent.events import ToolProgress
+
+    pq: _queue.Queue = _queue.Queue()
+    inner_closed = {"v": False}
+
+    class _HangAfterProgress:
+        async def astream(self, payload, config, *, stream_mode=None, subgraphs=False):
+            # Announce an execute call so progress correlates to it …
+            yield ((), "updates", {"model": {"messages": [SimpleNamespace(
+                tool_calls=[{"name": "execute",
+                             "args": {"command": "sleep 30"}, "id": "c1"}])]}})
+            # … enqueue one progress record, then hang like a long-running command.
+            pq.put(ToolProgress(command="sleep 30", tail="tick\n", tool_name="execute"))
+            try:
+                await asyncio.sleep(30)
+            finally:
+                inner_closed["v"] = True  # cancel/aclose reached the generator body
+            yield ((), "messages", (_AIChunk("never"),))
+
+    driver = SessionDriver(
+        agent=_HangAfterProgress(),
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=CostTracker(),
+        thread_id="t",
+        main_model_ref="claude-opus-4-8",
+        progress_queue=pq,
+    )
+    seen: list = []
+
+    with caplog.at_level(logging.WARNING, logger="asyncio"):
+        agen = driver.run_turn("go")
+
+        async def _until_progress(gen) -> None:
+            async for ev in gen:
+                seen.append(ev)
+                if ev.kind is EventKind.TOOL_PROGRESS:
+                    return
+
+        # The live tail surfaces even though the tool never returns (no deadlock).
+        await asyncio.wait_for(_until_progress(agen), timeout=5)
+        assert any(e.kind is EventKind.TOOL_PROGRESS for e in seen)
+        assert seen[-1].data.get("tool_call_id") == "c1"
+
+        # Cancel mid-tool — must return promptly (no deadlock on the hung tool).
+        await asyncio.wait_for(agen.aclose(), timeout=5)
+        del agen
+        # The wrapper (and its pending inner read task) are torn down by the async-gen
+        # finalizer: drop refs, GC, and let the loop run the scheduled acloses.
+        for _ in range(500):
+            gc.collect()
+            await asyncio.sleep(0.01)
+            if inner_closed["v"]:
+                break
+
+    assert inner_closed["v"] is True  # inner astream generator was closed, task cancelled
+    leaked = [r for r in caplog.records if "was destroyed but it is pending" in r.getMessage()]
+    assert not leaked, [r.getMessage() for r in caplog.records]

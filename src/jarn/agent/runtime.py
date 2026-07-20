@@ -58,6 +58,13 @@ _AMBIENT_LANGGRAPH_KEY_VARS = (
 #: not an exfiltration concern, so no warning is emitted.
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", ""})
 
+#: Upper bound on queued backend ToolProgress records (live foreground-execute
+#: tailing). Drop-on-full keeps a spewing command from ever blocking execute's worker
+#: thread; the driver drains every ~50ms, so overflow needs a wedged drain — at which
+#: point dropping the newest tail line is the right degradation (the last few lines
+#: still land whenever the drain resumes).
+_PROGRESS_QUEUE_MAXSIZE = 2048
+
 #: Names jarn reserves for its own builtin tools. An EXTRA tool (arriving via
 #: web/MCP ``extra_tools``) that is NOT namespaced (``mcp__…``) yet carries one of
 #: these names is a collision attack: name-keyed permission classification
@@ -150,6 +157,12 @@ class JarnRuntime:
     #: reports (response_metadata) against this set; see :class:`SessionDriver`.
     known_model_refs: tuple[str, ...] = ()
     backend: Any = None              # execution backend (for cancel/terminate)
+    #: Thread-safe queue of backend :class:`~jarn.agent.events.ToolProgress` records
+    #: for live foreground-``execute`` tailing. Set only when the backend supports
+    #: streaming progress (the local backend); ``None`` for docker/sandbox. The
+    #: per-turn :class:`SessionDriver` drains it (see ``make_driver`` /
+    #: ``SessionDriver._astream_with_progress``).
+    progress_queue: Any = None
 
 
 def _async_subagent_specs(config: Config) -> list[Any]:
@@ -583,7 +596,31 @@ def build_runtime(
         extra_gated, include_async=bool(config.async_subagents)
     )
 
-    backend = _make_backend(config, root, extra_roots=extra_roots)
+    # Live tool-output streaming (foreground execute). Create a bounded, thread-safe
+    # queue the backend's progress_sink feeds from its worker thread; the per-turn
+    # SessionDriver drains it and interleaves TOOL_PROGRESS events with astream
+    # output. Bounded + drop-on-full so a spewing command can never block the worker
+    # thread (progress is a display affordance, not part of execution). Only the local
+    # backend has a streaming execute; if the sink didn't land (docker/sandbox), the
+    # queue is dropped so the driver's merge wrapper stays disengaged.
+    import queue as _queue
+
+    _progress_queue: _queue.Queue = _queue.Queue(maxsize=_PROGRESS_QUEUE_MAXSIZE)
+
+    def _progress_sink(progress: Any) -> None:
+        # try/except (not contextlib.suppress) — this runs per output line on
+        # execute's worker thread; avoid building a context manager each call.
+        try:  # noqa: SIM105
+            _progress_queue.put_nowait(progress)
+        except _queue.Full:
+            pass  # best-effort; never block execute's worker thread on a slow drain
+
+    backend = _make_backend(
+        config, root, extra_roots=extra_roots, progress_sink=_progress_sink
+    )
+    progress_queue = (
+        _progress_queue if getattr(backend, "_progress_sink", None) is not None else None
+    )
 
     # Unify auto-compaction into a single in-graph summarization pass. Always
     # exclude deepagents' built-in SummarizationMiddleware (main model, fixed 85%
@@ -653,4 +690,5 @@ def build_runtime(
         main_model_ref=main_ref,
         known_model_refs=tuple(sorted(known_refs)),
         backend=backend,
+        progress_queue=progress_queue,
     )

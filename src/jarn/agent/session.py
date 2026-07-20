@@ -15,7 +15,9 @@ driver works headless (tests) and inside Textual.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import queue
 import time as _time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -30,6 +32,7 @@ from jarn.agent.events import (
     Event,
     EventKind,
     SuggestedMemory,
+    ToolProgress,
     _auto_reject,
 )
 from jarn.agent.interrupts import (
@@ -53,6 +56,7 @@ from jarn.agent.stream_handlers import (
     classify_error,
     handle_message_chunk,
     handle_update_chunk,
+    make_tool_progress_event,
     record_usage,
     resolve_model_ref,
 )
@@ -95,6 +99,55 @@ SNAPSHOT_FAIL_NOTICE = (
 #: pending (which would emit "Task was destroyed but it is pending"). Each task's
 #: done-callback removes its own entry, so this set self-drains.
 _DETACHED_SNAPSHOTS: set[asyncio.Task[Any]] = set()
+
+#: How often the streaming loop wakes to drain backend :class:`ToolProgress` records
+#: while awaiting the next astream chunk. A cadence, NOT a measured duration — a real
+#: astream chunk is delivered immediately (``asyncio.wait`` returns the instant the
+#: read task completes, not at the timeout), so this only bounds how promptly a live
+#: tool tail refreshes while the tool is quiet. Determinism of the progress CONTENTS
+#: (elapsed / heartbeat) lives in the backend's injected clock, not here.
+_PROGRESS_DRAIN_POLL_SECS = 0.05
+
+#: Sentinel the progress-merge wrapper returns when the wrapped astream is exhausted,
+#: so the inner ``__anext__`` task carries a plain value rather than a
+#: ``StopAsyncIteration`` the merge loop would have to special-case.
+_STREAM_DONE = object()
+
+
+@dataclass(slots=True, frozen=True)
+class _ProgressItem:
+    """A drained backend :class:`ToolProgress` marker interleaved into the astream
+    item flow by :meth:`SessionDriver._astream_with_progress`, so the driver can tell
+    a live-progress update apart from a real LangGraph chunk (a tuple) by type alone."""
+
+    progress: ToolProgress
+
+
+async def _anext_or_stop(agen: Any) -> Any:
+    """``await agen.__anext__()`` but return :data:`_STREAM_DONE` on exhaustion.
+
+    The result is wrapped in a task and raced against the drain poll; keeping
+    ``StopAsyncIteration`` out of the task result means a normal end is an ordinary
+    value the merge loop returns on, not an exception it has to catch mid-race."""
+    try:
+        return await agen.__anext__()
+    except StopAsyncIteration:
+        return _STREAM_DONE
+
+
+def _drain_progress(q: Any) -> list[ToolProgress]:
+    """Non-blocking drain of every currently-queued :class:`ToolProgress`.
+
+    Never blocks the streaming loop — returns whatever is enqueued right now (possibly
+    nothing). The backend's sink feeds this queue from its worker thread, so the drain
+    is the cross-thread hand-off point back onto the event loop."""
+    drained: list[ToolProgress] = []
+    while True:
+        try:
+            drained.append(q.get_nowait())
+        except queue.Empty:
+            break
+    return drained
 
 
 def _build_user_content(text: str, images: list[Path] | None) -> Any:
@@ -234,6 +287,21 @@ class SessionDriver:
     #: pending tool round until the round's ``ToolMessage``s land). ``None`` when
     #: nothing is held. Reset naturally on injection.
     _pending_steer: str | None = field(default=None, repr=False)
+    #: Live tool-output streaming. A thread-safe queue the local backend's
+    #: ``progress_sink`` feeds with :class:`ToolProgress` records from its worker
+    #: thread while a foreground ``execute`` runs; the stream loop drains it and
+    #: interleaves ``TOOL_PROGRESS`` events with the astream output. ``None`` (every
+    #: existing test path, and non-local backends) keeps the stream loop byte-identical
+    #: — the merge wrapper is never engaged.
+    progress_queue: Any = None
+    #: The most-recent active ``execute`` tool call, so drained progress (which the
+    #: backend can't tag — deepagents calls ``execute(command)`` with no id) correlates
+    #: to its ``TOOL_START`` / ``TOOL_END``. Set on an ``execute`` TOOL_START, cleared
+    #: on its TOOL_END. Reset per turn. (Parallel executes share one backend and one
+    #: queue, so progress binds to the latest start — the pragmatic session-level
+    #: correlation the design allows.)
+    _active_execute_call_id: str | None = field(default=None, repr=False)
+    _active_execute_agent: str | None = field(default=None, repr=False)
 
     def _config(self) -> dict[str, Any]:
         return {"configurable": {"thread_id": self.thread_id}}
@@ -298,6 +366,12 @@ class SessionDriver:
         self._subagent_pending = []
         self._ns_agent = {}
         self._subagent_seen_calls = set()
+        # Fresh live-progress correlation each turn; discard any progress a cancelled
+        # prior turn left queued so it can't leak stale tail lines into this one.
+        self._active_execute_call_id = None
+        self._active_execute_agent = None
+        if self.progress_queue is not None:
+            _drain_progress(self.progress_queue)
         if not resume:
             # Clear ALL entries at turn start, not just the current thread's.
             # The cumulative-stream dedup uses this dict to baseline provider totals
@@ -372,17 +446,43 @@ class SessionDriver:
             # Set True only when a steer was injected this pass, so the loop
             # re-enters astream(None) without emitting DONE / resolving interrupts.
             steered = False
+            # ``raw`` is the LangGraph astream generator; ``agen`` is what we iterate —
+            # ``raw`` itself on the byte-identical path, or the progress-merge wrapper
+            # around it when a backend queue is wired. Bound before the try so the
+            # ``finally`` can tear the wrapper down even if ``astream`` construction
+            # raises. ``None`` guards that window.
+            raw: Any = None
+            agen: Any = None
             try:
                 # subgraphs=True so output from delegated subagents (the `task`
                 # tool) is also streamed back — otherwise nested subagent replies
                 # never surface and the turn looks like it produced no answer.
                 # Bind the generator (rather than iterating the call inline) so a
                 # mid-turn steer can ``aclose()`` it cleanly at a settled boundary.
-                agen = self.agent.astream(
+                raw = self.agent.astream(
                     payload, self._config(),
                     stream_mode=["messages", "updates"], subgraphs=True,
                 )
+                # Live tool-output streaming: with a backend progress queue wired,
+                # interleave drained ToolProgress records with the astream items so a
+                # long foreground execute shows its tail WHILE it runs (not only when
+                # its ToolMessage finally arrives). No queue → iterate raw directly, so
+                # the hot streaming path is unchanged for every existing call site.
+                agen = (
+                    self._astream_with_progress(raw)
+                    if self.progress_queue is not None
+                    else raw
+                )
                 async for item in agen:
+                    if self.progress_queue is not None and type(item) is _ProgressItem:
+                        # A drained backend progress record — surface it as a
+                        # TOOL_PROGRESS event correlated to the running execute call.
+                        yield make_tool_progress_event(
+                            item.progress,
+                            tool_call_id=self._active_execute_call_id,
+                            agent=self._active_execute_agent,
+                        )
+                        continue
                     namespace, mode, chunk = _unpack_stream_item(item)
                     if mode is None:
                         continue
@@ -410,6 +510,11 @@ class SessionDriver:
                                 self._verify_dirty = True
                                 if self._last_edit_target:
                                     self._edited_paths.add(self._last_edit_target)
+                            if ev.kind is EventKind.TOOL_END and ev.text == "execute":
+                                # The running execute finished: stop correlating any
+                                # further backend progress to its call id.
+                                self._active_execute_call_id = None
+                                self._active_execute_agent = None
                         # Mid-turn budget enforcement: usage was just recorded for
                         # this message, so re-check the hard-stop the same way it is
                         # checked before the turn and abort cleanly if exceeded.
@@ -493,6 +598,11 @@ class SessionDriver:
                         for ev in self._handle_update_chunk(chunk, interrupts, namespace):
                             if ev.kind is EventKind.TOOL_START:
                                 _log.debug("tool start %s args=%.200r", ev.text, ev.data.get("args"))
+                            if ev.kind is EventKind.TOOL_START and ev.text == "execute":
+                                # Correlate subsequent backend progress (which the
+                                # backend can't tag) to this execute call.
+                                self._active_execute_call_id = ev.data.get("tool_call_id")
+                                self._active_execute_agent = ev.data.get("agent")
                             # Write tool-start events incrementally.
                             if ev.kind is EventKind.TOOL_START and self.transcript is not None:
                                 self.transcript.write_tool(
@@ -524,6 +634,15 @@ class SessionDriver:
                 )
                 yield Event(EventKind.ERROR, text=str(exc), data=data)
                 return
+            finally:
+                # Tear the progress-merge wrapper (and its pending inner read task)
+                # down on every exit of this astream pass — normal end, a steer-break
+                # (already aclosed above; this is idempotent), an error return, or a
+                # turn cancellation (GeneratorExit) — so the inner ``__anext__`` task
+                # never lingers. No-op on the byte-identical raw path (``agen is raw``).
+                if agen is not None and agen is not raw:
+                    with contextlib.suppress(Exception):
+                        await agen.aclose()
 
             # A steer pass resumes straight into astream(None) — it must not emit
             # DONE nor run interrupt resolution; the model runs its next super-step
@@ -672,6 +791,53 @@ class SessionDriver:
             notice = self._pending_snapshot_notice()
             if notice is not None:
                 yield notice
+
+    async def _astream_with_progress(self, agen: Any):
+        """Interleave drained backend :class:`ToolProgress` records with *agen*'s real
+        astream items, so a long foreground ``execute``'s live tail surfaces WHILE the
+        command runs — not only when the tool returns and its next chunk arrives.
+
+        The local backend tails its command in a worker thread and publishes progress
+        onto the thread-safe ``progress_queue`` (the sink is wired in ``make_driver``).
+        The astream loop is otherwise blocked awaiting the tool's next chunk for the
+        whole command, so this wrapper races the next-chunk read against a short drain
+        poll: on each wake it yields any queued progress as a :class:`_ProgressItem`,
+        and real chunks pass through untouched.
+
+        The read is a task that is NEVER cancelled on a drain wake — cancelling a
+        pending ``__anext__`` mid-read could drop a real chunk or corrupt LangGraph's
+        stream — only on final teardown. The ``finally`` cancels a still-pending read
+        and closes the inner generator on every exit (steer-break, error, cancel) so
+        neither the task nor the underlying astream leaks. Engaged only when a queue is
+        wired; the plain path iterates the raw generator directly (byte-identical)."""
+        q = self.progress_queue
+        task: asyncio.Task[Any] | None = None
+        try:
+            while True:
+                task = asyncio.ensure_future(_anext_or_stop(agen))
+                # Race the read against the drain poll; ``asyncio.wait`` returns the
+                # instant the read completes, so a real chunk incurs no added latency —
+                # the timeout only bounds how often we wake to drain a quiet tool.
+                while True:
+                    done, _pending = await asyncio.wait(
+                        {task}, timeout=_PROGRESS_DRAIN_POLL_SECS
+                    )
+                    for progress in _drain_progress(q):
+                        yield _ProgressItem(progress)
+                    if done:
+                        break
+                item = task.result()
+                task = None
+                if item is _STREAM_DONE:
+                    return
+                yield item
+        finally:
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
+            with contextlib.suppress(Exception):
+                await agen.aclose()
 
     async def _steer_boundary_settled(self) -> bool:
         """Whether the thread is at a SETTLED tool boundary — safe to append a steer

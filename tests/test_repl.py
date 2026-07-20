@@ -684,6 +684,50 @@ def test_tool_progress_caps_tail_lines_and_width():
     assert all(len(ln) <= width for ln in body.splitlines())
 
 
+@pytest.mark.asyncio
+async def test_run_turn_dispatches_tool_progress(tmp_path, monkeypatch):
+    """The REPL turn loop routes a TOOL_PROGRESS event to renderer.on_tool_progress,
+    so a running execute's tail + heartbeat reach the transient live region (and the
+    following TOOL_END clears it and commits the final result to scrollback)."""
+    from jarn import repl
+    from jarn.repl_renderer import TOOL_PROGRESS_STREAM_PREFIX
+
+    ctrl = _controller(tmp_path, monkeypatch)
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+    events = [
+        Event(EventKind.TOOL_START, "execute",
+              {"args": {"command": "make build"}, "tool_call_id": "c1"}),
+        Event(EventKind.TOOL_PROGRESS, "execute",
+              {"tail": "compiling foo.c\ncompiling bar.c\n", "elapsed": 3.0,
+               "heartbeat": False, "tool_call_id": "c1"}),
+        Event(EventKind.TOOL_END, "execute",
+              {"summary": "build ok", "tool_call_id": "c1"}),
+        Event(EventKind.DONE),
+    ]
+    monkeypatch.setattr(ctrl, "make_driver", lambda approver: _FakeDriver(events))
+
+    seen: list[str] = []
+    console = Console(file=StringIO(), width=80)
+    await repl._run_turn(
+        console, ctrl, "hi", _ask_returning(""),
+        live_sink=seen.append, spinner=False,
+    )
+    # The running tail reached the live region routed as plain-dim progress …
+    assert any(
+        s.startswith(TOOL_PROGRESS_STREAM_PREFIX) and "compiling bar.c" in s
+        for s in seen
+    ), seen
+    assert any("still running… 3s" in s for s in seen)
+    # … then TOOL_END cleared the transient region and committed the final result.
+    assert seen[-1] == ""
+    assert "build ok" in console.file.getvalue()
+    assert "compiling bar.c" not in console.file.getvalue()  # tail never hit scrollback
+    ctrl.close()
+
+
 def test_set_stream_classifies_tool_progress_prefix(tmp_path, monkeypatch):
     """The app routes a tool-progress-prefixed live payload to the plain-dim path,
     distinct from reasoning and from ordinary markdown prose."""

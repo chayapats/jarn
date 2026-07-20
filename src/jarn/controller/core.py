@@ -823,6 +823,10 @@ class Controller:
             _diag_round=self._diag_chain_round,
             steer_source=self._pop_steer_slot,
             date_state=self._date_state,
+            # Live tool-output streaming: the runtime's backend feeds this queue with
+            # ToolProgress from execute's worker thread; the driver drains it and
+            # interleaves TOOL_PROGRESS events. None for non-local backends.
+            progress_queue=getattr(self.runtime, "progress_queue", None),
         )
         # Retain for settle_snapshot: the /undo, /redo, and /abort paths await this
         # driver's pending turn-start snapshot before mutating the checkpoint stack.

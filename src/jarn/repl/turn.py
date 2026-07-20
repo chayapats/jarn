@@ -201,6 +201,19 @@ async def _run_turn(
                         agent=event.data.get("agent"),
                     )
                     produced = True
+                elif event.kind is EventKind.TOOL_PROGRESS:
+                    # Live foreground-execute tail: render the running command's
+                    # output tail + heartbeat into the transient live region (never
+                    # scrollback); on_tool_end clears it and commits the final result.
+                    renderer.on_tool_progress(
+                        event.text,
+                        event.data.get("tail", ""),
+                        event.data.get("elapsed", 0.0),
+                        tool_call_id=event.data.get("tool_call_id"),
+                        heartbeat=event.data.get("heartbeat", False),
+                        agent=event.data.get("agent"),
+                    )
+                    produced = True
                 elif event.kind is EventKind.TOOL_END:
                     renderer.on_tool_end(
                         event.text,

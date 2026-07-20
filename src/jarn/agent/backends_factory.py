@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from jarn.config.schema import Config
+
+if TYPE_CHECKING:
+    from jarn.agent.events import ToolProgress
 
 
 class SandboxUnavailable(RuntimeError):
@@ -16,6 +21,7 @@ def _make_local_backend(
     config: Config | None = None,
     *,
     extra_roots: list[Path] | None = None,
+    progress_sink: Callable[[ToolProgress], None] | None = None,
 ):
     """Local-first backend: real filesystem + shell, scoped to the project root.
 
@@ -33,6 +39,11 @@ def _make_local_backend(
     write isn't blocked at the FS layer) AND the OS-sandbox writable set (so the
     kernel permits it too) — keeping the syscall-time bound in sync with the
     engine's intent scope.
+
+    ``progress_sink`` (when set) opts a foreground ``execute`` into live output
+    tailing: the backend invokes it with each :class:`ToolProgress` from its worker
+    thread while the command runs. ``None`` (docker/sandbox backends, and any caller
+    that doesn't wire it) keeps the original blocking ``communicate`` path exactly.
     """
     from jarn.agent.local_backend import CancellableLocalShellBackend
 
@@ -61,6 +72,8 @@ def _make_local_backend(
         sandbox_extra_writable=[*sandbox_extra_writable, *added],
         # …and reachable through the virtual-mode FS guard.
         extra_roots=added,
+        # Live foreground-execute progress (opt-in). None → unchanged blocking path.
+        progress_sink=progress_sink,
     )
 
 
@@ -146,7 +159,12 @@ def _make_backend(
     project_root: Path | None,
     *,
     extra_roots: list[Path] | None = None,
+    progress_sink: Callable[[ToolProgress], None] | None = None,
 ):
+    """``progress_sink`` is forwarded only to the local backend (the sole backend
+    with a streaming ``execute``); docker/sandbox ignore it and produce no live
+    progress. build_runtime detects whether it landed and wires the driver's queue
+    accordingly."""
     if config.execution.backend == "docker":
         return _make_docker_backend(
             config, project_root, extra_roots=extra_roots
@@ -157,4 +175,6 @@ def _make_backend(
         if config.execution.sandbox_provider == "docker":
             return _make_docker_backend(config, project_root, extra_roots=extra_roots)
         return _make_sandbox_backend(config)  # may raise SandboxUnavailable
-    return _make_local_backend(project_root, config, extra_roots=extra_roots)
+    return _make_local_backend(
+        project_root, config, extra_roots=extra_roots, progress_sink=progress_sink
+    )
