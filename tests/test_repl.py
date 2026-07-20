@@ -638,6 +638,80 @@ def test_reasoning_streams_live_into_rich_live(monkeypatch):
     assert updates, "reasoning did not refresh the live region"
 
 
+def test_tool_progress_streams_tail_then_final_result():
+    """A running tool's output tail streams into the live region; on TOOL_END the
+    tail is cleared and the final result lands in scrollback exactly as today."""
+    from jarn.repl_renderer import TOOL_PROGRESS_STREAM_PREFIX
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+
+    seen: list[str] = []
+    console = Console(file=StringIO(), width=80)
+    r = _TurnRenderer(console, live_sink=seen.append, spinner=False)
+    r.on_tool("execute", {"command": "make build"}, tool_call_id="c1")
+    r.on_tool_progress(
+        "execute", "compiling foo.c\ncompiling bar.c\n", 3.0, tool_call_id="c1"
+    )
+    assert seen[-1].startswith(TOOL_PROGRESS_STREAM_PREFIX)  # routed as plain-dim
+    assert "compiling bar.c" in seen[-1]                     # tail is shown
+    assert "still running… 3s" in seen[-1]                   # heartbeat footer
+    # A quiet-time heartbeat refreshes the elapsed footer in place.
+    r.on_tool_progress("execute", "compiling bar.c\n", 6.0, tool_call_id="c1", heartbeat=True)
+    assert "still running… 6s" in seen[-1]
+    # TOOL_END clears the transient tail and commits the final result to scrollback.
+    r.on_tool_end("execute", "build ok", tool_call_id="c1")
+    assert seen[-1] == ""                                    # tail region cleared
+    out = console.file.getvalue()
+    assert "build ok" in out                                 # final result committed
+    assert "compiling bar.c" not in out                      # tail never hit scrollback
+
+
+def test_tool_progress_caps_tail_lines_and_width():
+    """The live tail shows only the last ~10 lines, each width-capped."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+    from jarn.repl_renderer import _current_width
+
+    seen: list[str] = []
+    console = Console(file=StringIO(), width=40)
+    r = _TurnRenderer(console, live_sink=seen.append, spinner=False)
+    tail = "".join(f"row{i}\n" for i in range(30)) + ("x" * 400 + "\n")
+    r.on_tool_progress("execute", tail, 1.0, tool_call_id="c1")
+    body = seen[-1]
+    assert "row0" not in body and "row5" not in body  # early lines dropped
+    assert "row29" in body                             # recent lines kept
+    # The 400-char line is truncated to the render width (capped at 100 cols).
+    width = _current_width()
+    assert ("x" * 400) not in body
+    assert all(len(ln) <= width for ln in body.splitlines())
+
+
+def test_set_stream_classifies_tool_progress_prefix(tmp_path, monkeypatch):
+    """The app routes a tool-progress-prefixed live payload to the plain-dim path,
+    distinct from reasoning and from ordinary markdown prose."""
+    from jarn import repl
+    from jarn.repl_renderer import REASONING_STREAM_PREFIX, TOOL_PROGRESS_STREAM_PREFIX
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+
+    app._set_stream(f"{TOOL_PROGRESS_STREAM_PREFIX}compiling…\n⎿ execute: still running… 4s")
+    assert app._stream_is_progress is True
+    assert app._stream_is_reasoning is False
+
+    app._set_stream(f"{REASONING_STREAM_PREFIX}pondering")
+    assert app._stream_is_reasoning is True
+    assert app._stream_is_progress is False
+
+    app._set_stream("# ordinary markdown prose")
+    assert app._stream_is_progress is False
+    assert app._stream_is_reasoning is False
+    app.controller.close()
+
+
 def test_session_thinking_word_is_stable():
     """The session thinking word is picked once and stays put across calls."""
     from jarn.tui import palette

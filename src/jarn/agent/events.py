@@ -18,6 +18,7 @@ class EventKind(str, Enum):
     TEXT = "text"
     REASONING = "reasoning"      # extended-thinking text (shown dim, secondary)
     TOOL_START = "tool_start"
+    TOOL_PROGRESS = "tool_progress"  # incremental output while a long tool runs
     TOOL_END = "tool_end"
     APPROVAL = "approval"        # informational: how an approval was resolved
     NOTICE = "notice"
@@ -30,6 +31,35 @@ class Event:
     kind: EventKind
     text: str = ""
     data: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True, frozen=True)
+class ToolProgress:
+    """Incremental progress from a long-running *foreground* tool (live streaming).
+
+    Emitted by a backend's ``execute`` from its worker thread while the command is
+    still running, so the front-end can show a live tail + heartbeat under the
+    running tool line instead of a bare spinner until the tool finishes. It carries
+    only what the emitter knows — the ``command`` and, when the wiring layer sets
+    them, the ``tool_call_id`` / ``tool_name`` that correlate this progress to a
+    ``TOOL_START`` — plus the incremental ``chunk`` that triggered this update
+    (empty on a heartbeat), a rolling ``tail`` (the last few output lines, already
+    bounded by line count), ``elapsed`` seconds since the command started (computed
+    from an injected clock so tests are deterministic), and ``heartbeat`` — ``True``
+    when this update fired because output was quiet rather than because new bytes
+    arrived.
+
+    A :class:`ToolProgress` is converted to a ``TOOL_PROGRESS`` :class:`Event` by
+    :func:`jarn.agent.stream_handlers.make_tool_progress_event` — the same seam that
+    builds ``TOOL_START`` / ``TOOL_END`` events."""
+
+    command: str = ""
+    chunk: str = ""
+    tail: str = ""
+    elapsed: float = 0.0
+    heartbeat: bool = False
+    tool_call_id: str | None = None
+    tool_name: str = "execute"
 
 
 @dataclass(slots=True)
