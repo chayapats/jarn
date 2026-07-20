@@ -167,7 +167,9 @@ class PermissionEngine:
 
     def _guard_for(self, action: Action):
         if action.kind is ActionKind.SHELL:
-            return inspect_command(action.target)
+            # Thread the per-host network egress policy so the guard can flag
+            # curl/wget to denied / non-allowlisted hosts (best-effort).
+            return inspect_command(action.target, self.rules.network)
         if action.kind is ActionKind.WRITE:
             return inspect_path_write(action.target, in_scope=self._in_scope(action.target))
         from jarn.permissions.guard import GuardVerdict

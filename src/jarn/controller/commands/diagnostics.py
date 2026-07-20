@@ -103,7 +103,8 @@ def _mcp_status(ctrl, parts: list[str]) -> CommandResult:
         # The sync command registry is invoked FROM the async REPL's running
         # loop; run_blocking probes on a one-shot worker thread there, and
         # asyncio.run inline when no loop is running (tests / headless).
-        mcp = run_blocking(load_mcp_tools(ctrl.config.mcp_servers))
+        net = ctrl.config.permissions.network
+        mcp = run_blocking(load_mcp_tools(ctrl.config.mcp_servers, net))
         ctrl.mcp_health = dict(mcp.health)
         ctrl.mcp_errors = dict(mcp.errors)
         # Replace the runtime's MCP cache with this fresh probe so the NEXT

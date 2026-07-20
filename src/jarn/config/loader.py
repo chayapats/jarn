@@ -72,6 +72,15 @@ def _merge_permissions(base: dict[str, Any], overlay: dict[str, Any]) -> dict[st
     for bucket in ("allow", "deny"):
         if bucket in overlay:
             merged[bucket] = [*base.get(bucket, []), *overlay.get(bucket, [])]
+    # The nested network egress policy also concatenates its allow/deny across
+    # tiers (project extends global). Without this, ``permissions.network`` in an
+    # overlay would be dropped by the ``dict(base)`` copy above, silently
+    # disabling the egress policy — the worst failure mode for a security feature.
+    base_net, overlay_net = base.get("network"), overlay.get("network")
+    if isinstance(base_net, dict) and isinstance(overlay_net, dict):
+        merged["network"] = _merge_permissions(base_net, overlay_net)
+    elif overlay_net is not None:
+        merged["network"] = overlay_net  # only overlay has it (or malformed → pydantic)
     return merged
 
 

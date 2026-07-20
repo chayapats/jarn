@@ -19,10 +19,16 @@ substitute for sandboxing. Patterns target catastrophic, hard-to-undo actions.
 
 from __future__ import annotations
 
+import fnmatch
 import re
 import unicodedata
 from dataclasses import dataclass
 from enum import Enum
+from typing import TYPE_CHECKING
+from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from jarn.config.schema import NetworkPolicy
 
 
 class GuardLevel(str, Enum):
@@ -176,15 +182,141 @@ def _rm_verdict(normalized: str) -> GuardVerdict | None:
     return None
 
 
-def inspect_command(command: str) -> GuardVerdict:
-    """Classify a shell command against the danger-guard rules."""
+# -- Unified network egress policy (shared by web_fetch / MCP / shell) -------
+
+
+class NetworkVerdict(str, Enum):
+    """Result of classifying a host against a :class:`NetworkPolicy`."""
+
+    ALLOWED = "allowed"          # permitted (or the policy is inert)
+    NOT_ALLOWED = "not_allowed"  # a non-empty allow-list the host isn't on
+    DENIED = "denied"            # an explicit deny-glob match (deny always wins)
+
+
+def _host_matches(host: str, patterns: list[str]) -> bool:
+    """Case-insensitive shell-glob match of *host* against any of *patterns*."""
+    h = host.strip().lower().rstrip(".")
+    for pat in patterns:
+        p = pat.strip().lower().rstrip(".")
+        if p and fnmatch.fnmatch(h, p):
+            return True
+    return False
+
+
+def classify_host(host: str, policy: NetworkPolicy) -> NetworkVerdict:
+    """Classify *host* against an egress *policy*.
+
+    ``deny`` always wins; an empty ``allow`` means allow-all; a non-empty
+    ``allow`` restricts egress to matching hosts. This is the single source of
+    truth for egress decisions, reused by web_fetch, the MCP loader, and the
+    shell danger-guard so the three enforcement points can never disagree.
+    """
+    if not host:
+        # An unresolvable/empty host cannot satisfy a non-empty allow-list.
+        return NetworkVerdict.NOT_ALLOWED if policy.allow else NetworkVerdict.ALLOWED
+    if _host_matches(host, policy.deny):
+        return NetworkVerdict.DENIED
+    if policy.allow and not _host_matches(host, policy.allow):
+        return NetworkVerdict.NOT_ALLOWED
+    return NetworkVerdict.ALLOWED
+
+
+_EGRESS_CMD = re.compile(r"\b(?:curl|wget)\b", re.IGNORECASE)
+_BARE_HOST = re.compile(r"(?:[\w-]+\.)+[a-z]{2,}", re.IGNORECASE)
+#: Flags whose following token is a local filename, not a host, so it must not
+#: be mistaken for an egress target (``curl -o out.txt https://…``).
+_OUTPUT_FLAGS = frozenset(
+    {"-o", "-O", "--output", "--output-document", "--remote-name"}
+)
+
+
+def _host_from_token(token: str) -> str | None:
+    """Extract a target host from one argv token, or ``None`` if it isn't one."""
+    tok = token.strip("'\"")
+    if tok[:7].lower() == "http://" or tok[:8].lower() == "https://":
+        host = urlparse(tok).hostname
+        return host.lower() if host else None
+    if not tok or tok.startswith("-"):
+        return None
+    candidate = tok.split("/", 1)[0]
+    if "@" in candidate:                     # strip user:pass@ credentials
+        candidate = candidate.rsplit("@", 1)[-1]
+    candidate = candidate.split(":", 1)[0]   # strip :port
+    if _BARE_HOST.fullmatch(candidate):
+        return candidate.lower()
+    return None
+
+
+def _egress_hosts(normalized: str) -> list[str]:
+    """Best-effort extraction of ``curl``/``wget`` target hosts from a command.
+
+    HONEST LIMITS: this reads URL-ish argv tokens of an obvious ``curl``/``wget``
+    invocation only. It cannot see hosts hidden behind shell variables, a
+    ``curl -K``/``--config`` file, ``@file`` request bodies, redirects, or a
+    nested ``bash -c``/``eval``. It is defense-in-depth, NOT a network sandbox —
+    for untrusted code use ``execution.backend: docker`` / the OS sandbox.
+    """
+    if not _EGRESS_CMD.search(normalized):
+        return []
+    hosts: list[str] = []
+    prev = ""
+    for tok in normalized.split():
+        if prev in _OUTPUT_FLAGS:
+            prev = tok
+            continue                          # this token is an output filename
+        host = _host_from_token(tok)
+        if host:
+            hosts.append(host)
+        prev = tok
+    return hosts
+
+
+def _egress_verdict(normalized: str, policy: NetworkPolicy) -> GuardVerdict | None:
+    """Guard verdict for curl/wget egress under *policy* (``None`` if clean)."""
+    not_allowed: list[str] = []
+    for host in _egress_hosts(normalized):
+        verdict = classify_host(host, policy)
+        if verdict is NetworkVerdict.DENIED:
+            return GuardVerdict(
+                GuardLevel.BLOCKED, f"network policy denies egress to {host!r}"
+            )
+        if verdict is NetworkVerdict.NOT_ALLOWED:
+            not_allowed.append(host)
+    if not_allowed:
+        return GuardVerdict(
+            GuardLevel.DANGEROUS,
+            f"egress to {not_allowed[0]!r} is not on the network allowlist",
+        )
+    return None
+
+
+def inspect_command(
+    command: str, network_policy: NetworkPolicy | None = None
+) -> GuardVerdict:
+    """Classify a shell command against the danger-guard rules.
+
+    When *network_policy* carries any allow/deny globs, ``curl``/``wget`` egress
+    targets are additionally checked: an explicit deny match is ``BLOCKED``, and
+    a host outside a non-empty allow-list is ``DANGEROUS``. This is best-effort
+    defense-in-depth (see :func:`_egress_hosts` for its limits), not a sandbox.
+    When *network_policy* is ``None`` or inert, behaviour is unchanged.
+    """
     normalized = _normalize(command)
     rm = _rm_verdict(normalized)
     if rm is not None:
         return rm
+    net: GuardVerdict | None = None
+    if network_policy is not None and (network_policy.allow or network_policy.deny):
+        net = _egress_verdict(normalized, network_policy)
+        # An explicit deny is un-allowlistable: it must win over the DANGEROUS
+        # rules below, so return it before the general rule scan.
+        if net is not None and net.level is GuardLevel.BLOCKED:
+            return net
     for pattern, level, reason in _RULES:
         if pattern.search(normalized):
             return GuardVerdict(level, reason)
+    if net is not None:
+        return net
     return GuardVerdict(GuardLevel.SAFE)
 
 

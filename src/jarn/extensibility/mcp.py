@@ -15,10 +15,14 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from jarn.config.schema import MCPServer
 from jarn.config.secrets import SecretResolutionError, redact_secrets, resolve
+
+if TYPE_CHECKING:
+    from jarn.config.schema import NetworkPolicy
 
 logger = logging.getLogger("jarn.mcp")
 
@@ -41,6 +45,30 @@ def run_blocking(coro: Any) -> Any:
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
         return ex.submit(asyncio.run, coro).result()
+
+
+def _network_block_reason(
+    server: MCPServer, network_policy: NetworkPolicy | None
+) -> str | None:
+    """Egress-policy check for an http/sse endpoint host; ``None`` = permitted.
+
+    ``stdio`` servers spawn a local subprocess with no egress host, so they are
+    never blocked here. Mirrors the SSRF host semantics of web_fetch: ``deny``
+    always wins, and a non-empty ``allow`` restricts to listed hosts.
+    """
+    if network_policy is None or not (network_policy.allow or network_policy.deny):
+        return None
+    if server.transport not in ("http", "sse", "streamable_http"):
+        return None
+    from jarn.permissions.guard import NetworkVerdict, classify_host
+
+    host = urlparse(server.url or "").hostname or ""
+    verdict = classify_host(host, network_policy)
+    if verdict is NetworkVerdict.DENIED:
+        return f"endpoint host {host!r} is denied by the permissions.network policy"
+    if verdict is NetworkVerdict.NOT_ALLOWED:
+        return f"endpoint host {host!r} is not on the permissions.network allowlist"
+    return None
 
 
 @dataclass(slots=True)
@@ -165,13 +193,16 @@ def to_connection(server: MCPServer) -> dict[str, Any]:
     raise ValueError(f"MCP server {server.name!r}: unknown transport {server.transport!r}")
 
 
-def build_client(servers: list[MCPServer]):
+def build_client(
+    servers: list[MCPServer], network_policy: NetworkPolicy | None = None
+):
     """Construct a MultiServerMCPClient from enabled servers (or ``None``).
 
     Returns the client paired with the list of server names whose connection
     dict was built successfully. Servers with an invalid connection (e.g. a
-    stdio server missing ``command``) are omitted here and surfaced separately
-    by :func:`load_mcp_tools` so they still show up as ``error`` in health.
+    stdio server missing ``command``) — or whose http/sse endpoint host is
+    refused by *network_policy* — are omitted here and surfaced separately by
+    :func:`load_mcp_tools` so they still show up as ``error`` in health.
     """
     enabled = [s for s in servers if s.enabled]
     if not enabled:
@@ -182,16 +213,26 @@ def build_client(servers: list[MCPServer]):
     bad: dict[str, str] = {}
     for server in enabled:
         try:
-            connections[server.name] = to_connection(server)
+            conn = to_connection(server)
         except ValueError as exc:
             logger.warning("Skipping MCP server: %s", exc)
             bad[server.name] = str(exc)
+            continue
+        reason = _network_block_reason(server, network_policy)
+        if reason is not None:
+            logger.warning("MCP server %r blocked by network policy: %s",
+                           server.name, reason)
+            bad[server.name] = reason
+            continue
+        connections[server.name] = conn
     if not connections:
         return None, list(bad.items())
     return MultiServerMCPClient(connections), list(bad.items())
 
 
-async def load_mcp_tools(servers: list[MCPServer]) -> MCPLoadResult:
+async def load_mcp_tools(
+    servers: list[MCPServer], network_policy: NetworkPolicy | None = None
+) -> MCPLoadResult:
     """Load tools from every enabled MCP server, each in isolation.
 
     The installed ``langchain-mcp-adapters`` ``MultiServerMCPClient`` exposes
@@ -206,7 +247,7 @@ async def load_mcp_tools(servers: list[MCPServer]) -> MCPLoadResult:
     so there is no client to close.
     """
     result = MCPLoadResult()
-    client, invalid = build_client(servers)
+    client, invalid = build_client(servers, network_policy)
     # Servers whose connection dict was malformed: mark error up front.
     for name, message in invalid:
         result.health[name] = "error"

@@ -73,6 +73,33 @@ def _allowlisted_hosts() -> set[str]:
     return {h.strip().lower() for h in raw.split(",") if h.strip()}
 
 
+def _egress_block_reason(host: str) -> str | None:
+    """Config ``permissions.network`` egress check for *host*; ``None`` = allowed.
+
+    ``deny`` always wins; an empty ``allow`` allows all (back-compat); and a host
+    on ``JARN_WEB_FETCH_ALLOW_HOSTS`` is treated as permitted egress too (union),
+    so existing env-based allowlists keep working. A config ``deny`` still
+    overrides the env var. Inert (returns ``None``) until a config with a
+    non-empty policy has been wired via :func:`build_web_tools`.
+    """
+    cfg = _active_config
+    if cfg is None:
+        return None
+    policy = cfg.permissions.network
+    if not policy.allow and not policy.deny:
+        return None
+    from jarn.permissions.guard import NetworkVerdict, classify_host
+
+    verdict = classify_host(host, policy)
+    if verdict is NetworkVerdict.DENIED:
+        return f"host {host!r} is denied by the permissions.network policy"
+    if verdict is NetworkVerdict.NOT_ALLOWED:
+        if host.lower() in _allowlisted_hosts():
+            return None  # env allowlist grants egress (union, back-compat)
+        return f"host {host!r} is not on the permissions.network allowlist"
+    return None
+
+
 def _resolve_ips(host: str) -> list[str]:
     """Resolve a hostname to its IP strings. Separated so tests can stub DNS."""
     return [str(info[4][0]) for info in socket.getaddrinfo(host, None)]
@@ -118,6 +145,12 @@ def _check_host(host: str) -> tuple[list[str], str | None]:
     """
     if not host:
         return [], "missing host"
+    # Per-host egress policy (permissions.network) is enforced first, before DNS
+    # resolution: a denied / non-allowlisted host is refused without a lookup,
+    # and a config deny wins even over the env allowlist below.
+    egress = _egress_block_reason(host)
+    if egress is not None:
+        return [], egress
     allowlisted = host.lower() in _allowlisted_hosts()
     try:
         ipaddress.ip_address(host)
@@ -483,8 +516,11 @@ def web_fetch(url: str, max_chars: int = 6000) -> str:
     """Fetch a URL and return its readable text content (HTML stripped).
 
     Refuses private/loopback/link-local targets (SSRF guard) — re-checked on
-    every redirect hop — and caps the download size. Set
-    ``JARN_WEB_FETCH_ALLOW_HOSTS`` to allow specific internal hosts explicitly.
+    every redirect hop — and caps the download size. Also enforces the unified
+    ``permissions.network`` egress policy (host allow/deny globs): a denied or
+    non-allowlisted host is refused. Set ``JARN_WEB_FETCH_ALLOW_HOSTS`` to allow
+    specific internal hosts explicitly (it also composes with the policy —
+    config deny wins).
     """
     if not url.startswith(("http://", "https://")):
         url = "https://" + url

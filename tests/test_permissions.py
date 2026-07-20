@@ -448,3 +448,42 @@ def test_deny_session_blocks():
     action = Action(ActionKind.SHELL, "rm temp.txt")
     eng.deny_session(action)
     assert eng.evaluate(action).decision is Decision.DENY
+
+
+# -- Wave B: unified network egress policy on shell curl/wget ---------------
+
+
+def _net_rules(allow=(), deny=()):
+    from jarn.config.schema import NetworkPolicy
+
+    return PermissionRules(network=NetworkPolicy(allow=list(allow), deny=list(deny)))
+
+
+def test_network_deny_host_blocks_curl_even_in_yolo():
+    """An explicit network deny is un-allowlistable (guard BLOCKED → DENY)."""
+    eng = _engine(PermissionMode.YOLO, rules=_net_rules(deny=["evil.com"]))
+    r = eng.evaluate(Action(ActionKind.SHELL, "curl https://evil.com"))
+    assert r.decision is Decision.DENY
+    assert r.block_remember_always is True
+
+
+def test_network_not_allowlisted_host_asks_even_in_yolo():
+    eng = _engine(PermissionMode.YOLO, rules=_net_rules(allow=["*.github.com"]))
+    r = eng.evaluate(Action(ActionKind.SHELL, "curl evil.com"))
+    assert r.decision is Decision.ASK
+    assert r.dangerous is True
+
+
+def test_network_allowlisted_host_runs_in_yolo():
+    eng = _engine(PermissionMode.YOLO, rules=_net_rules(allow=["*.github.com"]))
+    assert eng.evaluate(
+        Action(ActionKind.SHELL, "curl https://api.github.com/x")
+    ).decision is Decision.ALLOW
+
+
+def test_no_network_policy_leaves_curl_unaffected():
+    """Default (empty) policy → curl behaves exactly as before (YOLO allows)."""
+    eng = _engine(PermissionMode.YOLO)
+    assert eng.evaluate(
+        Action(ActionKind.SHELL, "curl https://anything.com")
+    ).decision is Decision.ALLOW

@@ -434,6 +434,67 @@ def test_mcp_http_headers_round_trip(tmp_path):
     assert conn["transport"] == "streamable_http"
 
 
+# --- Wave B: MCP endpoint host egress policy -----------------------------
+
+
+def _http(name, url):
+    return MCPServer(name=name, transport="http", url=url)
+
+
+@pytest.mark.asyncio
+async def test_mcp_denied_host_marked_error(monkeypatch):
+    """An http endpoint on the deny-list errors in isolation (deny wins)."""
+    from jarn.config.schema import NetworkPolicy
+
+    _patch_client(monkeypatch)
+    result = await load_mcp_tools(
+        [_http("remote", "https://evil.com/v1")], NetworkPolicy(deny=["evil.com"])
+    )
+    assert result.tools == []
+    assert result.health["remote"] == "error"
+    assert "denied" in result.errors["remote"]
+    assert result.degraded is True
+
+
+@pytest.mark.asyncio
+async def test_mcp_non_allowlisted_host_marked_error_others_load(monkeypatch):
+    """A host outside a non-empty allowlist errors; allowlisted server keeps tools."""
+    from jarn.config.schema import NetworkPolicy
+
+    _patch_client(monkeypatch)
+    result = await load_mcp_tools(
+        [_http("ok", "https://api.github.com/v1"), _http("bad", "https://evil.com/v1")],
+        NetworkPolicy(allow=["*.github.com"]),
+    )
+    assert _tool_names(result.tools) == ["mcp__ok__ok_tool"]
+    assert result.health == {"ok": "ok", "bad": "error"}
+    assert "allowlist" in result.errors["bad"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_stdio_never_blocked_by_network_policy(monkeypatch):
+    """stdio servers have no egress host — a strict allowlist must not disable them."""
+    from jarn.config.schema import NetworkPolicy
+
+    _patch_client(monkeypatch)
+    result = await load_mcp_tools([_stdio("local")], NetworkPolicy(allow=["nope.example"]))
+    assert _tool_names(result.tools) == ["mcp__local__local_tool"]
+    assert result.health == {"local": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_mcp_empty_policy_allows_http(monkeypatch):
+    """Empty policy = allow-all: an http server loads normally (back-compat)."""
+    from jarn.config.schema import NetworkPolicy
+
+    _patch_client(monkeypatch)
+    result = await load_mcp_tools(
+        [_http("remote", "https://evil.com/v1")], NetworkPolicy()
+    )
+    assert _tool_names(result.tools) == ["mcp__remote__remote_tool"]
+    assert result.health == {"remote": "ok"}
+
+
 @pytest.mark.asyncio
 async def test_invalid_connection_marked_error(monkeypatch):
     """A server whose connection dict can't be built is an 'error', not a crash."""
@@ -646,7 +707,7 @@ def test_mcp_status_refresh(tmp_path, monkeypatch, base_config):
     ctrl = Controller(base_config, tmp_path / "proj")
     calls: list[int] = []
 
-    async def _fake_load(servers):
+    async def _fake_load(servers, network_policy=None):
         calls.append(1)
         return MCPLoadResult(
             tools=["a_tool"], health={"a": "ok"}, errors={},
