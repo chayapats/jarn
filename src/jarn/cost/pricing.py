@@ -99,9 +99,28 @@ CONTEXT_WINDOWS: dict[str, int] = {
 # -- substring tables (overrides + built-ins) -------------------------------
 
 
+def _norm_slug(s: str) -> str:
+    """Fold a version separator so dot- and dash-form slugs match interchangeably.
+
+    OpenRouter quotes model versions with a DOT (``claude-opus-4.8``) while the
+    dedicated Anthropic API — and therefore our curated anchors — use a DASH
+    (``claude-opus-4-8``). They are different namespaces for the same model, so a
+    dot-form ref (the shipped OpenRouter default) would otherwise miss every
+    dash-keyed anchor and price at $0 offline. Normalizing dots to dashes bridges
+    the two without duplicating every anchor. Only exact catalog lookups
+    (``_catalog_entry``) stay separator-sensitive; those key off OpenRouter's own
+    dot-form ids so no bridging is needed there."""
+    return s.replace(".", "-")
+
+
 def _match_substr[T](table: dict[str, T], model_id: str) -> T | None:
-    """Longest substring-key match in ``table`` for ``model_id`` (most specific)."""
-    matches = [(k, v) for k, v in table.items() if k in model_id]
+    """Longest substring-key match in ``table`` for ``model_id`` (most specific).
+
+    Matching is dot/dash-insensitive on the version separator (see
+    :func:`_norm_slug`) so a dash-keyed curated anchor still matches a dot-form
+    ref and vice-versa; the longest-match tiebreak uses the original key length."""
+    norm_id = _norm_slug(model_id)
+    matches = [(k, v) for k, v in table.items() if _norm_slug(k) in norm_id]
     if not matches:
         return None
     return max(matches, key=lambda kv: len(kv[0]))[1]

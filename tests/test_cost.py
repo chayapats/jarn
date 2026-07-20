@@ -73,6 +73,43 @@ def test_curated_anchor_beats_catalog(tmp_path, monkeypatch):
     assert pricing.context_window("openrouter/anthropic/claude-opus-4-8") == 200_000
 
 
+def test_match_substr_bridges_dot_and_dash():
+    """The curated anchors are keyed in dash form; substring matching must treat a
+    dot-form version separator (OpenRouter slugs) as equivalent so a dot-form ref
+    still hits its anchor. Regression for the shipped default pricing at $0."""
+    from jarn.cost.pricing import _match_substr
+
+    dash_table = {"claude-opus-4-8": "X"}
+    assert _match_substr(dash_table, "openrouter/anthropic/claude-opus-4.8") == "X"
+    assert _match_substr(dash_table, "anthropic/claude-opus-4-8") == "X"
+    # Equivalence is symmetric: a dot-keyed override matches a dash-form id too.
+    assert _match_substr({"gpt-4.1": "Y"}, "provider/gpt-4-1-mini") == "Y"
+
+
+def test_default_openrouter_slug_priced_offline(tmp_path, monkeypatch):
+    """The shipped OpenRouter default uses a DOT slug (``claude-opus-4.8``) while
+    the curated anchor is dash-form (``claude-opus-4-8``). With NO catalog (cold /
+    offline first run) the default must still price from the curated anchor, not
+    fall through to unpriced $0."""
+    from jarn.config.defaults import DEFAULT_MODELS
+    from jarn.cost import pricing
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path))
+    monkeypatch.setattr(pricing, "_MEM_CATALOG", {})  # cold: no OpenRouter catalog
+
+    main = DEFAULT_MODELS["openrouter"]["main"]      # openrouter/anthropic/claude-opus-4.8
+    sub = DEFAULT_MODELS["openrouter"]["subagent"]   # .../claude-haiku-4.5
+
+    price = pricing.lookup(main)
+    assert price is not None and price.input_per_mtok == 5.0
+    assert pricing.cost_of(main, 1_000_000, 1_000_000) == 30.0
+    assert pricing.context_window(main) == 200_000
+
+    sub_price = pricing.lookup(sub)
+    assert sub_price is not None and sub_price.input_per_mtok == 1.0
+    assert pricing.context_window(sub) == 200_000
+
+
 def test_tracker_accumulates():
     t = CostTracker()
     t.record("claude-opus-4-8", 1000, 500)

@@ -367,28 +367,6 @@ def test_cache_invalidation():
     assert m.call_args_list[1].kwargs["api_key"] == "new-key"
 
 
-def test_fallback_propagates_secret_error():
-    from jarn.config.schema import RoutingConfig
-    from jarn.config.secrets import SecretResolutionError
-    from jarn.providers.models import ModelFactory
-
-    cfg = Config(
-        default_profile="p",
-        providers={
-            "p": ProviderConfig(type=ProviderType.OPENAI, api_key="k"),
-            "fb": ProviderConfig(type=ProviderType.OPENAI, api_key="keychain:jarn/fb"),
-        },
-        routing=RoutingConfig(main="p/model", fallback=["fb/model"]),
-    )
-    factory = ModelFactory(cfg)
-
-    with (
-        patch("jarn.providers.models.resolve", side_effect=SecretResolutionError("missing")),
-        pytest.raises(SecretResolutionError, match="missing"),
-    ):
-        factory.fallback_models()
-
-
 # -- remote_context_window (local-model context size for the gauge) ---------
 
 

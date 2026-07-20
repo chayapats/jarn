@@ -169,6 +169,25 @@ def _async_subagent_specs(config: Config) -> list[Any]:
     return specs
 
 
+def _general_purpose_subagent_spec(model: Any) -> dict[str, Any]:
+    """A ``general-purpose`` SubAgent spec identical to deepagents' built-in one but
+    pinned to ``model`` (the configured ``routing.subagent``).
+
+    deepagents auto-adds its general-purpose subagent — the agent the ``task`` tool
+    spawns — on the MAIN model, so a configured cheaper ``routing.subagent`` would
+    otherwise never bill. Supplying our own spec under the same name pre-empts that
+    auto-add (deepagents skips it when a ``general-purpose`` subagent is already
+    present) and routes delegated tasks onto the cheaper model. We reuse deepagents'
+    own name/description/system_prompt so behaviour is identical apart from the
+    model, and omit ``tools`` so the subagent inherits the parent's full set exactly
+    as the auto-added default does. ``model`` is a pre-built ``BaseChatModel`` (built
+    through jarn's own provider config), which deepagents' ``resolve_model`` passes
+    through untouched."""
+    from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
+
+    return {**GENERAL_PURPOSE_SUBAGENT, "model": model}
+
+
 # ---------------------------------------------------------------------------
 # Auto-compaction: a single in-graph summarization pass.
 #
@@ -513,6 +532,30 @@ def build_runtime(
     summarizer_ref = config.resolved_summarizer_model()
     if summarizer_ref:
         known_refs.add(summarizer_ref)
+
+    # Route the default general-purpose subagent (the agent the `task` tool spawns)
+    # onto the configured routing.subagent model so delegated work bills at the
+    # intended cheaper rate. deepagents otherwise auto-adds a general-purpose
+    # subagent on the MAIN model. Inject our own spec ONLY when a distinct subagent
+    # model is configured (routing.subagent set) and the user hasn't defined their
+    # own `general-purpose` subagent (their .md — including its `model:` override —
+    # wins). An unbuildable subagent model must not break startup: fall back to
+    # deepagents' default (general-purpose on the main model).
+    subagent_ref = config.resolved_subagent_model()
+    has_custom_gp = any(s.get("name") == "general-purpose" for s in subagent_specs)
+    if subagent_ref and subagent_ref != main_ref and not has_custom_gp:
+        try:
+            gp_model = factory.build_subagent()
+        except ModelResolutionError:
+            gp_model = None
+            logger.warning(
+                "routing.subagent %r unbuildable; the general-purpose subagent "
+                "falls back to the main model",
+                subagent_ref,
+            )
+        if gp_model is not None:
+            subagent_specs.append(_general_purpose_subagent_spec(gp_model))
+            known_refs.add(subagent_ref)
 
     # Gate every networked / MCP / mutating extra tool through the permission
     # engine too, so they cannot bypass policy (they map to ActionKind.NETWORK →
