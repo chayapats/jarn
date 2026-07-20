@@ -37,7 +37,12 @@ ASYNC_SUBAGENT_TOOLS = (
     "list_async_tasks",
 )
 
-#: Read-only tools — always permitted, never interrupted.
+#: Read tools. Gated so they REACH the permission engine — not because reads are
+#: normally blocked, but because the engine must inspect the target path against
+#: the sensitive-read globs (``.env``/``id_rsa``/``.aws/credentials``). The engine
+#: auto-ALLOWs ordinary reads, and :mod:`jarn.agent.interrupts` resumes an ALLOW
+#: SILENTLY (no user prompt), so gating them adds no approval flood — only a
+#: sensitive-path read (or one hitting a ``permissions.deny`` rule) prompts.
 READONLY_TOOLS = ("read_file", "ls", "glob", "grep")
 
 #: Planning / internal tools — always permitted.
@@ -51,12 +56,21 @@ def interrupt_map(
 ) -> dict[str, bool | InterruptOnConfig]:
     """Build the ``interrupt_on`` dict for ``create_deep_agent``.
 
-    **Every** mutating tool is gated in **every** mode: the permission engine —
-    not this map — decides ALLOW/ASK/DENY. This is deliberate. An in-scope file
-    edit in auto-edit/yolo auto-resolves to ALLOW (no prompt), but the engine's
-    danger-guard still inspects it, so a write to a sensitive path (``.git/``,
-    ``.ssh/``) or out of scope is caught even in YOLO. Gating ``edit_file`` only
-    in some modes (the old behaviour) let edits skip the danger-guard entirely.
+    **Every** mutating tool AND every read tool is gated in **every** mode: the
+    permission engine — not this map — decides ALLOW/ASK/DENY. This is deliberate.
+    An in-scope file edit in auto-edit/yolo auto-resolves to ALLOW (no prompt),
+    but the engine's danger-guard still inspects it, so a write to a sensitive
+    path (``.git/``, ``.ssh/``) or out of scope is caught even in YOLO. Gating
+    ``edit_file`` only in some modes (the old behaviour) let edits skip the
+    danger-guard entirely.
+
+    Read tools (:data:`READONLY_TOOLS`) are gated for the same reason: without
+    routing them through the engine, a read of ``.env``/``id_rsa``/
+    ``.aws/credentials`` is never inspected and can be exfiltrated through an
+    allowed network tool, and a user's ``permissions.deny`` on a path is dead.
+    The engine auto-ALLOWs ordinary reads and :mod:`jarn.agent.interrupts` resumes
+    an ALLOW silently, so this adds no approval flood — only sensitive-path reads
+    (or reads hitting a deny rule) surface to the user.
 
     ``extra_tools`` gates additional tools — the built-in web tools and any
     MCP-loaded tools — so network / external-mutating tools route through the
@@ -67,7 +81,7 @@ def interrupt_map(
     when async subagents are configured (deepagents injects those tools then and
     only then); otherwise gating phantom names is harmless but pointless.
     """
-    gated = [*MUTATING_TOOLS, *extra_tools]
+    gated = [*MUTATING_TOOLS, *READONLY_TOOLS, *extra_tools]
     if include_async:
         gated.extend(ASYNC_SUBAGENT_TOOLS)
     # Wiki mutating tools are gated here when present in extra_tools so the

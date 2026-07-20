@@ -71,9 +71,46 @@ def test_readonly_network_auto_allowed_in_auto_edit():
 
 
 def test_interrupt_map_gates_all_mutating_tools():
-    # Every mutating tool is gated in every mode (the engine decides the verdict),
-    # so edit_file can never skip the danger-guard.
-    assert set(interrupt_map()) == {"write_file", "edit_file", "execute"}
+    # Mutating tools AND read tools are gated in every mode (the engine decides the
+    # verdict), so edit_file can never skip the danger-guard and a read cannot skip
+    # the sensitive-path check. The engine auto-ALLOWs normal reads SILENTLY
+    # (interrupts.py resumes without prompting), so gating reads adds no approval
+    # flood — only a sensitive-path read (.env/id_rsa) reaches the approver.
+    assert set(interrupt_map()) == {
+        "write_file", "edit_file", "execute",
+        "read_file", "ls", "glob", "grep",
+    }
+
+
+def test_read_tools_routed_through_engine():
+    """Read tools must be gated so they reach the permission engine.
+
+    Without this, a sensitive read (.env / id_rsa / .aws/credentials) never hits
+    the engine at runtime and is completely ungated — the exfiltration gap.
+    """
+    from jarn.agent.permissions_bridge import READONLY_TOOLS
+
+    m = interrupt_map()
+    for t in READONLY_TOOLS:
+        assert t in m, f"read tool {t} is not gated → never reaches the engine"
+
+
+def test_sensitive_read_gated_end_to_end():
+    """Bridge + engine together: a read_file/grep of a secret path → ASK; a read
+    of ordinary source → ALLOW. Demonstrates the full closed path in YOLO."""
+    engine = PermissionEngine(mode=PermissionMode.YOLO)
+    assert engine.evaluate(
+        tool_to_action("read_file", {"file_path": ".env"})
+    ).decision.value == "ask"
+    assert engine.evaluate(
+        tool_to_action("read_file", {"file_path": "/home/u/.ssh/id_rsa"})
+    ).decision.value == "ask"
+    assert engine.evaluate(
+        tool_to_action("grep", {"path": "/proj/.aws/credentials"})
+    ).decision.value == "ask"
+    assert engine.evaluate(
+        tool_to_action("read_file", {"file_path": "src/app.py"})
+    ).decision.value == "allow"
 
 
 def test_interrupt_map_gates_extra_network_and_mcp_tools():
