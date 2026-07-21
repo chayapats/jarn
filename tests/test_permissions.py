@@ -155,6 +155,69 @@ def test_is_read_denied_path_is_deny_only():
     assert eng.is_read_denied_path("/proj/.env") is False
 
 
+# -- Second-eye final: READ path matching by FILE IDENTITY (relative/absolute) --
+#
+# READ authorization used to match LEXICAL STRINGS, so a RELATIVE sensitive glob
+# or session-deny never met the ABSOLUTE grep-result header for the SAME file (and
+# vice-versa) and the secret leaked. The engine now derives canonical aliases for a
+# concrete read path (normalized caller form + resolved-absolute anchored at
+# project_root + project-relative) and matches by file identity.
+
+
+def test_relative_sensitive_glob_matches_absolute_read_path(tmp_path):
+    """A RELATIVE custom sensitive glob (`secrets/*.txt`) catches an ABSOLUTE read
+    path for the same file — the identity the broad-grep result-filter passes in."""
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets" / "notes.txt").write_text("x")
+    eng = _engine(
+        PermissionMode.YOLO,
+        rules=PermissionRules(sensitive_read_globs=["secrets/*.txt"]),
+        project_root=tmp_path,
+    )
+    abs_path = str(tmp_path / "secrets" / "notes.txt")
+    assert eng.read_content_blocked(abs_path) is True
+    assert eng.evaluate(Action(ActionKind.READ, abs_path)).decision is Decision.ASK
+    # No over-redaction: a benign sibling in the same tree is not blocked.
+    assert eng.read_content_blocked(str(tmp_path / "src" / "app.py")) is False
+
+
+def test_relative_session_deny_matches_absolute_read_path(tmp_path):
+    """A RELATIVE session deny (`./secrets/notes.txt`) catches an ABSOLUTE read path
+    for the same file (resolved-absolute identity)."""
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets" / "notes.txt").write_text("x")
+    eng = _engine(PermissionMode.YOLO, project_root=tmp_path)
+    eng.deny_session(Action(ActionKind.READ, target="./secrets/notes.txt"))
+    abs_path = str(tmp_path / "secrets" / "notes.txt")
+    assert eng.is_read_denied_path(abs_path) is True
+    assert eng.read_content_blocked(abs_path) is True
+    assert eng.evaluate(Action(ActionKind.READ, abs_path)).decision is Decision.DENY
+
+
+def test_absolute_deny_matches_relative_read_path(tmp_path):
+    """The reverse direction: an ABSOLUTE deny rule catches a RELATIVE read path."""
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets" / "notes.txt").write_text("x")
+    abs_rule = str(tmp_path / "secrets" / "notes.txt")
+    eng = _engine(
+        PermissionMode.YOLO,
+        rules=PermissionRules(deny=[abs_rule]),
+        project_root=tmp_path,
+    )
+    assert eng.is_read_denied_path("secrets/notes.txt") is True
+    assert eng.read_content_blocked("secrets/notes.txt") is True
+
+
+def test_read_identity_matching_needs_no_root_stays_lexical(tmp_path):
+    """Without a project_root anchor, matching stays purely lexical (unchanged): a
+    relative glob does NOT reach an absolute path, so the alias logic is inert."""
+    eng = _engine(
+        PermissionMode.YOLO,
+        rules=PermissionRules(sensitive_read_globs=["secrets/*.txt"]),
+    )
+    assert eng.read_content_blocked("/anywhere/secrets/notes.txt") is False
+
+
 def test_plan_mode_denies_writes_and_shell():
     eng = _engine(PermissionMode.PLAN)
     assert eng.evaluate(Action(ActionKind.WRITE, "a.py")).decision is Decision.DENY

@@ -428,3 +428,107 @@ def test_shared_engine_session_deny_covers_main_and_subagent(base_config, tmp_pa
         out = flt.wrap_tool_call(req, lambda _r: msg)
         assert "secret-note-material" not in out.content  # session-denied → filtered
         assert str(src / "app.py") in out.content         # ordinary hit preserved
+
+
+# ---------------------------------------------------------------------------
+# Second-eye FINAL (path-spelling bypass): a RELATIVE sensitive glob or session
+# deny must catch the ABSOLUTE grep-result header for the SAME file. Before the
+# fix READ matching was lexical, so a relative rule never met deepagents' absolute
+# grep paths and the secret leaked (real-backend repro). The engine now matches by
+# file identity via project_root-anchored aliases; these prove it end-to-end.
+
+
+def _make_secrets_tree(tmp_path):
+    """A tree whose secret lives at RELATIVE ``secrets/notes.txt`` (so a relative
+    rule can name it) but which the real grep reports by ABSOLUTE path."""
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    (secrets / "notes.txt").write_text("PRIVATE KEY leaked-secret-material\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "app.py").write_text("# handles the PRIVATE KEY lookup\n")
+    return src
+
+
+def test_relative_sensitive_glob_redacts_absolute_grep_header(tmp_path):
+    """A RELATIVE custom ``sensitive_read_glob`` (``secrets/*.txt``) redacts the
+    ABSOLUTE grep header for the same file — the exact leak the Codex repro proved."""
+    src = _make_secrets_tree(tmp_path)
+    backend = CancellableLocalShellBackend(root_dir=str(tmp_path), virtual_mode=False)
+    msg = _grep_tool_message(backend, "PRIVATE KEY", str(tmp_path), "content")
+    assert "leaked-secret-material" in msg.content  # real grep leaked it (absolute header)
+
+    engine = PermissionEngine(
+        rules=PermissionRules(sensitive_read_globs=["secrets/*.txt"]),
+        project_root=tmp_path,
+    )
+    mw = ReadResultFilterMiddleware(engine)
+    out = mw.wrap_tool_call(
+        _Req({"name": "grep", "args": {"pattern": "PRIVATE KEY", "output_mode": "content"}}),
+        lambda _r: msg,
+    )
+    assert "leaked-secret-material" not in out.content  # relative glob caught absolute header
+    assert str(src / "app.py") in out.content           # benign source hit preserved
+
+
+def test_relative_session_deny_redacts_absolute_grep_header(tmp_path):
+    """A session deny recorded with a RELATIVE path (``./secrets/notes.txt``) redacts
+    the ABSOLUTE grep header for the same file (resolved-absolute identity)."""
+    src = _make_secrets_tree(tmp_path)
+    backend = CancellableLocalShellBackend(root_dir=str(tmp_path), virtual_mode=False)
+    msg = _grep_tool_message(backend, "PRIVATE KEY", str(tmp_path), "content")
+
+    engine = PermissionEngine(rules=PermissionRules(), project_root=tmp_path)
+    mw = ReadResultFilterMiddleware(engine)
+    req = _Req({"name": "grep", "args": {"pattern": "PRIVATE KEY", "output_mode": "content"}})
+
+    before = mw.wrap_tool_call(req, lambda _r: msg)
+    assert "leaked-secret-material" in before.content  # ordinary file: not yet denied
+
+    # Relative spelling, exactly as a user would type it at the interrupt prompt.
+    engine.deny_session(Action(ActionKind.READ, target="./secrets/notes.txt"))
+
+    after = mw.wrap_tool_call(req, lambda _r: msg)
+    assert "leaked-secret-material" not in after.content  # relative deny caught absolute header
+    assert str(src / "app.py") in after.content           # ordinary hit preserved
+
+
+def test_relative_deny_covers_main_and_subagent_absolute_grep(base_config, tmp_path):
+    """End-to-end: a RELATIVE session deny (``secrets/notes.txt``) on the shared,
+    project-rooted engine redacts an ABSOLUTE grep header on BOTH the main agent and
+    the general-purpose sub-graph (the ``task``/fan-out target)."""
+    from unittest.mock import patch
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from jarn.agent import builder
+    from jarn.agent.fanout import extract_subagent_graphs
+
+    src = _make_secrets_tree(tmp_path)
+
+    engine = PermissionEngine(rules=PermissionRules(), project_root=tmp_path)
+    fake = GenericFakeChatModel(messages=iter([]))
+    with patch("jarn.providers.models.ModelFactory.build", return_value=fake):
+        rt = builder.build_runtime(base_config, project_root=tmp_path, engine=engine)
+
+    main_filters = _find_subagent_read_filters(rt.agent)
+    gp = extract_subagent_graphs(rt.agent).get("general-purpose")
+    assert gp is not None, "the general-purpose sub-graph (task/fan-out target) must exist"
+    gp_filters = _find_subagent_read_filters(gp)
+    assert len(main_filters) == 1 and len(gp_filters) == 1
+    assert main_filters[0]._engine is engine and gp_filters[0]._engine is engine
+
+    # A relative-path session deny (as typed by the user) on the shared engine.
+    engine.deny_session(Action(ActionKind.READ, target="secrets/notes.txt"))
+
+    backend = CancellableLocalShellBackend(root_dir=str(tmp_path), virtual_mode=False)
+    msg = _grep_tool_message(backend, "PRIVATE KEY", str(tmp_path), "content")
+    assert "leaked-secret-material" in msg.content  # real grep leaked it (absolute header)
+
+    req = _Req(
+        {"name": "grep", "args": {"pattern": "PRIVATE KEY", "output_mode": "content"}, "id": "t1"}
+    )
+    for flt in (main_filters[0], gp_filters[0]):
+        out = flt.wrap_tool_call(req, lambda _r: msg)
+        assert "leaked-secret-material" not in out.content  # relative deny caught absolute header
+        assert str(src / "app.py") in out.content           # benign source hit preserved

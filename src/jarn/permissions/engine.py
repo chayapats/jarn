@@ -42,6 +42,17 @@ _WRAPPER_PROGRAMS = frozenset({
     "env", "xargs", "nohup", "timeout", "watch", "eval", "exec",
 })
 
+#: fnmatch glob metacharacters. A READ target/pattern containing any of these is a
+#: PATTERN, not a concrete file: it is matched textually (metacharacters preserved),
+#: never resolved as a filesystem path.
+_GLOB_METACHARS = frozenset("*?[")
+
+
+def _is_glob(text: str) -> bool:
+    """True when *text* carries fnmatch glob metacharacters (so it is a pattern,
+    not a concrete path to resolve to a file identity)."""
+    return any(ch in _GLOB_METACHARS for ch in text)
+
 
 class ActionKind(str, Enum):
     READ = "read"
@@ -346,34 +357,131 @@ class PermissionEngine:
         The SINGLE source of truth shared by the READ mode-decision here and the
         result-filter middleware (:mod:`jarn.agent.read_filter`).
 
-        Matching runs against the raw normalized path AND a leading-slash form,
-        so a ``**/``-anchored pattern also catches a bare relative target
-        (``.env`` vs ``**/.env``) WITHOUT the false positives a basename-only
-        match would create (a plain ``config`` must not match ``**/.git/config``).
-        ``fnmatch``'s ``*`` spans ``/``, so ``*.pem`` matches a .pem file at any
-        depth. An empty ``sensitive_read_globs`` disables the check entirely.
+        Matching runs against the path's canonical ALIASES (:meth:`_read_alias_set`):
+        the raw normalized path, a leading-slash form (so a ``**/``-anchored pattern
+        also catches a bare relative target, ``.env`` vs ``**/.env``, WITHOUT the
+        false positives a basename-only match would create), AND — when a
+        ``project_root`` anchor is configured — the resolved-absolute and
+        project-relative forms of the SAME file. That closes the spelling gap where a
+        RELATIVE glob (``secrets/*.txt``) never met the ABSOLUTE grep-result header
+        (``/proj/secrets/notes.txt``) for the same file. ``fnmatch``'s ``*`` spans
+        ``/``, so ``*.pem`` matches a .pem file at any depth. An empty
+        ``sensitive_read_globs`` disables the check entirely.
         """
         globs = self.rules.sensitive_read_globs
         if not globs or not path:
             return False
-        norm = path.replace("\\", "/")
-        candidates = {norm, norm if norm.startswith("/") else "/" + norm}
+        aliases, _ = self._read_alias_set(path)
         return any(
-            fnmatch.fnmatch(cand, pattern)
+            fnmatch.fnmatch(alias, pattern)
             for pattern in globs
-            for cand in candidates
+            for alias in aliases
         )
 
     def _matches(self, action: Action, patterns: list[str]) -> bool:
-        candidates = {action.target, self._rule_for(action)}
-        # A READ may carry extra path-like candidates (grep/glob ``glob`` value);
-        # a deny/allow rule matching ANY of them applies, so a benign scope can't
-        # mask a sensitive glob from an explicit deny.
+        # READ targets are matched by FILE IDENTITY (:meth:`_read_candidate_matches`)
+        # so a rule/glob written in one spelling catches the same file named in
+        # another (relative vs absolute). COMMAND/WRITE/NETWORK matching is left
+        # byte-identical — its scope/symlink gating (guard + ``_in_scope``) is
+        # separate and unchanged.
         if action.kind is ActionKind.READ:
-            candidates.update(cand for cand in action.read_targets if cand)
+            return any(
+                self._read_candidate_matches(cand, patterns)
+                for cand in self._read_candidates(action)
+            )
+        candidates = {action.target, self._rule_for(action)}
         for pattern in patterns:
             for cand in candidates:
                 if cand == pattern or fnmatch.fnmatch(cand, pattern):
+                    return True
+        return False
+
+    # -- READ-path identity matching (relative/absolute alias unification) ---
+    #
+    # A concrete READ path is matched by FILE IDENTITY, not lexical spelling: a
+    # relative ``sensitive_read_glob``/deny/session-rule must catch the ABSOLUTE
+    # grep-result header for the same file, and vice-versa. Every concrete path is
+    # reduced to canonical aliases ONCE (:meth:`_read_alias_set`) and those aliases
+    # are applied consistently to sensitive globs, allow rules, deny rules, and
+    # session rules. This is READ-only — command/write gating is untouched.
+
+    def _read_alias_set(self, path: str) -> tuple[set[str], Path | None]:
+        """Canonical aliases of a READ ``path`` + its resolved-absolute identity.
+
+        Aliases: (a) the normalized caller form and a leading-slash variant (so a
+        ``**/``-anchored glob catches a bare relative name), and — when a
+        ``project_root``/added root is configured — (b) the resolved-absolute form
+        anchored at the primary root (file identity, symlinks + ``..`` collapsed)
+        and (c) the project-relative form when the file is inside an active root.
+
+        A ``path`` that is itself a GLOB (a grep/glob ``glob`` candidate such as
+        ``**/.env``) is a pattern, not a concrete file: it keeps ONLY the lexical
+        aliases (resolving it would be meaningless) and has no identity. With no
+        root anchor, (b)/(c) are skipped so matching stays byte-identical to the
+        pre-fix lexical behavior.
+        """
+        norm = path.replace("\\", "/")
+        aliases = {norm, norm if norm.startswith("/") else "/" + norm}
+        if _is_glob(path):
+            return aliases, None
+        identity = self._resolved_read_path(path)
+        if identity is not None:
+            aliases.add(identity.as_posix())
+            rel = self._project_relative(identity)
+            if rel is not None:
+                aliases.add(rel)
+        return aliases, identity
+
+    def _resolved_read_path(self, path: str) -> Path | None:
+        """Resolved-absolute identity of a concrete READ ``path``, anchored at the
+        PRIMARY root (mirrors :meth:`_in_scope`'s anchoring) so a relative caller
+        spelling resolves to the SAME file a later absolute grep header names.
+
+        Returns ``None`` when there is no anchor (no configured root) or resolution
+        fails — callers then fall back to the lexical aliases only, preserving the
+        pre-fix behavior. This RESOLVES a concrete path; it is never called on a
+        glob pattern (that would destroy the metacharacters)."""
+        roots = self._scope_roots()
+        if not roots:
+            return None
+        try:
+            primary = roots[0].resolve()
+            return (primary / path).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            return None
+
+    def _project_relative(self, resolved: Path) -> str | None:
+        """The already-resolved READ target RELATIVE to the active root it falls
+        under (primary or added), as a POSIX string, so a relative pattern matches
+        an absolute file for the same path. ``None`` when outside every root."""
+        for root in self._scope_roots():
+            try:
+                r = root.resolve()
+            except (OSError, RuntimeError, ValueError):
+                continue
+            if resolved == r or r in resolved.parents:
+                try:
+                    return resolved.relative_to(r).as_posix()
+                except ValueError:
+                    continue
+        return None
+
+    def _read_candidate_matches(self, cand: str, patterns: list[str]) -> bool:
+        """True when a READ candidate matches ANY allow/deny ``pattern`` by file
+        identity. Each of the candidate's aliases is tested against every pattern
+        (a GLOB pattern keeps its metacharacters); additionally, a CONCRETE pattern
+        is compared by resolved-absolute identity, so a relative session-deny
+        (``./secrets/notes.txt``) catches an absolute grep header for the same file
+        and vice-versa. A glob candidate has no identity, so only its lexical
+        aliases apply."""
+        aliases, identity = self._read_alias_set(cand)
+        for pattern in patterns:
+            for alias in aliases:
+                if alias == pattern or fnmatch.fnmatch(alias, pattern):
+                    return True
+            if identity is not None and not _is_glob(pattern):
+                pat_identity = self._resolved_read_path(pattern)
+                if pat_identity is not None and pat_identity == identity:
                     return True
         return False
 
