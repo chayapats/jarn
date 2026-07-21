@@ -148,11 +148,24 @@ def test_general_purpose_subagent_uses_routing_subagent_model(base_config, tmp_p
     assert gp["model"] is not models[main_ref]
 
 
-def test_no_general_purpose_injection_when_subagent_matches_main(base_config, tmp_path):
+def test_general_purpose_injected_on_main_model_when_subagent_matches_main(base_config, tmp_path):
+    """Even with no distinct routing.subagent model, jarn STILL injects its own
+    general-purpose spec — on the MAIN model — rather than let deepagents auto-add
+    one. Reason is security (second-eye #1 residual): only a jarn-owned spec can
+    carry the result-filter middleware, so the `task`/fan-out subagent's broad grep
+    is redacted like the main agent's. Cost is unchanged (same model as the auto-add
+    would have used)."""
+    from jarn.agent.read_filter import ReadResultFilterMiddleware
+
     base_config.routing.subagent = None  # resolved_subagent_model() -> main
-    subagents, _ = _build_runtime_capture(base_config, tmp_path)
-    names = {s.get("name") for s in (subagents or [])}
-    assert "general-purpose" not in names
+    subagents, models = _build_runtime_capture(base_config, tmp_path)
+    main_ref = base_config.resolved_main_model()
+    gp = next((s for s in (subagents or []) if s.get("name") == "general-purpose"), None)
+    assert gp is not None, "GP must be injected so it can carry the result filter"
+    assert gp["model"] is models[main_ref]  # main model → no cost change vs auto-add
+    assert any(
+        isinstance(m, ReadResultFilterMiddleware) for m in gp.get("middleware", [])
+    ), "the injected general-purpose subagent must carry the result-filter middleware"
 
 
 def test_custom_general_purpose_subagent_not_clobbered(base_config, tmp_path):

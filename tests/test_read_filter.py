@@ -248,3 +248,86 @@ def test_glob_over_env_pre_exec_gated_end_to_end(tmp_path):
         "grep", {"pattern": "TOKEN", "path": str(tmp_path), "glob": "**/.env"}
     )
     assert engine.evaluate(action).decision.value == "deny"
+
+
+# ---------------------------------------------------------------------------
+# Subagent coverage (second-eye #1 residual): the result filter must ride the
+# COMPILED subagent sub-graphs too, not just the main agent — otherwise a
+# subagent's broad grep re-opens the exact leak on the delegated path.
+
+
+def _find_subagent_read_filters(compiled: Any) -> list[ReadResultFilterMiddleware]:
+    """Collect the unique ``ReadResultFilterMiddleware`` instances wrapping a compiled
+    (sub)graph's tool node.
+
+    langchain composes ``wrap_tool_call`` middleware into the ``ToolNode``'s
+    ``_wrap_tool_call`` / ``_awrap_tool_call`` chain; each middleware surfaces as the
+    ``__self__`` of a bound method captured in that chain's closures. Walking those
+    (deduped by id) proves the filter survived compilation into the subagent graph —
+    the same closure-walk approach ``test_fanout`` uses to find the HITL middleware.
+    """
+    tn = compiled.nodes["tools"].bound
+    found: dict[int, ReadResultFilterMiddleware] = {}
+    seen: set[int] = set()
+
+    def walk(fn: Any, depth: int = 0) -> None:
+        if fn is None or id(fn) in seen or depth > 12:
+            return
+        seen.add(id(fn))
+        owner = getattr(fn, "__self__", None)
+        if isinstance(owner, ReadResultFilterMiddleware):
+            found[id(owner)] = owner
+        for cell in getattr(fn, "__closure__", None) or ():
+            try:
+                value = cell.cell_contents
+            except ValueError:
+                continue
+            if isinstance(value, ReadResultFilterMiddleware):
+                found[id(value)] = value
+            if callable(value):
+                walk(value, depth + 1)
+
+    walk(getattr(tn, "_wrap_tool_call", None))
+    walk(getattr(tn, "_awrap_tool_call", None))
+    return list(found.values())
+
+
+def test_subagent_grep_over_secrets_is_filtered(base_config, tmp_path):
+    """The core subagent proof: build a REAL agent (create_deep_agent NOT mocked),
+    extract the compiled general-purpose sub-graph (the agent the ``task`` tool and
+    the fan-out spawn), confirm its tool node is wrapped by the result filter, and
+    show that filter really redacts a broad grep that leaked two secrets — while
+    keeping an ordinary source hit. This is the delegated-path equivalent of
+    ``test_broad_content_grep_over_secrets_is_filtered``."""
+    from unittest.mock import patch
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from jarn.agent import builder
+    from jarn.agent.fanout import extract_subagent_graphs
+
+    src = _make_tree(tmp_path)
+    fake = GenericFakeChatModel(messages=iter([]))
+    with patch("jarn.providers.models.ModelFactory.build", return_value=fake):
+        rt = builder.build_runtime(base_config, project_root=tmp_path)
+
+    gp = extract_subagent_graphs(rt.agent).get("general-purpose")
+    assert gp is not None, "the general-purpose sub-graph (task/fan-out target) must exist"
+    filters = _find_subagent_read_filters(gp)
+    assert len(filters) == 1, "the subagent tool node must carry exactly one result filter"
+
+    # The subagent's broad grep really leaks the secret material (the gate saw only
+    # the benign scope) — then the wired middleware strips it, exactly as on main.
+    backend = CancellableLocalShellBackend(root_dir=str(tmp_path), virtual_mode=False)
+    msg = _grep_tool_message(backend, "PRIVATE KEY", str(tmp_path), "content")
+    assert "pem-secret-material" in msg.content
+    assert "rsa-secret-material" in msg.content
+
+    out = filters[0].wrap_tool_call(
+        _Req({"name": "grep", "args": {"pattern": "PRIVATE KEY", "output_mode": "content"}, "id": "t1"}),
+        lambda _r: msg,
+    )
+    assert "pem-secret-material" not in out.content  # server.pem redacted for subagent
+    assert "rsa-secret-material" not in out.content   # id_rsa redacted for subagent
+    assert str(src / "app.py") in out.content         # benign source hit preserved
+    assert "handles the PRIVATE KEY lookup" in out.content

@@ -221,6 +221,47 @@ def _general_purpose_subagent_spec(model: Any) -> dict[str, Any]:
     return {**GENERAL_PURPOSE_SUBAGENT, "model": model}
 
 
+def _read_filter_middleware(config: Config) -> Any:
+    """A fresh result-filter middleware seeded from the session's permission rules.
+
+    Minted per stack (main agent + each jarn-built subagent) so no single instance
+    is shared across compiled graphs — mirroring the summarization middleware's
+    per-stack policy. The engine is rule-only (no session state), so every instance
+    agrees with the controller's engine on the sensitive-read globs and deny/allow
+    rules that decide what a broad grep may surface.
+    """
+    from jarn.agent.read_filter import ReadResultFilterMiddleware
+    from jarn.permissions import PermissionEngine
+
+    return ReadResultFilterMiddleware(PermissionEngine(rules=config.permissions))
+
+
+def _attach_read_filter(spec: dict[str, Any], config: Config) -> dict[str, Any]:
+    """Prepend jarn's result-filter middleware to a declarative subagent ``spec``.
+
+    Closes the second-eye #1 residual for subagents: pre-exec gating sees only a
+    read's SCOPE, so a subagent's broad ``grep(pattern, path=/repo)`` is auto-ALLOWed
+    on its benign scope yet returns the CONTENTS of every matching file (incl. .env /
+    keys). deepagents feeds a declarative ``SubAgent`` spec's ``middleware`` into the
+    compiled subagent (``create_deep_agent`` -> ``SubAgentMiddleware`` ->
+    ``create_agent(middleware=...)``), so a filter placed here wraps the subagent's
+    tool execution exactly as ``create_deep_agent(middleware=)`` wraps the main
+    agent's. Fan-out reuses these compiled sub-graphs, so it inherits the filter.
+
+    ``AsyncSubAgent`` (``graph_id``) / ``CompiledSubAgent`` (``runnable``) specs own
+    their own graph and take no spec middleware, so they are returned untouched (a
+    remote Agent-Protocol subagent runs out of process — its reads are the remote
+    harness's concern, not this in-process filter's).
+    """
+    if "graph_id" in spec or "runnable" in spec:
+        return spec
+    spec["middleware"] = [
+        _read_filter_middleware(config),
+        *list(spec.get("middleware") or []),
+    ]
+    return spec
+
+
 # ---------------------------------------------------------------------------
 # Auto-compaction: a single in-graph summarization pass.
 #
@@ -556,9 +597,12 @@ def build_runtime(
     tools = kept
 
     # Subagents may restrict themselves to a subset of the extra (web/MCP) tools;
-    # pass the available set so to_spec can resolve names and reject typos.
+    # pass the available set so to_spec can resolve names and reject typos. Each
+    # declarative spec also carries the result-filter middleware so a subagent's
+    # broad grep is redacted just like the main agent's (second-eye #1 residual).
     subagent_specs: list[Any] = [
-        s.to_spec(factory, available_tools=tools) for s in subagents.values()
+        _attach_read_filter(s.to_spec(factory, available_tools=tools), config)
+        for s in subagents.values()
     ]
     subagent_specs += _async_subagent_specs(config)
     leak_msgs = _ambient_key_leak_messages(config)
@@ -576,29 +620,37 @@ def build_runtime(
     if summarizer_ref:
         known_refs.add(summarizer_ref)
 
-    # Route the default general-purpose subagent (the agent the `task` tool spawns)
-    # onto the configured routing.subagent model so delegated work bills at the
-    # intended cheaper rate. deepagents otherwise auto-adds a general-purpose
-    # subagent on the MAIN model. Inject our own spec ONLY when a distinct subagent
-    # model is configured (routing.subagent set) and the user hasn't defined their
-    # own `general-purpose` subagent (their .md — including its `model:` override —
-    # wins). An unbuildable subagent model must not break startup: fall back to
-    # deepagents' default (general-purpose on the main model).
+    # Always supply our OWN general-purpose subagent spec (the agent the `task` tool
+    # — and the fan-out — spawns) unless the user defined their own `general-purpose`
+    # .md (theirs wins, `model:` override and all). Two reasons to own it rather than
+    # let deepagents auto-add one on the main model:
+    #   1. Cost: route delegated work onto the configured routing.subagent model when
+    #      one is set and distinct, so it bills at the cheaper rate.
+    #   2. Security (second-eye #1 residual): only a jarn-owned spec can carry the
+    #      result-filter middleware. deepagents' auto-added GP has no spec seam, so
+    #      its broad grep could surface a secret's contents the main agent's filter
+    #      would strip.
+    # With no distinct subagent model the spec runs on the MAIN model — behaviourally
+    # identical to deepagents' auto-add, plus the filter. An unbuildable subagent
+    # model must not break startup: fall back to the main model.
     subagent_ref = config.resolved_subagent_model()
     has_custom_gp = any(s.get("name") == "general-purpose" for s in subagent_specs)
-    if subagent_ref and subagent_ref != main_ref and not has_custom_gp:
-        try:
-            gp_model = factory.build_subagent()
-        except ModelResolutionError:
-            gp_model = None
-            logger.warning(
-                "routing.subagent %r unbuildable; the general-purpose subagent "
-                "falls back to the main model",
-                subagent_ref,
-            )
-        if gp_model is not None:
-            subagent_specs.append(_general_purpose_subagent_spec(gp_model))
-            known_refs.add(subagent_ref)
+    if not has_custom_gp:
+        gp_model: Any = model
+        if subagent_ref and subagent_ref != main_ref:
+            try:
+                gp_model = factory.build_subagent()
+                known_refs.add(subagent_ref)
+            except ModelResolutionError:
+                gp_model = model
+                logger.warning(
+                    "routing.subagent %r unbuildable; the general-purpose subagent "
+                    "falls back to the main model",
+                    subagent_ref,
+                )
+        subagent_specs.append(
+            _attach_read_filter(_general_purpose_subagent_spec(gp_model), config)
+        )
 
     # Gate every networked / MCP / mutating extra tool through the permission
     # engine too, so they cannot bypass policy (they map to ActionKind.NETWORK →
@@ -745,14 +797,12 @@ def build_runtime(
     # result before the model sees them. It carries its own PermissionEngine seeded
     # from the SAME config the controller's engine uses, so both agree on the
     # sensitive-read globs and deny/allow rules (this one is rule-only — no session
-    # state). Injected on the MAIN agent stack; subagent grep is covered by the
-    # pre-exec gate but not (yet) by this result filter — see the ticket residual.
-    from jarn.agent.read_filter import ReadResultFilterMiddleware
-    from jarn.permissions import PermissionEngine
-
-    read_filter_mw = ReadResultFilterMiddleware(
-        PermissionEngine(rules=config.permissions)
-    )
+    # state). Injected on the MAIN agent stack here; every jarn-built subagent spec
+    # (user .md + the general-purpose spec above) carries its own instance via
+    # `_attach_read_filter`, and the fan-out graphs reuse those compiled sub-graphs —
+    # so the whole in-process subagent surface is result-filtered too (second-eye #1
+    # residual closed). Remote async subagents run out of process → out of scope.
+    read_filter_mw = _read_filter_middleware(config)
 
     agent = create_deep_agent(
         model=model,
