@@ -12,8 +12,11 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
+
+if TYPE_CHECKING:
+    from jarn.cost.tracker import CostTracker
 
 from jarn.agent import prompts
 from jarn.agent.backends_factory import _make_backend
@@ -430,12 +433,22 @@ def build_runtime(
     system_prompt_override: str | None = None,
     response_format: Any | None = None,
     extra_roots: list[Path] | None = None,
+    cost_tracker: CostTracker | None = None,
 ) -> JarnRuntime:
     """Build a ready-to-run :class:`JarnRuntime` from config.
 
     ``checkpointer`` (a LangGraph saver) enables resumable sessions; pass one
     obtained from :func:`jarn.memory.open_checkpointer`. ``extra_tools`` is for
     MCP-loaded tools (see :func:`jarn.extensibility.mcp.load_mcp_tools`).
+
+    ``cost_tracker`` is the session's authoritative :class:`CostTracker` (owned by
+    the controller). It is threaded into the opt-in ``spawn_parallel_tasks`` fan-out
+    tool so each fanned-out task's usage is recorded into the tracker's
+    ``per_namespace`` dimension for a soft per-task budget + observability. Without
+    it, production fan-out would silently record nothing (the local test tracker
+    masked this). It is recorded via ``record_task_usage``, which intentionally
+    leaves ``total``/``per_model`` untouched so the streamed session total is never
+    double-counted. ``None`` (the default) disables per-task accounting.
 
     ``system_prompt_override`` replaces J.A.R.N.'s assembled system prompt
     wholesale (the "reliable nerd" persona + project context) with the given
@@ -720,6 +733,7 @@ def build_runtime(
                 invoke=_fanout_invoke,
                 available_subagents=sorted(fanout_names),
                 default_model_ref=subagent_ref or main_ref or "",
+                cost_tracker=cost_tracker,
             ),
         ]
 

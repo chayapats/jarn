@@ -457,6 +457,7 @@ def _stub_runtime_build(monkeypatch, mcp_result):
     def _fake_build_runtime(
         config, *, project_root, project_trusted=True, checkpointer, extra_tools,
         system_prompt_override=None, response_format=None, extra_roots=None,
+        cost_tracker=None,
     ):
         seen["extra_tools"] = extra_tools
         seen["project_trusted"] = project_trusted
@@ -525,6 +526,78 @@ async def test_ensure_runtime_stays_healthy_when_all_mcp_ok(
     assert ctrl.mcp_errors == {}
     assert seen["extra_tools"] == ["a_tool"]
     ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_fanout_records_into_controller_tracker_not_total(
+    tmp_path, monkeypatch, base_config
+):
+    """BUG 2: production fan-out must receive the SESSION tracker. The controller
+    owns the authoritative :class:`CostTracker`; ``build_runtime`` must thread it
+    into ``spawn_parallel_tasks`` so each fanned-out task's usage lands in the
+    tracker's ``per_namespace`` dimension — NOT in ``total``/``per_model`` (those
+    are owned by the streaming path; recording there too would double-count).
+
+    Exercises the real Controller -> build_runtime -> build_spawn_parallel_tasks_tool
+    wiring; only the subagent-invocation seam is substituted (a fake chat model
+    cannot drive the real gated sub-graph), so the tracker threading is genuine.
+    """
+    from langchain_core.messages import AIMessage
+
+    import jarn.agent.fanout as fanout_mod
+
+    monkeypatch.setenv("JARN_PARALLEL_SUBAGENTS", "1")
+    sub_ref = base_config.resolved_subagent_model()
+
+    captured: dict[str, object] = {}
+    real_build = fanout_mod.build_spawn_parallel_tasks_tool
+
+    async def _fake_invoke(subagent_type: str, description: str):
+        return {
+            "messages": [
+                AIMessage(
+                    content=f"did {description}",
+                    usage_metadata={
+                        "input_tokens": 100,
+                        "output_tokens": 20,
+                        "total_tokens": 120,
+                    },
+                    response_metadata={"model_name": sub_ref},
+                )
+            ]
+        }
+
+    def _wrapper(*, invoke, cost_tracker=None, **kw):
+        # Capture the tracker build_runtime threaded through, and swap the real
+        # gated-subgraph invoke for a fake that returns usage (the real subgraph
+        # can't run under a fake chat model).
+        captured["cost_tracker"] = cost_tracker
+        return real_build(invoke=_fake_invoke, cost_tracker=cost_tracker, **kw)
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    fake = GenericFakeChatModel(messages=iter([]))
+    with (
+        patch("jarn.providers.models.ModelFactory.build", return_value=fake),
+        patch.object(fanout_mod, "build_spawn_parallel_tasks_tool", _wrapper),
+    ):
+        rt = await ctrl.ensure_runtime()
+        tool = rt.agent.nodes["tools"].bound.tools_by_name["spawn_parallel_tasks"]
+        await tool.ainvoke(
+            {"tasks": [{"description": "alpha", "subagent_type": "general-purpose"}]}
+        )
+
+    # The session tracker (not a throwaway) reached the fan-out tool.
+    assert captured["cost_tracker"] is ctrl.tracker
+    # Usage recorded into the per-namespace dimension...
+    assert len(ctrl.tracker.per_namespace) == 1
+    ns = next(iter(ctrl.tracker.per_namespace.values()))
+    assert (ns.input_tokens, ns.output_tokens) == (100, 20)
+    assert ns.cost_usd > 0.0
+    # ...but NOT into the streamed session total / per-model (no double-count).
+    assert ctrl.tracker.total.cost_usd == 0.0
+    assert ctrl.tracker.total.total_tokens == 0
+    assert ctrl.tracker.per_model == {}
+    await ctrl.aclose()
 
 
 @pytest.mark.asyncio
@@ -914,6 +987,7 @@ async def test_ensure_runtime_errors_on_ambient_key_leak(
     def _leak_build(
         config, *, project_root, project_trusted, checkpointer, extra_tools,
         system_prompt_override=None, response_format=None, extra_roots=None,
+        cost_tracker=None,
     ):
         raise AmbientKeyLeakError(
             ["ambient LANGGRAPH_API_KEY would leak to https://evil.example.com/x"]

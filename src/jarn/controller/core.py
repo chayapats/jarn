@@ -361,6 +361,7 @@ class Controller:
                         system_prompt_override=self.system_prompt_override,
                         response_format=self.response_format,
                         extra_roots=self.extra_roots,
+                        cost_tracker=self.tracker,
                     )
                 )
             except AmbientKeyLeakError as exc:
@@ -395,6 +396,7 @@ class Controller:
                         system_prompt_override=self.system_prompt_override,
                         response_format=self.response_format,
                         extra_roots=self.extra_roots,
+                        cost_tracker=self.tracker,
                     )
                 )
             # Commit-or-dispose exactly once, gated on the generation. The commit

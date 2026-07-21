@@ -24,6 +24,23 @@ Design seams (so the orchestration is testable without a live agent):
 The tool itself is never gated (like ``task``): it only orchestrates subagents,
 each of which carries its own ``interrupt_on`` gate. All authority-bearing tool
 calls happen *inside* those gated subagents.
+
+HITL under fan-out (approval interrupts):
+
+* A gated action inside a fanned-out subagent raises one of LangGraph's
+  ``GraphBubbleUp`` signals (``GraphInterrupt`` = the approval pause). Such a
+  signal is RE-RAISED (see ``_run_one``), never converted into a task ``"error"``,
+  so it propagates through ``asyncio.gather`` to the SessionDriver's
+  approve/resume path exactly as a ``task``-spawned subagent's would.
+* LIMITATION (deferred, not faked): resume-exactly-once across N concurrent
+  siblings is not implemented. ``asyncio.gather`` surfaces the FIRST interrupt to
+  the driver while the other tasks are still in flight; on resume LangGraph
+  re-executes the whole ``spawn_parallel_tasks`` tool call, so already-finished
+  siblings are re-run rather than resumed. Fan-out is therefore only validated
+  under AUTO-RESOLVING permission modes (``yolo`` / pre-approved), where no
+  approval interrupt ever fires — which is why the feature stays OPT-IN and
+  off by default (``JARN_PARALLEL_SUBAGENTS``). The required correctness property
+  here is only that an interrupt is never silently swallowed.
 """
 
 from __future__ import annotations
@@ -33,6 +50,8 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
+
+from langgraph.errors import GraphBubbleUp
 
 from jarn.cost import pricing
 from jarn.cost.tracker import CostTracker
@@ -203,8 +222,14 @@ async def run_parallel_tasks(
     Concurrency is real: every task launches together under ``asyncio.gather``
     (bounded by a ``max_parallel`` semaphore), so N tasks take ~max(task) wall
     time rather than the sum. An unknown ``subagent_type`` is reported without
-    invoking anything; a task whose invocation raises is captured as an ``error``
-    outcome (one failure never cancels its siblings).
+    invoking anything; a task whose invocation raises an ordinary exception is
+    captured as an ``error`` outcome (one failure never cancels its siblings).
+
+    A LangGraph ``GraphBubbleUp`` (e.g. ``GraphInterrupt`` — the HITL approval
+    pause a gated action raises) is the ONE exception that is re-raised instead of
+    captured, so it reaches the driver's approve/resume path rather than being
+    swallowed into an ``error``. See the module docstring for the concurrent
+    resume-exactly-once limitation (deferred; feature stays opt-in/off by default).
 
     Per-task usage is measured from each subagent's returned messages, priced, and
     recorded into ``cost_tracker.per_namespace`` (when a tracker is given). A task
@@ -230,6 +255,18 @@ async def run_parallel_tasks(
         async with sem:
             try:
                 result = await invoke(sub_type, task.description)
+            except GraphBubbleUp:
+                # HITL boundary. LangGraph raises a ``GraphBubbleUp`` subclass
+                # (``GraphInterrupt`` is the approval-pause signal; ``ParentCommand``
+                # / ``GraphDrained`` are its siblings) to hand control back to the
+                # graph runner. These are NOT task failures — swallowing one into
+                # ``status="error"`` (the generic handler below) would silently drop
+                # the approval prompt for a gated action a fanned-out subagent hit,
+                # so the SessionDriver would never pause/resume. Re-raise so it
+                # propagates through ``asyncio.gather`` to the driver's approve/resume
+                # path exactly as a ``task``-spawned subagent's interrupt does.
+                # (See ``run_parallel_tasks`` for the concurrent-resume limitation.)
+                raise
             except Exception as exc:  # noqa: BLE001 - report, never crash the batch
                 return TaskOutcome(
                     index=index,

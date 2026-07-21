@@ -98,6 +98,55 @@ async def test_serial_invoke_would_deadlock_the_barrier():
         await asyncio.wait_for(serial(), timeout=0.3)
 
 
+# --- 1b. HITL interrupt propagation (BUG 1) --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_graph_interrupt_propagates_not_swallowed():
+    """A gated action inside a fanned-out subagent raises LangGraph's
+    ``GraphInterrupt`` (the HITL approval signal). It derives from ``Exception``,
+    so the generic per-task handler would otherwise convert it into a task
+    ``status="error"`` and the SessionDriver would never see the approval prompt.
+    It MUST instead propagate out of ``run_parallel_tasks`` to the driver's
+    approve/resume path."""
+    from langgraph.errors import GraphInterrupt
+
+    async def invoke(subagent_type: str, description: str):
+        # Stand-in for a gated tool call inside the subagent sub-graph pausing for
+        # approval (LangGraph raises this to hand control back to the graph runner).
+        raise GraphInterrupt(())
+
+    with pytest.raises(GraphInterrupt):
+        await run_parallel_tasks(
+            [ParallelTask("gated", subagent_type="general-purpose")],
+            invoke=invoke,
+            available_subagents=["general-purpose"],
+            default_model_ref=MODEL,
+        )
+
+
+@pytest.mark.asyncio
+async def test_graph_bubbleup_propagates_over_sibling_ordinary_error():
+    """When one task hits the HITL interrupt and another raises an ordinary error,
+    the bubble-up wins: it propagates (not swallowed) rather than being masked by a
+    sibling's captured ``error`` outcome. Ordinary exceptions are still captured;
+    only ``GraphBubbleUp`` re-raises."""
+    from langgraph.errors import GraphInterrupt
+
+    async def invoke(subagent_type: str, description: str):
+        if description == "gated":
+            raise GraphInterrupt(())
+        raise RuntimeError("ordinary failure")  # captured as an error outcome
+
+    with pytest.raises(GraphInterrupt):
+        await run_parallel_tasks(
+            [ParallelTask("gated"), ParallelTask("boom")],
+            invoke=invoke,
+            available_subagents=["general-purpose"],
+            default_model_ref=MODEL,
+        )
+
+
 # --- 2. aggregation shape ---------------------------------------------------
 
 
