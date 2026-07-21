@@ -737,6 +737,23 @@ def build_runtime(
             ),
         ]
 
+    # Result-filter middleware (the complete half of the second-eye #1 fix). The
+    # pre-exec gate sees only a read's SCOPE, so a broad content search
+    # (grep(pattern='TOKEN=', path='/repo')) is auto-ALLOWed on the benign scope
+    # yet returns the CONTENTS of every matching file, including .env / keys. This
+    # middleware strips hits from sensitive-read / read-deny files out of the grep
+    # result before the model sees them. It carries its own PermissionEngine seeded
+    # from the SAME config the controller's engine uses, so both agree on the
+    # sensitive-read globs and deny/allow rules (this one is rule-only — no session
+    # state). Injected on the MAIN agent stack; subagent grep is covered by the
+    # pre-exec gate but not (yet) by this result filter — see the ticket residual.
+    from jarn.agent.read_filter import ReadResultFilterMiddleware
+    from jarn.permissions import PermissionEngine
+
+    read_filter_mw = ReadResultFilterMiddleware(
+        PermissionEngine(rules=config.permissions)
+    )
+
     agent = create_deep_agent(
         model=model,
         backend=backend,
@@ -746,6 +763,7 @@ def build_runtime(
         checkpointer=checkpointer,
         tools=tools or None,
         response_format=response_format,
+        middleware=[read_filter_mw],
     )
 
     # Populate the fan-out graph holder from the compiled agent so the tool shares

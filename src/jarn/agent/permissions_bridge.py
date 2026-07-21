@@ -141,8 +141,30 @@ def tool_to_action(tool_name: str, args: dict[str, Any]) -> Action:
         path = args.get("file_path") or args.get("path") or args.get("filename") or ""
         return Action(ActionKind.WRITE, target=str(path), tool=tool_name)
     if tool_name in READONLY_TOOLS:
-        path = args.get("file_path") or args.get("path") or args.get("pattern") or ""
-        return Action(ActionKind.READ, target=str(path), tool=tool_name)
+        # A read is judged against its SCOPE (``path``/``file_path``) AND its
+        # file-GLOB, which can itself narrow the search to a secret even when the
+        # ``path`` is benign. Codex second-eye #1: the old single-target extraction
+        # returned only the benign ``path`` (or, when absent, the search
+        # ``pattern`` — which is never a path for grep), so a sensitive glob was
+        # ignored and the read auto-ALLOWed. The path-glob lives in a DIFFERENT arg
+        # per tool: ``grep`` filters files with ``glob`` (its ``pattern`` is SEARCH
+        # TEXT, never a path), while the ``glob`` tool's ``pattern`` IS the
+        # path-glob. The engine tests every candidate against the sensitive-read
+        # globs and read-deny rules (see ``Action.read_targets``); result content
+        # is filtered post-exec by :mod:`jarn.agent.read_filter` for broad searches
+        # whose scope alone can't reveal the danger.
+        path = str(args.get("file_path") or args.get("path") or "")
+        if tool_name == "grep":
+            file_glob = str(args.get("glob") or "")
+        elif tool_name == "glob":
+            file_glob = str(args.get("pattern") or "")
+        else:  # read_file / ls — a single path target, no glob
+            file_glob = ""
+        primary = path or file_glob  # display/scope target; glob when no path
+        read_targets = tuple(t for t in (path, file_glob) if t)
+        return Action(
+            ActionKind.READ, target=primary, tool=tool_name, read_targets=read_targets
+        )
     # Wiki mutating tools map to WRITE so the engine evaluates them exactly
     # like file writes: auto-allowed in auto-edit/yolo, prompted in ask.
     if tool_name in WIKI_MUTATING_TOOLS:

@@ -69,6 +69,14 @@ class Action:
     target: str
     #: Originating tool name, for hook matching and logging.
     tool: str | None = None
+    #: Extra path-like candidates a READ must ALSO be judged against, beyond
+    #: ``target``. A ``grep``/``glob`` carries both a search ``path`` and a
+    #: ``glob`` that can itself narrow the search to a secret (``glob='**/.env'``),
+    #: so a benign ``path`` must not be able to mask a sensitive ``glob``. Every
+    #: candidate is tested against the sensitive-read globs AND the read-deny
+    #: rules (see :meth:`PermissionEngine._is_sensitive_read` / :meth:`_matches`).
+    #: Empty for non-read actions.
+    read_targets: tuple[str, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -162,6 +170,42 @@ class PermissionEngine:
         rule = self._rule_for(action)
         if rule not in self._session_deny:
             self._session_deny.append(rule)
+
+    # -- read-result filtering (used by jarn.agent.read_filter) --------------
+    #
+    # The pre-exec gate sees only a read's SCOPE (its ``path``/``glob``), so a
+    # broad content-returning read — ``grep(pattern='TOKEN=', path='/repo')`` —
+    # is auto-ALLOWed on the benign scope yet still returns the CONTENTS of every
+    # matching file, including ``.env``/SSH keys. The result-filter middleware
+    # closes that by re-checking each matched file's path through the methods
+    # below, so the engine stays the single source of truth for what a read may
+    # surface.
+
+    def is_read_denied_path(self, path: str) -> bool:
+        """True when a filesystem *path* matches an explicit read *deny* rule
+        (config ``rules.deny`` or a session deny).
+
+        Defense-in-depth backstop for ``read_file``: a denied read is already
+        blocked pre-exec, but the result-filter re-checks so a denied file's
+        contents can never reach the model even if that gate is bypassed."""
+        return self._matches(Action(ActionKind.READ, target=path), self._all_deny())
+
+    def read_content_blocked(self, path: str) -> bool:
+        """True when a file at *path* must not have its CONTENTS surfaced by a
+        broad read tool (``grep``): it matches a read *deny* rule OR a
+        sensitive-read glob, and is NOT covered by an explicit *allow* rule.
+
+        Mirrors :meth:`evaluate`'s precedence (deny > allow > sensitive-read) so
+        the result-filter and the pre-exec gate agree: a broad ``grep`` over a
+        benign scope silently drops hits from ``.env``/keys (the exfiltration the
+        gate cannot catch), while an explicitly allow-listed secret path still
+        comes through."""
+        act = Action(ActionKind.READ, target=path)
+        if self._matches(act, self._all_deny()):
+            return True
+        if self._matches(act, self._all_allow()):
+            return False
+        return self.is_sensitive_read_path(path)
 
     # -- internals ----------------------------------------------------------
 
@@ -274,9 +318,35 @@ class PermissionEngine:
         return action.target
 
     def _is_sensitive_read(self, action: Action) -> bool:
-        """True when a READ target matches a configured sensitive-path glob.
+        """True when ANY of a READ's candidate targets matches a sensitive glob.
 
-        Matching runs against the raw normalized target AND a leading-slash form,
+        A ``grep``/``glob`` is judged against its search ``path`` AND its ``glob``
+        (see :attr:`Action.read_targets`), so ``grep(path='/repo', glob='**/.env')``
+        is caught even though ``/repo`` alone is benign.
+        """
+        return any(
+            self.is_sensitive_read_path(cand)
+            for cand in self._read_candidates(action)
+        )
+
+    @staticmethod
+    def _read_candidates(action: Action) -> tuple[str, ...]:
+        """Every path-like target a READ is judged against: the primary ``target``
+        plus any extra ``read_targets`` (a grep/glob ``glob`` value), de-duplicated
+        with empties dropped (order preserved for stable reasoning)."""
+        out: list[str] = []
+        for cand in (action.target, *action.read_targets):
+            if cand and cand not in out:
+                out.append(cand)
+        return tuple(out)
+
+    def is_sensitive_read_path(self, path: str) -> bool:
+        """True when a filesystem *path* matches a configured sensitive-read glob.
+
+        The SINGLE source of truth shared by the READ mode-decision here and the
+        result-filter middleware (:mod:`jarn.agent.read_filter`).
+
+        Matching runs against the raw normalized path AND a leading-slash form,
         so a ``**/``-anchored pattern also catches a bare relative target
         (``.env`` vs ``**/.env``) WITHOUT the false positives a basename-only
         match would create (a plain ``config`` must not match ``**/.git/config``).
@@ -284,10 +354,9 @@ class PermissionEngine:
         depth. An empty ``sensitive_read_globs`` disables the check entirely.
         """
         globs = self.rules.sensitive_read_globs
-        target = action.target
-        if not globs or not target:
+        if not globs or not path:
             return False
-        norm = target.replace("\\", "/")
+        norm = path.replace("\\", "/")
         candidates = {norm, norm if norm.startswith("/") else "/" + norm}
         return any(
             fnmatch.fnmatch(cand, pattern)
@@ -297,6 +366,11 @@ class PermissionEngine:
 
     def _matches(self, action: Action, patterns: list[str]) -> bool:
         candidates = {action.target, self._rule_for(action)}
+        # A READ may carry extra path-like candidates (grep/glob ``glob`` value);
+        # a deny/allow rule matching ANY of them applies, so a benign scope can't
+        # mask a sensitive glob from an explicit deny.
+        if action.kind is ActionKind.READ:
+            candidates.update(cand for cand in action.read_targets if cand)
         for pattern in patterns:
             for cand in candidates:
                 if cand == pattern or fnmatch.fnmatch(cand, pattern):

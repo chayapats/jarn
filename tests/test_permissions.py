@@ -100,6 +100,61 @@ def test_sensitive_read_globs_default_populated():
     assert PermissionRules().sensitive_read_globs  # non-empty by default
 
 
+# -- Multi-candidate READ gating (grep/glob ``glob`` arg) -------------------
+#
+# A grep/glob is judged against its search ``path`` AND its ``glob`` — a benign
+# path must not mask a sensitive glob (Codex second-eye #1).
+
+
+def test_read_extra_candidate_glob_triggers_sensitive_ask():
+    """A benign primary target with a sensitive ``read_targets`` candidate ASKs."""
+    eng = _engine(PermissionMode.YOLO)
+    action = Action(ActionKind.READ, "/repo", read_targets=("/repo", "**/.env"))
+    assert eng.evaluate(action).decision is Decision.ASK
+
+
+def test_read_extra_candidate_glob_triggers_deny():
+    """A read-deny on the glob candidate wins even when the primary is benign."""
+    eng = _engine(PermissionMode.YOLO, rules=PermissionRules(deny=["**/.env"]))
+    action = Action(ActionKind.READ, "/repo", read_targets=("/repo", "**/.env"))
+    assert eng.evaluate(action).decision is Decision.DENY
+
+
+# -- Read-result-filter predicates (used by jarn.agent.read_filter) ---------
+
+
+def test_read_content_blocked_matches_sensitive_and_deny():
+    """The predicate the grep result-filter uses: sensitive globs AND explicit
+    deny both block a matched file's contents; ordinary files pass."""
+    eng = _engine(PermissionMode.YOLO, rules=PermissionRules(deny=["**/secret.txt"]))
+    assert eng.read_content_blocked("/proj/.env") is True            # sensitive glob
+    assert eng.read_content_blocked("/proj/id_rsa") is True          # sensitive glob
+    assert eng.read_content_blocked("/proj/conf/secret.txt") is True  # deny rule
+    assert eng.read_content_blocked("/proj/src/app.py") is False     # ordinary
+
+
+def test_read_content_blocked_respects_allow_optout():
+    """An explicit allow rule opts a secret path back in (deny > allow > sensitive)."""
+    eng = _engine(PermissionMode.ASK, rules=PermissionRules(allow=["/proj/.env"]))
+    assert eng.read_content_blocked("/proj/.env") is False
+
+
+def test_read_content_blocked_deny_beats_allow():
+    eng = _engine(
+        PermissionMode.ASK,
+        rules=PermissionRules(allow=["/proj/.env"], deny=["/proj/.env"]),
+    )
+    assert eng.read_content_blocked("/proj/.env") is True
+
+
+def test_is_read_denied_path_is_deny_only():
+    """The read_file backstop is deny-only: a sensitive-but-not-denied path is
+    NOT reported denied (an approved sensitive read must still come through)."""
+    eng = _engine(PermissionMode.YOLO, rules=PermissionRules(deny=["**/id_rsa"]))
+    assert eng.is_read_denied_path("/home/u/.ssh/id_rsa") is True
+    assert eng.is_read_denied_path("/proj/.env") is False
+
+
 def test_plan_mode_denies_writes_and_shell():
     eng = _engine(PermissionMode.PLAN)
     assert eng.evaluate(Action(ActionKind.WRITE, "a.py")).decision is Decision.DENY
