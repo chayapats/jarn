@@ -495,6 +495,91 @@ async def test_mcp_empty_policy_allows_http(monkeypatch):
     assert result.health == {"remote": "ok"}
 
 
+# --- Request-scoped egress: a redirect can't reach a denied host ---------
+# _network_block_reason validates only the CONFIGURED endpoint host, but the httpx
+# transport follows redirects — so an allow-listed host that 3xx-redirects to a
+# denied host would reach it (egress bypass at the transport layer). build_client
+# now injects an httpx client factory whose request event hook re-classifies EVERY
+# hop. These tests drive that hook by mocking the redirect at the httpx layer.
+
+
+def _egress_factory(server, policy):
+    """build_client → the injected httpx_client_factory for *server* under *policy*."""
+    from jarn.extensibility.mcp import build_client
+
+    client, invalid = build_client([server], policy)
+    assert invalid == []
+    return client.connections[server.name]["httpx_client_factory"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_egress_hook_blocks_redirect_to_denied_host():
+    """An allow-listed endpoint that 3xx-redirects to a denied host is blocked at
+    the transport: the hook fires on the redirect hop and raises before bytes leave."""
+    import httpx
+
+    from jarn.config.schema import NetworkPolicy
+    from jarn.extensibility.mcp import MCPEgressBlocked
+
+    policy = NetworkPolicy(allow=["allowed.example"], deny=["evil.example"])
+    factory = _egress_factory(_http("remote", "https://allowed.example/mcp"), policy)
+
+    def _handler(request):
+        if request.url.host == "allowed.example":
+            return httpx.Response(307, headers={"location": "https://evil.example/mcp"})
+        return httpx.Response(200, text="reached evil")  # must never be returned
+
+    hclient = factory(headers={"Authorization": "Bearer x"})
+    hclient._transport = httpx.MockTransport(_handler)
+    try:
+        with pytest.raises(MCPEgressBlocked, match="evil.example.*denied"):
+            await hclient.get("https://allowed.example/mcp")
+    finally:
+        await hclient.aclose()
+
+
+@pytest.mark.asyncio
+async def test_mcp_egress_hook_allows_same_host_no_redirect():
+    """A same-host, non-redirecting request to an allow-listed host still succeeds."""
+    import httpx
+
+    from jarn.config.schema import NetworkPolicy
+
+    policy = NetworkPolicy(allow=["allowed.example"], deny=["evil.example"])
+    factory = _egress_factory(_http("remote", "https://allowed.example/mcp"), policy)
+
+    hclient = factory()
+    hclient._transport = httpx.MockTransport(lambda r: httpx.Response(200, text="ok"))
+    try:
+        resp = await hclient.get("https://allowed.example/mcp")
+        assert resp.status_code == 200
+        assert resp.text == "ok"
+    finally:
+        await hclient.aclose()
+
+
+def test_mcp_egress_factory_not_injected_for_stdio():
+    """stdio has no egress host, so a strict policy adds no httpx factory to it."""
+    from jarn.config.schema import NetworkPolicy
+    from jarn.extensibility.mcp import build_client
+
+    policy = NetworkPolicy(allow=["allowed.example"], deny=["evil.example"])
+    client, _ = build_client([_stdio("local")], policy)
+    assert "httpx_client_factory" not in client.connections["local"]
+
+
+def test_mcp_egress_factory_absent_without_policy():
+    """No policy (or an inert empty one) leaves the http connection dict untouched —
+    existing servers/tests see byte-for-byte the same connection."""
+    from jarn.config.schema import NetworkPolicy
+    from jarn.extensibility.mcp import build_client
+
+    server = _http("remote", "https://allowed.example/mcp")
+    for policy in (None, NetworkPolicy()):
+        client, _ = build_client([server], policy)
+        assert "httpx_client_factory" not in client.connections["remote"]
+
+
 @pytest.mark.asyncio
 async def test_invalid_connection_marked_error(monkeypatch):
     """A server whose connection dict can't be built is an 'error', not a crash."""

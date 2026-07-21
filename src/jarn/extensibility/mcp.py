@@ -22,9 +22,22 @@ from jarn.config.schema import MCPServer
 from jarn.config.secrets import SecretResolutionError, redact_secrets, resolve
 
 if TYPE_CHECKING:
+    import httpx
+
     from jarn.config.schema import NetworkPolicy
 
 logger = logging.getLogger("jarn.mcp")
+
+
+class MCPEgressBlocked(Exception):
+    """Raised inside the httpx request hook when an outgoing MCP request targets a
+    host forbidden by the ``permissions.network`` policy.
+
+    Raising here aborts the request BEFORE any bytes reach the denied host. Because
+    httpx re-issues a fresh request for every redirect hop (and the hook fires on
+    each), this closes the gap where an allow-listed endpoint 3xx-redirects to a
+    denied host: the redirect target is classified and refused per-hop, not just
+    the configured endpoint (see :func:`_egress_request_hook`)."""
 
 
 def run_blocking(coro: Any) -> Any:
@@ -69,6 +82,77 @@ def _network_block_reason(
     if verdict is NetworkVerdict.NOT_ALLOWED:
         return f"endpoint host {host!r} is not on the permissions.network allowlist"
     return None
+
+
+def _egress_request_hook(
+    network_policy: NetworkPolicy,
+) -> Callable[[httpx.Request], Any]:
+    """Build an httpx async ``request`` event hook that enforces the egress policy
+    on EVERY outgoing request host, not just the configured endpoint.
+
+    :func:`_network_block_reason` validates only the *configured* endpoint host at
+    build time. The underlying httpx transport follows redirects, so an allow-listed
+    host that 3xx-redirects to a denied host would otherwise reach it. httpx fires
+    the ``request`` hook once per hop (the original request and each redirect it
+    follows are all distinct :class:`httpx.Request` objects), so classifying
+    ``request.url.host`` here makes enforcement request-scoped: a redirect to a
+    denied/not-allowed host raises :class:`MCPEgressBlocked` before bytes leave."""
+    from jarn.permissions.guard import NetworkVerdict, classify_host
+
+    async def _hook(request: httpx.Request) -> None:
+        host = request.url.host or ""
+        verdict = classify_host(host, network_policy)
+        if verdict is NetworkVerdict.DENIED:
+            raise MCPEgressBlocked(
+                f"request host {host!r} is denied by the permissions.network policy"
+            )
+        if verdict is NetworkVerdict.NOT_ALLOWED:
+            raise MCPEgressBlocked(
+                f"request host {host!r} is not on the permissions.network allowlist"
+            )
+
+    return _hook
+
+
+def _egress_httpx_client_factory(
+    network_policy: NetworkPolicy,
+) -> Callable[..., httpx.AsyncClient]:
+    """An ``McpHttpClientFactory`` returning MCP's default httpx client augmented
+    with the request-scoped egress hook (:func:`_egress_request_hook`).
+
+    Delegates to the SDK's ``create_mcp_http_client`` so the MCP defaults
+    (``follow_redirects=True``, timeouts) are preserved verbatim, then appends the
+    hook to the client's public ``event_hooks['request']`` list. If that private
+    SDK helper ever moves, we fall back to constructing an equivalent client
+    ourselves (still ``follow_redirects=True``) rather than silently dropping the
+    egress control — this is a security guard, so it must fail closed, never open."""
+    import httpx  # noqa: PLC0415
+
+    hook = _egress_request_hook(network_policy)
+
+    def _factory(
+        headers: dict[str, str] | None = None,
+        timeout: httpx.Timeout | None = None,
+        auth: httpx.Auth | None = None,
+    ) -> httpx.AsyncClient:
+        try:
+            from mcp.shared._httpx_utils import (  # noqa: PLC0415
+                create_mcp_http_client,
+            )
+
+            client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
+        except Exception:  # noqa: BLE001 - private SDK path moved: rebuild MCP defaults
+            kwargs: dict[str, Any] = {"follow_redirects": True}
+            kwargs["timeout"] = timeout or httpx.Timeout(30.0, read=300.0)
+            if headers is not None:
+                kwargs["headers"] = headers
+            if auth is not None:
+                kwargs["auth"] = auth
+            client = httpx.AsyncClient(**kwargs)
+        client.event_hooks["request"].append(hook)
+        return client
+
+    return _factory
 
 
 @dataclass(slots=True)
@@ -224,6 +308,19 @@ def build_client(
                            server.name, reason)
             bad[server.name] = reason
             continue
+        # Request-scoped enforcement: when a policy is active, wrap the http/sse
+        # transport so EVERY outgoing request host (including redirect hops) is
+        # re-classified, not just the configured endpoint host checked above. The
+        # transport follows redirects, so an allow-listed host that 3xx-redirects to
+        # a denied host would otherwise bypass the endpoint check. stdio has no
+        # egress host and gets no factory; an empty/inert policy is left untouched so
+        # existing http servers and their connection dicts are byte-for-byte the same.
+        if (
+            network_policy is not None
+            and (network_policy.allow or network_policy.deny)
+            and conn.get("transport") in ("streamable_http", "sse")
+        ):
+            conn["httpx_client_factory"] = _egress_httpx_client_factory(network_policy)
         connections[server.name] = conn
     if not connections:
         return None, list(bad.items())
