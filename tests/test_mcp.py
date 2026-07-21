@@ -16,13 +16,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from types import SimpleNamespace
 
 import pytest
 
-from jarn.config.schema import MCPServer
+from jarn.config.schema import MCPServer, NetworkPolicy
 from jarn.config.secrets import redact_secrets
 from jarn.extensibility.mcp import (
+    _build_prompt_command,
     build_client,
     list_mcp_resources,
     load_mcp_prompts,
@@ -34,6 +36,10 @@ from jarn.extensibility.mcp import (
 
 def _stdio(name: str) -> MCPServer:
     return MCPServer(name=name, transport="stdio", command="run-" + name)
+
+
+def _http(name: str, url: str) -> MCPServer:
+    return MCPServer(name=name, transport="http", url=url)
 
 
 # ── fakes ────────────────────────────────────────────────────────────────────
@@ -93,12 +99,15 @@ class _FakeClient:
 
     async def get_prompt(self, server_name, prompt_name, *, arguments=None):
         if self._prompt_fn is not None:
-            return self._prompt_fn(server_name, prompt_name, arguments)
+            r = self._prompt_fn(server_name, prompt_name, arguments)
+            # A fn may return a coroutine to model a slow server (timeout tests).
+            return await r if asyncio.iscoroutine(r) else r
         return []
 
     async def get_resources(self, server_name=None, *, uris=None):
         if self._resource_fn is not None:
-            return self._resource_fn(server_name, uris)
+            r = self._resource_fn(server_name, uris)
+            return await r if asyncio.iscoroutine(r) else r
         return []
 
 
@@ -280,7 +289,11 @@ def test_cmd_mcp_prompts_registers_runtime_command(monkeypatch):
     )
     rt = SimpleNamespace(commands={})
     ctrl = SimpleNamespace(
-        config=SimpleNamespace(mcp_servers=[_stdio("srv")]), runtime=rt
+        config=SimpleNamespace(
+            mcp_servers=[_stdio("srv")],
+            permissions=SimpleNamespace(network=NetworkPolicy()),
+        ),
+        runtime=rt,
     )
     out = cmd_mcp(ctrl, "prompts").text
 
@@ -299,7 +312,11 @@ def test_cmd_mcp_prompt_single_fetch(monkeypatch):
     )
     rt = SimpleNamespace(commands={})
     ctrl = SimpleNamespace(
-        config=SimpleNamespace(mcp_servers=[_stdio("srv")]), runtime=rt
+        config=SimpleNamespace(
+            mcp_servers=[_stdio("srv")],
+            permissions=SimpleNamespace(network=NetworkPolicy()),
+        ),
+        runtime=rt,
     )
     out = cmd_mcp(ctrl, "prompt srv greet name=Cy").text
     assert "Hello, Cy!" in out
@@ -352,9 +369,142 @@ def test_cmd_mcp_resources_lists(monkeypatch):
         resource_fn=lambda server, uris: [_Blob("body")],
     )
     ctrl = SimpleNamespace(
-        config=SimpleNamespace(mcp_servers=[_stdio("srv")]), runtime=None
+        config=SimpleNamespace(
+            mcp_servers=[_stdio("srv")],
+            permissions=SimpleNamespace(network=NetworkPolicy()),
+        ),
+        runtime=None,
     )
     out = cmd_mcp(ctrl, "resources").text
     assert "file:///notes.txt" in out
     read_out = cmd_mcp(ctrl, "read srv file:///notes.txt").text
     assert "body" in read_out
+
+
+# ── BUG 1: network egress policy on prompts + resources ──────────────────────
+# Deny + non-empty-allow policy must block EACH http prompt/resource op (as it
+# already does for tool-loading) while stdio stays unaffected.
+
+_POLICY = NetworkPolicy(allow=["*.github.com"], deny=["evil.example"])
+
+
+def test_mcp_prompts_discovery_blocked_by_policy(monkeypatch):
+    """A denied http endpoint yields no prompt (error); stdio is unaffected."""
+    _patch_client(
+        monkeypatch, prompts={"local": [_greet_meta()]}, prompt_fn=_greet_fn
+    )
+    servers = [_http("bad", "https://evil.example/v1"), _stdio("local")]
+    result = asyncio.run(load_mcp_prompts(servers, _POLICY))
+
+    assert result.health["bad"] == "error"
+    assert "denied" in result.errors["bad"]
+    assert not any(k.startswith("mcp__bad__") for k in result.prompts)
+    # stdio has no egress host — never blocked.
+    assert "mcp__local__greet" in result.prompts
+    assert result.health["local"] == "ok"
+
+
+def test_mcp_prompt_fetch_reenforces_policy(monkeypatch):
+    """The lazy fetch closure RETAINS the policy: a command built for a denied
+    host still refuses to connect (defense in depth vs. a stale registration)."""
+    _patch_client(monkeypatch, prompts={"bad": [_greet_meta()]}, prompt_fn=_greet_fn)
+    server = _http("bad", "https://evil.example/v1")
+    # Build the client WITHOUT the policy so the connection exists (as if the
+    # command were registered before the policy tightened), then confirm the
+    # closure still blocks because it carries the policy.
+    client, _invalid = build_client([server])
+    cmd = _build_prompt_command(client, server, _greet_meta(), _POLICY, 30)
+    out = cmd.render("Ada")
+    assert "denied" in out
+    assert "Hello" not in out  # never reached the server
+
+
+def test_mcp_resources_list_blocked_by_policy(monkeypatch):
+    """A denied http endpoint contributes no resources (error); stdio unaffected."""
+    _patch_client(
+        monkeypatch,
+        resources={"local": [_notes_meta()]},
+        resource_fn=lambda server, uris: [_Blob("body")],
+    )
+    servers = [_http("bad", "https://evil.example/v1"), _stdio("local")]
+    result = asyncio.run(list_mcp_resources(servers, _POLICY))
+
+    assert result.health["bad"] == "error"
+    assert "denied" in result.errors["bad"]
+    assert not any(r.server == "bad" for r in result.resources)
+    assert any(r.server == "local" for r in result.resources)
+    assert result.health["local"] == "ok"
+
+
+def test_mcp_resource_read_blocked_by_policy(monkeypatch):
+    """Reading from a denied http host raises the block reason."""
+    _patch_client(monkeypatch, resource_fn=lambda server, uris: [_Blob("body")])
+    server = _http("bad", "https://evil.example/v1")
+    with pytest.raises(ValueError, match="denied"):
+        asyncio.run(read_mcp_resource([server], "bad", "file:///x", _POLICY))
+
+
+def test_mcp_resource_read_stdio_unaffected_by_policy(monkeypatch):
+    """A strict allowlist must not disable a stdio server's resource read."""
+    _patch_client(
+        monkeypatch,
+        resources={"local": [_notes_meta()]},
+        resource_fn=lambda server, uris: [_Blob("body")],
+    )
+    content = asyncio.run(
+        read_mcp_resource(
+            [_stdio("local")], "local", "file:///notes.txt",
+            NetworkPolicy(allow=["nope.example"]),
+        )
+    )
+    assert content == "body"
+
+
+# ── BUG 2: prompt/resource lazy fetch honours per-server timeout_secs ─────────
+# A server that stalls on the fetch (get_prompt / get_resources) must time out
+# per timeout_secs instead of hanging the synchronous REPL command forever.
+
+
+async def _stall_prompt():
+    await asyncio.sleep(5)
+    return [_Msg("too late")]
+
+
+async def _stall_resources():
+    await asyncio.sleep(5)
+    return [_Blob("too late")]
+
+
+def test_mcp_prompt_fetch_times_out(monkeypatch):
+    _patch_client(
+        monkeypatch,
+        prompts={"srv": [_greet_meta()]},
+        prompt_fn=lambda s, n, a: _stall_prompt(),
+    )
+    server = MCPServer(
+        name="srv", transport="stdio", command="run-srv", timeout_secs=0.05
+    )
+    result = asyncio.run(load_mcp_prompts([server]))
+    cmd = result.prompts["mcp__srv__greet"]
+
+    started = time.monotonic()
+    out = cmd.render("Ada")
+    elapsed = time.monotonic() - started
+    assert "timed out" in out
+    assert elapsed < 2, f"fetch should time out ~0.05s, waited {elapsed:.2f}s"
+
+
+def test_mcp_resource_read_times_out(monkeypatch):
+    _patch_client(
+        monkeypatch,
+        resources={"srv": [_notes_meta()]},
+        resource_fn=lambda s, uris: _stall_resources(),
+    )
+    server = MCPServer(
+        name="srv", transport="stdio", command="run-srv", timeout_secs=0.05
+    )
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="timed out"):
+        asyncio.run(read_mcp_resource([server], "srv", "file:///notes.txt"))
+    elapsed = time.monotonic() - started
+    assert elapsed < 2, f"read should time out ~0.05s, waited {elapsed:.2f}s"

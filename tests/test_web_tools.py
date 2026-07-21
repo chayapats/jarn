@@ -262,6 +262,46 @@ def test_build_web_tools():
     assert names == {"web_search", "web_fetch"}
 
 
+def test_web_fetch_policy_is_per_runtime(monkeypatch):
+    """Two runtimes with OPPOSITE egress policies keep their own after both build.
+
+    Regression for the process-global ``_active_config``: building a later
+    permissive runtime used to overwrite an earlier restricted runtime's policy
+    (all builds shared one tool object + one global), so the restricted tool then
+    fetched a denied host. Each build now returns per-runtime instances whose
+    closures capture their own config, so isolation holds regardless of order.
+    """
+    _public_dns(monkeypatch)
+    monkeypatch.setattr(web_tools, "_fetch_raw", lambda url, **k: _raw("<p>ok</p>"))
+    # Restricted runtime FIRST, permissive SECOND (the order that used to break it).
+    restricted = {
+        t.name: t for t in build_web_tools(_cfg_with_network(allow=["*.github.com"]))
+    }
+    permissive = {t.name: t for t in build_web_tools(_cfg_with_network())}
+
+    # Distinct instances — not the shared module singletons.
+    assert restricted["web_fetch"] is not permissive["web_fetch"]
+
+    # The restricted runtime's tool STILL blocks a non-allowlisted host …
+    blocked = restricted["web_fetch"].invoke({"url": "https://evil.com/x"})
+    assert "blocked" in blocked and "allowlist" in blocked
+    # … while the permissive (empty = allow-all) runtime's tool permits it.
+    assert "ok" in permissive["web_fetch"].invoke({"url": "https://evil.com/x"})
+
+
+def test_web_fetch_none_config_runtime_is_allow_all(monkeypatch):
+    """A runtime built with config=None binds an explicit allow-all, not the
+    module-level ``_active_config`` fallback (sentinel disambiguation)."""
+    _public_dns(monkeypatch)
+    monkeypatch.setattr(web_tools, "_fetch_raw", lambda url, **k: _raw("<p>ok</p>"))
+    # A restrictive module fallback that must NOT leak into a None-bound runtime.
+    monkeypatch.setattr(
+        web_tools, "_active_config", _cfg_with_network(deny=["evil.com"])
+    )
+    none_fetch = {t.name: t for t in build_web_tools(None)}["web_fetch"]
+    assert "ok" in none_fetch.invoke({"url": "https://evil.com/x"})
+
+
 def test_unpack_stream_item():
     # subgraphs=True items carry the namespace path as the first element; it is
     # now threaded through (for per-call cost attribution), not discarded.

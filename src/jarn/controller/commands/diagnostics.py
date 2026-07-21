@@ -172,7 +172,7 @@ def _mcp_prompts(ctrl) -> CommandResult:
         return CommandResult("No MCP servers configured.")
     from jarn.extensibility.mcp import load_mcp_prompts
 
-    res = run_blocking(load_mcp_prompts(servers))
+    res = run_blocking(load_mcp_prompts(servers, ctrl.config.permissions.network))
     _register_prompt_commands(ctrl, res.prompts)
     lines = ["[b]MCP prompts[/b]"]
     if res.prompts:
@@ -211,7 +211,9 @@ def _mcp_prompt(ctrl, rest: list[str]) -> CommandResult:
     from jarn.config.secrets import redact_secrets
     from jarn.extensibility.mcp import load_mcp_prompts
 
-    res = run_blocking(load_mcp_prompts(ctrl.config.mcp_servers))
+    res = run_blocking(
+        load_mcp_prompts(ctrl.config.mcp_servers, ctrl.config.permissions.network)
+    )
     key = f"mcp__{server}__{pname}"
     cmd = res.prompts.get(key)
     if cmd is None:
@@ -238,7 +240,7 @@ def _mcp_resources(ctrl) -> CommandResult:
         return CommandResult("No MCP servers configured.")
     from jarn.extensibility.mcp import list_mcp_resources
 
-    res = run_blocking(list_mcp_resources(servers))
+    res = run_blocking(list_mcp_resources(servers, ctrl.config.permissions.network))
     lines = ["[b]MCP resources[/b]"]
     if res.resources:
         lines.append(
@@ -271,7 +273,11 @@ def _mcp_read(ctrl, rest: list[str]) -> CommandResult:
     from jarn.extensibility.mcp import read_mcp_resource
 
     try:
-        content = run_blocking(read_mcp_resource(ctrl.config.mcp_servers, server, uri))
+        content = run_blocking(
+            read_mcp_resource(
+                ctrl.config.mcp_servers, server, uri, ctrl.config.permissions.network
+            )
+        )
     except Exception as exc:  # noqa: BLE001 - surface a clean, redacted message
         return CommandResult(
             redact_secrets(f"Failed to read {uri} from {server}: {exc}")

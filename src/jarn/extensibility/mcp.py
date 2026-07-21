@@ -380,15 +380,39 @@ async def _list_prompts(client: Any, server_name: str) -> list[Any]:
 
 
 async def _get_prompt_text(
-    client: Any, server_name: str, prompt_name: str, arguments: dict[str, Any]
+    client: Any,
+    server_name: str,
+    prompt_name: str,
+    arguments: dict[str, Any],
+    timeout_secs: float,
 ) -> str:
-    messages = await client.get_prompt(
-        server_name, prompt_name, arguments=arguments or None
-    )
+    """Fetch one prompt's text, bounded by the server's ``timeout_secs``.
+
+    Discovery already wraps ``list_prompts`` in ``wait_for``; the lazy fetch must
+    do the same or a server that stalls on ``get_prompt`` hangs the synchronous
+    REPL command forever. On timeout a redacted error string is returned (render
+    contracts on a string), never raised, so a direct ``/mcp__srv__p`` invoke
+    can't crash the turn."""
+    try:
+        messages = await asyncio.wait_for(
+            client.get_prompt(server_name, prompt_name, arguments=arguments or None),
+            timeout=timeout_secs,
+        )
+    except TimeoutError:
+        return redact_secrets(
+            f"MCP prompt {prompt_name!r} fetch timed out after {timeout_secs}s"
+        )
     return _join_prompt_messages(messages)
 
 
-def _build_prompt_command(client: Any, server: str, prompt: Any) -> MCPPromptCommand:
+def _build_prompt_command(
+    client: Any,
+    server_obj: MCPServer,
+    prompt: Any,
+    network_policy: NetworkPolicy | None,
+    timeout_secs: float,
+) -> MCPPromptCommand:
+    server = server_obj.name
     raw_name = str(getattr(prompt, "name", "") or "")
     # Collapse any server-supplied mcp__ prefix (provenance is ours to stamp) but
     # keep the ORIGINAL name for the get_prompt call.
@@ -399,7 +423,18 @@ def _build_prompt_command(client: Any, server: str, prompt: Any) -> MCPPromptCom
     )
 
     def _fetch(arguments: dict[str, Any]) -> str:
-        return run_blocking(_get_prompt_text(client, server, raw_name, arguments))
+        # Re-enforce the egress policy at fetch time. The command is registered
+        # into rt.commands and can be invoked long after discovery (even across a
+        # policy tightening), so it must independently refuse a denied HTTP host
+        # rather than trusting the discovery-time client filtering. stdio has no
+        # egress host and is never blocked. The per-server timeout is carried in
+        # so a stalled get_prompt cannot hang the REPL (BUG 2).
+        reason = _network_block_reason(server_obj, network_policy)
+        if reason is not None:
+            return redact_secrets(reason)
+        return run_blocking(
+            _get_prompt_text(client, server, raw_name, arguments, timeout_secs)
+        )
 
     return MCPPromptCommand(
         name=f"mcp__{server}__{display}",
@@ -411,21 +446,27 @@ def _build_prompt_command(client: Any, server: str, prompt: Any) -> MCPPromptCom
     )
 
 
-async def load_mcp_prompts(servers: list[MCPServer]) -> MCPPromptLoadResult:
+async def load_mcp_prompts(
+    servers: list[MCPServer], network_policy: NetworkPolicy | None = None
+) -> MCPPromptLoadResult:
     """Discover prompts from every enabled MCP server, each in isolation.
 
     Mirrors :func:`load_mcp_tools`: one bad/unreachable server records an error
     and is skipped rather than losing every other server's prompts. Only prompt
     metadata is fetched here (a ``list_prompts`` round-trip); each returned
-    :class:`MCPPromptCommand` fetches its body lazily when invoked."""
+    :class:`MCPPromptCommand` fetches its body lazily when invoked. *network_policy*
+    is enforced identically to tool-loading — an http/sse endpoint the egress
+    policy denies is skipped (error), and each command RETAINS the policy so its
+    lazy fetch re-checks it too (stdio is never blocked)."""
     result = MCPPromptLoadResult()
-    client, invalid = build_client(servers)
+    client, invalid = build_client(servers, network_policy)
     for name, message in invalid:
         result.health[name] = "error"
         result.errors[name] = message
     if client is None:
         return result
 
+    server_by_name = {s.name: s for s in servers if s.enabled}
     timeout_by_name = {s.name: s.timeout_secs for s in servers if s.enabled}
 
     async def _one(name: str) -> tuple[str, list[Any] | None, str | None]:
@@ -448,7 +489,13 @@ async def load_mcp_prompts(servers: list[MCPServer]) -> MCPPromptLoadResult:
             continue
         result.health[name] = "ok"
         for prompt in prompts or []:
-            command = _build_prompt_command(client, name, prompt)
+            command = _build_prompt_command(
+                client,
+                server_by_name[name],
+                prompt,
+                network_policy,
+                timeout_by_name.get(name, 30),
+            )
             result.prompts[command.name] = command
     return result
 
@@ -482,10 +529,16 @@ async def _list_resources(client: Any, server_name: str) -> list[Any]:
     return list(getattr(listed, "resources", []) or [])
 
 
-async def list_mcp_resources(servers: list[MCPServer]) -> MCPResourceListResult:
-    """List resources from every enabled MCP server, each in isolation."""
+async def list_mcp_resources(
+    servers: list[MCPServer], network_policy: NetworkPolicy | None = None
+) -> MCPResourceListResult:
+    """List resources from every enabled MCP server, each in isolation.
+
+    *network_policy* is enforced as in tool-loading: an http/sse endpoint the
+    egress policy denies is skipped and recorded as an error; stdio is never
+    blocked."""
     result = MCPResourceListResult()
-    client, invalid = build_client(servers)
+    client, invalid = build_client(servers, network_policy)
     for name, message in invalid:
         result.health[name] = "error"
         result.errors[name] = message
@@ -538,14 +591,35 @@ def _blob_text(blob: Any) -> str:
 
 
 async def read_mcp_resource(
-    servers: list[MCPServer], server: str, uri: str
+    servers: list[MCPServer],
+    server: str,
+    uri: str,
+    network_policy: NetworkPolicy | None = None,
 ) -> str:
     """Read one resource's content into text.
 
-    Raises ``ValueError`` when ``server`` is not a configured/enabled MCP server
-    (so the /mcp handler can surface a clear message)."""
-    client, _invalid = build_client(servers)
+    Raises ``ValueError`` when ``server`` is not a configured/enabled MCP server,
+    or when its http/sse endpoint host is refused by *network_policy* (the block
+    reason is surfaced so the /mcp handler can redact and display it). ``stdio``
+    servers have no egress host and are never policy-blocked. The read is bounded
+    by the server's ``timeout_secs`` so a stalled ``get_resources`` cannot hang
+    the synchronous REPL command (BUG 2)."""
+    client, invalid = build_client(servers, network_policy)
+    blocked = dict(invalid)
+    if server in blocked:
+        # Policy-denied (or otherwise unbuildable) endpoint: surface the reason.
+        raise ValueError(blocked[server])
     if client is None or server not in getattr(client, "connections", {}):
         raise ValueError(f"MCP server {server!r} is not configured or not enabled.")
-    blobs = await client.get_resources(server, uris=uri)
+    secs = next(
+        (s.timeout_secs for s in servers if s.name == server and s.enabled), 30
+    )
+    try:
+        blobs = await asyncio.wait_for(
+            client.get_resources(server, uris=uri), timeout=secs
+        )
+    except TimeoutError as exc:
+        raise TimeoutError(
+            redact_secrets(f"reading {uri!r} from {server!r} timed out after {secs}s")
+        ) from exc
     return "\n\n".join(t for b in (blobs or []) if (t := _blob_text(b)))
