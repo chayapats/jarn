@@ -140,6 +140,46 @@ def test_network_policy_coexists_with_allow_deny(tmp_path):
     assert cfg.permissions.network.deny == ["evil.com"]
 
 
+def test_sensitive_read_globs_custom_survives_merge(tmp_path):
+    """A configured custom ``sensitive_read_globs`` REPLACES the built-in defaults
+    through the merge — previously it was silently dropped so the defaults always
+    won (BUG D)."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"permissions": {"sensitive_read_globs": ["custom/*.secret"]}})
+    cfg = load_config(global_path=gp, project_path=None, project_root=tmp_path)
+    assert cfg.permissions.sensitive_read_globs == ["custom/*.secret"]
+
+
+def test_sensitive_read_globs_empty_opt_out_survives_merge(tmp_path):
+    """The documented empty-list opt-out reaches the config, not the 11 defaults."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"permissions": {"sensitive_read_globs": []}})
+    cfg = load_config(global_path=gp, project_path=None, project_root=tmp_path)
+    assert cfg.permissions.sensitive_read_globs == []
+
+
+def test_sensitive_read_globs_default_when_unset(tmp_path):
+    """When no tier sets it, the built-in defaults still apply (regression guard)."""
+    from jarn.config.schema import DEFAULT_SENSITIVE_READ_GLOBS
+
+    cfg = load_config(
+        global_path=tmp_path / "none-g.yaml",
+        project_path=tmp_path / "none-p.yaml",
+        project_root=tmp_path,
+    )
+    assert cfg.permissions.sensitive_read_globs == list(DEFAULT_SENSITIVE_READ_GLOBS)
+
+
+def test_sensitive_read_globs_project_replaces_global(tmp_path):
+    """Last-writer wins: a project list replaces the global one (tier precedence)."""
+    gp = tmp_path / "g.yaml"
+    pp = tmp_path / "p.yaml"
+    _write(gp, {"permissions": {"sensitive_read_globs": ["global/*.key"]}})
+    _write(pp, {"permissions": {"sensitive_read_globs": ["proj/*.pem"]}})
+    cfg = load_config(global_path=gp, project_path=pp)
+    assert cfg.permissions.sensitive_read_globs == ["proj/*.pem"]
+
+
 def test_hooks_and_mcp_extend(tmp_path):
     gp = tmp_path / "g.yaml"
     pp = tmp_path / "p.yaml"

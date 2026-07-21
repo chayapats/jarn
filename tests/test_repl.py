@@ -572,6 +572,61 @@ async def test_single_stop_message(tmp_path, monkeypatch):
     ctrl.close()
 
 
+@pytest.mark.asyncio
+async def test_command_dispatch_redacts_raising_extension_command(tmp_path, monkeypatch):
+    """BUG C boundary: the REPL's direct extension-command dispatch must redact
+    (never dump raw) any exception a custom/MCP command's render() raises — a raw
+    exception carried a secret (Authorization=Bearer sk-…) in the repro."""
+    from types import SimpleNamespace
+
+    from jarn import repl
+    from jarn.repl import turn as _turnmod
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    app.console = Console(file=StringIO(), force_terminal=False, width=100)
+
+    secret = "sk-live-secret-0123456789abcdefABCDEF"
+
+    class _RaisingCommand:
+        def render(self, args):
+            raise RuntimeError(f"transport failed: Authorization=Bearer {secret}")
+
+    app.controller.runtime = SimpleNamespace(
+        commands={"mcp__srv__greet": _RaisingCommand()}
+    )
+
+    async def _noop_ensure():
+        return app.controller.runtime
+
+    monkeypatch.setattr(app.controller, "ensure_runtime", _noop_ensure)
+
+    dispatched = False
+
+    async def _spy_turn(*a, **k):
+        nonlocal dispatched
+        dispatched = True
+
+    monkeypatch.setattr(_turnmod, "_run_turn", _spy_turn)
+
+    # Must NOT raise (the buggy path let the raw RuntimeError escape _command).
+    await app._command("mcp__srv__greet", "")
+
+    out = app.console.file.getvalue()
+    assert secret not in out
+    assert "sk-live-secret" not in out
+    assert "Bearer sk" not in out
+    assert not dispatched  # the raw (leaky) render text never seeded a turn
+    app.controller.close()
+
+
 def test_tool_sink_accumulates_live():
     """Tool outputs append to a provided sink as they arrive (mid-turn Ctrl+O)."""
     from jarn.repl_renderer import TurnRenderer as _TurnRenderer

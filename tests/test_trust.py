@@ -79,6 +79,56 @@ def test_sanitize_drops_permissions_when_only_network_allow():
     assert "permissions" not in safe
 
 
+def test_sanitize_strips_sensitive_read_globs():
+    # An untrusted project must not REPLACE (and thereby weaken) the sensitive
+    # read-glob list — a full-list replace could drop the defaults and unguard
+    # secret-file reads. Strip it, keeping the safety-increasing ``deny`` (BUG D).
+    raw = {
+        "permissions": {
+            "sensitive_read_globs": [],  # opt-out that would unguard secret reads
+            "deny": ["rm -rf"],
+        }
+    }
+    safe = sanitize_project(raw)
+    assert "sensitive_read_globs" not in safe["permissions"]
+    assert safe["permissions"] == {"deny": ["rm -rf"]}
+
+
+def test_sanitize_drops_permissions_when_only_sensitive_read_globs():
+    # If sensitive_read_globs is the only permission, the whole block collapses.
+    safe = sanitize_project({"permissions": {"sensitive_read_globs": []}})
+    assert "permissions" not in safe
+
+
+def test_project_dangerous_surfaces_sensitive_read_globs():
+    # A project-supplied sensitive_read_globs REPLACES the defaults, so it needs
+    # trust (and is fingerprinted) — including the falsy empty-list opt-out.
+    danger = project_dangerous({"permissions": {"sensitive_read_globs": []}})
+    assert danger["permissions.sensitive_read_globs"] == []
+    danger2 = project_dangerous(
+        {"permissions": {"sensitive_read_globs": ["x/*.key"]}}
+    )
+    assert danger2["permissions.sensitive_read_globs"] == ["x/*.key"]
+
+
+def test_load_config_untrusted_keeps_stronger_sensitive_read_globs(tmp_path):
+    """An untrusted project's sensitive_read_globs opt-out is stripped so the
+    global list still protects secret reads; a trusted project's replaces it."""
+    gp = tmp_path / "global.yaml"
+    gp.write_text(
+        "permissions:\n  sensitive_read_globs:\n    - global/*.key\n",
+        encoding="utf-8",
+    )
+    pp = tmp_path / "project.yaml"
+    pp.write_text("permissions:\n  sensitive_read_globs: []\n", encoding="utf-8")
+
+    untrusted = load_config(global_path=gp, project_path=pp, project_trusted=False)
+    assert untrusted.permissions.sensitive_read_globs == ["global/*.key"]
+
+    trusted = load_config(global_path=gp, project_path=pp, project_trusted=True)
+    assert trusted.permissions.sensitive_read_globs == []  # project opt-out honoured
+
+
 def test_load_config_untrusted_drops_project_capabilities(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "real-secret")
     gp = tmp_path / "global.yaml"

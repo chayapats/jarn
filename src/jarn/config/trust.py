@@ -88,6 +88,13 @@ def project_dangerous(raw: dict[str, Any]) -> dict[str, Any]:
         # An untrusted repo could *widen* egress past a restrictive global
         # allowlist — surface it so trust is required (and it's fingerprinted).
         danger["permissions.network.allow"] = net_allow
+    sensitive = perms.get("sensitive_read_globs")
+    if sensitive is not None:
+        # A project-supplied ``sensitive_read_globs`` REPLACES the defaults, so it
+        # can DROP protections (or opt out entirely with ``[]``) — surface it so
+        # trust is required and it's fingerprinted. ``is not None`` (not
+        # truthiness) so the falsy empty-list opt-out is caught too.
+        danger["permissions.sensitive_read_globs"] = sensitive
     return danger
 
 
@@ -100,11 +107,17 @@ def sanitize_project(raw: dict[str, Any]) -> dict[str, Any]:
     safe = {k: v for k, v in raw.items() if k in SAFE_PROJECT_KEYS}
     perms = safe.get("permissions")
     if isinstance(perms, dict):
-        # ``allow`` pre-approves commands without a prompt, and ``network.allow``
-        # would *widen* egress past a restrictive global allowlist — never honour
-        # either from an untrusted project. Keep the safety-increasing ``deny``
-        # and ``network.deny``.
-        trimmed = {k: v for k, v in perms.items() if k != "allow"}
+        # ``allow`` pre-approves commands without a prompt; ``network.allow``
+        # would *widen* egress past a restrictive global allowlist; and
+        # ``sensitive_read_globs`` is a full-list REPLACE an untrusted project
+        # could use to DROP the built-in/global defaults and unguard secret-file
+        # reads — never honour any of them. Keep the safety-increasing ``deny``
+        # and ``network.deny`` (and the built-in/global sensitive_read_globs).
+        trimmed = {
+            k: v
+            for k, v in perms.items()
+            if k not in ("allow", "sensitive_read_globs")
+        }
         net = trimmed.get("network")
         if isinstance(net, dict) and "allow" in net:
             net_trimmed = {k: v for k, v in net.items() if k != "allow"}

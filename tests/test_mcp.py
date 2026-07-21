@@ -508,3 +508,77 @@ def test_mcp_resource_read_times_out(monkeypatch):
         asyncio.run(read_mcp_resource([server], "srv", "file:///notes.txt"))
     elapsed = time.monotonic() - started
     assert elapsed < 2, f"read should time out ~0.05s, waited {elapsed:.2f}s"
+
+
+# ── BUG C: lazy fetch exceptions are redacted, never dumped raw ──────────────
+# The redirect egress hook raises MCPEgressBlocked, and transport calls raise
+# RuntimeError/httpx errors, from get_prompt / get_resources. These escape the
+# TimeoutError-only catch, and the REPL's direct extension-command dispatch has
+# no exception boundary, so a raw (secret-bearing) message would be shown to the
+# user. The lazy fetch must catch every NON-cancellation exception, pass it
+# through redact_secrets, and return (prompt) / raise (resource) a STABLE error.
+
+#: A live-secret-shaped token that must NEVER survive into any surfaced error.
+_LEAKY = "sk-live-secret-0123456789abcdefABCDEF"
+
+
+def test_mcp_prompt_fetch_exception_is_redacted(monkeypatch):
+    """A prompt fetch that raises a secret-bearing exception returns a redacted
+    STRING (render never raises, the token never appears in the output)."""
+    def _boom(server, name, arguments):
+        raise RuntimeError(f"transport failed: Authorization=Bearer {_LEAKY}")
+
+    _patch_client(monkeypatch, prompts={"srv": [_greet_meta()]}, prompt_fn=_boom)
+    result = asyncio.run(load_mcp_prompts([_stdio("srv")]))
+    cmd = result.prompts["mcp__srv__greet"]
+
+    out = cmd.render("Ada")  # must NOT raise
+    assert _LEAKY not in out
+    assert "sk-live-secret" not in out
+    assert "Bearer sk" not in out
+    assert "greet" in out  # a stable, human-meaningful error is still returned
+
+
+def test_mcp_prompt_fetch_egress_block_is_redacted(monkeypatch):
+    """An MCPEgressBlocked raised during transport (a redirect hop) is caught and
+    surfaced as a string — it never escapes render() as a raw exception."""
+    from jarn.extensibility.mcp import MCPEgressBlocked
+
+    def _blocked(server, name, arguments):
+        raise MCPEgressBlocked("request host 'evil.example' is denied by policy")
+
+    _patch_client(monkeypatch, prompts={"srv": [_greet_meta()]}, prompt_fn=_blocked)
+    result = asyncio.run(load_mcp_prompts([_stdio("srv")]))
+    out = result.prompts["mcp__srv__greet"].render("Ada")
+    assert "denied" in out
+    assert "Hello" not in out  # never reached the server
+
+
+def test_mcp_prompt_fetch_cancellation_propagates(monkeypatch):
+    """asyncio.CancelledError from the fetch MUST propagate (control flow), never
+    be swallowed or redacted into a returned string."""
+    from jarn.extensibility.mcp import _get_prompt_text
+
+    class _CancelClient:
+        async def get_prompt(self, *a, **k):
+            raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(_get_prompt_text(_CancelClient(), "srv", "greet", {}, 30))
+
+
+def test_mcp_resource_read_exception_is_redacted(monkeypatch):
+    """A resource read whose transport raises a secret-bearing error re-raises a
+    STABLE redacted error (never the raw token, no leaky __cause__ chain)."""
+    def _boom(server, uris):
+        raise RuntimeError(f"transport failed: Authorization=Bearer {_LEAKY}")
+
+    _patch_client(monkeypatch, resource_fn=_boom)
+    with pytest.raises(Exception) as excinfo:  # noqa: PT011 - assert on message
+        asyncio.run(read_mcp_resource([_stdio("srv")], "srv", "file:///x"))
+    msg = str(excinfo.value)
+    assert _LEAKY not in msg
+    assert "sk-live-secret" not in msg
+    assert "Bearer sk" not in msg
+    # The raw exception must not ride along as the cause (its str would leak too).
+    assert excinfo.value.__cause__ is None

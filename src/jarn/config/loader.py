@@ -72,6 +72,15 @@ def _merge_permissions(base: dict[str, Any], overlay: dict[str, Any]) -> dict[st
     for bucket in ("allow", "deny"):
         if bucket in overlay:
             merged[bucket] = [*base.get(bucket, []), *overlay.get(bucket, [])]
+    # ``sensitive_read_globs`` is a full-list REPLACE (last-writer wins), matching
+    # the existing tier precedence: a tier that EXPLICITLY supplies it — including
+    # the documented empty-list opt-out ``[]`` — replaces the prior list. Without
+    # this it was dropped by the ``dict(base)`` copy for whichever tier set it
+    # (base's carries through, but the overlay's never did), so a user's custom
+    # list or the opt-out was silently discarded and the built-in defaults always
+    # won (BUG D). ``[]`` is honoured via the ``in`` test (not truthiness).
+    if "sensitive_read_globs" in overlay:
+        merged["sensitive_read_globs"] = overlay["sensitive_read_globs"]
     # The nested network egress policy also concatenates its allow/deny across
     # tiers (project extends global). Without this, ``permissions.network`` in an
     # overlay would be dropped by the ``dict(base)`` copy above, silently

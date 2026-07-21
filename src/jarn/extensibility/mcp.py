@@ -489,7 +489,17 @@ async def _get_prompt_text(
     do the same or a server that stalls on ``get_prompt`` hangs the synchronous
     REPL command forever. On timeout a redacted error string is returned (render
     contracts on a string), never raised, so a direct ``/mcp__srv__p`` invoke
-    can't crash the turn."""
+    can't crash the turn.
+
+    EVERY other non-cancellation failure is likewise caught, redacted, and
+    returned as a stable string. The redirect egress hook raises
+    :class:`MCPEgressBlocked` and the transport raises ``RuntimeError``/httpx
+    errors — these previously escaped ``render()``, and the REPL's direct
+    extension-command dispatch has no exception boundary, so the raw message was
+    shown verbatim (a repro leaked ``Authorization=Bearer sk-…``). ``render``
+    contracts on a string, so we redact and return one. ``asyncio.CancelledError``
+    is re-raised untouched: cancellation is control flow, never an error to
+    swallow or redact."""
     try:
         messages = await asyncio.wait_for(
             client.get_prompt(server_name, prompt_name, arguments=arguments or None),
@@ -499,6 +509,10 @@ async def _get_prompt_text(
         return redact_secrets(
             f"MCP prompt {prompt_name!r} fetch timed out after {timeout_secs}s"
         )
+    except asyncio.CancelledError:
+        raise  # cancellation must propagate — never swallowed or redacted
+    except Exception as exc:  # noqa: BLE001 - egress-block/transport errors must not leak
+        return redact_secrets(f"MCP prompt {prompt_name!r} fetch failed: {exc}")
     return _join_prompt_messages(messages)
 
 
@@ -719,4 +733,14 @@ async def read_mcp_resource(
         raise TimeoutError(
             redact_secrets(f"reading {uri!r} from {server!r} timed out after {secs}s")
         ) from exc
+    except asyncio.CancelledError:
+        raise  # cancellation must propagate — never swallowed or redacted
+    except Exception as exc:  # noqa: BLE001 - egress-block/transport errors must not leak
+        # An MCPEgressBlocked (redirect hop) or httpx/transport error can carry a
+        # raw (secret-bearing) message. Re-raise a STABLE redacted error and drop
+        # the ``__cause__`` chain (``from None``) so the raw text can't ride along
+        # in a traceback (BUG C).
+        raise RuntimeError(
+            redact_secrets(f"reading {uri!r} from {server!r} failed: {exc}")
+        ) from None
     return "\n\n".join(t for b in (blobs or []) if (t := _blob_text(b)))
