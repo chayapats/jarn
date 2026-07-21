@@ -457,10 +457,11 @@ def _stub_runtime_build(monkeypatch, mcp_result):
     def _fake_build_runtime(
         config, *, project_root, project_trusted=True, checkpointer, extra_tools,
         system_prompt_override=None, response_format=None, extra_roots=None,
-        cost_tracker=None,
+        cost_tracker=None, engine=None,
     ):
         seen["extra_tools"] = extra_tools
         seen["project_trusted"] = project_trusted
+        seen["engine"] = engine
         from types import SimpleNamespace
 
         return SimpleNamespace(agent=object(), main_model_ref="m")
@@ -525,6 +526,29 @@ async def test_ensure_runtime_stays_healthy_when_all_mcp_ok(
     assert ctrl.mcp_health == {"a": "ok"}
     assert ctrl.mcp_errors == {}
     assert seen["extra_tools"] == ["a_tool"]
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_build_runtime_receives_controller_engine(
+    tmp_path, monkeypatch, base_config
+):
+    """BUG A: the controller must thread its AUTHORITATIVE, session-persistent
+    permission engine (the same instance ``interrupts.py`` records
+    ``deny_session``/``remember`` on, via the driver) into ``build_runtime`` so the
+    result-filter middleware honors runtime session denies. Assert object identity."""
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    result = MCPLoadResult(tools=[], health={}, errors={})
+    seen = _stub_runtime_build(monkeypatch, result)
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    await ctrl.ensure_runtime()
+
+    # The authoritative engine is threaded, not a fresh copy. This is the SAME
+    # object make_driver hands the SessionDriver (engine=self.engine) and that
+    # interrupts.py records deny_session/remember on — closing the filter/gate loop.
+    assert seen["engine"] is ctrl.engine
     ctrl.close()
 
 
@@ -987,7 +1011,7 @@ async def test_ensure_runtime_errors_on_ambient_key_leak(
     def _leak_build(
         config, *, project_root, project_trusted, checkpointer, extra_tools,
         system_prompt_override=None, response_format=None, extra_roots=None,
-        cost_tracker=None,
+        cost_tracker=None, engine=None,
     ):
         raise AmbientKeyLeakError(
             ["ambient LANGGRAPH_API_KEY would leak to https://evil.example.com/x"]

@@ -20,7 +20,7 @@ from langchain_core.messages import ToolMessage
 from jarn.agent.local_backend import CancellableLocalShellBackend
 from jarn.agent.read_filter import ReadResultFilterMiddleware
 from jarn.config.schema import PermissionRules
-from jarn.permissions import PermissionEngine
+from jarn.permissions import Action, ActionKind, PermissionEngine
 
 
 @dataclass
@@ -331,3 +331,100 @@ def test_subagent_grep_over_secrets_is_filtered(base_config, tmp_path):
     assert "rsa-secret-material" not in out.content   # id_rsa redacted for subagent
     assert str(src / "app.py") in out.content         # benign source hit preserved
     assert "handles the PRIVATE KEY lookup" in out.content
+
+
+# ---------------------------------------------------------------------------
+# Session-deny sharing (second-eye A, BUG A): the result filter must reference the
+# CONTROLLER's authoritative, session-aware engine — the same instance interrupts.py
+# records `deny_session`/`remember` on — not a fresh rule-only copy. Otherwise a user
+# denying a runtime read of a secret is ignored by a later broad grep.
+
+
+def test_session_deny_filters_subsequent_grep(tmp_path):
+    """A runtime READ denial recorded on the engine the middleware HOLDS (the path
+    ``interrupts.py`` takes: ``engine.deny_session(action)``) filters that path out
+    of a later broad grep — the filter honors session state, not only static rules.
+
+    ``notes.txt`` is an ordinary file (no sensitive glob, no config deny), so before
+    the deny its hit passes through; after the session deny it is redacted."""
+    (tmp_path / "notes.txt").write_text("PRIVATE KEY secret-note-material\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "app.py").write_text("# PRIVATE KEY doc\n")
+    backend = CancellableLocalShellBackend(root_dir=str(tmp_path), virtual_mode=False)
+    msg = _grep_tool_message(backend, "PRIVATE KEY", str(tmp_path), "content")
+
+    engine = _default_engine()
+    mw = ReadResultFilterMiddleware(engine)
+    req = _Req(
+        {"name": "grep", "args": {"pattern": "PRIVATE KEY", "output_mode": "content"}}
+    )
+
+    before = mw.wrap_tool_call(req, lambda _r: msg)
+    assert "secret-note-material" in before.content  # ordinary file: not yet filtered
+
+    # A user's runtime read-denial writes to THIS engine (exactly as interrupts.py).
+    engine.deny_session(Action(ActionKind.READ, target=str(tmp_path / "notes.txt")))
+
+    after = mw.wrap_tool_call(req, lambda _r: msg)
+    assert "secret-note-material" not in after.content  # session-denied → filtered
+    assert str(src / "app.py") in after.content         # ordinary hit still kept
+
+
+def test_shared_engine_session_deny_covers_main_and_subagent(base_config, tmp_path):
+    """BUG A end-to-end: passing the controller's authoritative engine to
+    ``build_runtime`` must thread THAT SAME object into the result filter on the
+    MAIN agent AND the general-purpose sub-graph (the ``task``/fan-out target), so a
+    session deny recorded on it — the ``deny_session`` path — is honored everywhere.
+
+    Proves both: (1) engine object identity (``filter._engine is engine``) on both
+    stacks, and (2) a session deny on the shared engine redacts a later broad grep
+    on both, while an ordinary source hit survives."""
+    from unittest.mock import patch
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from jarn.agent import builder
+    from jarn.agent.fanout import extract_subagent_graphs
+
+    (tmp_path / "notes.txt").write_text("PRIVATE KEY secret-note-material\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "app.py").write_text("# PRIVATE KEY doc\n")
+
+    engine = PermissionEngine(rules=PermissionRules())
+    fake = GenericFakeChatModel(messages=iter([]))
+    with patch("jarn.providers.models.ModelFactory.build", return_value=fake):
+        rt = builder.build_runtime(base_config, project_root=tmp_path, engine=engine)
+
+    # The MAIN agent and the general-purpose sub-graph both carry the filter, and it
+    # references the SAME shared engine object (fan-out reuses the GP sub-graph).
+    main_filters = _find_subagent_read_filters(rt.agent)
+    assert len(main_filters) == 1, "the main tool node must carry exactly one filter"
+    assert main_filters[0]._engine is engine
+
+    gp = extract_subagent_graphs(rt.agent).get("general-purpose")
+    assert gp is not None, "the general-purpose sub-graph (task/fan-out target) must exist"
+    gp_filters = _find_subagent_read_filters(gp)
+    assert len(gp_filters) == 1, "the subagent tool node must carry exactly one filter"
+    assert gp_filters[0]._engine is engine
+
+    # A runtime read-denial recorded on the shared engine now filters that path out
+    # of a broad grep on BOTH stacks.
+    engine.deny_session(Action(ActionKind.READ, target=str(tmp_path / "notes.txt")))
+
+    backend = CancellableLocalShellBackend(root_dir=str(tmp_path), virtual_mode=False)
+    msg = _grep_tool_message(backend, "PRIVATE KEY", str(tmp_path), "content")
+    assert "secret-note-material" in msg.content  # the raw grep really leaked it
+
+    req = _Req(
+        {
+            "name": "grep",
+            "args": {"pattern": "PRIVATE KEY", "output_mode": "content"},
+            "id": "t1",
+        }
+    )
+    for flt in (main_filters[0], gp_filters[0]):
+        out = flt.wrap_tool_call(req, lambda _r: msg)
+        assert "secret-note-material" not in out.content  # session-denied → filtered
+        assert str(src / "app.py") in out.content         # ordinary hit preserved

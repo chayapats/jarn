@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from jarn.cost.tracker import CostTracker
+    from jarn.permissions import PermissionEngine
 
 from jarn.agent import prompts
 from jarn.agent.backends_factory import _make_backend
@@ -221,22 +222,26 @@ def _general_purpose_subagent_spec(model: Any) -> dict[str, Any]:
     return {**GENERAL_PURPOSE_SUBAGENT, "model": model}
 
 
-def _read_filter_middleware(config: Config) -> Any:
-    """A fresh result-filter middleware seeded from the session's permission rules.
+def _read_filter_middleware(engine: PermissionEngine) -> Any:
+    """A result-filter middleware bound to the session's AUTHORITATIVE permission
+    engine — the controller's request-scoped instance that gates tool calls and
+    receives runtime ``deny_session``/``remember`` (see ``interrupts.py``).
 
-    Minted per stack (main agent + each jarn-built subagent) so no single instance
-    is shared across compiled graphs — mirroring the summarization middleware's
-    per-stack policy. The engine is rule-only (no session state), so every instance
-    agrees with the controller's engine on the sensitive-read globs and deny/allow
-    rules that decide what a broad grep may surface.
+    A FRESH middleware is minted per stack (main agent + each jarn-built subagent) so
+    no single middleware instance is shared across compiled graphs — mirroring the
+    summarization middleware's per-stack policy — but every instance references the
+    SAME engine. That is the BUG A fix: a runtime session deny (a user rejecting a
+    read of a secret) is now honored by the main agent's filter AND every
+    subagent/fan-out filter, not just the pre-exec gate. The engine remains the
+    single source of truth for the sensitive-read globs and deny/allow rules that
+    decide what a broad grep may surface.
     """
     from jarn.agent.read_filter import ReadResultFilterMiddleware
-    from jarn.permissions import PermissionEngine
 
-    return ReadResultFilterMiddleware(PermissionEngine(rules=config.permissions))
+    return ReadResultFilterMiddleware(engine)
 
 
-def _attach_read_filter(spec: dict[str, Any], config: Config) -> dict[str, Any]:
+def _attach_read_filter(spec: dict[str, Any], engine: PermissionEngine) -> dict[str, Any]:
     """Prepend jarn's result-filter middleware to a declarative subagent ``spec``.
 
     Closes the second-eye #1 residual for subagents: pre-exec gating sees only a
@@ -248,15 +253,17 @@ def _attach_read_filter(spec: dict[str, Any], config: Config) -> dict[str, Any]:
     tool execution exactly as ``create_deep_agent(middleware=)`` wraps the main
     agent's. Fan-out reuses these compiled sub-graphs, so it inherits the filter.
 
-    ``AsyncSubAgent`` (``graph_id``) / ``CompiledSubAgent`` (``runnable``) specs own
-    their own graph and take no spec middleware, so they are returned untouched (a
-    remote Agent-Protocol subagent runs out of process — its reads are the remote
-    harness's concern, not this in-process filter's).
+    ``engine`` is the session's authoritative :class:`PermissionEngine`, so the
+    subagent filter honors runtime session denies/allows exactly as the main agent's
+    does (BUG A). ``AsyncSubAgent`` (``graph_id``) / ``CompiledSubAgent`` (``runnable``)
+    specs own their own graph and take no spec middleware, so they are returned
+    untouched (a remote Agent-Protocol subagent runs out of process — its reads are
+    the remote harness's concern, not this in-process filter's).
     """
     if "graph_id" in spec or "runnable" in spec:
         return spec
     spec["middleware"] = [
-        _read_filter_middleware(config),
+        _read_filter_middleware(engine),
         *list(spec.get("middleware") or []),
     ]
     return spec
@@ -475,12 +482,23 @@ def build_runtime(
     response_format: Any | None = None,
     extra_roots: list[Path] | None = None,
     cost_tracker: CostTracker | None = None,
+    engine: PermissionEngine | None = None,
 ) -> JarnRuntime:
     """Build a ready-to-run :class:`JarnRuntime` from config.
 
     ``checkpointer`` (a LangGraph saver) enables resumable sessions; pass one
     obtained from :func:`jarn.memory.open_checkpointer`. ``extra_tools`` is for
     MCP-loaded tools (see :func:`jarn.extensibility.mcp.load_mcp_tools`).
+
+    ``engine`` is the session's AUTHORITATIVE :class:`PermissionEngine` — the
+    controller's request-scoped instance that gates tool calls and receives runtime
+    ``deny_session``/``remember`` (see ``interrupts.py``). It is threaded into the
+    result-filter middleware on the MAIN agent AND every jarn-built subagent/fan-out
+    filter so a runtime session deny of a secret is honored by the filter, not only
+    the pre-exec gate (BUG A / second-eye A). Direct callers (eval harness, unit
+    tests) may omit it; ``None`` falls back to a rule-only engine seeded from
+    ``config.permissions`` — byte-identical to the pre-fix behavior, minus session
+    awareness (which those callers don't drive anyway).
 
     ``cost_tracker`` is the session's authoritative :class:`CostTracker` (owned by
     the controller). It is threaded into the opt-in ``spawn_parallel_tasks`` fan-out
@@ -510,6 +528,18 @@ def build_runtime(
 
     factory = ModelFactory(config)
     model = factory.build_main()
+
+    # Result-filter engine (BUG A): use the session's AUTHORITATIVE engine when the
+    # controller supplies it — the SAME instance that gates tool calls and receives
+    # runtime deny_session/remember — so the filter honors session denials/allows on
+    # every stack (main + subagents + fan-out). Direct callers may omit it; fall back
+    # to a rule-only engine seeded from config (unchanged pre-fix behavior).
+    if engine is not None:
+        read_filter_engine = engine
+    else:
+        from jarn.permissions import PermissionEngine
+
+        read_filter_engine = PermissionEngine(rules=config.permissions)
 
     # Context: project JARN.md + memory + skill catalog + detected verify cmds.
     # Forward compat settings so that read_claude_dir and context_files are
@@ -601,7 +631,7 @@ def build_runtime(
     # declarative spec also carries the result-filter middleware so a subagent's
     # broad grep is redacted just like the main agent's (second-eye #1 residual).
     subagent_specs: list[Any] = [
-        _attach_read_filter(s.to_spec(factory, available_tools=tools), config)
+        _attach_read_filter(s.to_spec(factory, available_tools=tools), read_filter_engine)
         for s in subagents.values()
     ]
     subagent_specs += _async_subagent_specs(config)
@@ -649,7 +679,9 @@ def build_runtime(
                     subagent_ref,
                 )
         subagent_specs.append(
-            _attach_read_filter(_general_purpose_subagent_spec(gp_model), config)
+            _attach_read_filter(
+                _general_purpose_subagent_spec(gp_model), read_filter_engine
+            )
         )
 
     # Gate every networked / MCP / mutating extra tool through the permission
@@ -794,15 +826,17 @@ def build_runtime(
     # (grep(pattern='TOKEN=', path='/repo')) is auto-ALLOWed on the benign scope
     # yet returns the CONTENTS of every matching file, including .env / keys. This
     # middleware strips hits from sensitive-read / read-deny files out of the grep
-    # result before the model sees them. It carries its own PermissionEngine seeded
-    # from the SAME config the controller's engine uses, so both agree on the
-    # sensitive-read globs and deny/allow rules (this one is rule-only — no session
-    # state). Injected on the MAIN agent stack here; every jarn-built subagent spec
-    # (user .md + the general-purpose spec above) carries its own instance via
-    # `_attach_read_filter`, and the fan-out graphs reuse those compiled sub-graphs —
-    # so the whole in-process subagent surface is result-filtered too (second-eye #1
-    # residual closed). Remote async subagents run out of process → out of scope.
-    read_filter_mw = _read_filter_middleware(config)
+    # result before the model sees them. It references the session's AUTHORITATIVE
+    # PermissionEngine (`read_filter_engine`) — the controller's request-scoped
+    # instance that gates tool calls and receives runtime deny_session/remember — so
+    # a user's runtime read-denial is honored here, not just at the pre-exec gate
+    # (BUG A). Injected on the MAIN agent stack here; every jarn-built subagent spec
+    # (user .md + the general-purpose spec above) carries its own instance bound to
+    # the SAME engine via `_attach_read_filter`, and the fan-out graphs reuse those
+    # compiled sub-graphs — so the whole in-process subagent surface honors the same
+    # session denies (second-eye #1 residual closed). Remote async subagents run out
+    # of process → out of scope.
+    read_filter_mw = _read_filter_middleware(read_filter_engine)
 
     agent = create_deep_agent(
         model=model,

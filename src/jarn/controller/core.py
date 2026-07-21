@@ -349,7 +349,12 @@ class Controller:
                 # Built into a LOCAL; committed to self.runtime only under the
                 # generation check below. functools.partial resolves the
                 # module-level build_runtime name at call time, so tests
-                # monkeypatching it keep working.
+                # monkeypatching it keep working. `engine=self.engine` threads the
+                # session's AUTHORITATIVE, session-persistent permission engine (the
+                # same instance interrupts.py records deny_session/remember on) into
+                # the result-filter middleware so a runtime read-denial is honored by
+                # the filter on every stack (BUG A); it survives runtime rebuilds
+                # because only self.runtime is invalidated, never self.engine.
                 runtime = await asyncio.to_thread(
                     functools.partial(
                         build_runtime,
@@ -362,6 +367,7 @@ class Controller:
                         response_format=self.response_format,
                         extra_roots=self.extra_roots,
                         cost_tracker=self.tracker,
+                        engine=self.engine,
                     )
                 )
             except AmbientKeyLeakError as exc:
@@ -397,6 +403,7 @@ class Controller:
                         response_format=self.response_format,
                         extra_roots=self.extra_roots,
                         cost_tracker=self.tracker,
+                        engine=self.engine,
                     )
                 )
             # Commit-or-dispose exactly once, gated on the generation. The commit

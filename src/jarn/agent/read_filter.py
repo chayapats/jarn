@@ -18,6 +18,18 @@ Wired as a ``middleware=`` entry on ``create_deep_agent`` (a jarn-owned seam), s
 deepagents in site-packages is never edited. It wraps tool *execution* via the
 ``wrap_tool_call`` / ``awrap_tool_call`` hook, which composes around the shared
 tool node regardless of stack position.
+
+Residual B — BEST-EFFORT, not a hard guarantee. This result-filter parses grep
+DISPLAY text (deepagents' formatted output), so it is DEFENSE-IN-DEPTH, not a hard
+boundary: it recovers each hit's file path by parsing the formatter's line
+structure. An attacker-controlled path that contains a NEWLINE can split the file
+header across lines and bypass the per-file drop, so a determined attacker who can
+name files (or grep across untrusted content) may still surface a matched line. The
+HARD controls remain (a) pre-execution sensitive-path GATING — which catches
+explicit read targets (an explicit ``read_file``/``glob`` of a secret) via the
+permission engine before any tool runs — and (b) OS-level isolation
+(``execution.backend: docker`` or an OS sandbox) for running untrusted code. This
+filter narrows the broad-grep exfiltration window; it does not replace either.
 """
 
 from __future__ import annotations
@@ -49,10 +61,18 @@ class ReadResultFilterMiddleware(AgentMiddleware):
     """Filter sensitive/denied file hits out of ``grep`` output (and back-stop a
     directly-denied ``read_file``) before the content reaches the model.
 
-    Holds a :class:`PermissionEngine` seeded from the SAME config the session's
-    engine uses, so both agree on sensitive-read globs and deny/allow rules. It
-    consults only rule-based matching (no session state), so a path approved
-    *once* at runtime is still filtered here — see the module residual notes.
+    Holds the session's AUTHORITATIVE :class:`PermissionEngine` — the controller's
+    request-scoped instance that gates tool calls and receives runtime
+    ``deny_session``/``remember`` (see ``jarn.agent.interrupts``). Because it shares
+    that one engine (rather than a fresh rule-only copy), a runtime SESSION deny of a
+    path is honored here too: a user who denies reading a secret has that file's hits
+    stripped from a later broad grep, on the main agent and every subagent/fan-out
+    stack alike (BUG A fix). It reuses the engine's
+    :meth:`~jarn.permissions.PermissionEngine.read_content_blocked` /
+    :meth:`~jarn.permissions.PermissionEngine.is_read_denied_path` — the single
+    source of truth for config deny/allow rules, sensitive-read globs, and session
+    denies/allows. See the module docstring's residual B note: this is best-effort
+    defense-in-depth (it parses grep display text), not a hard boundary.
     """
 
     def __init__(self, engine: PermissionEngine) -> None:
