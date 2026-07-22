@@ -153,17 +153,29 @@ def test_network_policy_scalar_overlay_not_split_into_char_globs(tmp_path):
     assert "must be a list" in str(exc.value)
 
 
-def test_network_policy_null_overlay_normalizes_not_typeerror(tmp_path):
-    """A null network allow in an overlay tier normalizes to [] via pydantic
-    rather than raising a raw TypeError from the [*base, *overlay] splat when
-    BOTH tiers define permissions.network."""
+def test_network_policy_null_overlay_preserves_base_allow(tmp_path):
+    """A null network allow in an overlay (project) tier means "inherit the base"
+    — it must PRESERVE the global allow list, NOT erase it to []. Erasing it lets
+    a project DELETE a restrictive global allowlist (privilege escalation, E)."""
     gp = tmp_path / "g.yaml"
     pp = tmp_path / "p.yaml"
     _write(gp, {"permissions": {"network": {"allow": ["*.github.com"]}}})
     _write(pp, {"permissions": {"network": {"allow": None, "deny": ["evil.com"]}}})
     cfg = load_config(global_path=gp, project_path=pp)
-    assert cfg.permissions.network.allow == []
+    assert cfg.permissions.network.allow == ["*.github.com"]  # base preserved
     assert cfg.permissions.network.deny == ["evil.com"]
+
+
+def test_network_policy_null_overlay_preserves_base_deny(tmp_path):
+    """A null network.deny in the project (overlay) tier must INHERIT the global
+    deny, not ERASE it — a null overlay is an empty contribution, so a project
+    can't wipe a restrictive global deny by setting it to null (FINDING E)."""
+    gp = tmp_path / "g.yaml"
+    pp = tmp_path / "p.yaml"
+    _write(gp, {"permissions": {"network": {"deny": ["metadata.internal"]}}})
+    _write(pp, {"permissions": {"network": {"deny": None}}})
+    cfg = load_config(global_path=gp, project_path=pp)
+    assert cfg.permissions.network.deny == ["metadata.internal"]  # base preserved
 
 
 def test_sensitive_read_globs_custom_survives_merge(tmp_path):

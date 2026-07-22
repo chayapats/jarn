@@ -642,3 +642,86 @@ def test_mcp_resource_opaque_credential_is_redacted(monkeypatch):
     assert _OPAQUE_CRED not in msg
     assert "credential was [REDACTED]" in msg
     assert excinfo.value.__cause__ is None  # raw cause dropped so it can't leak
+
+
+# ── Rotated credential: the OLD (build-time) value is redacted, not a re-resolve ─
+# The credential VALUES scrubbed from an error must be captured at the moment the
+# connection is built (what the LIVE client actually sends), never re-resolved at
+# error time. If a credential rotates (env/keychain/file changes) AFTER the client
+# was built, the live client still holds the OLD value — so a server can echo the
+# OLD credential in an error. Re-resolving at error time yields the NEW value, which
+# fails to scrub the OLD one, leaking it (prompt errors reach the model turn).
+
+#: The credential the connection is built with (opaque: only exact-value scrubbing
+#: removes it) and the value it rotates to afterwards.
+_OLD_CRED = "odd!credential#42"
+_NEW_CRED = "rotated!credential#77"
+
+
+def _patch_rotating_resolve(monkeypatch, ref):
+    """Model a credential rotation for *ref*: ``resolve(ref)`` yields ``_OLD_CRED``
+    the FIRST time (the connection build) and ``_NEW_CRED`` on every later call (a
+    re-resolution at error time). Any other value passes through unchanged."""
+    import jarn.extensibility.mcp as mcp_mod
+
+    calls = {"n": 0}
+
+    def _resolve(value, *args, **kwargs):
+        if value == ref:
+            calls["n"] += 1
+            return _OLD_CRED if calls["n"] == 1 else _NEW_CRED
+        return value
+
+    monkeypatch.setattr(mcp_mod, "resolve", _resolve)
+
+
+def test_mcp_prompt_rotated_credential_old_value_is_redacted(monkeypatch):
+    """A prompt error echoing the credential the LIVE client holds (the OLD value)
+    must be scrubbed even after the underlying credential rotates: the value is
+    captured at connection-build time, not re-resolved at fetch time."""
+    _patch_rotating_resolve(monkeypatch, "${MCP_ROT_CRED}")
+
+    def _echo_old(server, name, arguments):
+        # The live client still sends the OLD credential; the server echoes it back.
+        raise RuntimeError(f"MCP rejected request; credential was {_OLD_CRED}")
+
+    _patch_client(monkeypatch, prompts={"srv": [_greet_meta()]}, prompt_fn=_echo_old)
+    server = MCPServer(
+        name="srv",
+        transport="http",
+        url="https://mcp.example/v1",
+        headers={"X-Api-Key": "${MCP_ROT_CRED}"},
+    )
+    # Connection built here with the OLD credential; the command is registered and
+    # invoked later (below), after the credential has rotated.
+    result = asyncio.run(load_mcp_prompts([server]))
+
+    out = result.prompts["mcp__srv__greet"].render("Ada")  # must NOT raise
+    assert _OLD_CRED not in out  # the value the live client actually sent
+    assert _NEW_CRED not in out  # the re-resolved value must not appear either
+    assert "credential was [REDACTED]" in out
+
+
+def test_mcp_resource_rotated_credential_old_value_is_redacted(monkeypatch):
+    """A resource read error echoing the OLD (build-time) credential is scrubbed
+    from the raised error even after the credential rotates — the captured value,
+    not a re-resolution, drives redaction."""
+    _patch_rotating_resolve(monkeypatch, "${MCP_ROT_CRED}")
+
+    def _echo_old(server, uris):
+        raise RuntimeError(f"MCP rejected request; credential was {_OLD_CRED}")
+
+    _patch_client(monkeypatch, resource_fn=_echo_old)
+    server = MCPServer(
+        name="srv",
+        transport="http",
+        url="https://mcp.example/v1",
+        headers={"X-Api-Key": "${MCP_ROT_CRED}"},
+    )
+    with pytest.raises(Exception) as excinfo:  # noqa: PT011 - assert on message
+        asyncio.run(read_mcp_resource([server], "srv", "res://x"))
+    msg = str(excinfo.value)
+    assert _OLD_CRED not in msg
+    assert _NEW_CRED not in msg
+    assert "credential was [REDACTED]" in msg
+    assert excinfo.value.__cause__ is None  # raw cause dropped so it can't leak

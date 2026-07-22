@@ -535,14 +535,14 @@ def test_relative_deny_covers_main_and_subagent_absolute_grep(base_config, tmp_p
 
 
 # ---------------------------------------------------------------------------
-# Second-eye round-5 #1/#2 — PRODUCTION virtual-mode backend. The local backend
-# (backends_factory: ``virtual_mode=True``) reports grep hits as VIRTUAL-absolute
-# paths (``/secrets/notes.txt``), NOT the host-absolute paths the round-4 tests
-# above used. Without display->host translation the engine reads that as
-# host-absolute (outside the project root), so a RELATIVE sensitive-glob /
-# session-deny missed it and the secret LEAKED in production. The filter now
-# rebases virtual headers to host identity via ``virtual_root`` before the engine
-# sees them; the engine also normalizes dot-relative rule/glob spellings (#2).
+# Second-eye round-5/6 #1/#2 — PRODUCTION virtual-mode backend. The local backend
+# (backends_factory: ``virtual_mode=True``) reports read/grep paths as
+# VIRTUAL-absolute (``/secrets/notes.txt``), NOT the host-absolute paths the
+# round-4 tests above used. The engine now canonicalizes virtual READ targets to
+# host identity when ``engine.virtual_reads`` is set (round-6 #1) — at BOTH the
+# pre-exec gate (see test_permissions) AND this result filter — so a RELATIVE
+# sensitive-glob / session-deny matches by file identity and a remembered allow of
+# the displayed path takes effect. It also normalizes dot-relative globs (#2).
 
 
 def _virtual_grep_message(tmp_path) -> ToolMessage:
@@ -562,17 +562,22 @@ def _grep_req() -> _Req:
     )
 
 
+def _virtual_engine(tmp_path, **rule_kw) -> PermissionEngine:
+    """A project-rooted engine configured as the production local backend is:
+    ``virtual_reads=True`` (its read/grep paths are virtual-absolute)."""
+    engine = PermissionEngine(rules=PermissionRules(**rule_kw), project_root=tmp_path)
+    engine.virtual_reads = True
+    return engine
+
+
 def test_virtual_relative_sensitive_glob_redacts_virtual_header(tmp_path):
     """PRODUCTION repro (#1): a RELATIVE ``sensitive_read_glob`` (``secrets/*.txt``)
-    redacts a VIRTUAL grep header. Leaks without the filter's ``virtual_root``
-    rebasing — the exact round-5 blocker."""
+    redacts a VIRTUAL grep header. Leaks without ``engine.virtual_reads``
+    canonicalization — the exact round-5 blocker."""
     _make_secrets_tree(tmp_path)
     msg = _virtual_grep_message(tmp_path)
-    engine = PermissionEngine(
-        rules=PermissionRules(sensitive_read_globs=["secrets/*.txt"]),
-        project_root=tmp_path,
-    )
-    mw = ReadResultFilterMiddleware(engine, virtual_root=tmp_path)
+    engine = _virtual_engine(tmp_path, sensitive_read_globs=["secrets/*.txt"])
+    mw = ReadResultFilterMiddleware(engine)
     out = mw.wrap_tool_call(_grep_req(), lambda _r: msg)
     assert "leaked-secret-material" not in out.content  # secret redacted
     assert "/src/app.py" in out.content                 # benign virtual hit preserved
@@ -583,8 +588,8 @@ def test_virtual_relative_session_deny_redacts_virtual_header(tmp_path):
     redacts the VIRTUAL grep header for the same file."""
     _make_secrets_tree(tmp_path)
     msg = _virtual_grep_message(tmp_path)
-    engine = PermissionEngine(rules=PermissionRules(), project_root=tmp_path)
-    mw = ReadResultFilterMiddleware(engine, virtual_root=tmp_path)
+    engine = _virtual_engine(tmp_path)
+    mw = ReadResultFilterMiddleware(engine)
     req = _grep_req()
     before = mw.wrap_tool_call(req, lambda _r: msg)
     assert "leaked-secret-material" in before.content   # ordinary file: not yet denied
@@ -599,35 +604,49 @@ def test_virtual_dot_relative_sensitive_glob_redacts_virtual_header(tmp_path):
     virtual header — engine dot-segment pattern normalization."""
     _make_secrets_tree(tmp_path)
     msg = _virtual_grep_message(tmp_path)
-    engine = PermissionEngine(
-        rules=PermissionRules(sensitive_read_globs=["./secrets/*.txt"]),
-        project_root=tmp_path,
-    )
-    mw = ReadResultFilterMiddleware(engine, virtual_root=tmp_path)
+    engine = _virtual_engine(tmp_path, sensitive_read_globs=["./secrets/*.txt"])
+    mw = ReadResultFilterMiddleware(engine)
     out = mw.wrap_tool_call(_grep_req(), lambda _r: msg)
     assert "leaked-secret-material" not in out.content
     assert "/src/app.py" in out.content
 
 
 def test_virtual_no_over_redaction_of_benign_virtual_hits(tmp_path):
-    """The rebasing must NOT redact benign hits: with a secrets-only glob the source
-    file's virtual header and body survive (no false positives from translation)."""
+    """Canonicalization must NOT redact benign hits: with a secrets-only glob the
+    source file's virtual header and body survive (no false positives)."""
     _make_secrets_tree(tmp_path)
     msg = _virtual_grep_message(tmp_path)
-    engine = PermissionEngine(
-        rules=PermissionRules(sensitive_read_globs=["secrets/*.txt"]),
-        project_root=tmp_path,
-    )
-    mw = ReadResultFilterMiddleware(engine, virtual_root=tmp_path)
+    engine = _virtual_engine(tmp_path, sensitive_read_globs=["secrets/*.txt"])
+    mw = ReadResultFilterMiddleware(engine)
     out = mw.wrap_tool_call(_grep_req(), lambda _r: msg)
     assert "/src/app.py" in out.content
     assert "handles the PRIVATE KEY lookup" in out.content
 
 
+def test_virtual_remembered_allow_surfaces_denied_looking_hit(tmp_path):
+    """#1 precedence/escape-hatch (round-6 B): a user who APPROVES+REMEMBERS the
+    DISPLAYED virtual path gets its later broad-grep hit SURFACED (allow beats
+    sensitive), because the remembered allow is stored by host identity too."""
+    _make_secrets_tree(tmp_path)
+    msg = _virtual_grep_message(tmp_path)
+    engine = _virtual_engine(tmp_path, sensitive_read_globs=["secrets/*.txt"])
+    mw = ReadResultFilterMiddleware(engine)
+    # Baseline: sensitive → redacted.
+    assert "leaked-secret-material" not in mw.wrap_tool_call(_grep_req(), lambda _r: msg).content
+    # User approves+remembers the DISPLAYED virtual path (as interrupts.py does).
+    from jarn.permissions import RememberScope
+
+    engine.remember(
+        Action(ActionKind.READ, target="/secrets/notes.txt"), RememberScope.SESSION
+    )
+    out = mw.wrap_tool_call(_grep_req(), lambda _r: msg)
+    assert "leaked-secret-material" in out.content  # explicit allow escape hatch works
+
+
 def test_virtual_relative_deny_covers_main_and_subagent(base_config, tmp_path):
-    """End-to-end WIRING (#1): ``build_runtime`` threads the virtual root to BOTH the
-    main and general-purpose read filters, so a RELATIVE session deny redacts a
-    PRODUCTION virtual grep header on both stacks (main agent + task/fan-out target)."""
+    """End-to-end WIRING (#1): ``build_runtime`` sets ``engine.virtual_reads`` so BOTH
+    the main and general-purpose read filters (sharing the engine) redact a PRODUCTION
+    virtual grep header from a RELATIVE session deny (main agent + task/fan-out)."""
     from unittest.mock import patch
 
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -646,9 +665,10 @@ def test_virtual_relative_deny_covers_main_and_subagent(base_config, tmp_path):
     assert gp is not None, "the general-purpose sub-graph (task/fan-out target) must exist"
     gp_filters = _find_subagent_read_filters(gp)
     assert len(main_filters) == 1 and len(gp_filters) == 1
-    # Wiring proof: build_runtime passed the virtual-root anchor to BOTH filters.
-    assert main_filters[0]._virtual_root == tmp_path
-    assert gp_filters[0]._virtual_root == tmp_path
+    # Wiring proof: build_runtime marked the shared engine as virtual-reads, and both
+    # filters reference that same engine.
+    assert engine.virtual_reads is True
+    assert main_filters[0]._engine is engine and gp_filters[0]._engine is engine
 
     engine.deny_session(Action(ActionKind.READ, target="secrets/notes.txt"))
     msg = _virtual_grep_message(tmp_path)

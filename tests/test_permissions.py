@@ -605,3 +605,91 @@ def test_no_network_policy_leaves_curl_unaffected():
     assert eng.evaluate(
         Action(ActionKind.SHELL, "curl https://anything.com")
     ).decision is Decision.ALLOW
+
+
+# -- Virtual-mode READ canonicalization (second-eye round-6 #1/#3) ----------
+#
+# The local backend presents read/grep paths in a VIRTUAL namespace rooted at
+# project_root ('/x' == <root>/x on the host). When ``engine.virtual_reads`` is
+# set the engine canonicalizes READ targets to host identity at EVERY entry — the
+# pre-exec gate here AND the result filter — so a relative sensitive-glob/deny
+# matches, the explicit-allow escape hatch works, and (round-6 #3) a real
+# --add-dir path is not falsely rebased.
+
+
+def test_virtual_direct_read_asks_on_relative_sensitive_glob(tmp_path):
+    """round-6 #1 (pre-exec gate): a direct read_file of a VIRTUAL sensitive path
+    ASKs (not silent ALLOW) when the sensitive glob is RELATIVE."""
+    proj = tmp_path / "project"
+    proj.mkdir()
+    eng = PermissionEngine(
+        rules=PermissionRules(sensitive_read_globs=["secrets/*.txt"]),
+        project_root=proj,
+    )
+    eng.virtual_reads = True
+    assert eng.evaluate(
+        Action(ActionKind.READ, target="/secrets/notes.txt")  # virtual-absolute
+    ).decision is Decision.ASK
+    # The host spelling of the SAME file also ASKs (file-identity match).
+    assert eng.evaluate(
+        Action(ActionKind.READ, target=str(proj / "secrets" / "notes.txt"))
+    ).decision is Decision.ASK
+
+
+def test_virtual_reads_flag_is_load_bearing(tmp_path):
+    """Without ``virtual_reads`` (docker/sandbox, and the pre-fix behavior) a virtual
+    sensitive path is read as host-absolute, misses the relative glob, and is
+    auto-ALLOWED — the exact leak the flag closes. Guards the fix's necessity."""
+    proj = tmp_path / "project"
+    proj.mkdir()
+    eng = PermissionEngine(
+        rules=PermissionRules(sensitive_read_globs=["secrets/*.txt"]),
+        project_root=proj,
+    )  # virtual_reads defaults False
+    assert eng.evaluate(
+        Action(ActionKind.READ, target="/secrets/notes.txt")
+    ).decision is Decision.ALLOW
+
+
+def test_virtual_remembered_allow_beats_sensitive_at_gate(tmp_path):
+    """round-6 #1 (precedence): remembering an allow for the DISPLAYED virtual path
+    makes a later evaluate of the same virtual path ALLOW — one precedence-correct
+    decision (deny>allow>sensitive), stored by host identity."""
+    proj = tmp_path / "project"
+    proj.mkdir()
+    eng = PermissionEngine(
+        rules=PermissionRules(sensitive_read_globs=["secrets/*.txt"]),
+        project_root=proj,
+    )
+    eng.virtual_reads = True
+    act = Action(ActionKind.READ, target="/secrets/notes.txt")
+    assert eng.evaluate(act).decision is Decision.ASK
+    eng.remember(act, RememberScope.SESSION)
+    assert eng.evaluate(act).decision is Decision.ALLOW  # explicit allow wins
+
+
+def test_virtual_canonicalization_preserves_added_root_paths(tmp_path):
+    """round-6 #3: ``_canonical_read_target`` rebases a VIRTUAL path under the primary
+    root but leaves a HOST-absolute --add-dir path unchanged (the backend returns
+    those as-is), and is idempotent — so an unrelated primary-root rule can't falsely
+    flag a benign added-root read."""
+    proj = tmp_path / "project"
+    proj.mkdir()
+    added = tmp_path / "added"
+    added.mkdir()
+    eng = PermissionEngine(rules=PermissionRules(), project_root=proj, roots=(added,))
+    eng.virtual_reads = True
+    virt = "/secrets/notes.txt"
+    host_added = str(added / "notes.txt")
+    host_primary = str(proj / "secrets" / "notes.txt")
+    # Virtual-absolute → rebased under the primary root.
+    assert eng._canonical_read_target(virt) == host_primary
+    # Idempotent: a host path already under the primary root is untouched.
+    assert eng._canonical_read_target(host_primary) == host_primary
+    # A real --add-dir host path is preserved (NOT rebased under the primary root).
+    assert eng._canonical_read_target(host_added) == host_added
+    # A glob pattern is never rebased (it's a pattern, not a concrete file).
+    assert eng._canonical_read_target("/secrets/*.txt") == "/secrets/*.txt"
+    # OFF → no-op (docker/sandbox host paths pass straight through).
+    eng.virtual_reads = False
+    assert eng._canonical_read_target(virt) == virt

@@ -79,15 +79,32 @@ def project_dangerous(raw: dict[str, Any]) -> dict[str, Any]:
     (surfaced separately from the safety-increasing ``permissions.deny``).
     """
     danger: dict[str, Any] = {k: raw[k] for k in raw if k not in SAFE_PROJECT_KEYS}
-    perms = raw.get("permissions") or {}
+    perms = raw.get("permissions")
+    if not isinstance(perms, dict):
+        # A malformed ``permissions`` block (scalar/list) is untrusted raw input we
+        # can't safely introspect — surface it as trust-relevant (fail safe) rather
+        # than crash with a raw AttributeError (FINDING F). Config validation raises
+        # the clean ConfigError later.
+        if perms is not None:
+            danger["permissions"] = perms
+        return danger
     allow = perms.get("allow")
     if allow:
         danger["permissions.allow"] = allow
-    net_allow = (perms.get("network") or {}).get("allow")
-    if net_allow:
-        # An untrusted repo could *widen* egress past a restrictive global
-        # allowlist — surface it so trust is required (and it's fingerprinted).
-        danger["permissions.network.allow"] = net_allow
+    network = perms.get("network")
+    if isinstance(network, dict):
+        if "allow" in network:
+            # ANY explicitly-supplied ``network.allow`` (including ``null``/``[]``)
+            # is trust-relevant: a project could *widen* egress past a restrictive
+            # global allowlist. Surface it so trust is required (and it's
+            # fingerprinted) — an ``is`` membership test, not a truthiness check
+            # that would miss ``null`` (FINDING E).
+            danger["permissions.network.allow"] = network["allow"]
+    elif network is not None:
+        # A malformed (scalar/list/int) ``network`` value can't be introspected —
+        # treat it as trust-relevant raw input (fail safe) instead of raising a raw
+        # AttributeError (FINDING F); config validation raises the clean error.
+        danger["permissions.network"] = network
     sensitive = perms.get("sensitive_read_globs")
     if sensitive is not None:
         # A project-supplied ``sensitive_read_globs`` REPLACES the defaults, so it
@@ -119,8 +136,16 @@ def sanitize_project(raw: dict[str, Any]) -> dict[str, Any]:
             if k not in ("allow", "sensitive_read_globs")
         }
         net = trimmed.get("network")
-        if isinstance(net, dict) and "allow" in net:
-            net_trimmed = {k: v for k, v in net.items() if k != "allow"}
+        if isinstance(net, dict):
+            # Strip ``allow`` (would widen egress) and DROP a null ``deny`` — a null
+            # deny contributes nothing and must not be retained as
+            # "safety-increasing"; retaining it would signal intent to clear the
+            # global deny (FINDING E). A real ``deny`` list is kept.
+            net_trimmed = {
+                k: v
+                for k, v in net.items()
+                if k != "allow" and not (k == "deny" and v is None)
+            }
             if net_trimmed:
                 trimmed["network"] = net_trimmed
             else:

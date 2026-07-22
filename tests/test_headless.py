@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -497,6 +498,130 @@ async def test_headless_telemetry_off_records_nothing(
     ctrl = captured["controller"]
     assert not ctrl.telemetry.enabled
     assert ctrl.telemetry._buffer == []
+
+
+def _turn_events(ctrl) -> list:
+    """The buffered 'turn' telemetry rows recorded on the controller."""
+    return [row for row in ctrl.telemetry._buffer if row.get("event") == "turn"]
+
+
+@pytest.mark.asyncio
+async def test_headless_records_turn_on_error_event(
+    tmp_path, monkeypatch, base_config
+):
+    """A FAILED headless run (driver yields an ERROR event) still records EXACTLY
+    ONE 'turn' telemetry event.
+
+    Bug G: the ERROR-event raise jumped past ``record_turn`` (which sat only on
+    the success path), so a failed unattended / CI run flushed an empty telemetry
+    buffer at ``aclose()`` while a successful one recorded a turn. The REPL turn
+    path (repl/turn.py) records the turn in a ``finally`` after the stream ends,
+    regardless of outcome — headless must match.
+    """
+    from jarn.agent.session import Event
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    base_config.observability.telemetry = True
+
+    async def _erroring(prompt, *, resume: bool = False):
+        yield Event(kind=EventKind.TEXT, text="partial")
+        yield Event(kind=EventKind.ERROR, text="provider failed", data={})
+
+    captured: dict = {}
+    _spy_controller_init(monkeypatch, captured)
+    _stub_controller(monkeypatch, run_turn_side_effect=_erroring)
+
+    with pytest.raises(HeadlessFailure):
+        await _run_headless("do the thing", base_config, tmp_path)
+
+    ctrl = captured["controller"]
+    assert ctrl.telemetry.enabled
+    assert len(_turn_events(ctrl)) == 1, (
+        "a failed (ERROR-event) headless run must still record exactly one 'turn'"
+    )
+
+
+@pytest.mark.asyncio
+async def test_headless_records_turn_on_refusal(
+    tmp_path, monkeypatch, base_config
+):
+    """An approval refusal mid-turn still records EXACTLY ONE 'turn' telemetry event.
+
+    The refusal raises out of the event loop before the success-path record_turn;
+    the turn must still be recorded (via the finally), exactly once.
+    """
+    from jarn.agent.session import Event
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    base_config.observability.telemetry = True
+
+    async def _refused(prompt, *, resume: bool = False):
+        yield Event(
+            kind=EventKind.APPROVAL,
+            text="rejected: write_file",
+            data={"target": "write_file"},
+        )
+
+    captured: dict = {}
+    _spy_controller_init(monkeypatch, captured)
+    _stub_controller(monkeypatch, run_turn_side_effect=_refused)
+
+    with pytest.raises(HeadlessRefusal):
+        await _run_headless("write a file", base_config, tmp_path)
+
+    ctrl = captured["controller"]
+    assert len(_turn_events(ctrl)) == 1, (
+        "a refused headless run must still record exactly one 'turn'"
+    )
+
+
+@pytest.mark.asyncio
+async def test_headless_records_turn_on_cancellation(
+    tmp_path, monkeypatch, base_config
+):
+    """A cancelled headless run still records EXACTLY ONE 'turn' telemetry event."""
+    from jarn.agent.session import Event
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    base_config.observability.telemetry = True
+
+    async def _cancelled(prompt, *, resume: bool = False):
+        yield Event(kind=EventKind.TEXT, text="starting")
+        raise asyncio.CancelledError
+
+    captured: dict = {}
+    _spy_controller_init(monkeypatch, captured)
+    _stub_controller(monkeypatch, run_turn_side_effect=_cancelled)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _run_headless("long task", base_config, tmp_path)
+
+    ctrl = captured["controller"]
+    assert len(_turn_events(ctrl)) == 1, (
+        "a cancelled headless run must still record exactly one 'turn'"
+    )
+
+
+@pytest.mark.asyncio
+async def test_headless_records_exactly_one_turn_on_success(
+    tmp_path, monkeypatch, base_config
+):
+    """The success path records EXACTLY ONE 'turn' — no double-record after the
+    fix moves recording into a finally (guards against a success + finally double).
+    """
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    base_config.observability.telemetry = True
+
+    captured: dict = {}
+    _spy_controller_init(monkeypatch, captured)
+    _stub_controller(monkeypatch, text="done", tool_events=1)
+
+    await _run_headless("do the thing", base_config, tmp_path)
+
+    ctrl = captured["controller"]
+    assert len(_turn_events(ctrl)) == 1, (
+        "a successful headless run must record exactly one 'turn' (no double-record)"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -222,7 +222,11 @@ def _namespace_tool(tool: Any, server_name: str) -> Any:
 
 
 def _resolve_secret_map(
-    mapping: dict[str, str], *, kind: str, server: str
+    mapping: dict[str, str],
+    *,
+    kind: str,
+    server: str,
+    sink: set[str] | None = None,
 ) -> dict[str, str]:
     """Resolve ``${ENV}`` / ``keychain:`` / ``file:`` references in a header/env map.
 
@@ -234,52 +238,69 @@ def _resolve_secret_map(
     reference, never the secret. A literal value (no recognised prefix) passes
     through unchanged. A resolution failure is raised as ``ValueError`` (so
     :func:`build_client` records the server as ``error`` in isolation) with a
-    secret-redacted message so no key value leaks into logs or health output."""
+    secret-redacted message so no key value leaks into logs or health output.
+
+    When ``sink`` is supplied, every resolved non-empty value is also recorded
+    into it. This is how :func:`build_client` captures the exact credential VALUES
+    the live connection will send — snapshotted here, at build, so error-time
+    redaction never has to re-resolve the reference (a re-resolve after a rotation
+    would miss the old value the live client still holds; see :func:`_known_secrets`)."""
     resolved: dict[str, str] = {}
     for key, value in mapping.items():
         try:
-            resolved[key] = resolve(value) or ""
+            concrete = resolve(value) or ""
         except SecretResolutionError as exc:
             raise ValueError(
                 redact_secrets(f"MCP server {server!r} {kind} {key!r}: {exc}")
             ) from exc
+        resolved[key] = concrete
+        if sink is not None and concrete:
+            sink.add(concrete)
     return resolved
 
 
-def _server_known_secrets(server: MCPServer) -> set[str]:
-    """Resolve the server's header/env secret VALUES for verbatim redaction.
+#: Attribute name under which :func:`build_client` stashes the per-server captured
+#: credential VALUES on the constructed client (``{server_name: set[str]}``).
+_KNOWN_SECRETS_ATTR = "_jarn_known_secrets"
+
+
+def _known_secrets(client: Any, name: str) -> set[str] | None:
+    """The header/env credential VALUES captured for server *name* at the moment
+    its connection was built (stashed on *client* by :func:`build_client`).
+
+    This is the SINGLE source for verbatim (``redact_secrets(..., known=…)``)
+    scrubbing at every error boundary. It is an IMMUTABLE snapshot of exactly what
+    the live client sends — deliberately NOT a re-resolution of the config
+    reference at error time. Re-resolving would miss a credential that rotated
+    after the connection was built: the live client still holds the OLD value, so
+    a malicious/compromised server can echo that OLD credential back in an error
+    (prompt errors reach the model turn); a re-resolve yields the NEW value and
+    fails to scrub the OLD one. Reading the build-time snapshot closes that leak.
 
     The pattern net in :func:`jarn.config.secrets.redact_secrets` only recognises
-    secret-SHAPED strings (``Bearer …``, ``sk-…``, vendor prefixes). A
-    malicious/compromised server can echo the credential we configured FOR it back
-    inside an error message with no label, where it survives the pattern net and
-    (for prompts) reaches the model turn. Passing these resolved values as
-    ``redact_secrets(..., known=…)`` scrubs them verbatim regardless of shape.
-
-    Resolution is best-effort and mirrors :func:`to_connection` (same ``resolve``
-    helper): a literal passes through unchanged, and any resolution failure is
-    ignored — the point is to gather live credential values to scrub, never to
-    raise. Values shorter than 8 chars are dropped by ``redact_secrets`` itself."""
-    known: set[str] = set()
-    for mapping in (server.headers, server.env):
-        for value in (mapping or {}).values():
-            try:
-                resolved = resolve(value)
-            except SecretResolutionError:
-                resolved = value
-            if resolved:
-                known.add(resolved)
-    return known
+    secret-SHAPED strings, so an opaque, unlabelled credential survives it — these
+    captured values scrub it verbatim regardless of shape. Values shorter than 8
+    chars are dropped by ``redact_secrets`` itself."""
+    captured = getattr(client, _KNOWN_SECRETS_ATTR, None)
+    if not captured:
+        return None
+    return captured.get(name) or None
 
 
-def to_connection(server: MCPServer) -> dict[str, Any]:
+def to_connection(
+    server: MCPServer, *, secrets_sink: set[str] | None = None
+) -> dict[str, Any]:
     """Build the per-server connection dict for MultiServerMCPClient.
 
     Header and env values are secret-resolved here (at spawn), not at config
     load, so a ``${ENV}`` / ``keychain:`` / ``file:`` reference in ``headers`` or
     ``env`` becomes its concrete secret only in the connection dict handed to the
     transport — the persisted config keeps the reference. See
-    :func:`_resolve_secret_map`."""
+    :func:`_resolve_secret_map`.
+
+    When ``secrets_sink`` is supplied, the concrete credential VALUES resolved for
+    this connection are recorded into it — the immutable snapshot :func:`build_client`
+    carries to every error-redaction boundary (see :func:`_known_secrets`)."""
     if server.transport == "stdio":
         if not server.command:
             raise ValueError(f"MCP server {server.name!r} (stdio) needs a 'command'.")
@@ -287,7 +308,9 @@ def to_connection(server: MCPServer) -> dict[str, Any]:
             "transport": "stdio",
             "command": server.command,
             "args": list(server.args),
-            "env": _resolve_secret_map(dict(server.env), kind="env", server=server.name)
+            "env": _resolve_secret_map(
+                dict(server.env), kind="env", server=server.name, sink=secrets_sink
+            )
             or None,
         }
     if server.transport in ("http", "streamable_http", "sse"):
@@ -297,7 +320,10 @@ def to_connection(server: MCPServer) -> dict[str, Any]:
         conn: dict[str, Any] = {"transport": transport, "url": server.url}
         if server.headers:
             conn["headers"] = _resolve_secret_map(
-                dict(server.headers), kind="header", server=server.name
+                dict(server.headers),
+                kind="header",
+                server=server.name,
+                sink=secrets_sink,
             )
         return conn
     raise ValueError(f"MCP server {server.name!r}: unknown transport {server.transport!r}")
@@ -321,9 +347,14 @@ def build_client(
 
     connections: dict[str, Any] = {}
     bad: dict[str, str] = {}
+    # Per-server snapshot of the credential VALUES each connection was built with,
+    # captured at build so error-time redaction never re-resolves a reference (a
+    # re-resolve after a rotation would miss the value the live client holds).
+    known_by_name: dict[str, set[str]] = {}
     for server in enabled:
+        sink: set[str] = set()
         try:
-            conn = to_connection(server)
+            conn = to_connection(server, secrets_sink=sink)
         except ValueError as exc:
             logger.warning("Skipping MCP server: %s", exc)
             bad[server.name] = str(exc)
@@ -348,9 +379,14 @@ def build_client(
         ):
             conn["httpx_client_factory"] = _egress_httpx_client_factory(network_policy)
         connections[server.name] = conn
+        known_by_name[server.name] = sink
     if not connections:
         return None, list(bad.items())
-    return MultiServerMCPClient(connections), list(bad.items())
+    client = MultiServerMCPClient(connections)
+    # Stash the build-time credential snapshot so every error boundary redacts
+    # against what the live client actually sends (see _known_secrets).
+    setattr(client, _KNOWN_SECRETS_ATTR, known_by_name)
+    return client, list(bad.items())
 
 
 async def load_mcp_tools(
@@ -379,7 +415,6 @@ async def load_mcp_tools(
         return result
 
     timeout_by_name = {s.name: s.timeout_secs for s in servers if s.enabled}
-    server_by_name = {s.name: s for s in servers if s.enabled}
 
     async def _load_one(name: str):
         """Load one server's tools in isolation; never raises."""
@@ -394,10 +429,9 @@ async def load_mcp_tools(
             return name, None, f"timed out after {secs}s"
         except Exception as exc:  # noqa: BLE001 - one bad server must not kill startup
             # A compromised server can echo the configured credential in its error;
-            # scrub the configured header/env VALUES verbatim (known=…) since the
-            # pattern net misses an opaque, unlabelled secret.
-            srv = server_by_name.get(name)
-            known = _server_known_secrets(srv) if srv else None
+            # scrub the VALUES captured when this connection was built (known=…) since
+            # the pattern net misses an opaque, unlabelled secret.
+            known = _known_secrets(client, name)
             redacted = redact_secrets(str(exc), known=known)
             logger.warning("Failed to load MCP tools from %s: %s", name, redacted)
             return name, None, redacted
@@ -579,10 +613,13 @@ def _build_prompt_command(
         # policy tightening), so it must independently refuse a denied HTTP host
         # rather than trusting the discovery-time client filtering. stdio has no
         # egress host and is never blocked. The per-server timeout is carried in
-        # so a stalled get_prompt cannot hang the REPL (BUG 2). The server's
-        # resolved header/env credential values are threaded through so an opaque
-        # secret echoed in an error is scrubbed before it reaches the model turn.
-        known = _server_known_secrets(server_obj)
+        # so a stalled get_prompt cannot hang the REPL (BUG 2). The credential
+        # values captured when THIS client's connection was built are threaded
+        # through so an opaque secret echoed in an error is scrubbed before it
+        # reaches the model turn — and, because the command is invoked long after
+        # discovery, the captured snapshot (not a re-resolve) is what the live
+        # client still sends, so a credential rotation cannot leak the old value.
+        known = _known_secrets(client, server)
         reason = _network_block_reason(server_obj, network_policy)
         if reason is not None:
             return redact_secrets(reason, known=known)
@@ -631,9 +668,7 @@ async def load_mcp_prompts(
         except TimeoutError:
             return name, None, f"timed out after {secs}s"
         except Exception as exc:  # noqa: BLE001 - one bad server must not kill discovery
-            srv = server_by_name.get(name)
-            redacted = redact_secrets(str(exc), known=_server_known_secrets(srv)
-                                      if srv else None)
+            redacted = redact_secrets(str(exc), known=_known_secrets(client, name))
             logger.warning("Failed to list MCP prompts from %s: %s", name, redacted)
             return name, None, redacted
 
@@ -642,9 +677,8 @@ async def load_mcp_prompts(
     ):
         if err is not None:
             result.health[name] = "error"
-            srv = server_by_name.get(name)
             result.errors[name] = redact_secrets(
-                err, known=_server_known_secrets(srv) if srv else None
+                err, known=_known_secrets(client, name)
             )
             continue
         result.health[name] = "ok"
@@ -706,7 +740,6 @@ async def list_mcp_resources(
         return result
 
     timeout_by_name = {s.name: s.timeout_secs for s in servers if s.enabled}
-    server_by_name = {s.name: s for s in servers if s.enabled}
 
     async def _one(name: str) -> tuple[str, list[Any] | None, str | None]:
         secs = timeout_by_name.get(name, 30)
@@ -718,9 +751,7 @@ async def list_mcp_resources(
         except TimeoutError:
             return name, None, f"timed out after {secs}s"
         except Exception as exc:  # noqa: BLE001 - one bad server must not kill discovery
-            srv = server_by_name.get(name)
-            redacted = redact_secrets(str(exc), known=_server_known_secrets(srv)
-                                      if srv else None)
+            redacted = redact_secrets(str(exc), known=_known_secrets(client, name))
             logger.warning("Failed to list MCP resources from %s: %s", name, redacted)
             return name, None, redacted
 
@@ -729,9 +760,8 @@ async def list_mcp_resources(
     ):
         if err is not None:
             result.health[name] = "error"
-            srv = server_by_name.get(name)
             result.errors[name] = redact_secrets(
-                err, known=_server_known_secrets(srv) if srv else None
+                err, known=_known_secrets(client, name)
             )
             continue
         result.health[name] = "ok"
@@ -780,10 +810,12 @@ async def read_mcp_resource(
         raise ValueError(f"MCP server {server!r} is not configured or not enabled.")
     srv = next((s for s in servers if s.name == server and s.enabled), None)
     secs = srv.timeout_secs if srv is not None else 30
-    # The server's resolved header/env credential values, scrubbed verbatim from any
-    # surfaced error so an opaque secret the server echoes back can't leak (the
-    # pattern net alone misses an unlabelled value).
-    known = _server_known_secrets(srv) if srv is not None else None
+    # The credential values captured when THIS client's connection was built,
+    # scrubbed verbatim from any surfaced error so an opaque secret the server
+    # echoes back can't leak (the pattern net alone misses an unlabelled value).
+    # Using the build-time snapshot, not a re-resolve, means a credential that
+    # rotated after the connection was built cannot leak its old value.
+    known = _known_secrets(client, server)
     try:
         blobs = await asyncio.wait_for(
             client.get_resources(server, uris=uri), timeout=secs

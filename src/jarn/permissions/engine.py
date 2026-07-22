@@ -120,6 +120,17 @@ class PermissionEngine:
     #: per-root ``resolve()`` symlink discipline as the primary. Context loading
     #: and checkpoint/undo stay PRIMARY-ONLY — these widen the WRITE scope only.
     roots: tuple[Path, ...] = ()
+    #: True when the execution backend formats READ paths in a VIRTUAL namespace
+    #: rooted at ``project_root`` (the local backend's ``virtual_mode=True``): a
+    #: grep header / read_file target ``/secrets/notes.txt`` then denotes
+    #: ``<project_root>/secrets/notes.txt`` on the host, NOT host-absolute ``/``.
+    #: When set, READ targets are canonicalized to host identity
+    #: (:meth:`_canonical_read_target`) at every entry — the pre-exec gate AND the
+    #: result filter — so a relative sensitive-glob/deny matches by file identity
+    #: and a remembered allow of the displayed path takes effect. OFF (default) for
+    #: docker/sandbox (real host/container paths) — no guessing, byte-identical
+    #: behavior. This is READ-only; command/write matching is untouched.
+    virtual_reads: bool = False
     #: Optional sink for ALWAYS-scoped rules so they persist across processes
     #: (wired by the controller to a :class:`PermissionRuleStore`).
     persist: Callable[[str], object] | None = None
@@ -309,6 +320,13 @@ class PermissionEngine:
         return False
 
     def _rule_for(self, action: Action) -> str:
+        # READ rules are stored/matched by HOST identity: canonicalize a virtual
+        # target so a remembered allow / session deny of the DISPLAYED path takes
+        # effect against the same file's host identity later (result filter). This
+        # is what makes the explicit-allow escape hatch work under virtual_mode and
+        # keeps deny>allow>sensitive a single, precedence-correct decision.
+        if action.kind is ActionKind.READ:
+            return self._canonical_read_target(action.target)
         if action.kind is ActionKind.SHELL:
             parts = action.target.split()
             if len(parts) < 2:
@@ -340,16 +358,48 @@ class PermissionEngine:
             for cand in self._read_candidates(action)
         )
 
-    @staticmethod
-    def _read_candidates(action: Action) -> tuple[str, ...]:
+    def _read_candidates(self, action: Action) -> tuple[str, ...]:
         """Every path-like target a READ is judged against: the primary ``target``
-        plus any extra ``read_targets`` (a grep/glob ``glob`` value), de-duplicated
-        with empties dropped (order preserved for stable reasoning)."""
+        plus any extra ``read_targets`` (a grep/glob ``glob`` value), each
+        canonicalized to host identity (:meth:`_canonical_read_target`), then
+        de-duplicated with empties dropped (order preserved for stable reasoning)."""
         out: list[str] = []
         for cand in (action.target, *action.read_targets):
+            cand = self._canonical_read_target(cand)
             if cand and cand not in out:
                 out.append(cand)
         return tuple(out)
+
+    def _canonical_read_target(self, target: str) -> str:
+        """Canonicalize a READ path from the execution backend's namespace to a
+        HOST filesystem path, so the engine's file-identity matching sees the real
+        file both at the pre-exec gate and in the result filter.
+
+        Active ONLY when :attr:`virtual_reads` is set — the local backend formats
+        read/grep paths as VIRTUAL-absolute (rooted at ``project_root``): ``/x``
+        means ``<project_root>/x`` on the host. A virtual-absolute target is rebased
+        under the primary root; a HOST-absolute target ALREADY under an active root
+        (primary or an added ``--add-dir`` root, which the backend returns unchanged)
+        is kept as-is — that also makes this IDEMPOTENT. A glob pattern or a
+        non-absolute target is returned unchanged. With ``virtual_reads`` off or no
+        anchor, this is a no-op (docker/sandbox host paths, ``project_root=None``) —
+        the engine never guesses a namespace it was not told about."""
+        if not self.virtual_reads or not target or self.project_root is None:
+            return target
+        if _is_glob(target) or not target.startswith("/"):
+            return target
+        try:
+            resolved = Path(target).resolve()
+        except (OSError, RuntimeError, ValueError):
+            resolved = Path(target)
+        for root in (self.project_root, *self.roots):
+            try:
+                r = root.resolve()
+            except (OSError, RuntimeError, ValueError):
+                continue
+            if resolved == r or r in resolved.parents:
+                return target  # real host path under an active root — leave it
+        return (self.project_root / target.lstrip("/")).as_posix()
 
     def is_sensitive_read_path(self, path: str) -> bool:
         """True when a filesystem *path* matches a configured sensitive-read glob.
@@ -371,6 +421,7 @@ class PermissionEngine:
         globs = self.rules.sensitive_read_globs
         if not globs or not path:
             return False
+        path = self._canonical_read_target(path)
         aliases, _ = self._read_alias_set(path)
         return any(
             fnmatch.fnmatch(alias, pattern)

@@ -330,6 +330,12 @@ async def _run_headless(
         response_format=response_format,
         extra_roots=add_dirs,
     )
+    # Once the driver's turn has begun, EXACTLY ONE telemetry turn must be recorded
+    # regardless of outcome — success, ERROR event, approval refusal, or
+    # cancellation — mirroring the REPL turn path (repl/turn.py records the turn in a
+    # finally after the stream ends). Pre-runtime validation failures below (before
+    # this flag flips) still record nothing, exactly as before.
+    driver_started = False
     try:
         ok, message = controller.validate()
         if not ok:
@@ -364,6 +370,7 @@ async def _run_headless(
         # loop through DONE (including bounded verification repairs). Re-invoking a
         # completed graph because it happened to use a tool duplicated final answers
         # and cost, so a headless prompt is one complete user turn.
+        driver_started = True
         async for event in driver.run_turn(turn_input, resume=resume):
             if on_event is not None:
                 # Stream every event generically (stream-json). Runs before the
@@ -397,14 +404,6 @@ async def _run_headless(
                     )
 
         reply_text = "".join(text_parts)
-
-        # Record per-turn telemetry now that the driver's complete model/tool graph
-        # has run to DONE — mirroring the REPL turn path (repl/turn.py). Headless is
-        # the most common real usage (unattended / CI), so without this the buffer
-        # flushed at aclose() is always empty and telemetry never fires. record_turn
-        # is a hard no-op when telemetry is opt-out/off, so this respects the
-        # default-OFF policy exactly like the REPL (the gate lives in Telemetry).
-        controller.record_turn(when=time.time())
 
         # When a schema was requested, extract the structured result from the
         # agent's final graph state instead of using the free-text reply.
@@ -453,6 +452,18 @@ async def _run_headless(
             transcript_path=transcript_path,
         )
     finally:
+        # Record per-turn telemetry once the driver's turn ran — success OR failure
+        # (ERROR event / approval refusal / cancellation) — mirroring the REPL turn
+        # path (repl/turn.py), which records the turn in a finally after the stream
+        # ends regardless of outcome. Headless is the most common real usage
+        # (unattended / CI): recording only on success (as before) undercounted every
+        # failed run to zero. record_turn is a hard no-op when telemetry is
+        # opt-out/off, so this respects the default-OFF policy exactly like the REPL
+        # (the gate lives in Telemetry). Recorded before aclose() so the turn event is
+        # in the buffer aclose() flushes; the driver_started guard keeps pre-runtime
+        # validation failures recording nothing.
+        if driver_started:
+            controller.record_turn(when=time.time())
         await controller.aclose()
 
 

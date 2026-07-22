@@ -222,9 +222,7 @@ def _general_purpose_subagent_spec(model: Any) -> dict[str, Any]:
     return {**GENERAL_PURPOSE_SUBAGENT, "model": model}
 
 
-def _read_filter_middleware(
-    engine: PermissionEngine, virtual_root: Path | None = None
-) -> Any:
+def _read_filter_middleware(engine: PermissionEngine) -> Any:
     """A result-filter middleware bound to the session's AUTHORITATIVE permission
     engine — the controller's request-scoped instance that gates tool calls and
     receives runtime ``deny_session``/``remember`` (see ``interrupts.py``).
@@ -236,21 +234,15 @@ def _read_filter_middleware(
     read of a secret) is now honored by the main agent's filter AND every
     subagent/fan-out filter, not just the pre-exec gate. The engine remains the
     single source of truth for the sensitive-read globs and deny/allow rules that
-    decide what a broad grep may surface.
-
-    ``virtual_root`` is the backend's virtual root when it emits virtual-mode paths
-    (the local backend); the filter rebases those to host identity before the engine
-    sees them so a relative sensitive-glob/deny catches a virtual grep header
-    (round-5 #1). ``None`` for docker/sandbox/remote backends and when unrooted.
+    decide what a broad grep may surface — including translating a virtual-backend
+    display path to host identity (``engine.virtual_reads``; round-5 #1).
     """
     from jarn.agent.read_filter import ReadResultFilterMiddleware
 
-    return ReadResultFilterMiddleware(engine, virtual_root=virtual_root)
+    return ReadResultFilterMiddleware(engine)
 
 
-def _attach_read_filter(
-    spec: dict[str, Any], engine: PermissionEngine, virtual_root: Path | None = None
-) -> dict[str, Any]:
+def _attach_read_filter(spec: dict[str, Any], engine: PermissionEngine) -> dict[str, Any]:
     """Prepend jarn's result-filter middleware to a declarative subagent ``spec``.
 
     Closes the second-eye #1 residual for subagents: pre-exec gating sees only a
@@ -272,7 +264,7 @@ def _attach_read_filter(
     if "graph_id" in spec or "runnable" in spec:
         return spec
     spec["middleware"] = [
-        _read_filter_middleware(engine, virtual_root),
+        _read_filter_middleware(engine),
         *list(spec.get("middleware") or []),
     ]
     return spec
@@ -550,21 +542,15 @@ def build_runtime(
 
         read_filter_engine = PermissionEngine(rules=config.permissions)
 
-    # The local backend (the default) formats grep/read results as VIRTUAL-mode
-    # paths rooted at the project root (``/x`` == ``<root>/x`` on the host); docker
-    # and sandbox backends emit real host/container-absolute paths. The result
-    # filter matches by HOST file identity, so ONLY the virtual local backend needs
-    # its display paths rebased — and only when there is a project-root anchor to
-    # rebase onto (``project_root=None`` stays lexical, unchanged). We tie the
-    # virtual root to the engine's own ``project_root`` so the rebased path anchors
-    # exactly where the engine's identity/relative aliases expect (round-5 #1). A
+    # The local backend (the default) formats read/grep paths in a VIRTUAL namespace
+    # rooted at the project root (``/x`` == ``<root>/x`` on the host); docker and
+    # sandbox backends emit real host/container-absolute paths. Tell the engine so it
+    # canonicalizes READ targets to host identity at BOTH the pre-exec gate and the
+    # result filter (round-5/6 #1) — a relative sensitive-glob/deny then matches the
+    # virtual header AND a remembered allow of the displayed path takes effect. A
     # docker fallback rewrites ``execution.backend`` to ``local`` before the (re)build
     # (controller.core), so this config read reflects the ACTUAL backend.
-    read_filter_virtual_root = (
-        read_filter_engine.project_root
-        if config.execution.backend not in ("docker", "sandbox")
-        else None
-    )
+    read_filter_engine.virtual_reads = config.execution.backend not in ("docker", "sandbox")
 
     # Context: project JARN.md + memory + skill catalog + detected verify cmds.
     # Forward compat settings so that read_claude_dir and context_files are
@@ -656,11 +642,7 @@ def build_runtime(
     # declarative spec also carries the result-filter middleware so a subagent's
     # broad grep is redacted just like the main agent's (second-eye #1 residual).
     subagent_specs: list[Any] = [
-        _attach_read_filter(
-            s.to_spec(factory, available_tools=tools),
-            read_filter_engine,
-            read_filter_virtual_root,
-        )
+        _attach_read_filter(s.to_spec(factory, available_tools=tools), read_filter_engine)
         for s in subagents.values()
     ]
     subagent_specs += _async_subagent_specs(config)
@@ -709,9 +691,7 @@ def build_runtime(
                 )
         subagent_specs.append(
             _attach_read_filter(
-                _general_purpose_subagent_spec(gp_model),
-                read_filter_engine,
-                read_filter_virtual_root,
+                _general_purpose_subagent_spec(gp_model), read_filter_engine
             )
         )
 
@@ -867,7 +847,7 @@ def build_runtime(
     # compiled sub-graphs — so the whole in-process subagent surface honors the same
     # session denies (second-eye #1 residual closed). Remote async subagents run out
     # of process → out of scope.
-    read_filter_mw = _read_filter_middleware(read_filter_engine, read_filter_virtual_root)
+    read_filter_mw = _read_filter_middleware(read_filter_engine)
 
     agent = create_deep_agent(
         model=model,
