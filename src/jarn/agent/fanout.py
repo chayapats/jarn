@@ -68,6 +68,18 @@ SubagentInvoke = Callable[[str, str], Awaitable[Mapping[str, Any]]]
 #: semaphore (still concurrent up to the cap).
 _DEFAULT_MAX_PARALLEL = 8
 
+
+def _safe_exc_summary(exc: BaseException) -> str:
+    """Format an exception for a task-error outcome WITHOUT letting a raising
+    ``__str__`` (or a bad argument object) escape the batch's error-isolation
+    handler and crash the whole fan-out call (round-10). Falls back to just the
+    type name when the exception cannot be stringified."""
+    name = type(exc).__name__
+    try:
+        return f"{name}: {exc}"
+    except Exception:  # noqa: BLE001 - a broken __str__ must not break isolation
+        return name
+
 #: Sentinel used when a task omits ``subagent_type``.
 _DEFAULT_SUBAGENT_TYPE = "general-purpose"
 
@@ -272,12 +284,14 @@ async def run_parallel_tasks(
                 # A subagent's provider/MCP/subprocess exception text can carry
                 # credentials (e.g. an echoed ``Authorization: Bearer …``). This
                 # summary is fed back to the orchestrating model, so scrub it with
-                # the shared redactor before it leaves the batch (round-9 #3).
+                # the shared redactor before it leaves the batch (round-9 #3). Format
+                # it SAFELY: a raising ``__str__`` must not escape this isolation
+                # handler and crash the whole batch (round-10).
                 return TaskOutcome(
                     index=index,
                     subagent_type=sub_type,
                     status="error",
-                    summary=redact_secrets(f"{type(exc).__name__}: {exc}"),
+                    summary=redact_secrets(_safe_exc_summary(exc)),
                     duration_s=clock() - started,
                 )
         duration = clock() - started

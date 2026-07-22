@@ -205,6 +205,30 @@ async def test_error_summary_redacts_credentials():
     assert secret not in format_result(result)  # …and from the model-facing roll-up
 
 
+@pytest.mark.asyncio
+async def test_error_isolation_survives_raising_exception_str():
+    """round-10: an exception whose ``__str__`` itself raises must still isolate as an
+    ``error`` outcome — the formatter must not let the crash escape the batch."""
+
+    class _BadStr:
+        def __str__(self):
+            raise ValueError("string conversion failed")
+
+    async def invoke(subagent_type: str, description: str):
+        raise RuntimeError(_BadStr())
+
+    result = await run_parallel_tasks(
+        [ParallelTask("boom", subagent_type="general-purpose")],
+        invoke=invoke,
+        available_subagents=["general-purpose"],
+        default_model_ref=MODEL,
+    )
+    outcome = result.outcomes[0]
+    assert outcome.status == "error"        # isolated, not crashed
+    assert "RuntimeError" in outcome.summary  # falls back to the type name
+    format_result(result)                    # rendering must not raise either
+
+
 # --- 3. per-task budget accounting -----------------------------------------
 
 
