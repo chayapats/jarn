@@ -207,12 +207,16 @@ async def test_error_summary_redacts_credentials():
 
 @pytest.mark.asyncio
 async def test_error_isolation_survives_raising_exception_str():
-    """round-10: an exception whose ``__str__`` itself raises must still isolate as an
-    ``error`` outcome — the formatter must not let the crash escape the batch."""
+    """round-10/11: an exception whose ``__str__`` itself raises must still isolate as
+    an ``error`` outcome — the formatter must not let the crash escape the batch, even
+    when ``__str__`` raises a BaseException (not just an Exception)."""
+
+    class _Explode(BaseException):
+        pass
 
     class _BadStr:
         def __str__(self):
-            raise ValueError("string conversion failed")
+            raise _Explode("string conversion failed")
 
     async def invoke(subagent_type: str, description: str):
         raise RuntimeError(_BadStr())

@@ -297,9 +297,17 @@ class SessionDriver:
     #: The most-recent active ``execute`` tool call, so drained progress (which the
     #: backend can't tag — deepagents calls ``execute(command)`` with no id) correlates
     #: to its ``TOOL_START`` / ``TOOL_END``. Set on an ``execute`` TOOL_START, cleared
-    #: on its TOOL_END. Reset per turn. (Parallel executes share one backend and one
-    #: queue, so progress binds to the latest start — the pragmatic session-level
-    #: correlation the design allows.)
+    #: on its TOOL_END. Reset per turn.
+    #:
+    #: ACCEPTED RESIDUAL (second-eye round-11): when the model batches TWO execute
+    #: calls that run concurrently, their ToolProgress records share this one backend
+    #: queue and bind to the LATEST start, so a live-tail / stream-json record can
+    #: carry the other call's id. Per-call correlation is not cleanly reachable — the
+    #: deepagents ``execute`` tool (site-packages) does not thread the tool_call_id to
+    #: ``backend.execute``, and a ToolProgress only carries its ``command`` (ambiguous
+    #: for identical concurrent commands). This affects live-tail DISPLAY attribution
+    #: only (not the tool result, gating, or transcript); a full fix would wrap the
+    #: execute tool to inject the id. Left as documented best-effort.
     _active_execute_call_id: str | None = field(default=None, repr=False)
     _active_execute_agent: str | None = field(default=None, repr=False)
 

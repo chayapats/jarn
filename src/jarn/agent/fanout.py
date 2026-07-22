@@ -77,8 +77,8 @@ def _safe_exc_summary(exc: BaseException) -> str:
     name = type(exc).__name__
     try:
         return f"{name}: {exc}"
-    except Exception:  # noqa: BLE001 - a broken __str__ must not break isolation
-        return name
+    except BaseException:  # noqa: BLE001 - even a __str__ raising a BaseException
+        return name       # (not just Exception) must not break error isolation
 
 #: Sentinel used when a task omits ``subagent_type``.
 _DEFAULT_SUBAGENT_TYPE = "general-purpose"
