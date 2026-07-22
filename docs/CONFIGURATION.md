@@ -388,6 +388,33 @@ permissions:
     - "npm test"
   deny:                    # always blocked
     - "curl *"
+  sensitive_read_globs:    # reads of these secret stores are CONFIRMED (ASK) in
+                           # EVERY mode — including yolo — so the agent can't
+                           # silently read a secret and exfiltrate it over an
+                           # allowed network tool. An explicit `allow` rule for a
+                           # path is the escape hatch; a `deny` rule forces DENY.
+                           # Shell globs; `*` spans `/`, so `*.pem` matches at any
+                           # depth. Also strips such files' contents from a broad
+                           # `grep` result (they can't sneak out via search).
+                           # Omit to use the built-in defaults (.env/.env.*,
+                           # **/.ssh/**, **/.aws/credentials, **/.git/config,
+                           # *_rsa, *.pem, **/id_*, **/*.key). Set to [] to OPT OUT
+                           # (reads then behave exactly as before).
+    - "**/.env"
+    - "secrets/*.txt"
+  network:                 # per-host egress policy for web_fetch, MCP http/sse
+                           # endpoints, and (best-effort) shell curl/wget. `deny`
+                           # ALWAYS wins. Empty `allow` = allow-all (back-compat);
+                           # a non-empty `allow` restricts egress to matching hosts.
+                           # Host globs, matched case-insensitively against the
+                           # resolved host (`*.github.com` matches api.github.com,
+                           # not the bare github.com). Shell egress is best-effort
+                           # (hard isolation is execution.backend: docker); tiers
+                           # merged from global+project must each be a LIST.
+    allow:
+      - "*.github.com"
+    deny:
+      - "evil.example.com"
 
 # ── Hooks (lifecycle automation) ─────────────────────────────────────────
 hook_inherit_env: false          # true → hook subprocesses inherit full os.environ

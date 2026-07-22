@@ -223,11 +223,18 @@ def classify_host(host: str, policy: NetworkPolicy) -> NetworkVerdict:
 
 _EGRESS_CMD = re.compile(r"\b(?:curl|wget)\b", re.IGNORECASE)
 _BARE_HOST = re.compile(r"(?:[\w-]+\.)+[a-z]{2,}", re.IGNORECASE)
-#: Flags whose following token is a local filename, not a host, so it must not
-#: be mistaken for an egress target (``curl -o out.txt https://…``).
-_OUTPUT_FLAGS = frozenset(
-    {"-o", "-O", "--output", "--output-document", "--remote-name"}
-)
+#: An argv token that *is* a curl/wget invocation (bare or path-qualified, e.g.
+#: ``/usr/bin/curl``) so option arity is resolved against the right program.
+_PROG_TOKEN = re.compile(r"(?:^|/)(curl|wget)$", re.IGNORECASE)
+#: Flags whose *following* token is a local output filename (not a host), keyed
+#: by program because arity differs: curl's ``-O`` / ``--remote-name`` are
+#: BOOLEAN (curl derives the name from the URL) and take NO argument, so they
+#: must not swallow the following token — otherwise the URL host slips past
+#: egress gating. wget's ``-O`` / ``--output-document`` DO take a filename.
+_FILENAME_FLAGS: dict[str, frozenset[str]] = {
+    "curl": frozenset({"-o", "--output"}),
+    "wget": frozenset({"-O", "--output-document"}),
+}
 
 
 def _host_from_token(token: str) -> str | None:
@@ -259,15 +266,22 @@ def _egress_hosts(normalized: str) -> list[str]:
     if not _EGRESS_CMD.search(normalized):
         return []
     hosts: list[str] = []
-    prev = ""
+    filename_flags: frozenset[str] = frozenset()
+    skip_next = False
     for tok in normalized.split():
-        if prev in _OUTPUT_FLAGS:
-            prev = tok
+        if skip_next:
+            skip_next = False
             continue                          # this token is an output filename
         host = _host_from_token(tok)
         if host:
             hosts.append(host)
-        prev = tok
+            continue
+        prog = _PROG_TOKEN.search(tok)
+        if prog is not None:                  # switch flag arity to this program
+            filename_flags = _FILENAME_FLAGS[prog.group(1).lower()]
+            continue
+        if tok in filename_flags:             # only these truly consume a filename
+            skip_next = True
     return hosts
 
 

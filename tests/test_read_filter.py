@@ -532,3 +532,128 @@ def test_relative_deny_covers_main_and_subagent_absolute_grep(base_config, tmp_p
         out = flt.wrap_tool_call(req, lambda _r: msg)
         assert "leaked-secret-material" not in out.content  # relative deny caught absolute header
         assert str(src / "app.py") in out.content           # benign source hit preserved
+
+
+# ---------------------------------------------------------------------------
+# Second-eye round-5 #1/#2 — PRODUCTION virtual-mode backend. The local backend
+# (backends_factory: ``virtual_mode=True``) reports grep hits as VIRTUAL-absolute
+# paths (``/secrets/notes.txt``), NOT the host-absolute paths the round-4 tests
+# above used. Without display->host translation the engine reads that as
+# host-absolute (outside the project root), so a RELATIVE sensitive-glob /
+# session-deny missed it and the secret LEAKED in production. The filter now
+# rebases virtual headers to host identity via ``virtual_root`` before the engine
+# sees them; the engine also normalizes dot-relative rule/glob spellings (#2).
+
+
+def _virtual_grep_message(tmp_path) -> ToolMessage:
+    """A real ``virtual_mode=True`` grep over the secrets tree — headers are VIRTUAL
+    (``/secrets/notes.txt``), exactly as the production local backend emits (the
+    blind spot: the round-4 regression tests all used ``virtual_mode=False``)."""
+    backend = CancellableLocalShellBackend(root_dir=str(tmp_path), virtual_mode=True)
+    msg = _grep_tool_message(backend, "PRIVATE KEY", "/", "content")
+    assert "/secrets/notes.txt:" in msg.content     # VIRTUAL header (not the host path)
+    assert "leaked-secret-material" in msg.content   # real grep leaked it
+    return msg
+
+
+def _grep_req() -> _Req:
+    return _Req(
+        {"name": "grep", "args": {"pattern": "PRIVATE KEY", "output_mode": "content"}, "id": "t1"}
+    )
+
+
+def test_virtual_relative_sensitive_glob_redacts_virtual_header(tmp_path):
+    """PRODUCTION repro (#1): a RELATIVE ``sensitive_read_glob`` (``secrets/*.txt``)
+    redacts a VIRTUAL grep header. Leaks without the filter's ``virtual_root``
+    rebasing — the exact round-5 blocker."""
+    _make_secrets_tree(tmp_path)
+    msg = _virtual_grep_message(tmp_path)
+    engine = PermissionEngine(
+        rules=PermissionRules(sensitive_read_globs=["secrets/*.txt"]),
+        project_root=tmp_path,
+    )
+    mw = ReadResultFilterMiddleware(engine, virtual_root=tmp_path)
+    out = mw.wrap_tool_call(_grep_req(), lambda _r: msg)
+    assert "leaked-secret-material" not in out.content  # secret redacted
+    assert "/src/app.py" in out.content                 # benign virtual hit preserved
+
+
+def test_virtual_relative_session_deny_redacts_virtual_header(tmp_path):
+    """PRODUCTION repro (#1): a RELATIVE session deny (``./secrets/notes.txt``)
+    redacts the VIRTUAL grep header for the same file."""
+    _make_secrets_tree(tmp_path)
+    msg = _virtual_grep_message(tmp_path)
+    engine = PermissionEngine(rules=PermissionRules(), project_root=tmp_path)
+    mw = ReadResultFilterMiddleware(engine, virtual_root=tmp_path)
+    req = _grep_req()
+    before = mw.wrap_tool_call(req, lambda _r: msg)
+    assert "leaked-secret-material" in before.content   # ordinary file: not yet denied
+    engine.deny_session(Action(ActionKind.READ, target="./secrets/notes.txt"))
+    after = mw.wrap_tool_call(req, lambda _r: msg)
+    assert "leaked-secret-material" not in after.content  # relative deny caught virtual header
+    assert "/src/app.py" in after.content
+
+
+def test_virtual_dot_relative_sensitive_glob_redacts_virtual_header(tmp_path):
+    """#2: a DOT-relative ``sensitive_read_glob`` (``./secrets/*.txt``) redacts the
+    virtual header — engine dot-segment pattern normalization."""
+    _make_secrets_tree(tmp_path)
+    msg = _virtual_grep_message(tmp_path)
+    engine = PermissionEngine(
+        rules=PermissionRules(sensitive_read_globs=["./secrets/*.txt"]),
+        project_root=tmp_path,
+    )
+    mw = ReadResultFilterMiddleware(engine, virtual_root=tmp_path)
+    out = mw.wrap_tool_call(_grep_req(), lambda _r: msg)
+    assert "leaked-secret-material" not in out.content
+    assert "/src/app.py" in out.content
+
+
+def test_virtual_no_over_redaction_of_benign_virtual_hits(tmp_path):
+    """The rebasing must NOT redact benign hits: with a secrets-only glob the source
+    file's virtual header and body survive (no false positives from translation)."""
+    _make_secrets_tree(tmp_path)
+    msg = _virtual_grep_message(tmp_path)
+    engine = PermissionEngine(
+        rules=PermissionRules(sensitive_read_globs=["secrets/*.txt"]),
+        project_root=tmp_path,
+    )
+    mw = ReadResultFilterMiddleware(engine, virtual_root=tmp_path)
+    out = mw.wrap_tool_call(_grep_req(), lambda _r: msg)
+    assert "/src/app.py" in out.content
+    assert "handles the PRIVATE KEY lookup" in out.content
+
+
+def test_virtual_relative_deny_covers_main_and_subagent(base_config, tmp_path):
+    """End-to-end WIRING (#1): ``build_runtime`` threads the virtual root to BOTH the
+    main and general-purpose read filters, so a RELATIVE session deny redacts a
+    PRODUCTION virtual grep header on both stacks (main agent + task/fan-out target)."""
+    from unittest.mock import patch
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from jarn.agent import builder
+    from jarn.agent.fanout import extract_subagent_graphs
+
+    _make_secrets_tree(tmp_path)
+    engine = PermissionEngine(rules=PermissionRules(), project_root=tmp_path)
+    fake = GenericFakeChatModel(messages=iter([]))
+    with patch("jarn.providers.models.ModelFactory.build", return_value=fake):
+        rt = builder.build_runtime(base_config, project_root=tmp_path, engine=engine)
+
+    main_filters = _find_subagent_read_filters(rt.agent)
+    gp = extract_subagent_graphs(rt.agent).get("general-purpose")
+    assert gp is not None, "the general-purpose sub-graph (task/fan-out target) must exist"
+    gp_filters = _find_subagent_read_filters(gp)
+    assert len(main_filters) == 1 and len(gp_filters) == 1
+    # Wiring proof: build_runtime passed the virtual-root anchor to BOTH filters.
+    assert main_filters[0]._virtual_root == tmp_path
+    assert gp_filters[0]._virtual_root == tmp_path
+
+    engine.deny_session(Action(ActionKind.READ, target="secrets/notes.txt"))
+    msg = _virtual_grep_message(tmp_path)
+    req = _grep_req()
+    for flt in (main_filters[0], gp_filters[0]):
+        out = flt.wrap_tool_call(req, lambda _r: msg)
+        assert "leaked-secret-material" not in out.content  # virtual header redacted on both
+        assert "/src/app.py" in out.content                 # benign hit preserved

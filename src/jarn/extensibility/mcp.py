@@ -246,6 +246,32 @@ def _resolve_secret_map(
     return resolved
 
 
+def _server_known_secrets(server: MCPServer) -> set[str]:
+    """Resolve the server's header/env secret VALUES for verbatim redaction.
+
+    The pattern net in :func:`jarn.config.secrets.redact_secrets` only recognises
+    secret-SHAPED strings (``Bearer …``, ``sk-…``, vendor prefixes). A
+    malicious/compromised server can echo the credential we configured FOR it back
+    inside an error message with no label, where it survives the pattern net and
+    (for prompts) reaches the model turn. Passing these resolved values as
+    ``redact_secrets(..., known=…)`` scrubs them verbatim regardless of shape.
+
+    Resolution is best-effort and mirrors :func:`to_connection` (same ``resolve``
+    helper): a literal passes through unchanged, and any resolution failure is
+    ignored — the point is to gather live credential values to scrub, never to
+    raise. Values shorter than 8 chars are dropped by ``redact_secrets`` itself."""
+    known: set[str] = set()
+    for mapping in (server.headers, server.env):
+        for value in (mapping or {}).values():
+            try:
+                resolved = resolve(value)
+            except SecretResolutionError:
+                resolved = value
+            if resolved:
+                known.add(resolved)
+    return known
+
+
 def to_connection(server: MCPServer) -> dict[str, Any]:
     """Build the per-server connection dict for MultiServerMCPClient.
 
@@ -353,6 +379,7 @@ async def load_mcp_tools(
         return result
 
     timeout_by_name = {s.name: s.timeout_secs for s in servers if s.enabled}
+    server_by_name = {s.name: s for s in servers if s.enabled}
 
     async def _load_one(name: str):
         """Load one server's tools in isolation; never raises."""
@@ -366,8 +393,14 @@ async def load_mcp_tools(
             logger.warning("Timed out loading MCP tools from %s after %ss", name, secs)
             return name, None, f"timed out after {secs}s"
         except Exception as exc:  # noqa: BLE001 - one bad server must not kill startup
-            logger.warning("Failed to load MCP tools from %s: %s", name, exc)
-            return name, None, str(exc)
+            # A compromised server can echo the configured credential in its error;
+            # scrub the configured header/env VALUES verbatim (known=…) since the
+            # pattern net misses an opaque, unlabelled secret.
+            srv = server_by_name.get(name)
+            known = _server_known_secrets(srv) if srv else None
+            redacted = redact_secrets(str(exc), known=known)
+            logger.warning("Failed to load MCP tools from %s: %s", name, redacted)
+            return name, None, redacted
 
     # gather preserves argument order, so tools are extended in client.connections
     # iteration order regardless of which handshake completes first.
@@ -482,6 +515,7 @@ async def _get_prompt_text(
     prompt_name: str,
     arguments: dict[str, Any],
     timeout_secs: float,
+    known: set[str] | None = None,
 ) -> str:
     """Fetch one prompt's text, bounded by the server's ``timeout_secs``.
 
@@ -507,12 +541,18 @@ async def _get_prompt_text(
         )
     except TimeoutError:
         return redact_secrets(
-            f"MCP prompt {prompt_name!r} fetch timed out after {timeout_secs}s"
+            f"MCP prompt {prompt_name!r} fetch timed out after {timeout_secs}s",
+            known=known,
         )
     except asyncio.CancelledError:
         raise  # cancellation must propagate — never swallowed or redacted
     except Exception as exc:  # noqa: BLE001 - egress-block/transport errors must not leak
-        return redact_secrets(f"MCP prompt {prompt_name!r} fetch failed: {exc}")
+        # ``known`` carries the server's resolved header/env credential values so an
+        # opaque, unlabelled secret the server echoes back is scrubbed verbatim (the
+        # pattern net alone would miss it and it would reach the model turn).
+        return redact_secrets(
+            f"MCP prompt {prompt_name!r} fetch failed: {exc}", known=known
+        )
     return _join_prompt_messages(messages)
 
 
@@ -539,12 +579,15 @@ def _build_prompt_command(
         # policy tightening), so it must independently refuse a denied HTTP host
         # rather than trusting the discovery-time client filtering. stdio has no
         # egress host and is never blocked. The per-server timeout is carried in
-        # so a stalled get_prompt cannot hang the REPL (BUG 2).
+        # so a stalled get_prompt cannot hang the REPL (BUG 2). The server's
+        # resolved header/env credential values are threaded through so an opaque
+        # secret echoed in an error is scrubbed before it reaches the model turn.
+        known = _server_known_secrets(server_obj)
         reason = _network_block_reason(server_obj, network_policy)
         if reason is not None:
-            return redact_secrets(reason)
+            return redact_secrets(reason, known=known)
         return run_blocking(
-            _get_prompt_text(client, server, raw_name, arguments, timeout_secs)
+            _get_prompt_text(client, server, raw_name, arguments, timeout_secs, known)
         )
 
     return MCPPromptCommand(
@@ -588,15 +631,21 @@ async def load_mcp_prompts(
         except TimeoutError:
             return name, None, f"timed out after {secs}s"
         except Exception as exc:  # noqa: BLE001 - one bad server must not kill discovery
-            logger.warning("Failed to list MCP prompts from %s: %s", name, exc)
-            return name, None, str(exc)
+            srv = server_by_name.get(name)
+            redacted = redact_secrets(str(exc), known=_server_known_secrets(srv)
+                                      if srv else None)
+            logger.warning("Failed to list MCP prompts from %s: %s", name, redacted)
+            return name, None, redacted
 
     for name, prompts, err in await asyncio.gather(
         *(_one(n) for n in client.connections)
     ):
         if err is not None:
             result.health[name] = "error"
-            result.errors[name] = redact_secrets(err)
+            srv = server_by_name.get(name)
+            result.errors[name] = redact_secrets(
+                err, known=_server_known_secrets(srv) if srv else None
+            )
             continue
         result.health[name] = "ok"
         for prompt in prompts or []:
@@ -657,6 +706,7 @@ async def list_mcp_resources(
         return result
 
     timeout_by_name = {s.name: s.timeout_secs for s in servers if s.enabled}
+    server_by_name = {s.name: s for s in servers if s.enabled}
 
     async def _one(name: str) -> tuple[str, list[Any] | None, str | None]:
         secs = timeout_by_name.get(name, 30)
@@ -668,15 +718,21 @@ async def list_mcp_resources(
         except TimeoutError:
             return name, None, f"timed out after {secs}s"
         except Exception as exc:  # noqa: BLE001 - one bad server must not kill discovery
-            logger.warning("Failed to list MCP resources from %s: %s", name, exc)
-            return name, None, str(exc)
+            srv = server_by_name.get(name)
+            redacted = redact_secrets(str(exc), known=_server_known_secrets(srv)
+                                      if srv else None)
+            logger.warning("Failed to list MCP resources from %s: %s", name, redacted)
+            return name, None, redacted
 
     for name, resources, err in await asyncio.gather(
         *(_one(n) for n in client.connections)
     ):
         if err is not None:
             result.health[name] = "error"
-            result.errors[name] = redact_secrets(err)
+            srv = server_by_name.get(name)
+            result.errors[name] = redact_secrets(
+                err, known=_server_known_secrets(srv) if srv else None
+            )
             continue
         result.health[name] = "ok"
         for res in resources or []:
@@ -722,16 +778,21 @@ async def read_mcp_resource(
         raise ValueError(blocked[server])
     if client is None or server not in getattr(client, "connections", {}):
         raise ValueError(f"MCP server {server!r} is not configured or not enabled.")
-    secs = next(
-        (s.timeout_secs for s in servers if s.name == server and s.enabled), 30
-    )
+    srv = next((s for s in servers if s.name == server and s.enabled), None)
+    secs = srv.timeout_secs if srv is not None else 30
+    # The server's resolved header/env credential values, scrubbed verbatim from any
+    # surfaced error so an opaque secret the server echoes back can't leak (the
+    # pattern net alone misses an unlabelled value).
+    known = _server_known_secrets(srv) if srv is not None else None
     try:
         blobs = await asyncio.wait_for(
             client.get_resources(server, uris=uri), timeout=secs
         )
     except TimeoutError as exc:
         raise TimeoutError(
-            redact_secrets(f"reading {uri!r} from {server!r} timed out after {secs}s")
+            redact_secrets(
+                f"reading {uri!r} from {server!r} timed out after {secs}s", known=known
+            )
         ) from exc
     except asyncio.CancelledError:
         raise  # cancellation must propagate — never swallowed or redacted
@@ -741,6 +802,6 @@ async def read_mcp_resource(
         # the ``__cause__`` chain (``from None``) so the raw text can't ride along
         # in a traceback (BUG C).
         raise RuntimeError(
-            redact_secrets(f"reading {uri!r} from {server!r} failed: {exc}")
+            redact_secrets(f"reading {uri!r} from {server!r} failed: {exc}", known=known)
         ) from None
     return "\n\n".join(t for b in (blobs or []) if (t := _blob_text(b)))

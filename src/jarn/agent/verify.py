@@ -28,6 +28,43 @@ _NODE_SCRIPT_BUCKETS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("check", "typecheck"), "lint"),
 )
 
+# Script-name tokens (name split on ``:`` and ``-``) that make a package script unsafe
+# to run as an unattended verification step: it mutates the worktree (``fix``/``write``)
+# or never terminates (``watch``/``dev``/``serve``/``start``). Running one would let a
+# zero exit code certify a tree that was never actually tested — e.g. ``lint:fix``
+# rewrites files, exits 0, and the gate would report success for that unverified state.
+_UNSAFE_SCRIPT_TOKENS: frozenset[str] = frozenset(
+    {"fix", "write", "watch", "dev", "serve", "start"}
+)
+# Command-body markers with the same effect when a mutating/watch flag is inlined into
+# an otherwise innocuously named script (e.g. ``"lint:ci": "eslint . --fix"``).
+_UNSAFE_SCRIPT_BODY_MARKERS: tuple[str, ...] = (
+    "--fix",
+    "--write",
+    ":fix",
+    ":write",
+    "--watch",
+)
+
+
+def _split_script_tokens(name: str) -> list[str]:
+    """Tokenize an npm script name on ``:`` and ``-`` (``lint:fix`` -> ``[lint, fix]``)."""
+    return [tok for tok in re.split(r"[:\-]", name.lower()) if tok]
+
+
+def _is_verify_safe(name: str, body: object) -> bool:
+    """True when a script is safe to run unattended: non-mutating and terminating.
+
+    Uses exact tokenized name classification (not substring matching) plus a scan of
+    the command body for inlined mutating/watch flags. This keeps plain ``test``,
+    ``lint``, ``typecheck`` and ``build`` scripts while excluding ``lint:fix``,
+    ``format:write``, ``test:watch``, ``dev``/``serve``/``start`` and the like.
+    """
+    if _UNSAFE_SCRIPT_TOKENS.intersection(_split_script_tokens(name)):
+        return False
+    body_lower = str(body or "").lower()
+    return not any(marker in body_lower for marker in _UNSAFE_SCRIPT_BODY_MARKERS)
+
 
 @dataclass(slots=True)
 class ProjectCapabilities:
@@ -78,10 +115,14 @@ def _detect_node(root: Path, caps: ProjectCapabilities) -> None:
         runner = "yarn"
     elif (root / "bun.lockb").is_file():
         runner = "bun run"
-    for script_name in scripts:
-        lower = script_name.lower()
+    for script_name, script_body in scripts.items():
+        # Only non-interactive, non-mutating scripts are acceptance checks: a mutating
+        # script (``lint:fix``) or a watch/serve script would make verification lie.
+        if not _is_verify_safe(script_name, script_body):
+            continue
+        tokens = set(_split_script_tokens(script_name))
         for keywords, bucket_name in _NODE_SCRIPT_BUCKETS:
-            if any(kw in lower for kw in keywords):
+            if tokens.intersection(keywords):
                 bucket = getattr(caps, bucket_name)
                 cmd = f"{runner} {script_name}"
                 if cmd not in bucket:

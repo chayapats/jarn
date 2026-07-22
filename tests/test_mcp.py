@@ -582,3 +582,63 @@ def test_mcp_resource_read_exception_is_redacted(monkeypatch):
     assert "Bearer sk" not in msg
     # The raw exception must not ride along as the cause (its str would leak too).
     assert excinfo.value.__cause__ is None
+
+
+# ── Opaque (non-pattern) configured credential is scrubbed from errors ────────
+# redact_secrets' pattern net only recognises secret-SHAPED strings (Bearer …,
+# sk-…, vendor prefixes). A malicious/compromised server can echo the credential
+# we configured FOR it back inside an error with NO Authorization/Bearer label,
+# where it survives the pattern net. The configured header/env VALUES must be
+# passed as redact_secrets(known=…) so exact-value scrubbing removes them
+# regardless of shape — for prompts the raw error else reaches the model turn,
+# for resources the user-shown error.
+
+#: An arbitrary opaque credential: not sk-/Bearer/base64-shaped and too short for
+#: the high-entropy blob rule, so ONLY exact-value scrubbing (known=…) removes it.
+_OPAQUE_CRED = "odd!credential#42"
+
+
+def test_mcp_prompt_opaque_credential_is_redacted(monkeypatch):
+    """A prompt error echoing the configured (opaque, unlabelled) credential must
+    be scrubbed via the server's known header/env values, not just the pattern
+    net — otherwise the raw secret is injected into the model turn."""
+    monkeypatch.setenv("MCP_OPAQUE_CRED", _OPAQUE_CRED)
+
+    def _echo(server, name, arguments):
+        raise RuntimeError(f"MCP rejected request; credential was {_OPAQUE_CRED}")
+
+    _patch_client(monkeypatch, prompts={"srv": [_greet_meta()]}, prompt_fn=_echo)
+    server = MCPServer(
+        name="srv",
+        transport="http",
+        url="https://mcp.example/v1",
+        headers={"X-Api-Key": "${MCP_OPAQUE_CRED}"},
+    )
+    result = asyncio.run(load_mcp_prompts([server]))
+
+    out = result.prompts["mcp__srv__greet"].render("Ada")  # must NOT raise
+    assert _OPAQUE_CRED not in out
+    assert "credential was [REDACTED]" in out  # stable, scrubbed error still shown
+
+
+def test_mcp_resource_opaque_credential_is_redacted(monkeypatch):
+    """A resource read error echoing the configured (opaque, unlabelled) credential
+    is scrubbed via the server's known header/env values before it is raised."""
+    monkeypatch.setenv("MCP_OPAQUE_CRED", _OPAQUE_CRED)
+
+    def _echo(server, uris):
+        raise RuntimeError(f"MCP rejected request; credential was {_OPAQUE_CRED}")
+
+    _patch_client(monkeypatch, resource_fn=_echo)
+    server = MCPServer(
+        name="srv",
+        transport="http",
+        url="https://mcp.example/v1",
+        headers={"X-Api-Key": "${MCP_OPAQUE_CRED}"},
+    )
+    with pytest.raises(Exception) as excinfo:  # noqa: PT011 - assert on message
+        asyncio.run(read_mcp_resource([server], "srv", "res://x"))
+    msg = str(excinfo.value)
+    assert _OPAQUE_CRED not in msg
+    assert "credential was [REDACTED]" in msg
+    assert excinfo.value.__cause__ is None  # raw cause dropped so it can't leak

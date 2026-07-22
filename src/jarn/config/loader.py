@@ -71,7 +71,17 @@ def _merge_permissions(base: dict[str, Any], overlay: dict[str, Any]) -> dict[st
     merged = dict(base)
     for bucket in ("allow", "deny"):
         if bucket in overlay:
-            merged[bucket] = [*base.get(bucket, []), *overlay.get(bucket, [])]
+            base_val = base.get(bucket, [])
+            overlay_val = overlay.get(bucket, [])
+            if isinstance(base_val, list) and isinstance(overlay_val, list):
+                merged[bucket] = [*base_val, *overlay_val]
+            else:
+                # A scalar/null on either side can't be spliced: splatting a str
+                # yields per-character host globs and splatting None raises a raw
+                # TypeError. Preserve the raw overlay value (replace) so downstream
+                # pydantic validation normalizes null→[] or raises the intended,
+                # clear validation error (see pydantic_schema NetworkPolicyModel).
+                merged[bucket] = overlay_val
     # ``sensitive_read_globs`` is a full-list REPLACE (last-writer wins), matching
     # the existing tier precedence: a tier that EXPLICITLY supplies it — including
     # the documented empty-list opt-out ``[]`` — replaces the prior list. Without

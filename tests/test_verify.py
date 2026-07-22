@@ -57,6 +57,96 @@ def test_detect_node_test_unit_and_typecheck(tmp_path):
     assert "npm run check" in caps.lint
 
 
+def test_detect_node_excludes_mutating_and_watch_scripts(tmp_path):
+    """Loose substring matching used to select mutating/non-terminating scripts.
+
+    ``lint:fix`` matched the ``lint`` keyword and was run as a verification step; it
+    rewrites the worktree and exits 0, so the gate reported success for a tree that
+    was never actually tested. ``test:watch``/``dev``/``start`` hang or serve. Only
+    non-mutating, terminating scripts may be selected — while the plain
+    ``test``/``build``/``lint`` scripts still are.
+    """
+    (tmp_path / "package.json").write_text(
+        '{"scripts": {'
+        '"test": "vitest run", '
+        '"build": "vite build", '
+        '"lint": "eslint .", '
+        '"lint:fix": "eslint . --fix", '
+        '"lint:write": "prettier --write .", '
+        '"test:watch": "vitest", '
+        '"dev": "vite", '
+        '"start": "node server.js", '
+        '"lint:ci": "eslint . --fix"'
+        '}}',
+        encoding="utf-8",
+    )
+    caps = detect_capabilities(tmp_path)
+    # Legitimate, non-mutating verification scripts are still selected.
+    assert "npm run test" in caps.test
+    assert "npm run build" in caps.build
+    assert "npm run lint" in caps.lint
+    # Mutating / non-terminating scripts must never be selected.
+    selected = [*caps.test, *caps.build, *caps.lint]
+    assert "npm run lint:fix" not in selected
+    assert "npm run lint:write" not in selected
+    assert "npm run test:watch" not in selected
+    assert "npm run dev" not in selected
+    assert "npm run start" not in selected
+    # A safe-looking name whose body inlines ``--fix`` is excluded via the body scan.
+    assert "npm run lint:ci" not in selected
+
+
+@pytest.mark.asyncio
+async def test_gate_never_runs_mutating_lint_fix(tmp_path):
+    """End-to-end: the auto gate must never hand a mutating script to the executor.
+
+    Executed repro (Codex): a real ``lint:fix`` mutates the worktree, exits 0, and the
+    gate reports success for an untested state. Simulate the mutation in the executor
+    and assert the gate never runs ``lint:fix`` and the tree is left untouched.
+    """
+    from jarn.agent.session import SessionDriver
+    from jarn.agent.verify import verify_after_edit
+    from jarn.config.schema import PermissionMode
+    from jarn.cost import CostTracker
+    from jarn.permissions import PermissionEngine
+
+    (tmp_path / "package.json").write_text(
+        '{"scripts": {'
+        '"test": "vitest run", '
+        '"lint": "eslint .", '
+        '"lint:fix": "eslint . --fix"'
+        '}}',
+        encoding="utf-8",
+    )
+    sentinel = tmp_path / "sentinel.txt"
+    sentinel.write_text("original", encoding="utf-8")
+    ran: list[str] = []
+
+    def _executor(cmd: str):
+        ran.append(cmd)
+        # A real `lint:fix` rewrites files; reproduce that side effect here.
+        if "lint:fix" in cmd:
+            sentinel.write_text("changed-by-lint-fix", encoding="utf-8")
+        return SimpleNamespace(exit_code=0, output="ok")
+
+    driver = SessionDriver(
+        agent=None,
+        engine=PermissionEngine(mode=PermissionMode.YOLO),
+        tracker=CostTracker(),
+        thread_id="t",
+        verify_gate="auto",
+        project_root=tmp_path,
+        verify_executor=_executor,
+    )
+    ev = await verify_after_edit(driver, "edit_file")
+    assert "npm run lint:fix" not in ran, f"gate must not run mutating lint:fix; ran={ran}"
+    assert ran == ["npm run test", "npm run lint"], f"only safe scripts run; ran={ran}"
+    assert sentinel.read_text(encoding="utf-8") == "original", (
+        "verification must not mutate the worktree"
+    )
+    assert ev.data["verify"]["ok"] is True
+
+
 def test_makefile_target_detection(tmp_path):
     (tmp_path / "Makefile").write_text(
         ".PHONY: test\n\ntest:\n\tpytest -q\n\nbuild:\n\techo build\n",

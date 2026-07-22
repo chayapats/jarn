@@ -16,7 +16,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from jarn.config.schema import PermissionMode, PermissionRules
 from jarn.config.yaml_store import ConfigCorruptError
@@ -374,7 +374,7 @@ class PermissionEngine:
         aliases, _ = self._read_alias_set(path)
         return any(
             fnmatch.fnmatch(alias, pattern)
-            for pattern in globs
+            for pattern in self._expand_read_patterns(globs)
             for alias in aliases
         )
 
@@ -466,6 +466,28 @@ class PermissionEngine:
                     continue
         return None
 
+    def _expand_read_patterns(self, patterns: list[str]) -> list[str]:
+        """READ ``patterns`` plus a dot-segment-normalized POSIX alias for each, so a
+        DOT-RELATIVE rule/glob (``./secrets/*.txt``, ``a/./b``) matches the same file
+        a physical path names (round-5 #2). Only when a root anchor is configured —
+        with no root the patterns are returned unchanged so matching stays
+        byte-identical to the pre-fix lexical behavior (``project_root=None``).
+        ``PurePosixPath`` collapses ``.``/``./`` segments while preserving glob
+        metacharacters (``*``/``**``) and ``..`` (which needs the filesystem to
+        resolve and is left to the identity path)."""
+        if not self._scope_roots():
+            return patterns
+        out = list(patterns)
+        seen = set(patterns)
+        for p in patterns:
+            if not p:
+                continue
+            norm = PurePosixPath(p).as_posix()
+            if norm and norm != "." and norm not in seen:
+                out.append(norm)
+                seen.add(norm)
+        return out
+
     def _read_candidate_matches(self, cand: str, patterns: list[str]) -> bool:
         """True when a READ candidate matches ANY allow/deny ``pattern`` by file
         identity. Each of the candidate's aliases is tested against every pattern
@@ -475,7 +497,7 @@ class PermissionEngine:
         and vice-versa. A glob candidate has no identity, so only its lexical
         aliases apply."""
         aliases, identity = self._read_alias_set(cand)
-        for pattern in patterns:
+        for pattern in self._expand_read_patterns(patterns):
             for alias in aliases:
                 if alias == pattern or fnmatch.fnmatch(alias, pattern):
                     return True

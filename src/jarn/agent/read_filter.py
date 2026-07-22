@@ -41,6 +41,8 @@ from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from langgraph.prebuilt.tool_node import ToolCallRequest
 
     from jarn.permissions import PermissionEngine
@@ -75,11 +77,59 @@ class ReadResultFilterMiddleware(AgentMiddleware):
     defense-in-depth (it parses grep display text), not a hard boundary.
     """
 
-    def __init__(self, engine: PermissionEngine) -> None:
+    def __init__(
+        self, engine: PermissionEngine, *, virtual_root: Path | None = None
+    ) -> None:
         self._engine = engine
+        # The backend's VIRTUAL root, when it formats read results as virtual-mode
+        # paths (the local backend's ``virtual_mode=True``): a grep header ``/x`` is
+        # then ``<virtual_root>/x`` on the host, NOT host-absolute ``/x``. The engine
+        # matches by HOST file identity, so without translation a RELATIVE
+        # sensitive-glob/deny never meets the virtual header (round-5 #1). ``None``
+        # for docker/sandbox/remote backends (real host/container paths) and when
+        # there is no project-root anchor — display paths then pass through unchanged.
+        self._virtual_root = virtual_root
         # AgentMiddleware.tools is read by create_agent; a wrap-only middleware
         # registers none (mirrors langchain's own ToolRetryMiddleware).
         self.tools = []
+
+    # -- backend-namespace translation --------------------------------------
+
+    def _to_host_path(self, display_path: str) -> str:
+        """Map a backend DISPLAY path to its host-filesystem path for the engine.
+
+        Virtual-mode local backends root every path at the virtual root ``/``, so
+        ``/secrets/notes.txt`` denotes ``<virtual_root>/secrets/notes.txt`` on the
+        host. Non-virtual backends (``virtual_root is None``) already emit genuine
+        host/container-absolute paths and are returned unchanged — the engine must
+        not guess a namespace, so the boundary that KNOWS the backend translates it
+        (round-5 #1). Files under an ``--add-dir`` added root are covered by the raw
+        fall-through in the ``blocked``/``denied`` helpers below.
+        """
+        if self._virtual_root is None:
+            return display_path
+        rel = display_path[1:] if display_path.startswith("/") else display_path
+        return (self._virtual_root / rel).as_posix()
+
+    def _read_content_blocked(self, display_path: str) -> bool:
+        """``engine.read_content_blocked`` for a backend display path, checked by
+        HOST identity AND the raw display spelling. A virtual header is translated
+        to its host path (so a relative sensitive-glob/deny matches); the raw path
+        is still tested so a rule written against the virtual spelling — or an
+        added-root path this mapper does not rebase — also redacts. Either match
+        redacts (fail-closed: this only ever ADDS redactions, never removes one)."""
+        host = self._to_host_path(display_path)
+        if host != display_path and self._engine.read_content_blocked(host):
+            return True
+        return self._engine.read_content_blocked(display_path)
+
+    def _is_read_denied(self, display_path: str) -> bool:
+        """``engine.is_read_denied_path`` under the same host-identity + raw-spelling
+        fail-closed check as :meth:`_read_content_blocked` (read_file backstop)."""
+        host = self._to_host_path(display_path)
+        if host != display_path and self._engine.is_read_denied_path(host):
+            return True
+        return self._engine.is_read_denied_path(display_path)
 
     # -- interception -------------------------------------------------------
 
@@ -122,7 +172,7 @@ class ReadResultFilterMiddleware(AgentMiddleware):
         args = call.get("args") or {}
         output_mode = str(args.get("output_mode") or "files_with_matches")
         new_content, removed = _filter_grep_content(
-            content, output_mode, self._engine.read_content_blocked
+            content, output_mode, self._read_content_blocked
         )
         if not removed:
             return result
@@ -134,7 +184,7 @@ class ReadResultFilterMiddleware(AgentMiddleware):
         # NOT re-filtered here (the user was already prompted and approved).
         args = call.get("args") or {}
         path = str(args.get("file_path") or "")
-        if path and self._engine.is_read_denied_path(path):
+        if path and self._is_read_denied(path):
             return ToolMessage(
                 content=f"Error: permission denied for read on {path}",
                 name="read_file",

