@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from jarn.config.loader import load_config
+import pytest
+
+from jarn.config.loader import ConfigError, load_config
 from jarn.config.trust import (
     TrustStore,
     fingerprint,
@@ -56,6 +58,129 @@ def test_sanitize_strips_dangerous_keeps_benign():
     assert safe["ui"] == {"theme": "light"}
     # deny survives (safety-increasing); allow is dropped.
     assert safe["permissions"] == {"deny": ["git push"]}
+
+
+def test_sanitize_strips_network_allow_keeps_network_deny():
+    # An untrusted repo's network.allow could widen egress past a restrictive
+    # global allowlist — strip it while keeping the safety-increasing deny.
+    raw = {
+        "permissions": {
+            "network": {"allow": ["*"], "deny": ["evil.com"]},
+        }
+    }
+    safe = sanitize_project(raw)
+    assert safe["permissions"]["network"] == {"deny": ["evil.com"]}
+    # ...and it is surfaced as needing trust (so it's fingerprinted/prompted).
+    danger = project_dangerous(raw)
+    assert danger["permissions.network.allow"] == ["*"]
+
+
+def test_sanitize_drops_permissions_when_only_network_allow():
+    # If network.allow is the only permission, the whole block collapses away.
+    safe = sanitize_project({"permissions": {"network": {"allow": ["*"]}}})
+    assert "permissions" not in safe
+
+
+def test_sanitize_strips_sensitive_read_globs():
+    # An untrusted project must not REPLACE (and thereby weaken) the sensitive
+    # read-glob list — a full-list replace could drop the defaults and unguard
+    # secret-file reads. Strip it, keeping the safety-increasing ``deny`` (BUG D).
+    raw = {
+        "permissions": {
+            "sensitive_read_globs": [],  # opt-out that would unguard secret reads
+            "deny": ["rm -rf"],
+        }
+    }
+    safe = sanitize_project(raw)
+    assert "sensitive_read_globs" not in safe["permissions"]
+    assert safe["permissions"] == {"deny": ["rm -rf"]}
+
+
+def test_sanitize_drops_permissions_when_only_sensitive_read_globs():
+    # If sensitive_read_globs is the only permission, the whole block collapses.
+    safe = sanitize_project({"permissions": {"sensitive_read_globs": []}})
+    assert "permissions" not in safe
+
+
+def test_project_dangerous_surfaces_sensitive_read_globs():
+    # A project-supplied sensitive_read_globs REPLACES the defaults, so it needs
+    # trust (and is fingerprinted) — including the falsy empty-list opt-out.
+    danger = project_dangerous({"permissions": {"sensitive_read_globs": []}})
+    assert danger["permissions.sensitive_read_globs"] == []
+    danger2 = project_dangerous(
+        {"permissions": {"sensitive_read_globs": ["x/*.key"]}}
+    )
+    assert danger2["permissions.sensitive_read_globs"] == ["x/*.key"]
+
+
+def test_load_config_untrusted_keeps_stronger_sensitive_read_globs(tmp_path):
+    """An untrusted project's sensitive_read_globs opt-out is stripped so the
+    global list still protects secret reads; a trusted project's replaces it."""
+    gp = tmp_path / "global.yaml"
+    gp.write_text(
+        "permissions:\n  sensitive_read_globs:\n    - global/*.key\n",
+        encoding="utf-8",
+    )
+    pp = tmp_path / "project.yaml"
+    pp.write_text("permissions:\n  sensitive_read_globs: []\n", encoding="utf-8")
+
+    untrusted = load_config(global_path=gp, project_path=pp, project_trusted=False)
+    assert untrusted.permissions.sensitive_read_globs == ["global/*.key"]
+
+    trusted = load_config(global_path=gp, project_path=pp, project_trusted=True)
+    assert trusted.permissions.sensitive_read_globs == []  # project opt-out honoured
+
+
+def test_load_config_untrusted_null_network_deny_preserves_global(tmp_path):
+    """An UNTRUSTED project setting ``network.deny: null`` must NOT erase the
+    global network deny (privilege escalation, FINDING E). A null deny is not a
+    safety-increasing value — it is dropped in sanitization, and the merge inherits
+    the base list — so the restrictive global egress deny still applies."""
+    gp = tmp_path / "global.yaml"
+    gp.write_text(
+        "permissions:\n  network:\n    deny:\n      - metadata.internal\n",
+        encoding="utf-8",
+    )
+    pp = tmp_path / "project.yaml"
+    pp.write_text("permissions:\n  network:\n    deny: null\n", encoding="utf-8")
+
+    untrusted = load_config(global_path=gp, project_path=pp, project_trusted=False)
+    assert untrusted.permissions.network.deny == ["metadata.internal"]
+
+
+def test_project_dangerous_surfaces_null_network_allow():
+    """ANY explicitly-supplied ``network.allow`` — including ``null`` — is
+    trust-relevant (FINDING E): a project touching the egress allowlist must
+    require trust, so it is surfaced (and fingerprinted) rather than skipped by a
+    truthiness check that would miss ``null``/``[]``."""
+    danger = project_dangerous({"permissions": {"network": {"allow": None}}})
+    assert "permissions.network.allow" in danger
+    assert danger["permissions.network.allow"] is None
+    # the empty-list explicit form is surfaced too
+    danger2 = project_dangerous({"permissions": {"network": {"allow": []}}})
+    assert danger2["permissions.network.allow"] == []
+
+
+@pytest.mark.parametrize("bad_network", ["evil.com", ["evil.com"], 7])
+def test_malformed_network_yields_config_error_not_attributeerror(tmp_path, bad_network):
+    """A malformed (scalar/list/int) ``permissions.network`` value must not crash
+    trust resolution with a raw ``AttributeError`` (FINDING F). ``project_dangerous``
+    — called on untrusted raw input BEFORE validation — surfaces it as
+    trust-relevant, and the normal config-validation path produces a clean
+    ``ConfigError`` (not AttributeError)."""
+    import yaml
+
+    raw = {"permissions": {"network": bad_network}}
+    # project_dangerous inspects untrusted raw input before pydantic runs.
+    danger = project_dangerous(raw)  # must NOT raise AttributeError
+    assert danger["permissions.network"] == bad_network  # surfaced, fail safe
+
+    gp = tmp_path / "g.yaml"
+    pp = tmp_path / "p.yaml"
+    gp.write_text("{}\n", encoding="utf-8")
+    pp.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(global_path=gp, project_path=pp)
 
 
 def test_load_config_untrusted_drops_project_capabilities(tmp_path, monkeypatch):

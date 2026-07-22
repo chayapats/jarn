@@ -18,7 +18,6 @@ import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from jarn.config.loader import ConfigError
 from jarn.config.schema import Config, ProviderConfig, ProviderType
 from jarn.config.secrets import SecretResolutionError, resolve
 
@@ -556,26 +555,6 @@ class ModelFactory:
     def invalidate_cache(self) -> None:
         """Drop cached chat models (e.g. after ``/key`` or config reload)."""
         self._cache.clear()
-
-    def fallback_models(self) -> list[BaseChatModel]:
-        """Materialize the configured fallback chain (skipping unbuildable ones)."""
-        models: list[BaseChatModel] = []
-        for ref in self.config.routing.fallback:
-            try:
-                models.append(self.build(ref))
-            except SecretResolutionError:
-                raise
-            except ConfigError:
-                raise
-            except ModelResolutionError as exc:
-                if isinstance(exc.__cause__, SecretResolutionError):
-                    raise exc.__cause__ from exc
-                # A broken fallback ref must not prevent the agent from starting.
-                continue
-            except Exception as exc:
-                logger.warning("Skipping fallback model %r: %s", ref, exc)
-                continue
-        return models
 
     # -- internals ----------------------------------------------------------
 

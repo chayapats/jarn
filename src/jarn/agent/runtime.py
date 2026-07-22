@@ -12,8 +12,12 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
+
+if TYPE_CHECKING:
+    from jarn.cost.tracker import CostTracker
+    from jarn.permissions import PermissionEngine
 
 from jarn.agent import prompts
 from jarn.agent.backends_factory import _make_backend
@@ -58,6 +62,13 @@ _AMBIENT_LANGGRAPH_KEY_VARS = (
 #: not an exfiltration concern, so no warning is emitted.
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", ""})
 
+#: Upper bound on queued backend ToolProgress records (live foreground-execute
+#: tailing). Drop-on-full keeps a spewing command from ever blocking execute's worker
+#: thread; the driver drains every ~50ms, so overflow needs a wedged drain — at which
+#: point dropping the newest tail line is the right degradation (the last few lines
+#: still land whenever the drain resumes).
+_PROGRESS_QUEUE_MAXSIZE = 2048
+
 #: Names jarn reserves for its own builtin tools. An EXTRA tool (arriving via
 #: web/MCP ``extra_tools``) that is NOT namespaced (``mcp__…``) yet carries one of
 #: these names is a collision attack: name-keyed permission classification
@@ -77,7 +88,24 @@ _RESERVED_BUILTIN_NAMES = frozenset({
     "repo_map",
     "exit_plan_mode",
     "suggest_memory",
+    "spawn_parallel_tasks",
 })
+
+
+def _parallel_fanout_enabled(config: Config) -> bool:
+    """Whether the ``spawn_parallel_tasks`` fan-out tool is registered.
+
+    OFF by default so default tool availability is unchanged. Opt in via a config
+    field (``execution.parallel_subagents`` — read defensively with ``getattr`` so
+    a future schema addition Just Works without this module owning the schema) or
+    the ``JARN_PARALLEL_SUBAGENTS`` env var. The config field, when present, wins.
+    """
+    flag = getattr(getattr(config, "execution", None), "parallel_subagents", None)
+    if flag is not None:
+        return bool(flag)
+    return os.environ.get("JARN_PARALLEL_SUBAGENTS", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
 
 def _url_is_local(url: str) -> bool:
@@ -150,6 +178,12 @@ class JarnRuntime:
     #: reports (response_metadata) against this set; see :class:`SessionDriver`.
     known_model_refs: tuple[str, ...] = ()
     backend: Any = None              # execution backend (for cancel/terminate)
+    #: Thread-safe queue of backend :class:`~jarn.agent.events.ToolProgress` records
+    #: for live foreground-``execute`` tailing. Set only when the backend supports
+    #: streaming progress (the local backend); ``None`` for docker/sandbox. The
+    #: per-turn :class:`SessionDriver` drains it (see ``make_driver`` /
+    #: ``SessionDriver._astream_with_progress``).
+    progress_queue: Any = None
 
 
 def _async_subagent_specs(config: Config) -> list[Any]:
@@ -167,6 +201,73 @@ def _async_subagent_specs(config: Config) -> list[Any]:
             spec["headers"] = a.headers
         specs.append(spec)
     return specs
+
+
+def _general_purpose_subagent_spec(model: Any) -> dict[str, Any]:
+    """A ``general-purpose`` SubAgent spec identical to deepagents' built-in one but
+    pinned to ``model`` (the configured ``routing.subagent``).
+
+    deepagents auto-adds its general-purpose subagent — the agent the ``task`` tool
+    spawns — on the MAIN model, so a configured cheaper ``routing.subagent`` would
+    otherwise never bill. Supplying our own spec under the same name pre-empts that
+    auto-add (deepagents skips it when a ``general-purpose`` subagent is already
+    present) and routes delegated tasks onto the cheaper model. We reuse deepagents'
+    own name/description/system_prompt so behaviour is identical apart from the
+    model, and omit ``tools`` so the subagent inherits the parent's full set exactly
+    as the auto-added default does. ``model`` is a pre-built ``BaseChatModel`` (built
+    through jarn's own provider config), which deepagents' ``resolve_model`` passes
+    through untouched."""
+    from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
+
+    return {**GENERAL_PURPOSE_SUBAGENT, "model": model}
+
+
+def _read_filter_middleware(engine: PermissionEngine) -> Any:
+    """A result-filter middleware bound to the session's AUTHORITATIVE permission
+    engine — the controller's request-scoped instance that gates tool calls and
+    receives runtime ``deny_session``/``remember`` (see ``interrupts.py``).
+
+    A FRESH middleware is minted per stack (main agent + each jarn-built subagent) so
+    no single middleware instance is shared across compiled graphs — mirroring the
+    summarization middleware's per-stack policy — but every instance references the
+    SAME engine. That is the BUG A fix: a runtime session deny (a user rejecting a
+    read of a secret) is now honored by the main agent's filter AND every
+    subagent/fan-out filter, not just the pre-exec gate. The engine remains the
+    single source of truth for the sensitive-read globs and deny/allow rules that
+    decide what a broad grep may surface — including translating a virtual-backend
+    display path to host identity (``engine.virtual_reads``; round-5 #1).
+    """
+    from jarn.agent.read_filter import ReadResultFilterMiddleware
+
+    return ReadResultFilterMiddleware(engine)
+
+
+def _attach_read_filter(spec: dict[str, Any], engine: PermissionEngine) -> dict[str, Any]:
+    """Prepend jarn's result-filter middleware to a declarative subagent ``spec``.
+
+    Closes the second-eye #1 residual for subagents: pre-exec gating sees only a
+    read's SCOPE, so a subagent's broad ``grep(pattern, path=/repo)`` is auto-ALLOWed
+    on its benign scope yet returns the CONTENTS of every matching file (incl. .env /
+    keys). deepagents feeds a declarative ``SubAgent`` spec's ``middleware`` into the
+    compiled subagent (``create_deep_agent`` -> ``SubAgentMiddleware`` ->
+    ``create_agent(middleware=...)``), so a filter placed here wraps the subagent's
+    tool execution exactly as ``create_deep_agent(middleware=)`` wraps the main
+    agent's. Fan-out reuses these compiled sub-graphs, so it inherits the filter.
+
+    ``engine`` is the session's authoritative :class:`PermissionEngine`, so the
+    subagent filter honors runtime session denies/allows exactly as the main agent's
+    does (BUG A). ``AsyncSubAgent`` (``graph_id``) / ``CompiledSubAgent`` (``runnable``)
+    specs own their own graph and take no spec middleware, so they are returned
+    untouched (a remote Agent-Protocol subagent runs out of process — its reads are
+    the remote harness's concern, not this in-process filter's).
+    """
+    if "graph_id" in spec or "runnable" in spec:
+        return spec
+    spec["middleware"] = [
+        _read_filter_middleware(engine),
+        *list(spec.get("middleware") or []),
+    ]
+    return spec
 
 
 # ---------------------------------------------------------------------------
@@ -381,12 +482,33 @@ def build_runtime(
     system_prompt_override: str | None = None,
     response_format: Any | None = None,
     extra_roots: list[Path] | None = None,
+    cost_tracker: CostTracker | None = None,
+    engine: PermissionEngine | None = None,
 ) -> JarnRuntime:
     """Build a ready-to-run :class:`JarnRuntime` from config.
 
     ``checkpointer`` (a LangGraph saver) enables resumable sessions; pass one
     obtained from :func:`jarn.memory.open_checkpointer`. ``extra_tools`` is for
     MCP-loaded tools (see :func:`jarn.extensibility.mcp.load_mcp_tools`).
+
+    ``engine`` is the session's AUTHORITATIVE :class:`PermissionEngine` — the
+    controller's request-scoped instance that gates tool calls and receives runtime
+    ``deny_session``/``remember`` (see ``interrupts.py``). It is threaded into the
+    result-filter middleware on the MAIN agent AND every jarn-built subagent/fan-out
+    filter so a runtime session deny of a secret is honored by the filter, not only
+    the pre-exec gate (BUG A / second-eye A). Direct callers (eval harness, unit
+    tests) may omit it; ``None`` falls back to a rule-only engine seeded from
+    ``config.permissions`` — byte-identical to the pre-fix behavior, minus session
+    awareness (which those callers don't drive anyway).
+
+    ``cost_tracker`` is the session's authoritative :class:`CostTracker` (owned by
+    the controller). It is threaded into the opt-in ``spawn_parallel_tasks`` fan-out
+    tool so each fanned-out task's usage is recorded into the tracker's
+    ``per_namespace`` dimension for a soft per-task budget + observability. Without
+    it, production fan-out would silently record nothing (the local test tracker
+    masked this). It is recorded via ``record_task_usage``, which intentionally
+    leaves ``total``/``per_model`` untouched so the streamed session total is never
+    double-counted. ``None`` (the default) disables per-task accounting.
 
     ``system_prompt_override`` replaces J.A.R.N.'s assembled system prompt
     wholesale (the "reliable nerd" persona + project context) with the given
@@ -407,6 +529,28 @@ def build_runtime(
 
     factory = ModelFactory(config)
     model = factory.build_main()
+
+    # Result-filter engine (BUG A): use the session's AUTHORITATIVE engine when the
+    # controller supplies it — the SAME instance that gates tool calls and receives
+    # runtime deny_session/remember — so the filter honors session denials/allows on
+    # every stack (main + subagents + fan-out). Direct callers may omit it; fall back
+    # to a rule-only engine seeded from config (unchanged pre-fix behavior).
+    if engine is not None:
+        read_filter_engine = engine
+    else:
+        from jarn.permissions import PermissionEngine
+
+        read_filter_engine = PermissionEngine(rules=config.permissions)
+
+    # The local backend (the default) formats read/grep paths in a VIRTUAL namespace
+    # rooted at the project root (``/x`` == ``<root>/x`` on the host); docker and
+    # sandbox backends emit real host/container-absolute paths. Tell the engine so it
+    # canonicalizes READ targets to host identity at BOTH the pre-exec gate and the
+    # result filter (round-5/6 #1) — a relative sensitive-glob/deny then matches the
+    # virtual header AND a remembered allow of the displayed path takes effect. A
+    # docker fallback rewrites ``execution.backend`` to ``local`` before the (re)build
+    # (controller.core), so this config read reflects the ACTUAL backend.
+    read_filter_engine.virtual_reads = config.execution.backend not in ("docker", "sandbox")
 
     # Context: project JARN.md + memory + skill catalog + detected verify cmds.
     # Forward compat settings so that read_claude_dir and context_files are
@@ -494,9 +638,12 @@ def build_runtime(
     tools = kept
 
     # Subagents may restrict themselves to a subset of the extra (web/MCP) tools;
-    # pass the available set so to_spec can resolve names and reject typos.
+    # pass the available set so to_spec can resolve names and reject typos. Each
+    # declarative spec also carries the result-filter middleware so a subagent's
+    # broad grep is redacted just like the main agent's (second-eye #1 residual).
     subagent_specs: list[Any] = [
-        s.to_spec(factory, available_tools=tools) for s in subagents.values()
+        _attach_read_filter(s.to_spec(factory, available_tools=tools), read_filter_engine)
+        for s in subagents.values()
     ]
     subagent_specs += _async_subagent_specs(config)
     leak_msgs = _ambient_key_leak_messages(config)
@@ -513,6 +660,40 @@ def build_runtime(
     summarizer_ref = config.resolved_summarizer_model()
     if summarizer_ref:
         known_refs.add(summarizer_ref)
+
+    # Always supply our OWN general-purpose subagent spec (the agent the `task` tool
+    # — and the fan-out — spawns) unless the user defined their own `general-purpose`
+    # .md (theirs wins, `model:` override and all). Two reasons to own it rather than
+    # let deepagents auto-add one on the main model:
+    #   1. Cost: route delegated work onto the configured routing.subagent model when
+    #      one is set and distinct, so it bills at the cheaper rate.
+    #   2. Security (second-eye #1 residual): only a jarn-owned spec can carry the
+    #      result-filter middleware. deepagents' auto-added GP has no spec seam, so
+    #      its broad grep could surface a secret's contents the main agent's filter
+    #      would strip.
+    # With no distinct subagent model the spec runs on the MAIN model — behaviourally
+    # identical to deepagents' auto-add, plus the filter. An unbuildable subagent
+    # model must not break startup: fall back to the main model.
+    subagent_ref = config.resolved_subagent_model()
+    has_custom_gp = any(s.get("name") == "general-purpose" for s in subagent_specs)
+    if not has_custom_gp:
+        gp_model: Any = model
+        if subagent_ref and subagent_ref != main_ref:
+            try:
+                gp_model = factory.build_subagent()
+                known_refs.add(subagent_ref)
+            except ModelResolutionError:
+                gp_model = model
+                logger.warning(
+                    "routing.subagent %r unbuildable; the general-purpose subagent "
+                    "falls back to the main model",
+                    subagent_ref,
+                )
+        subagent_specs.append(
+            _attach_read_filter(
+                _general_purpose_subagent_spec(gp_model), read_filter_engine
+            )
+        )
 
     # Gate every networked / MCP / mutating extra tool through the permission
     # engine too, so they cannot bypass policy (they map to ActionKind.NETWORK →
@@ -540,7 +721,31 @@ def build_runtime(
         extra_gated, include_async=bool(config.async_subagents)
     )
 
-    backend = _make_backend(config, root, extra_roots=extra_roots)
+    # Live tool-output streaming (foreground execute). Create a bounded, thread-safe
+    # queue the backend's progress_sink feeds from its worker thread; the per-turn
+    # SessionDriver drains it and interleaves TOOL_PROGRESS events with astream
+    # output. Bounded + drop-on-full so a spewing command can never block the worker
+    # thread (progress is a display affordance, not part of execution). Only the local
+    # backend has a streaming execute; if the sink didn't land (docker/sandbox), the
+    # queue is dropped so the driver's merge wrapper stays disengaged.
+    import queue as _queue
+
+    _progress_queue: _queue.Queue = _queue.Queue(maxsize=_PROGRESS_QUEUE_MAXSIZE)
+
+    def _progress_sink(progress: Any) -> None:
+        # try/except (not contextlib.suppress) — this runs per output line on
+        # execute's worker thread; avoid building a context manager each call.
+        try:  # noqa: SIM105
+            _progress_queue.put_nowait(progress)
+        except _queue.Full:
+            pass  # best-effort; never block execute's worker thread on a slow drain
+
+    backend = _make_backend(
+        config, root, extra_roots=extra_roots, progress_sink=_progress_sink
+    )
+    progress_queue = (
+        _progress_queue if getattr(backend, "_progress_sink", None) is not None else None
+    )
 
     # Unify auto-compaction into a single in-graph summarization pass. Always
     # exclude deepagents' built-in SummarizationMiddleware (main model, fixed 85%
@@ -586,6 +791,64 @@ def build_runtime(
             # auto-summarization on every stack for this key).
             _SUMMARIZATION_BUILDERS.pop(excluded_key, None)
 
+    # Parallel subagent fan-out (opt-in). The `spawn_parallel_tasks` tool runs
+    # several subagents CONCURRENTLY and returns one aggregated roll-up. It reuses
+    # the EXACT gated sub-graphs deepagents builds for the `task` tool (extracted
+    # after compilation into ``_fanout_graphs``) so a fanned-out subagent is
+    # constructed, gated, and billed identically to a `task`-spawned one. Added to
+    # `tools` AFTER the interrupt map is built so the orchestration tool itself is
+    # ungated (like `task`); its subagents carry their own interrupt gates.
+    _fanout_graphs: dict[str, Any] = {}
+    _fanout_enabled = _parallel_fanout_enabled(config)
+    if _fanout_enabled:
+        from langchain_core.messages import HumanMessage
+
+        from jarn.agent.fanout import build_spawn_parallel_tasks_tool
+
+        fanout_names = {
+            name
+            for s in subagent_specs
+            if (name := s.get("name")) and "graph_id" not in s
+        }
+        fanout_names.add("general-purpose")  # deepagents auto-adds it
+
+        async def _fanout_invoke(subagent_type: str, description: str) -> Any:
+            """Invoke one gated sub-graph by name (reused from the `task` tool)."""
+            runnable = _fanout_graphs.get(subagent_type)
+            if runnable is None:
+                raise KeyError(f"subagent {subagent_type!r} is not available")
+            return await runnable.ainvoke(
+                {"messages": [HumanMessage(content=description)]},
+                {"configurable": {"ls_agent_type": "subagent"}},
+            )
+
+        tools = [
+            *tools,
+            build_spawn_parallel_tasks_tool(
+                invoke=_fanout_invoke,
+                available_subagents=sorted(fanout_names),
+                default_model_ref=subagent_ref or main_ref or "",
+                cost_tracker=cost_tracker,
+            ),
+        ]
+
+    # Result-filter middleware (the complete half of the second-eye #1 fix). The
+    # pre-exec gate sees only a read's SCOPE, so a broad content search
+    # (grep(pattern='TOKEN=', path='/repo')) is auto-ALLOWed on the benign scope
+    # yet returns the CONTENTS of every matching file, including .env / keys. This
+    # middleware strips hits from sensitive-read / read-deny files out of the grep
+    # result before the model sees them. It references the session's AUTHORITATIVE
+    # PermissionEngine (`read_filter_engine`) — the controller's request-scoped
+    # instance that gates tool calls and receives runtime deny_session/remember — so
+    # a user's runtime read-denial is honored here, not just at the pre-exec gate
+    # (BUG A). Injected on the MAIN agent stack here; every jarn-built subagent spec
+    # (user .md + the general-purpose spec above) carries its own instance bound to
+    # the SAME engine via `_attach_read_filter`, and the fan-out graphs reuse those
+    # compiled sub-graphs — so the whole in-process subagent surface honors the same
+    # session denies (second-eye #1 residual closed). Remote async subagents run out
+    # of process → out of scope.
+    read_filter_mw = _read_filter_middleware(read_filter_engine)
+
     agent = create_deep_agent(
         model=model,
         backend=backend,
@@ -595,7 +858,17 @@ def build_runtime(
         checkpointer=checkpointer,
         tools=tools or None,
         response_format=response_format,
+        middleware=[read_filter_mw],
     )
+
+    # Populate the fan-out graph holder from the compiled agent so the tool shares
+    # the task tool's gated runnables by reference. Empty extraction (deepagents
+    # internals shifted) leaves the tool present but reporting "unavailable" rather
+    # than silently bypassing any gate.
+    if _fanout_enabled:
+        from jarn.agent.fanout import extract_subagent_graphs
+
+        _fanout_graphs.update(extract_subagent_graphs(agent))
 
     return JarnRuntime(
         agent=agent,
@@ -610,4 +883,5 @@ def build_runtime(
         main_model_ref=main_ref,
         known_model_refs=tuple(sorted(known_refs)),
         backend=backend,
+        progress_queue=progress_queue,
     )

@@ -120,9 +120,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         "mcp",
-        "Show configured MCP servers with per-server health and last error.",
+        "Show MCP server health; list and invoke server prompts; list and read server resources.",
         "core",
-        usage="[status] [--refresh|refresh]",
+        usage="[status|refresh|prompts|prompt <server> <name>|resources|read <server> <uri>]",
         group="Setup",
     ),
     CommandSpec(
@@ -130,6 +130,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Show telemetry opt-in status and local sink stats.",
         "core",
         usage="status",
+        group="Setup",
+    ),
+    CommandSpec(
+        "skill",
+        "Invoke a skill by name, injecting its instructions into the turn.",
+        "core",
+        usage="<name>",
         group="Setup",
     ),
     CommandSpec("skills", "List available skills.", "core", group="Setup"),

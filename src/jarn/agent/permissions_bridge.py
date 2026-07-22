@@ -37,7 +37,12 @@ ASYNC_SUBAGENT_TOOLS = (
     "list_async_tasks",
 )
 
-#: Read-only tools — always permitted, never interrupted.
+#: Read tools. Gated so they REACH the permission engine — not because reads are
+#: normally blocked, but because the engine must inspect the target path against
+#: the sensitive-read globs (``.env``/``id_rsa``/``.aws/credentials``). The engine
+#: auto-ALLOWs ordinary reads, and :mod:`jarn.agent.interrupts` resumes an ALLOW
+#: SILENTLY (no user prompt), so gating them adds no approval flood — only a
+#: sensitive-path read (or one hitting a ``permissions.deny`` rule) prompts.
 READONLY_TOOLS = ("read_file", "ls", "glob", "grep")
 
 #: Planning / internal tools — always permitted.
@@ -51,12 +56,21 @@ def interrupt_map(
 ) -> dict[str, bool | InterruptOnConfig]:
     """Build the ``interrupt_on`` dict for ``create_deep_agent``.
 
-    **Every** mutating tool is gated in **every** mode: the permission engine —
-    not this map — decides ALLOW/ASK/DENY. This is deliberate. An in-scope file
-    edit in auto-edit/yolo auto-resolves to ALLOW (no prompt), but the engine's
-    danger-guard still inspects it, so a write to a sensitive path (``.git/``,
-    ``.ssh/``) or out of scope is caught even in YOLO. Gating ``edit_file`` only
-    in some modes (the old behaviour) let edits skip the danger-guard entirely.
+    **Every** mutating tool AND every read tool is gated in **every** mode: the
+    permission engine — not this map — decides ALLOW/ASK/DENY. This is deliberate.
+    An in-scope file edit in auto-edit/yolo auto-resolves to ALLOW (no prompt),
+    but the engine's danger-guard still inspects it, so a write to a sensitive
+    path (``.git/``, ``.ssh/``) or out of scope is caught even in YOLO. Gating
+    ``edit_file`` only in some modes (the old behaviour) let edits skip the
+    danger-guard entirely.
+
+    Read tools (:data:`READONLY_TOOLS`) are gated for the same reason: without
+    routing them through the engine, a read of ``.env``/``id_rsa``/
+    ``.aws/credentials`` is never inspected and can be exfiltrated through an
+    allowed network tool, and a user's ``permissions.deny`` on a path is dead.
+    The engine auto-ALLOWs ordinary reads and :mod:`jarn.agent.interrupts` resumes
+    an ALLOW silently, so this adds no approval flood — only sensitive-path reads
+    (or reads hitting a deny rule) surface to the user.
 
     ``extra_tools`` gates additional tools — the built-in web tools and any
     MCP-loaded tools — so network / external-mutating tools route through the
@@ -67,7 +81,7 @@ def interrupt_map(
     when async subagents are configured (deepagents injects those tools then and
     only then); otherwise gating phantom names is harmless but pointless.
     """
-    gated = [*MUTATING_TOOLS, *extra_tools]
+    gated = [*MUTATING_TOOLS, *READONLY_TOOLS, *extra_tools]
     if include_async:
         gated.extend(ASYNC_SUBAGENT_TOOLS)
     # Wiki mutating tools are gated here when present in extra_tools so the
@@ -127,8 +141,30 @@ def tool_to_action(tool_name: str, args: dict[str, Any]) -> Action:
         path = args.get("file_path") or args.get("path") or args.get("filename") or ""
         return Action(ActionKind.WRITE, target=str(path), tool=tool_name)
     if tool_name in READONLY_TOOLS:
-        path = args.get("file_path") or args.get("path") or args.get("pattern") or ""
-        return Action(ActionKind.READ, target=str(path), tool=tool_name)
+        # A read is judged against its SCOPE (``path``/``file_path``) AND its
+        # file-GLOB, which can itself narrow the search to a secret even when the
+        # ``path`` is benign. Codex second-eye #1: the old single-target extraction
+        # returned only the benign ``path`` (or, when absent, the search
+        # ``pattern`` — which is never a path for grep), so a sensitive glob was
+        # ignored and the read auto-ALLOWed. The path-glob lives in a DIFFERENT arg
+        # per tool: ``grep`` filters files with ``glob`` (its ``pattern`` is SEARCH
+        # TEXT, never a path), while the ``glob`` tool's ``pattern`` IS the
+        # path-glob. The engine tests every candidate against the sensitive-read
+        # globs and read-deny rules (see ``Action.read_targets``); result content
+        # is filtered post-exec by :mod:`jarn.agent.read_filter` for broad searches
+        # whose scope alone can't reveal the danger.
+        path = str(args.get("file_path") or args.get("path") or "")
+        if tool_name == "grep":
+            file_glob = str(args.get("glob") or "")
+        elif tool_name == "glob":
+            file_glob = str(args.get("pattern") or "")
+        else:  # read_file / ls — a single path target, no glob
+            file_glob = ""
+        primary = path or file_glob  # display/scope target; glob when no path
+        read_targets = tuple(t for t in (path, file_glob) if t)
+        return Action(
+            ActionKind.READ, target=primary, tool=tool_name, read_targets=read_targets
+        )
     # Wiki mutating tools map to WRITE so the engine evaluates them exactly
     # like file writes: auto-allowed in auto-edit/yolo, prompted in ask.
     if tool_name in WIKI_MUTATING_TOOLS:

@@ -71,7 +71,41 @@ def _merge_permissions(base: dict[str, Any], overlay: dict[str, Any]) -> dict[st
     merged = dict(base)
     for bucket in ("allow", "deny"):
         if bucket in overlay:
-            merged[bucket] = [*base.get(bucket, []), *overlay.get(bucket, [])]
+            base_val = base.get(bucket, [])
+            overlay_val = overlay.get(bucket, [])
+            if isinstance(base_val, list) and overlay_val is None:
+                # A null overlay means "inherit the base", NOT "replace with an
+                # empty list". Preserve the base so an overlay (project) tier can't
+                # ERASE a restrictive global allow/deny by setting it to null — a
+                # privilege escalation (FINDING E). Without this the None replaced
+                # the list and pydantic normalized it to [], wiping the base.
+                merged[bucket] = base_val
+            elif isinstance(base_val, list) and isinstance(overlay_val, list):
+                merged[bucket] = [*base_val, *overlay_val]
+            else:
+                # A scalar on either side can't be spliced: splatting a str yields
+                # per-character host globs. Preserve the raw overlay value (replace)
+                # so downstream pydantic validation raises the intended, clear
+                # validation error (see pydantic_schema NetworkPolicyModel).
+                merged[bucket] = overlay_val
+    # ``sensitive_read_globs`` is a full-list REPLACE (last-writer wins), matching
+    # the existing tier precedence: a tier that EXPLICITLY supplies it — including
+    # the documented empty-list opt-out ``[]`` — replaces the prior list. Without
+    # this it was dropped by the ``dict(base)`` copy for whichever tier set it
+    # (base's carries through, but the overlay's never did), so a user's custom
+    # list or the opt-out was silently discarded and the built-in defaults always
+    # won (BUG D). ``[]`` is honoured via the ``in`` test (not truthiness).
+    if "sensitive_read_globs" in overlay:
+        merged["sensitive_read_globs"] = overlay["sensitive_read_globs"]
+    # The nested network egress policy also concatenates its allow/deny across
+    # tiers (project extends global). Without this, ``permissions.network`` in an
+    # overlay would be dropped by the ``dict(base)`` copy above, silently
+    # disabling the egress policy — the worst failure mode for a security feature.
+    base_net, overlay_net = base.get("network"), overlay.get("network")
+    if isinstance(base_net, dict) and isinstance(overlay_net, dict):
+        merged["network"] = _merge_permissions(base_net, overlay_net)
+    elif overlay_net is not None:
+        merged["network"] = overlay_net  # only overlay has it (or malformed → pydantic)
     return merged
 
 

@@ -46,6 +46,9 @@ class CommandResult:
     rebuilt: bool = False
     clear_screen: bool = False
     quit: bool = False
+    # When True, `text` is instructions the model should act on (e.g. /skill):
+    # the REPL seeds an agent turn with it instead of just printing it.
+    seed_turn: bool = False
 
 
 @dataclass(slots=True)
@@ -334,7 +337,9 @@ class Controller:
             # stale worker re-caching the old (revoked-tool) result.
             mcp = self._mcp_cache
             if mcp is None:
-                mcp = await load_mcp_tools(self.config.mcp_servers)
+                mcp = await load_mcp_tools(
+                    self.config.mcp_servers, self.config.permissions.network
+                )
             tools = mcp.tools
             try:
                 # build_runtime is pure-sync and does O(repo) file I/O (skills /
@@ -344,7 +349,12 @@ class Controller:
                 # Built into a LOCAL; committed to self.runtime only under the
                 # generation check below. functools.partial resolves the
                 # module-level build_runtime name at call time, so tests
-                # monkeypatching it keep working.
+                # monkeypatching it keep working. `engine=self.engine` threads the
+                # session's AUTHORITATIVE, session-persistent permission engine (the
+                # same instance interrupts.py records deny_session/remember on) into
+                # the result-filter middleware so a runtime read-denial is honored by
+                # the filter on every stack (BUG A); it survives runtime rebuilds
+                # because only self.runtime is invalidated, never self.engine.
                 runtime = await asyncio.to_thread(
                     functools.partial(
                         build_runtime,
@@ -356,6 +366,8 @@ class Controller:
                         system_prompt_override=self.system_prompt_override,
                         response_format=self.response_format,
                         extra_roots=self.extra_roots,
+                        cost_tracker=self.tracker,
+                        engine=self.engine,
                     )
                 )
             except AmbientKeyLeakError as exc:
@@ -390,6 +402,8 @@ class Controller:
                         system_prompt_override=self.system_prompt_override,
                         response_format=self.response_format,
                         extra_roots=self.extra_roots,
+                        cost_tracker=self.tracker,
+                        engine=self.engine,
                     )
                 )
             # Commit-or-dispose exactly once, gated on the generation. The commit
@@ -597,15 +611,31 @@ class Controller:
     async def compact_apply(self, summary: str) -> None:
         """Replace the conversation thread with ``summary``: start a fresh
         thread and seed it with the summary. The destructive half of compaction
-        — call only after the user confirms (manual) or unconditionally (auto)."""
+        — call only after the user confirms (manual) or unconditionally (auto).
+
+        The structured ``todos`` plan is a separate graph-state channel from
+        ``messages`` (see :meth:`todos`), and the fresh thread starts with an
+        empty one. Capture the current plan BEFORE minting the new thread and
+        seed it back, or the agent's checklist silently resets to empty on every
+        compaction — losing its plan on a long task exactly when compaction
+        fires mid-work."""
         rt = await self.ensure_runtime()
+        # Read the plan off the OLD thread while its config is still current.
+        todos = await self.todos()
         self.new_thread()
         from langchain_core.messages import HumanMessage
 
-        await rt.agent.aupdate_state(
-            self._config(),
-            {"messages": [HumanMessage(content=f"[Summary of prior conversation]\n{summary}")]},
-        )
+        seed: dict[str, Any] = {
+            "messages": [
+                HumanMessage(content=f"[Summary of prior conversation]\n{summary}")
+            ]
+        }
+        # Only carry a non-empty plan across: an empty list has nothing to
+        # preserve, so keep the seed messages-only (byte-identical to before)
+        # rather than writing an empty channel value.
+        if todos:
+            seed["todos"] = todos
+        await rt.agent.aupdate_state(self._config(), seed)
 
     async def compact(self) -> str:
         """One-shot summarize-and-fork primitive: generate a summary via
@@ -688,13 +718,18 @@ class Controller:
         scratch — not a no-op (that's the 2-turn / first-turn rewind case)."""
         rt = await self.ensure_runtime()
         state = await rt.agent.aget_state(self._config())
-        messages = (getattr(state, "values", {}) or {}).get("messages", []) or []
+        values = getattr(state, "values", {}) or {}
+        messages = values.get("messages", []) or []
         if not messages or keep_count < 0:
             return None
 
         import asyncio
 
         kept_prefix = list(messages[:keep_count])  # empty when keep_count == 0
+        # Carry the structured plan onto the new branch: ``todos`` is a distinct
+        # graph-state channel from ``messages``, and the forked thread starts with
+        # an empty one, so a rewind would otherwise wipe the agent's checklist.
+        todos = list(values.get("todos", []) or [])
         original_thread = self.thread_id
 
         # Slice 2: revert the working tree to the chosen turn's checkpoint before
@@ -726,10 +761,14 @@ class Controller:
         self.checkpoint_manager.register_thread_alias(
             self.thread_id, original_thread, _kept_turns
         )
-        await rt.agent.aupdate_state(
-            self._config(),
-            {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *kept_prefix]},
-        )
+        seed: dict[str, Any] = {
+            "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *kept_prefix]
+        }
+        # Only seed a non-empty plan (an empty channel value is a no-op we skip
+        # to keep the payload byte-identical to the pre-fix behavior).
+        if todos:
+            seed["todos"] = todos
+        await rt.agent.aupdate_state(self._config(), seed)
         return keep_count
 
     # TODO(rewind-conversation) slice 3: in-place/destructive rewind on the same
@@ -795,6 +834,10 @@ class Controller:
             _diag_round=self._diag_chain_round,
             steer_source=self._pop_steer_slot,
             date_state=self._date_state,
+            # Live tool-output streaming: the runtime's backend feeds this queue with
+            # ToolProgress from execute's worker thread; the driver drains it and
+            # interleaves TOOL_PROGRESS events. None for non-local backends.
+            progress_queue=getattr(self.runtime, "progress_queue", None),
         )
         # Retain for settle_snapshot: the /undo, /redo, and /abort paths await this
         # driver's pending turn-start snapshot before mutating the checkpoint stack.

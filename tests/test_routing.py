@@ -97,3 +97,107 @@ def test_missing_key_wrapped_as_resolution_error(base_config, monkeypatch):
     factory = ModelFactory(base_config)
     with pytest.raises(ModelResolutionError):
         factory.build("openrouter/x")
+
+
+# -- default general-purpose subagent runs on routing.subagent (cost routing) --
+#
+# deepagents auto-adds the general-purpose subagent (the one the `task` tool
+# spawns) on the MAIN model. build_runtime instead injects its own spec on the
+# configured routing.subagent model so delegated tasks bill at the cheaper rate.
+
+
+def _build_runtime_capture(cfg, tmp_path):
+    """Run build_runtime with model construction + create_deep_agent stubbed,
+    capturing the ``subagents`` deepagents receives. Returns (subagents, models
+    keyed by ref) so a test can assert *which* model each subagent runs on."""
+    from unittest.mock import MagicMock
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from jarn.agent import builder
+
+    models: dict[str, object] = {}
+
+    def fake_build(self, ref):  # noqa: ANN001
+        if ref not in models:
+            models[ref] = GenericFakeChatModel(messages=iter([]))
+        return models[ref]
+
+    captured: dict[str, object] = {}
+
+    def fake_cda(**kwargs):
+        captured["subagents"] = kwargs.get("subagents")
+        return MagicMock(name="compiled-agent")
+
+    with (
+        patch("jarn.providers.models.ModelFactory.build", fake_build),
+        patch("deepagents.create_deep_agent", fake_cda),
+    ):
+        builder.build_runtime(cfg, project_root=tmp_path)
+    return captured["subagents"], models
+
+
+def test_general_purpose_subagent_uses_routing_subagent_model(base_config, tmp_path):
+    subagents, models = _build_runtime_capture(base_config, tmp_path)
+    sub_ref = base_config.resolved_subagent_model()
+    main_ref = base_config.resolved_main_model()
+    assert sub_ref == "openrouter/anthropic/claude-haiku-4-5" and sub_ref != main_ref
+    gp = next((s for s in (subagents or []) if s.get("name") == "general-purpose"), None)
+    assert gp is not None, "build_runtime must inject a general-purpose subagent spec"
+    assert gp["model"] is models[sub_ref]
+    assert gp["model"] is not models[main_ref]
+
+
+def test_general_purpose_injected_on_main_model_when_subagent_matches_main(base_config, tmp_path):
+    """Even with no distinct routing.subagent model, jarn STILL injects its own
+    general-purpose spec — on the MAIN model — rather than let deepagents auto-add
+    one. Reason is security (second-eye #1 residual): only a jarn-owned spec can
+    carry the result-filter middleware, so the `task`/fan-out subagent's broad grep
+    is redacted like the main agent's. Cost is unchanged (same model as the auto-add
+    would have used)."""
+    from jarn.agent.read_filter import ReadResultFilterMiddleware
+
+    base_config.routing.subagent = None  # resolved_subagent_model() -> main
+    subagents, models = _build_runtime_capture(base_config, tmp_path)
+    main_ref = base_config.resolved_main_model()
+    gp = next((s for s in (subagents or []) if s.get("name") == "general-purpose"), None)
+    assert gp is not None, "GP must be injected so it can carry the result filter"
+    assert gp["model"] is models[main_ref]  # main model → no cost change vs auto-add
+    assert any(
+        isinstance(m, ReadResultFilterMiddleware) for m in gp.get("middleware", [])
+    ), "the injected general-purpose subagent must carry the result-filter middleware"
+
+
+def test_custom_general_purpose_subagent_not_clobbered(base_config, tmp_path):
+    """A user-defined `general-purpose` subagent (.md) wins: jarn must not inject
+    its own, so the user's model/prompt override is preserved."""
+    from jarn.extensibility.subagents import CustomSubagent
+
+    custom = {
+        "general-purpose": CustomSubagent(
+            name="general-purpose",
+            description="user gp",
+            system_prompt="do the thing",
+            model="openrouter/anthropic/claude-opus-4-8",
+        )
+    }
+    with patch("jarn.agent.runtime.load_subagents", return_value=custom):
+        subagents, _ = _build_runtime_capture(base_config, tmp_path)
+    gps = [s for s in (subagents or []) if s.get("name") == "general-purpose"]
+    assert len(gps) == 1  # only the user's — no jarn-injected duplicate
+    assert gps[0]["system_prompt"] == "do the thing"
+
+
+def test_general_purpose_injection_compiles(base_config, tmp_path):
+    """Real build (create_deep_agent NOT mocked): the injected general-purpose
+    subagent spec must be accepted by deepagents and compile to a graph."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from jarn.agent import builder
+
+    fake = GenericFakeChatModel(messages=iter([]))
+    with patch("jarn.providers.models.ModelFactory.build", return_value=fake):
+        rt = builder.build_runtime(base_config, project_root=tmp_path)
+    assert type(rt.agent).__name__ == "CompiledStateGraph"
+    # The subagent model ref is now a known usage-attribution target (billed cheap).
+    assert base_config.resolved_subagent_model() in rt.known_model_refs

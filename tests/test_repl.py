@@ -572,6 +572,61 @@ async def test_single_stop_message(tmp_path, monkeypatch):
     ctrl.close()
 
 
+@pytest.mark.asyncio
+async def test_command_dispatch_redacts_raising_extension_command(tmp_path, monkeypatch):
+    """BUG C boundary: the REPL's direct extension-command dispatch must redact
+    (never dump raw) any exception a custom/MCP command's render() raises — a raw
+    exception carried a secret (Authorization=Bearer sk-…) in the repro."""
+    from types import SimpleNamespace
+
+    from jarn import repl
+    from jarn.repl import turn as _turnmod
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    app.console = Console(file=StringIO(), force_terminal=False, width=100)
+
+    secret = "sk-live-secret-0123456789abcdefABCDEF"
+
+    class _RaisingCommand:
+        def render(self, args):
+            raise RuntimeError(f"transport failed: Authorization=Bearer {secret}")
+
+    app.controller.runtime = SimpleNamespace(
+        commands={"mcp__srv__greet": _RaisingCommand()}
+    )
+
+    async def _noop_ensure():
+        return app.controller.runtime
+
+    monkeypatch.setattr(app.controller, "ensure_runtime", _noop_ensure)
+
+    dispatched = False
+
+    async def _spy_turn(*a, **k):
+        nonlocal dispatched
+        dispatched = True
+
+    monkeypatch.setattr(_turnmod, "_run_turn", _spy_turn)
+
+    # Must NOT raise (the buggy path let the raw RuntimeError escape _command).
+    await app._command("mcp__srv__greet", "")
+
+    out = app.console.file.getvalue()
+    assert secret not in out
+    assert "sk-live-secret" not in out
+    assert "Bearer sk" not in out
+    assert not dispatched  # the raw (leaky) render text never seeded a turn
+    app.controller.close()
+
+
 def test_tool_sink_accumulates_live():
     """Tool outputs append to a provided sink as they arrive (mid-turn Ctrl+O)."""
     from jarn.repl_renderer import TurnRenderer as _TurnRenderer
@@ -636,6 +691,124 @@ def test_reasoning_streams_live_into_rich_live(monkeypatch):
     finally:
         r._live_clear()
     assert updates, "reasoning did not refresh the live region"
+
+
+def test_tool_progress_streams_tail_then_final_result():
+    """A running tool's output tail streams into the live region; on TOOL_END the
+    tail is cleared and the final result lands in scrollback exactly as today."""
+    from jarn.repl_renderer import TOOL_PROGRESS_STREAM_PREFIX
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+
+    seen: list[str] = []
+    console = Console(file=StringIO(), width=80)
+    r = _TurnRenderer(console, live_sink=seen.append, spinner=False)
+    r.on_tool("execute", {"command": "make build"}, tool_call_id="c1")
+    r.on_tool_progress(
+        "execute", "compiling foo.c\ncompiling bar.c\n", 3.0, tool_call_id="c1"
+    )
+    assert seen[-1].startswith(TOOL_PROGRESS_STREAM_PREFIX)  # routed as plain-dim
+    assert "compiling bar.c" in seen[-1]                     # tail is shown
+    assert "still running… 3s" in seen[-1]                   # heartbeat footer
+    # A quiet-time heartbeat refreshes the elapsed footer in place.
+    r.on_tool_progress("execute", "compiling bar.c\n", 6.0, tool_call_id="c1", heartbeat=True)
+    assert "still running… 6s" in seen[-1]
+    # TOOL_END clears the transient tail and commits the final result to scrollback.
+    r.on_tool_end("execute", "build ok", tool_call_id="c1")
+    assert seen[-1] == ""                                    # tail region cleared
+    out = console.file.getvalue()
+    assert "build ok" in out                                 # final result committed
+    assert "compiling bar.c" not in out                      # tail never hit scrollback
+
+
+def test_tool_progress_caps_tail_lines_and_width():
+    """The live tail shows only the last ~10 lines, each width-capped."""
+    from jarn.repl_renderer import TurnRenderer as _TurnRenderer
+    from jarn.repl_renderer import _current_width
+
+    seen: list[str] = []
+    console = Console(file=StringIO(), width=40)
+    r = _TurnRenderer(console, live_sink=seen.append, spinner=False)
+    tail = "".join(f"row{i}\n" for i in range(30)) + ("x" * 400 + "\n")
+    r.on_tool_progress("execute", tail, 1.0, tool_call_id="c1")
+    body = seen[-1]
+    assert "row0" not in body and "row5" not in body  # early lines dropped
+    assert "row29" in body                             # recent lines kept
+    # The 400-char line is truncated to the render width (capped at 100 cols).
+    width = _current_width()
+    assert ("x" * 400) not in body
+    assert all(len(ln) <= width for ln in body.splitlines())
+
+
+@pytest.mark.asyncio
+async def test_run_turn_dispatches_tool_progress(tmp_path, monkeypatch):
+    """The REPL turn loop routes a TOOL_PROGRESS event to renderer.on_tool_progress,
+    so a running execute's tail + heartbeat reach the transient live region (and the
+    following TOOL_END clears it and commits the final result to scrollback)."""
+    from jarn import repl
+    from jarn.repl_renderer import TOOL_PROGRESS_STREAM_PREFIX
+
+    ctrl = _controller(tmp_path, monkeypatch)
+
+    async def _noop_runtime():
+        return None
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+    events = [
+        Event(EventKind.TOOL_START, "execute",
+              {"args": {"command": "make build"}, "tool_call_id": "c1"}),
+        Event(EventKind.TOOL_PROGRESS, "execute",
+              {"tail": "compiling foo.c\ncompiling bar.c\n", "elapsed": 3.0,
+               "heartbeat": False, "tool_call_id": "c1"}),
+        Event(EventKind.TOOL_END, "execute",
+              {"summary": "build ok", "tool_call_id": "c1"}),
+        Event(EventKind.DONE),
+    ]
+    monkeypatch.setattr(ctrl, "make_driver", lambda approver: _FakeDriver(events))
+
+    seen: list[str] = []
+    console = Console(file=StringIO(), width=80)
+    await repl._run_turn(
+        console, ctrl, "hi", _ask_returning(""),
+        live_sink=seen.append, spinner=False,
+    )
+    # The running tail reached the live region routed as plain-dim progress …
+    assert any(
+        s.startswith(TOOL_PROGRESS_STREAM_PREFIX) and "compiling bar.c" in s
+        for s in seen
+    ), seen
+    assert any("still running… 3s" in s for s in seen)
+    # … then TOOL_END cleared the transient region and committed the final result.
+    assert seen[-1] == ""
+    assert "build ok" in console.file.getvalue()
+    assert "compiling bar.c" not in console.file.getvalue()  # tail never hit scrollback
+    ctrl.close()
+
+
+def test_set_stream_classifies_tool_progress_prefix(tmp_path, monkeypatch):
+    """The app routes a tool-progress-prefixed live payload to the plain-dim path,
+    distinct from reasoning and from ordinary markdown prose."""
+    from jarn import repl
+    from jarn.repl_renderer import REASONING_STREAM_PREFIX, TOOL_PROGRESS_STREAM_PREFIX
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(default_profile="openrouter",
+                 providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+                 routing=RoutingConfig(main="openrouter/m"))
+    app = repl.InlineApp(cfg, root)
+
+    app._set_stream(f"{TOOL_PROGRESS_STREAM_PREFIX}compiling…\n⎿ execute: still running… 4s")
+    assert app._stream_is_progress is True
+    assert app._stream_is_reasoning is False
+
+    app._set_stream(f"{REASONING_STREAM_PREFIX}pondering")
+    assert app._stream_is_reasoning is True
+    assert app._stream_is_progress is False
+
+    app._set_stream("# ordinary markdown prose")
+    assert app._stream_is_progress is False
+    assert app._stream_is_reasoning is False
+    app.controller.close()
 
 
 def test_session_thinking_word_is_stable():
@@ -2132,6 +2305,72 @@ async def test_skills_available_after_ensure_extensions(tmp_path, monkeypatch):
     result = app.controller.handle_command("skills", "")
     assert "demo" in result.text
     assert "No skills loaded" not in result.text
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_skill_command_invokes_manual_skill(tmp_path, monkeypatch):
+    """`/skill <name>` resolves a manual skill and injects its body; unknown
+    names and a missing argument fail cleanly (no exception)."""
+    from jarn import repl
+    from jarn.agent.builder import JarnRuntime
+    from jarn.extensibility.skills import Skill
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={"openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")},
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    skill = Skill(
+        name="deploy",
+        description="Deploy safely",
+        body="Step 1. Run the tests.\nStep 2. Ship it.",
+        trigger="manual",
+        scope="project",
+    )
+
+    async def _fake_ensure():
+        app.controller.runtime = JarnRuntime(
+            agent=object(),
+            config=cfg,
+            factory=object(),
+            project_root=root,
+            system_prompt="",
+            capabilities=object(),
+            skills={"deploy": skill},
+        )
+
+    monkeypatch.setattr(app.controller, "ensure_runtime", _fake_ensure)
+    await app._ensure_extensions()
+
+    # Known manual skill: resolves and injects the full body (so the model
+    # follows it — manual skills are excluded from the auto catalog).
+    result = app.controller.handle_command("skill", "deploy")
+    assert "Step 1. Run the tests." in result.text
+    assert "Step 2. Ship it." in result.text
+    assert "deploy" in result.text
+    # A resolved skill seeds an agent turn (the model acts on the body), rather
+    # than merely printing it — the REPL routes seed_turn results to _run_turn.
+    assert result.seed_turn is True
+
+    # Case-insensitive resolution.
+    assert "Step 1. Run the tests." in app.controller.handle_command("skill", "DEPLOY").text
+
+    # Unknown name: clean error naming the skill and pointing at /skills.
+    err = app.controller.handle_command("skill", "nope")
+    assert "nope" in err.text
+    assert "Unknown skill" in err.text
+    assert err.seed_turn is False  # errors print, never seed a turn
+
+    # Missing argument: usage hint, not a crash.
+    usage = app.controller.handle_command("skill", "")
+    assert "/skill" in usage.text
+    assert usage.seed_turn is False
+
     app.controller.close()
 
 

@@ -21,15 +21,25 @@ regex, enforces write isolation. ``"off"`` (the default) preserves the original
 
 from __future__ import annotations
 
+import codecs
+import contextlib
+import io
+import locale
 import logging
+import queue
 import subprocess
 import threading
+import time
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from deepagents.backends import LocalShellBackend
 from deepagents.backends.filesystem import _raise_if_symlink_loop
 from deepagents.backends.protocol import ExecuteResponse
 
+from jarn.agent.events import ToolProgress
 from jarn.agent.process_util import terminate_process_group
 
 logger = logging.getLogger("jarn.agent.local_backend")
@@ -37,6 +47,101 @@ logger = logging.getLogger("jarn.agent.local_backend")
 #: One-time warning state: emitted at most once per process per backend instance
 #: when ``sandbox_mode="auto"`` and no sandbox is available.
 _WARNED_SANDBOX_UNAVAILABLE: set[int] = set()
+
+#: Defaults for live foreground-``execute`` progress (only active when a
+#: ``progress_sink`` is wired). Heartbeat cadence is intentionally coarse — a
+#: quiet build should reassure ("still running… 30s"), not spam.
+_DEFAULT_HEARTBEAT_SECS = 5.0
+_DEFAULT_TAIL_LINES = 10
+_DEFAULT_POLL_SECS = 0.2
+
+#: Max bytes pulled per streaming reader ``read1`` call. The streaming path pumps
+#: *bytes* (not lines) so no-newline output surfaces live; the size only bounds a
+#: single syscall's payload, not latency (``read1`` returns whatever is available).
+_READ_CHUNK_BYTES = 65536
+
+
+def _make_text_decoder() -> io.IncrementalNewlineDecoder:
+    """Build a decoder that mirrors ``subprocess.Popen(text=True)`` byte-for-byte.
+
+    The blocking path decodes its pipes through a ``TextIOWrapper`` created by
+    ``text=True``: the locale's preferred encoding, ``errors="strict"`` (so invalid
+    bytes RAISE — they are never silently dropped), and universal-newline translation
+    (``\\r\\n``/``\\r`` -> ``\\n``). The streaming path pumps raw bytes, so it must
+    reconstruct exactly that pipeline to stay consistent with the no-sink path. An
+    *incremental* decoder is required because a multi-byte character (or a ``\\r\\n``)
+    can straddle two ``read1`` chunks; it buffers the partial and, on the final flush
+    (``decode(b"", final=True)``), raises on a genuinely truncated/invalid sequence
+    just as the blocking decode would."""
+    enc = locale.getpreferredencoding(False)
+    base = codecs.getincrementaldecoder(enc)("strict")
+    return io.IncrementalNewlineDecoder(base, translate=True)
+
+
+@dataclass(slots=True)
+class _TailTracker:
+    """Rolling output tail + heartbeat bookkeeping for a streaming ``execute``.
+
+    Kept separate from the subprocess plumbing so the *timing* decisions (elapsed
+    seconds, whether a quiet spell warrants a heartbeat) are pure and unit-testable
+    with an injected ``clock`` — no process needs to be spawned to exercise them.
+    ``on_output`` feeds a new stdout/stderr chunk (updating the bounded tail and
+    stamping "last activity"); ``maybe_heartbeat`` is polled while the queue is
+    quiet and returns a heartbeat :class:`ToolProgress` only once ``heartbeat_secs``
+    have elapsed since the last emit."""
+
+    clock: Callable[[], float]
+    start: float
+    heartbeat_secs: float = _DEFAULT_HEARTBEAT_SECS
+    tail_lines: int = _DEFAULT_TAIL_LINES
+    command: str = ""
+    tool_name: str = "execute"
+    _lines: deque[str] = field(init=False, repr=False)
+    #: Monotonic time of the last emitted progress OR heartbeat — the quiet-window
+    #: anchor. Seeded to ``start`` so the first heartbeat is measured from launch.
+    _last_emit: float = field(init=False, default=0.0)
+
+    def __post_init__(self) -> None:
+        self._lines = deque(maxlen=max(1, self.tail_lines))
+        self._last_emit = self.start
+
+    def elapsed(self) -> float:
+        return max(0.0, self.clock() - self.start)
+
+    def _tail_text(self) -> str:
+        # Lines retain their trailing newline, so a plain join reconstructs the
+        # visible tail exactly (the deque already bounds it to ``tail_lines``).
+        return "".join(self._lines)
+
+    def on_output(self, text: str) -> ToolProgress:
+        """Record a new output chunk and return a (non-heartbeat) progress record."""
+        for line in text.splitlines(keepends=True):
+            self._lines.append(line)
+        now = self.clock()
+        self._last_emit = now
+        return ToolProgress(
+            command=self.command,
+            chunk=text,
+            tail=self._tail_text(),
+            elapsed=max(0.0, now - self.start),
+            heartbeat=False,
+            tool_name=self.tool_name,
+        )
+
+    def maybe_heartbeat(self) -> ToolProgress | None:
+        """Return a heartbeat record iff output has been quiet for ``heartbeat_secs``."""
+        now = self.clock()
+        if now - self._last_emit < self.heartbeat_secs:
+            return None
+        self._last_emit = now
+        return ToolProgress(
+            command=self.command,
+            chunk="",
+            tail=self._tail_text(),
+            elapsed=max(0.0, now - self.start),
+            heartbeat=True,
+            tool_name=self.tool_name,
+        )
 
 
 class CancellableLocalShellBackend(LocalShellBackend):
@@ -76,6 +181,11 @@ class CancellableLocalShellBackend(LocalShellBackend):
         sandbox_allow_network: bool = True,
         sandbox_extra_writable: list[Path] | None = None,
         extra_roots: list[Path] | None = None,
+        progress_sink: Callable[[ToolProgress], None] | None = None,
+        clock: Callable[[], float] | None = None,
+        progress_heartbeat_secs: float = _DEFAULT_HEARTBEAT_SECS,
+        progress_tail_lines: int = _DEFAULT_TAIL_LINES,
+        progress_poll_secs: float = _DEFAULT_POLL_SECS,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -88,6 +198,16 @@ class CancellableLocalShellBackend(LocalShellBackend):
         self._extra_roots: list[Path] = [
             Path(p).resolve() for p in (extra_roots or [])
         ]
+        # Live foreground-``execute`` progress. When ``progress_sink`` is ``None``
+        # (the default, and every existing call site) ``execute`` takes the original
+        # blocking ``communicate`` path BYTE-FOR-BYTE — the hot path is untouched.
+        # The clock is injected so progress/heartbeat timing is deterministic in
+        # tests; it defaults to ``time.monotonic``.
+        self._progress_sink = progress_sink
+        self._clock: Callable[[], float] = clock or time.monotonic
+        self._progress_heartbeat_secs = progress_heartbeat_secs
+        self._progress_tail_lines = progress_tail_lines
+        self._progress_poll_secs = progress_poll_secs
 
     def _resolve_path(self, key: str) -> Path:
         """Extend the virtual-mode FS guard to also accept added roots.
@@ -181,47 +301,211 @@ class CancellableLocalShellBackend(LocalShellBackend):
                 truncated=False,
             )
 
+        # A ``progress_sink`` opts into incremental tailing (a live tail + heartbeat
+        # while the command runs). Without one — every existing call site — this is
+        # the original blocking ``communicate`` path, unchanged: the pipes are opened
+        # in text mode exactly as before. The streaming path instead opens *binary*
+        # pipes so it can pump bytes and decode them itself (see _communicate_streaming).
+        streaming = self._progress_sink is not None
+        proc = self._spawn(command, sandbox_argv, text=not streaming)
+        with self._live_lock:
+            self._live.add(proc)
+        try:
+            if streaming:
+                outcome = self._communicate_streaming(proc, command, effective_timeout)
+            else:
+                outcome = self._communicate_blocking(proc, effective_timeout)
+        finally:
+            with self._live_lock:
+                self._live.discard(proc)
+
+        if outcome is None:  # timed out (killed + reaped inside the communicator)
+            return ExecuteResponse(
+                output=f"Error: Command timed out after {effective_timeout} seconds.",
+                exit_code=124, truncated=False,
+            )
+        stdout, stderr = outcome
+        return self._finalize_output(stdout, stderr, proc.returncode or 0)
+
+    def _spawn(
+        self, command: str, sandbox_argv: list[str] | None, *, text: bool = True
+    ) -> subprocess.Popen:
+        """Start the command in its own process session (killable tree). Identical
+        Popen shape as before; only extracted so both the blocking and streaming
+        communicators share one spawn site.
+
+        ``text`` selects the pipe mode: ``True`` (the no-sink default) keeps the
+        original text-mode pipes BYTE-FOR-BYTE; the streaming path passes ``False`` so
+        it receives raw binary pipes to pump and decode itself."""
         if sandbox_argv is not None:
             # Sandboxed: argv is fully constructed; do NOT use shell=True.
-            proc = subprocess.Popen(  # noqa: S603
+            return subprocess.Popen(  # noqa: S603
                 sandbox_argv,
                 shell=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL,
-                text=True,
+                text=text,
                 env=self._env,
                 cwd=str(self.cwd),
                 start_new_session=True,  # own process group → whole tree is killable
             )
-        else:
-            proc = subprocess.Popen(  # noqa: S602
-                command,
-                shell=True,  # parity with the base backend (LLM-controlled shell)
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL,
-                text=True,
-                env=self._env,
-                cwd=str(self.cwd),
-                start_new_session=True,  # own process group → whole tree is killable
-            )
-        with self._live_lock:
-            self._live.add(proc)
-        try:
-            try:
-                stdout, stderr = proc.communicate(timeout=effective_timeout)
-            except subprocess.TimeoutExpired:
-                self._kill(proc)
-                proc.communicate()  # reap
-                return ExecuteResponse(
-                    output=f"Error: Command timed out after {effective_timeout} seconds.",
-                    exit_code=124, truncated=False,
-                )
-        finally:
-            with self._live_lock:
-                self._live.discard(proc)
+        return subprocess.Popen(  # noqa: S602
+            command,
+            shell=True,  # parity with the base backend (LLM-controlled shell)
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            text=text,
+            env=self._env,
+            cwd=str(self.cwd),
+            start_new_session=True,  # own process group → whole tree is killable
+        )
 
+    def _communicate_blocking(
+        self, proc: subprocess.Popen, timeout: float
+    ) -> tuple[str, str] | None:
+        """Original path: block until the command finishes. Returns ``(stdout,
+        stderr)``, or ``None`` on timeout (after killing + reaping the tree)."""
+        try:
+            return proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self._kill(proc)
+            proc.communicate()  # reap
+            return None
+
+    def _communicate_streaming(
+        self, proc: subprocess.Popen, command: str, timeout: float
+    ) -> tuple[str, str] | None:
+        """Incremental path: drain stdout/stderr through reader threads while the
+        command runs, surfacing a live tail + heartbeat via ``progress_sink``.
+
+        stdout and stderr are pumped by two daemon threads that read *bytes* (via
+        ``read1`` — no line buffering, so no-newline output is emitted live) and decode
+        them through a decoder that mirrors ``text=True`` exactly (see
+        :func:`_make_text_decoder`). Each decoded chunk is appended to a per-stream
+        buffer (so the final ``[stderr]``-prefixed combining is byte-identical to the
+        blocking path) AND put on a shared queue this thread drains for the tail +
+        heartbeat. A reader that fails (e.g. invalid UTF-8, which the blocking path also
+        raises on) records its exception; it is re-raised here rather than swallowed, so
+        a failed read can never masquerade as a silent ``exit=0``/``<no output>`` success.
+
+        The whole-command timeout is a SINGLE monotonic deadline (injected clock):
+        supervision continues until the process has actually exited AND both pipes are
+        drained — closing the pipes early does NOT end supervision. On the deadline the
+        process tree is killed + reaped and ``None`` is returned (the caller renders the
+        same exit-124 timeout result as the blocking path). Returns ``(stdout, stderr)``
+        on a clean exit."""
+        out_buf: list[str] = []
+        err_buf: list[str] = []
+        q: queue.Queue[tuple[str, str | None]] = queue.Queue()
+        #: First fatal reader-thread exception per stream (e.g. a decode error). Kept
+        #: so it can be re-raised on this thread instead of dying uncaught in the daemon.
+        reader_errors: dict[str, BaseException] = {}
+
+        def pump(stream, buf: list[str], tag: str) -> None:
+            decoder = _make_text_decoder()
+            try:
+                while True:
+                    chunk = stream.read1(_READ_CHUNK_BYTES)
+                    if not chunk:  # b"" == EOF
+                        break
+                    text = decoder.decode(chunk)
+                    if text:  # empty while a multi-byte char is still buffered
+                        buf.append(text)
+                        q.put((tag, text))
+                # Flush: raises (strict) on a truncated/invalid trailing sequence,
+                # matching the blocking path's end-of-stream decode.
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    buf.append(tail)
+                    q.put((tag, tail))
+            except BaseException as exc:  # noqa: BLE001 - captured + surfaced below
+                reader_errors.setdefault(tag, exc)
+            finally:
+                # Best-effort close; the sentinel tells the drain this stream ended.
+                with contextlib.suppress(Exception):
+                    stream.close()
+                q.put((tag, None))
+
+        threads = [
+            threading.Thread(target=pump, args=(proc.stdout, out_buf, "out"), daemon=True),
+            threading.Thread(target=pump, args=(proc.stderr, err_buf, "err"), daemon=True),
+        ]
+        for t in threads:
+            t.start()
+
+        start = self._clock()
+        tracker = _TailTracker(
+            clock=self._clock,
+            start=start,
+            heartbeat_secs=self._progress_heartbeat_secs,
+            tail_lines=self._progress_tail_lines,
+            command=command,
+        )
+        # Poll no coarser than the heartbeat cadence, else a heartbeat can't fire on
+        # time (it is only checked when the queue goes idle for one poll).
+        poll = max(0.01, min(self._progress_poll_secs, self._progress_heartbeat_secs))
+        eofs = 0
+        timed_out = False
+        while True:
+            if tracker.elapsed() >= timeout:
+                timed_out = True
+                break
+            # Done ONLY when the process has actually exited AND both pipes drained.
+            # Pipe EOF alone must not end supervision: a process can close stdout/stderr
+            # and keep running (that path used to bypass the timeout entirely).
+            if eofs >= 2 and proc.poll() is not None:
+                break
+            try:
+                _tag, item = q.get(timeout=poll)
+            except queue.Empty:
+                self._emit_progress(tracker.maybe_heartbeat())
+                continue
+            if item is None:
+                eofs += 1
+                continue
+            self._emit_progress(tracker.on_output(item))
+
+        if timed_out:
+            self._kill(proc)
+            for t in threads:
+                t.join(timeout=1.0)
+            # Reap best-effort; a wedged wait must never hang the turn. On timeout we
+            # return None regardless (exit 124) — a killed/still-running process must
+            # NOT report success — so any reader error is irrelevant here.
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=5)
+            return None
+
+        for t in threads:
+            t.join(timeout=1.0)
+        # The loop only exits cleanly once ``proc.poll()`` is not None, so wait()
+        # returns immediately with the real exit code (never None coerced to 0).
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=5)
+        # A reader failure (decode error / read error) is surfaced, exactly like the
+        # blocking path raising — never swallowed into a false success.
+        reader_error = reader_errors.get("out") or reader_errors.get("err")
+        if reader_error is not None:
+            raise reader_error
+        return "".join(out_buf), "".join(err_buf)
+
+    def _emit_progress(self, progress: ToolProgress | None) -> None:
+        """Hand a progress record to the sink; a sink error must never break the
+        command (progress is a display affordance, not part of execution)."""
+        if progress is None or self._progress_sink is None:
+            return
+        try:
+            self._progress_sink(progress)
+        except Exception:  # noqa: BLE001 - best-effort; log and keep running
+            logger.debug("progress sink raised", exc_info=True)
+
+    def _finalize_output(
+        self, stdout: str, stderr: str, code: int
+    ) -> ExecuteResponse:
+        """Combine stdout/stderr, truncate, and append a nonzero exit code —
+        identical to the base backend so streamed and blocking runs read the same."""
         parts: list[str] = []
         if stdout:
             parts.append(stdout)
@@ -235,7 +519,6 @@ class CancellableLocalShellBackend(LocalShellBackend):
             output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
             truncated = True
 
-        code = proc.returncode or 0
         if code != 0:
             output = f"{output.rstrip()}\n\nExit code: {code}"
         return ExecuteResponse(output=output, exit_code=code, truncated=truncated)

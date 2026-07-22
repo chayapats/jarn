@@ -186,9 +186,11 @@ async def run_pre_hooks(
     carries non-fatal warnings for non-blocking failures so they're surfaced
     to the user instead of being swallowed.
 
-    NOTE: only *gated* tools reach this (mutating + network/MCP); read-only
-    tools never interrupt, so ``pre_tool`` does not fire for them. Hooks run
-    off the event loop (``to_thread``) so a slow hook doesn't freeze the UI.
+    NOTE: gated tools reach this — mutating + network/MCP, plus reads (so a
+    read of a secret store can be gated against ``sensitive_read_globs``). An
+    ordinary read still resolves to ALLOW and auto-resumes silently, but it now
+    routes through here, so ``pre_tool`` fires for reads too. Hooks run off the
+    event loop (``to_thread``) so a slow hook doesn't freeze the UI.
     """
     from jarn.extensibility.hooks import HookEvent
 

@@ -447,7 +447,7 @@ def _stub_runtime_build(monkeypatch, mcp_result):
 
     seen = {}
 
-    async def _fake_loader(servers):
+    async def _fake_loader(servers, network_policy=None):
         assert isinstance(mcp_result, MCPLoadResult)
         return mcp_result
 
@@ -457,9 +457,11 @@ def _stub_runtime_build(monkeypatch, mcp_result):
     def _fake_build_runtime(
         config, *, project_root, project_trusted=True, checkpointer, extra_tools,
         system_prompt_override=None, response_format=None, extra_roots=None,
+        cost_tracker=None, engine=None,
     ):
         seen["extra_tools"] = extra_tools
         seen["project_trusted"] = project_trusted
+        seen["engine"] = engine
         from types import SimpleNamespace
 
         return SimpleNamespace(agent=object(), main_model_ref="m")
@@ -528,6 +530,101 @@ async def test_ensure_runtime_stays_healthy_when_all_mcp_ok(
 
 
 @pytest.mark.asyncio
+async def test_build_runtime_receives_controller_engine(
+    tmp_path, monkeypatch, base_config
+):
+    """BUG A: the controller must thread its AUTHORITATIVE, session-persistent
+    permission engine (the same instance ``interrupts.py`` records
+    ``deny_session``/``remember`` on, via the driver) into ``build_runtime`` so the
+    result-filter middleware honors runtime session denies. Assert object identity."""
+    from jarn.extensibility.mcp import MCPLoadResult
+
+    result = MCPLoadResult(tools=[], health={}, errors={})
+    seen = _stub_runtime_build(monkeypatch, result)
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+
+    await ctrl.ensure_runtime()
+
+    # The authoritative engine is threaded, not a fresh copy. This is the SAME
+    # object make_driver hands the SessionDriver (engine=self.engine) and that
+    # interrupts.py records deny_session/remember on — closing the filter/gate loop.
+    assert seen["engine"] is ctrl.engine
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_fanout_records_into_controller_tracker_not_total(
+    tmp_path, monkeypatch, base_config
+):
+    """BUG 2: production fan-out must receive the SESSION tracker. The controller
+    owns the authoritative :class:`CostTracker`; ``build_runtime`` must thread it
+    into ``spawn_parallel_tasks`` so each fanned-out task's usage lands in the
+    tracker's ``per_namespace`` dimension — NOT in ``total``/``per_model`` (those
+    are owned by the streaming path; recording there too would double-count).
+
+    Exercises the real Controller -> build_runtime -> build_spawn_parallel_tasks_tool
+    wiring; only the subagent-invocation seam is substituted (a fake chat model
+    cannot drive the real gated sub-graph), so the tracker threading is genuine.
+    """
+    from langchain_core.messages import AIMessage
+
+    import jarn.agent.fanout as fanout_mod
+
+    monkeypatch.setenv("JARN_PARALLEL_SUBAGENTS", "1")
+    sub_ref = base_config.resolved_subagent_model()
+
+    captured: dict[str, object] = {}
+    real_build = fanout_mod.build_spawn_parallel_tasks_tool
+
+    async def _fake_invoke(subagent_type: str, description: str):
+        return {
+            "messages": [
+                AIMessage(
+                    content=f"did {description}",
+                    usage_metadata={
+                        "input_tokens": 100,
+                        "output_tokens": 20,
+                        "total_tokens": 120,
+                    },
+                    response_metadata={"model_name": sub_ref},
+                )
+            ]
+        }
+
+    def _wrapper(*, invoke, cost_tracker=None, **kw):
+        # Capture the tracker build_runtime threaded through, and swap the real
+        # gated-subgraph invoke for a fake that returns usage (the real subgraph
+        # can't run under a fake chat model).
+        captured["cost_tracker"] = cost_tracker
+        return real_build(invoke=_fake_invoke, cost_tracker=cost_tracker, **kw)
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    fake = GenericFakeChatModel(messages=iter([]))
+    with (
+        patch("jarn.providers.models.ModelFactory.build", return_value=fake),
+        patch.object(fanout_mod, "build_spawn_parallel_tasks_tool", _wrapper),
+    ):
+        rt = await ctrl.ensure_runtime()
+        tool = rt.agent.nodes["tools"].bound.tools_by_name["spawn_parallel_tasks"]
+        await tool.ainvoke(
+            {"tasks": [{"description": "alpha", "subagent_type": "general-purpose"}]}
+        )
+
+    # The session tracker (not a throwaway) reached the fan-out tool.
+    assert captured["cost_tracker"] is ctrl.tracker
+    # Usage recorded into the per-namespace dimension...
+    assert len(ctrl.tracker.per_namespace) == 1
+    ns = next(iter(ctrl.tracker.per_namespace.values()))
+    assert (ns.input_tokens, ns.output_tokens) == (100, 20)
+    assert ns.cost_usd > 0.0
+    # ...but NOT into the streamed session total / per-model (no double-count).
+    assert ctrl.tracker.total.cost_usd == 0.0
+    assert ctrl.tracker.total.total_tokens == 0
+    assert ctrl.tracker.per_model == {}
+    await ctrl.aclose()
+
+
+@pytest.mark.asyncio
 async def test_mcp_loaded_once_across_rebuilds_and_reset_on_invalidate(
     tmp_path, monkeypatch, base_config
 ):
@@ -541,7 +638,7 @@ async def test_mcp_loaded_once_across_rebuilds_and_reset_on_invalidate(
 
     calls = {"load": 0, "build": 0}
 
-    async def _counting_loader(servers):
+    async def _counting_loader(servers, network_policy=None):
         calls["load"] += 1
         return MCPLoadResult(tools=["a_tool"], health={"a": "ok"}, errors={})
 
@@ -599,7 +696,7 @@ def test_mcp_refresh_updates_cache_so_rebuild_keeps_fresh_health(
     # The server recovers; `/mcp refresh` re-probes and must also refresh the cache.
     healthy = MCPLoadResult(tools=["s_tool"], health={"s": "ok"}, errors={})
 
-    async def _healthy_loader(servers):
+    async def _healthy_loader(servers, network_policy=None):
         return healthy
 
     monkeypatch.setattr(diag_mod, "load_mcp_tools", _healthy_loader)
@@ -638,7 +735,7 @@ async def test_cancel_midbuild_never_starts_a_second_concurrent_build(
     lock = threading.Lock()
     st = {"calls": 0, "concurrent": 0, "max_concurrent": 0}
 
-    async def _fake_loader(servers):
+    async def _fake_loader(servers, network_policy=None):
         return MCPLoadResult(tools=[], health={}, errors={})
 
     async def _fake_checkpointer(db_path):
@@ -700,7 +797,7 @@ async def test_invalidation_midbuild_disposes_stale_and_reloads_mcp(
     ]
     load = {"n": 0}
 
-    async def _fake_loader(servers):
+    async def _fake_loader(servers, network_policy=None):
         i = min(load["n"], len(results) - 1)
         load["n"] += 1
         return results[i]
@@ -759,7 +856,7 @@ async def test_concurrent_ensure_runtime_builds_once(
 
     calls = {"build": 0}
 
-    async def _fake_loader(servers):
+    async def _fake_loader(servers, network_policy=None):
         return MCPLoadResult(tools=[], health={}, errors={})
 
     async def _fake_checkpointer(db_path):
@@ -801,7 +898,7 @@ async def test_ensure_runtime_single_flight_under_concurrency(
 
     calls = {"build": 0}
 
-    async def _fake_loader(servers):
+    async def _fake_loader(servers, network_policy=None):
         return MCPLoadResult(tools=["a_tool"], health={"a": "ok"}, errors={})
 
     async def _fake_checkpointer(db_path):
@@ -845,7 +942,7 @@ async def test_mcp_refresh_from_running_loop_stores_cache(
 
     healthy = MCPLoadResult(tools=["s_tool"], health={"s": "ok"}, errors={})
 
-    async def _healthy_loader(servers):
+    async def _healthy_loader(servers, network_policy=None):
         return healthy
 
     monkeypatch.setattr(diag_mod, "load_mcp_tools", _healthy_loader)
@@ -914,6 +1011,7 @@ async def test_ensure_runtime_errors_on_ambient_key_leak(
     def _leak_build(
         config, *, project_root, project_trusted, checkpointer, extra_tools,
         system_prompt_override=None, response_format=None, extra_roots=None,
+        cost_tracker=None, engine=None,
     ):
         raise AmbientKeyLeakError(
             ["ambient LANGGRAPH_API_KEY would leak to https://evil.example.com/x"]
@@ -1415,8 +1513,12 @@ def test_main_context_window_queries_local_once_and_caches(tmp_path, monkeypatch
 # -- conversation rewind (fork to an earlier turn) --------------------------
 
 
-def _rewind_runtime(messages):
-    """A fake runtime whose agent records aupdate_state and serves `messages`."""
+def _rewind_runtime(messages, todos=None):
+    """A fake runtime whose agent records aupdate_state and serves `messages`.
+
+    ``todos`` (when given) is served as the graph's ``todos`` channel so a test can
+    assert the structured plan survives a fork; ``None`` keeps the channel absent,
+    the byte-identical no-plan shape the pre-todos tests rely on."""
     from types import SimpleNamespace
 
     class _Agent:
@@ -1425,7 +1527,10 @@ def _rewind_runtime(messages):
             self.updated_config = None
 
         async def aget_state(self, config):
-            return SimpleNamespace(values={"messages": list(messages)})
+            values = {"messages": list(messages)}
+            if todos is not None:
+                values["todos"] = list(todos)
+            return SimpleNamespace(values=values)
 
         async def aupdate_state(self, config, values):
             self.updated_config = config
@@ -1497,6 +1602,55 @@ async def test_fork_to_turn_starts_new_thread_with_prefix(tmp_path, monkeypatch,
     assert recorded[0].id == REMOVE_ALL_MESSAGES
     # remainder is exactly the kept prefix, in order
     assert [m.content for m in recorded[1:]] == ["first", "ans1"]
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_fork_to_turn_preserves_todos(tmp_path, monkeypatch, base_config):
+    """A conversation rewind forks onto a fresh thread (empty ``todos`` channel),
+    so the current plan must be carried over — otherwise rewinding to an earlier
+    turn silently wipes the agent's checklist. Messages seeding is unchanged."""
+    from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
+    from langgraph.graph.message import REMOVE_ALL_MESSAGES
+
+    todos = [
+        {"content": "do X", "status": "completed"},
+        {"content": "do Y", "status": "in_progress"},
+    ]
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    msgs = [
+        HumanMessage(content="first"),
+        AIMessage(content="ans1"),
+        HumanMessage(content="second"),
+        AIMessage(content="ans2"),
+    ]
+    agent, ctrl.runtime = _rewind_runtime(msgs, todos=todos)
+
+    cut = await ctrl.fork_to_turn(2)  # keep messages[:2]
+
+    assert cut == 2
+    assert agent.updated["todos"] == todos  # plan carried onto the new branch
+    # Message seeding is untouched by the todos fix.
+    recorded = agent.updated["messages"]
+    assert isinstance(recorded[0], RemoveMessage)
+    assert recorded[0].id == REMOVE_ALL_MESSAGES
+    assert [m.content for m in recorded[1:]] == ["first", "ans1"]
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_fork_to_turn_no_todos_seeds_only_messages(tmp_path, monkeypatch, base_config):
+    """With no active plan the fork seed stays messages-only (no empty ``todos``
+    key), keeping the pre-fix payload byte-identical."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    msgs = [HumanMessage(content="first"), AIMessage(content="ans1")]
+    agent, ctrl.runtime = _rewind_runtime(msgs, todos=[])
+
+    await ctrl.fork_to_turn(2)
+
+    assert "todos" not in agent.updated
     ctrl.close()
 
 
@@ -1902,7 +2056,7 @@ async def test_cancel_midbuild_then_aclose_never_leaks_backend(
     started = threading.Event()
     closed = {"n": 0}
 
-    async def _fake_loader(servers):
+    async def _fake_loader(servers, network_policy=None):
         return MCPLoadResult(tools=[], health={}, errors={})
 
     async def _fake_checkpointer(db_path):
@@ -1958,7 +2112,7 @@ async def test_aclose_closes_committed_runtime_backend(
 
     closed = {"n": 0}
 
-    async def _fake_loader(servers):
+    async def _fake_loader(servers, network_policy=None):
         return MCPLoadResult(tools=[], health={}, errors={})
 
     async def _fake_checkpointer(db_path):
@@ -2003,7 +2157,7 @@ async def test_aclose_serializes_after_live_caller_no_post_close_build(
     build = {"n": 0}
     closed = {"n": 0}
 
-    async def _fake_loader(servers):
+    async def _fake_loader(servers, network_policy=None):
         return MCPLoadResult(tools=[], health={}, errors={})
 
     async def _fake_checkpointer(db_path):

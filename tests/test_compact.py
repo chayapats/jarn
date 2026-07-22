@@ -16,18 +16,24 @@ class _FakeSummarizer:
 
 
 class _FakeAgent:
-    def __init__(self, messages):
+    def __init__(self, messages, todos=None):
         self._messages = messages
+        # None → the todos channel key is absent from graph state (mirrors a
+        # thread that never called write_todos); a list → the current plan.
+        self._todos = todos
         self.updated = None
 
     async def aget_state(self, config):
-        return SimpleNamespace(values={"messages": self._messages})
+        values = {"messages": self._messages}
+        if self._todos is not None:
+            values["todos"] = self._todos
+        return SimpleNamespace(values=values)
 
     async def aupdate_state(self, config, values):
         self.updated = values
 
 
-def _controller(tmp_path, monkeypatch, messages):
+def _controller(tmp_path, monkeypatch, messages, todos=None):
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     root = tmp_path / "proj"
     (root / ".jarn").mkdir(parents=True)
@@ -35,7 +41,7 @@ def _controller(tmp_path, monkeypatch, messages):
 
     ctrl = Controller(Config(), root)
     ctrl.runtime = SimpleNamespace(
-        agent=_FakeAgent(messages),
+        agent=_FakeAgent(messages, todos),
         factory=SimpleNamespace(
             build_summarizer=lambda: _FakeSummarizer(),
             build_main=lambda: _FakeSummarizer(),
@@ -266,6 +272,58 @@ async def test_compact_apply_seeds_fresh_thread(tmp_path, monkeypatch):
     seeded = ctrl.runtime.agent.updated["messages"][0]
     assert isinstance(seeded, HumanMessage)
     assert "MY SUMMARY" in seeded.content
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_compact_apply_preserves_todos(tmp_path, monkeypatch):
+    """/compact forks to a fresh LangGraph thread whose ``todos`` channel starts
+    empty, so the structured plan must be carried over explicitly — otherwise the
+    agent's checklist resets to empty on every compaction and it loses its plan
+    mid-task exactly when compaction fires."""
+    todos = [
+        {"content": "step one", "status": "completed"},
+        {"content": "step two", "status": "in_progress"},
+        {"content": "step three", "status": "pending"},
+    ]
+    ctrl = _controller(
+        tmp_path, monkeypatch, [HumanMessage(content="x")], todos=todos
+    )
+
+    await ctrl.compact_apply("MY SUMMARY")
+
+    updated = ctrl.runtime.agent.updated
+    assert updated["todos"] == todos  # plan carried across the fork
+    # Message seeding is preserved exactly (regression guard).
+    seeded = updated["messages"][0]
+    assert isinstance(seeded, HumanMessage)
+    assert "MY SUMMARY" in seeded.content
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_compact_preserves_todos_end_to_end(tmp_path, monkeypatch):
+    """The one-shot compact() path (summarize + apply) preserves todos too."""
+    todos = [{"content": "finish the refactor", "status": "in_progress"}]
+    messages = [HumanMessage(content="fix the bug"), AIMessage(content="fixed it")]
+    ctrl = _controller(tmp_path, monkeypatch, messages, todos=todos)
+
+    await ctrl.compact()
+
+    assert ctrl.runtime.agent.updated["todos"] == todos
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_compact_apply_no_todos_seeds_only_messages(tmp_path, monkeypatch):
+    """With no active plan the seed stays messages-only — no empty ``todos`` key is
+    written (byte-identical to the pre-fix behavior, so a fork never clobbers a
+    channel that had no plan to begin with)."""
+    ctrl = _controller(tmp_path, monkeypatch, [HumanMessage(content="x")], todos=[])
+
+    await ctrl.compact_apply("S")
+
+    assert "todos" not in ctrl.runtime.agent.updated
     ctrl.close()
 
 

@@ -126,6 +126,66 @@ def test_web_fetch_allowlist_overrides(monkeypatch):
     assert "ok" in web_fetch.invoke({"url": "http://internal.corp/"})
 
 
+def _cfg_with_network(allow=(), deny=()):
+    """A minimal Config carrying a permissions.network egress policy."""
+    from jarn.config.schema import Config, NetworkPolicy, PermissionRules
+
+    cfg = Config()
+    cfg.permissions = PermissionRules(
+        network=NetworkPolicy(allow=list(allow), deny=list(deny))
+    )
+    return cfg
+
+
+def test_web_fetch_network_allowlist_blocks_unlisted(monkeypatch):
+    """A non-empty allowlist refuses a host that isn't on it (Wave B)."""
+    _public_dns(monkeypatch)
+    monkeypatch.setattr(web_tools, "_active_config", _cfg_with_network(allow=["*.github.com"]))
+    out = web_fetch.invoke({"url": "https://evil.com/x"})
+    assert "blocked" in out and "allowlist" in out
+
+
+def test_web_fetch_network_allowlist_permits_listed(monkeypatch):
+    _public_dns(monkeypatch)
+    monkeypatch.setattr(web_tools, "_active_config", _cfg_with_network(allow=["*.github.com"]))
+    monkeypatch.setattr(web_tools, "_fetch_raw", lambda url, **k: _raw("<p>hi</p>"))
+    assert "hi" in web_fetch.invoke({"url": "https://api.github.com/x"})
+
+
+def test_web_fetch_network_deny_wins(monkeypatch):
+    _public_dns(monkeypatch)
+    monkeypatch.setattr(web_tools, "_active_config", _cfg_with_network(deny=["evil.com"]))
+    out = web_fetch.invoke({"url": "https://evil.com/x"})
+    assert "blocked" in out and "denied" in out
+
+
+def test_web_fetch_empty_policy_allows_all(monkeypatch):
+    """Empty allow+deny = allow-all (back-compat); existing behaviour unchanged."""
+    _public_dns(monkeypatch)
+    monkeypatch.setattr(web_tools, "_active_config", _cfg_with_network())
+    monkeypatch.setattr(web_tools, "_fetch_raw", lambda url, **k: _raw("<p>ok</p>"))
+    assert "ok" in web_fetch.invoke({"url": "https://anywhere.example"})
+
+
+def test_web_fetch_env_allowlist_unions_with_config_allow(monkeypatch):
+    """A host on JARN_WEB_FETCH_ALLOW_HOSTS is permitted egress even under a
+    config allowlist it isn't on (union, back-compat)."""
+    _public_dns(monkeypatch)
+    monkeypatch.setenv("JARN_WEB_FETCH_ALLOW_HOSTS", "internal.corp")
+    monkeypatch.setattr(web_tools, "_active_config", _cfg_with_network(allow=["*.github.com"]))
+    monkeypatch.setattr(web_tools, "_fetch_raw", lambda url, **k: _raw("<p>ok</p>"))
+    assert "ok" in web_fetch.invoke({"url": "http://internal.corp/"})
+
+
+def test_web_fetch_config_deny_overrides_env_allowlist(monkeypatch):
+    """Config deny wins even over the JARN_WEB_FETCH_ALLOW_HOSTS env var."""
+    _public_dns(monkeypatch)
+    monkeypatch.setenv("JARN_WEB_FETCH_ALLOW_HOSTS", "internal.corp")
+    monkeypatch.setattr(web_tools, "_active_config", _cfg_with_network(deny=["internal.corp"]))
+    out = web_fetch.invoke({"url": "http://internal.corp/"})
+    assert "blocked" in out and "denied" in out
+
+
 def test_web_fetch_re_checks_redirect_target(monkeypatch):
     def resolve(host):
         return {"example.com": ["93.184.216.34"], "internal.corp": ["10.0.0.5"]}[host]
@@ -200,6 +260,46 @@ def test_build_web_tools():
     tools = build_web_tools()
     names = {t.name for t in tools}
     assert names == {"web_search", "web_fetch"}
+
+
+def test_web_fetch_policy_is_per_runtime(monkeypatch):
+    """Two runtimes with OPPOSITE egress policies keep their own after both build.
+
+    Regression for the process-global ``_active_config``: building a later
+    permissive runtime used to overwrite an earlier restricted runtime's policy
+    (all builds shared one tool object + one global), so the restricted tool then
+    fetched a denied host. Each build now returns per-runtime instances whose
+    closures capture their own config, so isolation holds regardless of order.
+    """
+    _public_dns(monkeypatch)
+    monkeypatch.setattr(web_tools, "_fetch_raw", lambda url, **k: _raw("<p>ok</p>"))
+    # Restricted runtime FIRST, permissive SECOND (the order that used to break it).
+    restricted = {
+        t.name: t for t in build_web_tools(_cfg_with_network(allow=["*.github.com"]))
+    }
+    permissive = {t.name: t for t in build_web_tools(_cfg_with_network())}
+
+    # Distinct instances — not the shared module singletons.
+    assert restricted["web_fetch"] is not permissive["web_fetch"]
+
+    # The restricted runtime's tool STILL blocks a non-allowlisted host …
+    blocked = restricted["web_fetch"].invoke({"url": "https://evil.com/x"})
+    assert "blocked" in blocked and "allowlist" in blocked
+    # … while the permissive (empty = allow-all) runtime's tool permits it.
+    assert "ok" in permissive["web_fetch"].invoke({"url": "https://evil.com/x"})
+
+
+def test_web_fetch_none_config_runtime_is_allow_all(monkeypatch):
+    """A runtime built with config=None binds an explicit allow-all, not the
+    module-level ``_active_config`` fallback (sentinel disambiguation)."""
+    _public_dns(monkeypatch)
+    monkeypatch.setattr(web_tools, "_fetch_raw", lambda url, **k: _raw("<p>ok</p>"))
+    # A restrictive module fallback that must NOT leak into a None-bound runtime.
+    monkeypatch.setattr(
+        web_tools, "_active_config", _cfg_with_network(deny=["evil.com"])
+    )
+    none_fetch = {t.name: t for t in build_web_tools(None)}["web_fetch"]
+    assert "ok" in none_fetch.invoke({"url": "https://evil.com/x"})
 
 
 def test_unpack_stream_item():

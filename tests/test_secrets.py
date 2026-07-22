@@ -185,6 +185,40 @@ def test_redact_known_secret_substring_of_longer_first():
     assert long_ not in out
 
 
+def test_redact_short_known_secret_seven_chars():
+    # A user-declared exact secret shorter than the heuristic floor (7 chars)
+    # must still be scrubbed — it is a real credential, not detected text.
+    out = redact_secrets("resolved credential abc1234 for header", known={"abc1234"})
+    assert "abc1234" not in out
+    assert "[REDACTED]" in out
+
+
+def test_redact_short_known_secret_four_char_pin():
+    # An even shorter realistic secret (a 4-char PIN) must not leak.
+    out = redact_secrets("your PIN is 4821 ok", known={"4821"})
+    assert "4821" not in out
+    assert "[REDACTED]" in out
+
+
+def test_redact_short_known_substring_keeps_longest_first():
+    # A short known value that is a substring of a longer known value must not
+    # corrupt the longer redaction: longest-first ordering still holds.
+    short = "1234"
+    long_ = "1234abcd"
+    out = redact_secrets(f"key {long_} and pin {short}", known={short, long_})
+    assert short not in out
+    assert long_ not in out
+    # If ordering were wrong the longer value would become "[REDACTED]abcd".
+    assert "abcd" not in out
+
+
+def test_redact_short_known_no_over_redaction():
+    # Ordinary text without a matching known value is unchanged (no spurious
+    # redaction from the exact-value loop or the pattern detectors).
+    plain = "the meeting is at 4pm today"
+    assert redact_secrets(plain, known={"4821"}) == plain
+
+
 def test_redact_empty_returns_empty():
     assert redact_secrets("") == ""
 

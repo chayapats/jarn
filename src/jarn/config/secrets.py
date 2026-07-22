@@ -103,7 +103,10 @@ def redact_secrets(value: str, *, known: set[str] | None = None) -> str:
         # Longest first so a short secret that is a substring of a longer one
         # doesn't get partially redacted before the longer one is handled.
         for secret in sorted(known, key=len, reverse=True):
-            if secret and len(secret) >= 8:
+            # Known values are user-declared exact secrets — scrub any non-empty
+            # value regardless of length; the >=8 floor is only for heuristic
+            # pattern detection (below), not for values the caller marked secret.
+            if secret:
                 text = text.replace(secret, _REDACTED)
     text = _PEM.sub(_REDACTED, text)
     text = _BEARER.sub(_bearer_replacement, text)

@@ -125,6 +125,41 @@ def load_skills(
     return out
 
 
+def find_skill(skills: dict[str, Skill], name: str) -> Skill | None:
+    """Resolve a skill by name for explicit ``/skill <name>`` invocation.
+
+    Tries an exact match first, then a trimmed case-insensitive one so a user
+    typing ``/skill Deploy`` still finds a skill keyed ``deploy``. Returns
+    ``None`` when nothing matches (the caller renders the "unknown skill" error).
+    """
+    if name in skills:
+        return skills[name]
+    wanted = name.strip().lower()
+    for key, skill in skills.items():
+        if key.lower() == wanted:
+            return skill
+    return None
+
+
+def render_skill_invocation(skill: Skill) -> str:
+    """Render a skill's full body as an injectable, follow-me instruction block.
+
+    ``manual``-trigger skills are excluded from :func:`auto_skill_catalog`, so an
+    explicit ``/skill <name>`` is the ONLY way to run them; string/auto skills
+    can be invoked this way too. Unlike the catalog (names + descriptions only,
+    read-on-demand), the whole body is injected here so the model follows it
+    immediately for this turn without a tool round-trip.
+    """
+    lines = [f"# Skill: {skill.name}"]
+    if skill.description:
+        lines.append(skill.description)
+    lines.append("")
+    lines.append("Follow these skill instructions for this turn:")
+    lines.append("")
+    lines.append(skill.body.strip())
+    return "\n".join(lines)
+
+
 def auto_skill_catalog(skills: dict[str, Skill]) -> str:
     """Render the auto-eligible skills as a prompt-injectable catalog.
 

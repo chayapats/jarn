@@ -388,6 +388,33 @@ permissions:
     - "npm test"
   deny:                    # always blocked
     - "curl *"
+  sensitive_read_globs:    # reads of these secret stores are CONFIRMED (ASK) in
+                           # EVERY mode — including yolo — so the agent can't
+                           # silently read a secret and exfiltrate it over an
+                           # allowed network tool. An explicit `allow` rule for a
+                           # path is the escape hatch; a `deny` rule forces DENY.
+                           # Shell globs; `*` spans `/`, so `*.pem` matches at any
+                           # depth. Also strips such files' contents from a broad
+                           # `grep` result (they can't sneak out via search).
+                           # Omit to use the built-in defaults (.env/.env.*,
+                           # **/.ssh/**, **/.aws/credentials, **/.git/config,
+                           # *_rsa, *.pem, **/id_*, **/*.key). Set to [] to OPT OUT
+                           # (reads then behave exactly as before).
+    - "**/.env"
+    - "secrets/*.txt"
+  network:                 # per-host egress policy for web_fetch, MCP http/sse
+                           # endpoints, and (best-effort) shell curl/wget. `deny`
+                           # ALWAYS wins. Empty `allow` = allow-all (back-compat);
+                           # a non-empty `allow` restricts egress to matching hosts.
+                           # Host globs, matched case-insensitively against the
+                           # resolved host (`*.github.com` matches api.github.com,
+                           # not the bare github.com). Shell egress is best-effort
+                           # (hard isolation is execution.backend: docker); tiers
+                           # merged from global+project must each be a LIST.
+    allow:
+      - "*.github.com"
+    deny:
+      - "evil.example.com"
 
 # ── Hooks (lifecycle automation) ─────────────────────────────────────────
 hook_inherit_env: false          # true → hook subprocesses inherit full os.environ
@@ -418,10 +445,17 @@ mcp_servers:
 # ── Verification gate (post-edit) ────────────────────────────────────────
 verify:
   gate: suggest            # off | suggest | auto — once per turn, after all
-                           # write_file/edit_file calls complete: suggest emits
-                           # the detected test command; auto runs it and renders
-                           # a badge: ⎿ verified: pytest ✓ 214 passed · 3.2s
-                           # (permissions + danger-guard still apply)
+                           # write_file/edit_file calls complete: suggest (default)
+                           # only SHOWS the detected command; auto runs it and
+                           # renders a badge: ⎿ verified: pytest ✓ 214 passed · 3.2s.
+                           # `auto` is an opt-in trust decision — it executes your
+                           # project's own test/lint/build scripts, so every command
+                           # still routes through the permission engine (danger-guard
+                           # + per-command approval unless yolo) and the backend
+                           # sandbox. Detection excludes mutating/watch scripts and
+                           # any whose body trips the danger-guard, and shell-quotes
+                           # script names; it can't prove an arbitrary script body is
+                           # side-effect-free, so untrusted repos should use docker.
   max_repair_rounds: 1      # after an auto verification failure, feed the
                            # command/output back to the same agent and retry this
                            # many times; persistent failure is terminal/non-zero
@@ -754,9 +788,10 @@ field contains the parsed object:
 jarn -p "list changed files" --output-schema files.schema.json --json | jq '.result.files[]'
 ```
 
-`--max-turns N` remains accepted for compatibility, but one headless invocation is
-one complete user turn: `SessionDriver` already runs the entire model/tool graph to
-completion. JARN does not restart a completed graph merely because tools were used.
+`--max-turns N` must be `1` (the default); values >1 are rejected with a clear
+error, because one headless invocation is one complete user turn: `SessionDriver`
+already runs the entire model/tool graph to completion. JARN does not restart a
+completed graph merely because tools were used.
 
 `--ignore-project-config` loads only the user's/global configuration while keeping
 `--cwd` as the code workspace. This is intended for CI against untrusted checkouts:

@@ -95,8 +95,25 @@ class CommandMixin:
         rt = self.controller.runtime
         if rt and name in rt.commands:
             self._last_tool_outputs = []
+            try:
+                rendered = rt.commands[name].render(args)
+            except Exception as exc:  # noqa: BLE001 - defensive boundary
+                # A custom/MCP command's render() must NEVER dump a raw,
+                # potentially secret-bearing exception here: this direct dispatch
+                # path (unlike the /mcp handler) has no other boundary, so an MCP
+                # prompt whose lazy fetch raised (redirect egress block, transport
+                # error) would show the raw text — a repro leaked a Bearer token.
+                # Redact and surface a stable one-liner instead. CancelledError is
+                # a BaseException, so a real turn-cancellation still propagates.
+                from jarn.config.secrets import redact_secrets
+
+                c.print(
+                    f"[{palette.C_ERROR}]{_rich_escape(redact_secrets(str(exc)))}"
+                    f"[/{palette.C_ERROR}]"
+                )
+                return
             await repl_turn._run_turn(
-                c, self.controller, rt.commands[name].render(args), self._ask,
+                c, self.controller, rendered, self._ask,
                 pick=self._pick_approval, view=self._view_full_diff,
                 edit=self._edit_before_apply,
                 live_sink=self._set_stream, spinner=False,
@@ -185,6 +202,24 @@ class CommandMixin:
             # /abort path guards above). Cheap no-op when nothing is pending.
             await self.controller.settle_snapshot()
         result = self.controller.handle_command(name, args)
+        if result.seed_turn:
+            # A command (e.g. /skill) whose text is instructions the model should
+            # act on: seed an agent turn with it — same path as custom commands
+            # and /commit,/review — rather than just printing it.
+            self._last_tool_outputs = []
+            await repl_turn._run_turn(
+                c, self.controller, result.text, self._ask,
+                pick=self._pick_approval, view=self._view_full_diff,
+                edit=self._edit_before_apply,
+                live_sink=self._set_stream, spinner=False,
+                tool_sink=self._last_tool_outputs,
+                token_sink=self._count_stream_chars,
+                todos_sink=self._on_todos_live,
+                queue_sink=self._input_queue.append,
+            )
+            await self._render_todos()
+            self._maybe_autocheckpoint_hint()
+            return
         if result.clear_screen:
             self._clear_scrollback()
         c.print(result.text)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -15,6 +16,7 @@ from jarn.headless import (
     EXIT_REFUSED,
     EXIT_SUCCESS,
     EXIT_TIMEOUT,
+    HeadlessFailure,
     HeadlessRefusal,
     HeadlessResult,
     _make_fail_closed_approver,
@@ -55,6 +57,9 @@ def _stub_controller(
 
     fake_driver = MagicMock()
     fake_driver.run_turn = _fake_run_turn
+    # No transcript writer in the stub (keeps stream-json terminal lines clean;
+    # a real driver sets this only when observability.transcript is enabled).
+    fake_driver.transcript = None
 
     import jarn.headless as headless_mod
 
@@ -355,7 +360,7 @@ async def test_completed_graph_is_not_reinvoked_after_tool_use(
     _stub_controller(monkeypatch, run_turn_side_effect=_multi_run_turn)
 
     result = await _run_headless(
-        "do the thing", base_config, tmp_path, max_turns=5,
+        "do the thing", base_config, tmp_path, max_turns=1,
     )
 
     assert len(calls) == 1
@@ -363,6 +368,38 @@ async def test_completed_graph_is_not_reinvoked_after_tool_use(
     assert result.turns == 1
     assert result.result == "step one"
     assert result.tool_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_max_turns_above_one_rejected(tmp_path, monkeypatch, base_config):
+    """Headless is single-turn by design, so --max-turns > 1 is refused up front.
+
+    Silently accepting > 1 while still reporting ``turns == 1`` would misrepresent
+    what actually ran; an honest, clear error is emitted instead.
+    """
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _stub_controller(monkeypatch, text="unused")
+
+    with pytest.raises(HeadlessFailure) as exc_info:
+        await _run_headless("do the thing", base_config, tmp_path, max_turns=5)
+
+    assert exc_info.value.kind == "error"
+    assert exc_info.value.exit_code == EXIT_ERROR
+    assert "max-turns" in str(exc_info.value).lower()
+
+
+def test_max_turns_above_one_exits_error_via_run_headless(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """The sync entry point surfaces the --max-turns > 1 rejection as exit 1 + message."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _stub_controller(monkeypatch, text="unused")
+
+    code = run_headless("do the thing", base_config, tmp_path, max_turns=3)
+
+    assert code == EXIT_ERROR
+    err = capsys.readouterr().err
+    assert "max-turns" in err.lower()
 
 
 @pytest.mark.asyncio
@@ -388,6 +425,203 @@ async def test_multi_turn_cap_respects_limit(tmp_path, monkeypatch, base_config)
     assert len(calls) == 1
     assert result.turns == 1
     assert result.tool_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# Telemetry (opt-in) is recorded in the headless turn path
+# ---------------------------------------------------------------------------
+
+
+def _spy_controller_init(monkeypatch, captured: dict) -> None:
+    """Spy Controller.__init__ so a test can inspect the real instance afterwards.
+
+    The real __init__ still runs (it wires up ``self.telemetry`` / ``self.tracker``);
+    the spy just captures ``self`` once it is built.
+    """
+    import jarn.headless as headless_mod
+
+    orig_init = headless_mod.Controller.__init__
+
+    def _spy_init(self, *a, **k):
+        orig_init(self, *a, **k)
+        captured["controller"] = self
+
+    monkeypatch.setattr(headless_mod.Controller, "__init__", _spy_init)
+
+
+@pytest.mark.asyncio
+async def test_headless_records_turn_telemetry_when_enabled(
+    tmp_path, monkeypatch, base_config
+):
+    """Headless records one per-turn telemetry event when telemetry is opted in.
+
+    This mirrors the REPL turn path (repl/turn.py ``controller.record_turn``).
+    Without it, unattended / CI runs — the most common headless usage — record
+    nothing and flush an empty buffer at shutdown.
+    """
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    base_config.observability.telemetry = True
+
+    captured: dict = {}
+    _spy_controller_init(monkeypatch, captured)
+    _stub_controller(monkeypatch, text="done")
+
+    await _run_headless("do the thing", base_config, tmp_path)
+
+    ctrl = captured["controller"]
+    assert ctrl.telemetry.enabled
+    # aclose is stubbed to a no-op, so the recorded event is still buffered.
+    turn_events = [row for row in ctrl.telemetry._buffer if row.get("event") == "turn"]
+    assert len(turn_events) == 1, (
+        "headless must record exactly one 'turn' telemetry event, like the REPL"
+    )
+
+
+@pytest.mark.asyncio
+async def test_headless_telemetry_off_records_nothing(
+    tmp_path, monkeypatch, base_config
+):
+    """With telemetry opt-out (the default), the headless path records nothing.
+
+    The default-OFF / opt-in policy must be respected exactly as in the REPL — the
+    gate lives inside Telemetry, so calling record_turn is a hard no-op when off.
+    """
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    # base_config.observability.telemetry defaults to False (opt-in).
+
+    captured: dict = {}
+    _spy_controller_init(monkeypatch, captured)
+    _stub_controller(monkeypatch, text="done")
+
+    await _run_headless("do the thing", base_config, tmp_path)
+
+    ctrl = captured["controller"]
+    assert not ctrl.telemetry.enabled
+    assert ctrl.telemetry._buffer == []
+
+
+def _turn_events(ctrl) -> list:
+    """The buffered 'turn' telemetry rows recorded on the controller."""
+    return [row for row in ctrl.telemetry._buffer if row.get("event") == "turn"]
+
+
+@pytest.mark.asyncio
+async def test_headless_records_turn_on_error_event(
+    tmp_path, monkeypatch, base_config
+):
+    """A FAILED headless run (driver yields an ERROR event) still records EXACTLY
+    ONE 'turn' telemetry event.
+
+    Bug G: the ERROR-event raise jumped past ``record_turn`` (which sat only on
+    the success path), so a failed unattended / CI run flushed an empty telemetry
+    buffer at ``aclose()`` while a successful one recorded a turn. The REPL turn
+    path (repl/turn.py) records the turn in a ``finally`` after the stream ends,
+    regardless of outcome — headless must match.
+    """
+    from jarn.agent.session import Event
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    base_config.observability.telemetry = True
+
+    async def _erroring(prompt, *, resume: bool = False):
+        yield Event(kind=EventKind.TEXT, text="partial")
+        yield Event(kind=EventKind.ERROR, text="provider failed", data={})
+
+    captured: dict = {}
+    _spy_controller_init(monkeypatch, captured)
+    _stub_controller(monkeypatch, run_turn_side_effect=_erroring)
+
+    with pytest.raises(HeadlessFailure):
+        await _run_headless("do the thing", base_config, tmp_path)
+
+    ctrl = captured["controller"]
+    assert ctrl.telemetry.enabled
+    assert len(_turn_events(ctrl)) == 1, (
+        "a failed (ERROR-event) headless run must still record exactly one 'turn'"
+    )
+
+
+@pytest.mark.asyncio
+async def test_headless_records_turn_on_refusal(
+    tmp_path, monkeypatch, base_config
+):
+    """An approval refusal mid-turn still records EXACTLY ONE 'turn' telemetry event.
+
+    The refusal raises out of the event loop before the success-path record_turn;
+    the turn must still be recorded (via the finally), exactly once.
+    """
+    from jarn.agent.session import Event
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    base_config.observability.telemetry = True
+
+    async def _refused(prompt, *, resume: bool = False):
+        yield Event(
+            kind=EventKind.APPROVAL,
+            text="rejected: write_file",
+            data={"target": "write_file"},
+        )
+
+    captured: dict = {}
+    _spy_controller_init(monkeypatch, captured)
+    _stub_controller(monkeypatch, run_turn_side_effect=_refused)
+
+    with pytest.raises(HeadlessRefusal):
+        await _run_headless("write a file", base_config, tmp_path)
+
+    ctrl = captured["controller"]
+    assert len(_turn_events(ctrl)) == 1, (
+        "a refused headless run must still record exactly one 'turn'"
+    )
+
+
+@pytest.mark.asyncio
+async def test_headless_records_turn_on_cancellation(
+    tmp_path, monkeypatch, base_config
+):
+    """A cancelled headless run still records EXACTLY ONE 'turn' telemetry event."""
+    from jarn.agent.session import Event
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    base_config.observability.telemetry = True
+
+    async def _cancelled(prompt, *, resume: bool = False):
+        yield Event(kind=EventKind.TEXT, text="starting")
+        raise asyncio.CancelledError
+
+    captured: dict = {}
+    _spy_controller_init(monkeypatch, captured)
+    _stub_controller(monkeypatch, run_turn_side_effect=_cancelled)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _run_headless("long task", base_config, tmp_path)
+
+    ctrl = captured["controller"]
+    assert len(_turn_events(ctrl)) == 1, (
+        "a cancelled headless run must still record exactly one 'turn'"
+    )
+
+
+@pytest.mark.asyncio
+async def test_headless_records_exactly_one_turn_on_success(
+    tmp_path, monkeypatch, base_config
+):
+    """The success path records EXACTLY ONE 'turn' — no double-record after the
+    fix moves recording into a finally (guards against a success + finally double).
+    """
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    base_config.observability.telemetry = True
+
+    captured: dict = {}
+    _spy_controller_init(monkeypatch, captured)
+    _stub_controller(monkeypatch, text="done", tool_events=1)
+
+    await _run_headless("do the thing", base_config, tmp_path)
+
+    ctrl = captured["controller"]
+    assert len(_turn_events(ctrl)) == 1, (
+        "a successful headless run must record exactly one 'turn' (no double-record)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -833,3 +1067,199 @@ def test_schema_validation_failure_exit(tmp_path, monkeypatch, base_config, caps
     assert code == EXIT_ERROR
     data = json.loads(capsys.readouterr().out)
     assert data["error"]["kind"] == "schema"
+
+
+# ---------------------------------------------------------------------------
+# Streaming JSON output (--output-format stream-json)
+# ---------------------------------------------------------------------------
+
+
+def _parse_ndjson(out: str) -> list[dict]:
+    """Parse NDJSON stdout, asserting every non-blank line is valid JSON."""
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    return [json.loads(ln) for ln in lines]
+
+
+def test_stream_json_emits_events_then_result(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """stream-json: ≥1 event line (each valid JSON) then exactly one terminal
+    ``{"type":"result",...}`` line carrying the envelope + thread_id."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _stub_controller(monkeypatch, text="streamed answer", tool_events=1)
+
+    code = run_headless(
+        "do it", base_config, tmp_path, output_format="stream-json"
+    )
+    assert code == EXIT_SUCCESS
+
+    records = _parse_ndjson(capsys.readouterr().out)  # each line valid JSON
+
+    # Exactly one terminal result line, and it is the last line.
+    results = [r for r in records if r.get("type") == "result"]
+    assert len(results) == 1
+    assert records[-1]["type"] == "result"
+
+    # At least one non-result event line streamed before it.
+    event_lines = [r for r in records if r.get("type") != "result"]
+    assert len(event_lines) >= 1
+    kinds = {r["type"] for r in event_lines}
+    assert "text" in kinds
+    assert "tool_start" in kinds
+
+    # Terminal line carries the full envelope + thread_id (the CI-resume gap fix).
+    terminal = results[0]
+    assert terminal["result"] == "streamed answer"
+    for key in ("tokens", "cost", "turns", "tool_calls", "verification"):
+        assert key in terminal
+    assert isinstance(terminal["thread_id"], str) and terminal["thread_id"]
+
+
+def test_stream_json_includes_transcript_path_when_available(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """When the driver has a transcript writer, its path is added to the result."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    fake_driver = _stub_controller(monkeypatch, text="ok")
+    fake_driver.transcript = SimpleNamespace(path=tmp_path / "sessions" / "t.jsonl")
+
+    code = run_headless("q", base_config, tmp_path, output_format="stream-json")
+    assert code == EXIT_SUCCESS
+
+    records = _parse_ndjson(capsys.readouterr().out)
+    terminal = records[-1]
+    assert terminal["type"] == "result"
+    assert terminal["transcript_path"] == str(tmp_path / "sessions" / "t.jsonl")
+
+
+def test_event_to_json_is_generic(base_config):
+    """_event_to_json serializes any event by kind + attributes — no whitelist,
+    so a REASONING event (never special-cased) and arbitrary data still flow."""
+    from jarn.agent.session import Event
+    from jarn.headless import _event_to_json
+
+    ev = Event(kind=EventKind.REASONING, text="thinking", data={"future_key": 1})
+    out = _event_to_json(ev)
+    assert out["type"] == "reasoning"
+    assert out["text"] == "thinking"
+    assert out["data"] == {"future_key": 1}
+
+
+def test_stream_json_error_emits_error_line(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """stream-json error path: emits a terminal error line + the refusal exit code."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+
+    async def _raising_run_turn(prompt, *, resume: bool = False):
+        raise HeadlessRefusal("execute", "ask mode requires confirmation")
+        yield  # pragma: no cover - makes this an async generator
+
+    fake_driver = MagicMock()
+    fake_driver.run_turn = _raising_run_turn
+    fake_driver.transcript = None
+
+    import jarn.headless as headless_mod
+
+    async def _fake_ensure_runtime(self):
+        pass
+
+    async def _fake_aclose(self):
+        pass
+
+    monkeypatch.setattr(headless_mod.Controller, "ensure_runtime", _fake_ensure_runtime)
+    monkeypatch.setattr(headless_mod.Controller, "make_driver", lambda self, a: fake_driver)
+    monkeypatch.setattr(headless_mod.Controller, "validate", lambda self: (True, "ready"))
+    monkeypatch.setattr(headless_mod.Controller, "enrich_turn_input", lambda self, t: t)
+    monkeypatch.setattr(headless_mod.Controller, "aclose", _fake_aclose)
+
+    code = run_headless("risky", base_config, tmp_path, output_format="stream-json")
+
+    assert code == EXIT_REFUSED
+    records = _parse_ndjson(capsys.readouterr().out)
+    assert records[-1]["type"] == "error"
+    assert records[-1]["error"]["kind"] == "refusal"
+    assert "confirmation" in records[-1]["error"]["message"]
+
+
+def test_stream_json_error_event_streams_then_terminal(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """An ERROR event streams as an event line AND closes with a terminal error
+    line carrying the correct (timeout) exit code."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    from jarn.agent.session import Event
+
+    async def _timeout(prompt, *, resume: bool = False):
+        yield Event(kind=EventKind.ERROR, text="request timed out after 30s", data={})
+
+    _stub_controller(monkeypatch, run_turn_side_effect=_timeout)
+
+    code = run_headless("x", base_config, tmp_path, output_format="stream-json")
+    assert code == EXIT_TIMEOUT
+    records = _parse_ndjson(capsys.readouterr().out)
+    assert any(r.get("type") == "error" for r in records)
+    assert records[-1]["type"] == "error"
+
+
+def test_output_format_json_matches_as_json(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """output_format='json' emits the buffered envelope unchanged (no streaming
+    schema, no thread_id leak into the buffered json contract)."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _stub_controller(monkeypatch, text="buf")
+
+    code = run_headless("q", base_config, tmp_path, output_format="json")
+    assert code == EXIT_SUCCESS
+
+    data = json.loads(capsys.readouterr().out)
+    assert data["result"] == "buf"
+    assert "type" not in data       # buffered json is NOT the streaming schema
+    assert "thread_id" not in data  # json mode is unchanged
+
+
+def test_output_format_text_matches_default(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """output_format='text' prints plain text (unchanged from the default)."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _stub_controller(monkeypatch, text="plain")
+
+    code = run_headless("q", base_config, tmp_path, output_format="text")
+    assert code == EXIT_SUCCESS
+    assert capsys.readouterr().out.strip() == "plain"
+
+
+def test_output_format_cli_alias_and_conflict(tmp_path, monkeypatch, base_config):
+    """--json is a legacy alias for --output-format json; conflicting combos error."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    import jarn.cli as cli_mod
+
+    seen: list[dict] = []
+
+    def _recording(**kw):
+        seen.append(kw)
+        return 0
+
+    monkeypatch.setattr(cli_mod, "_cmd_headless", _recording)
+    from jarn.cli import main
+
+    assert main(["-p", "hi", "--json"]) == 0
+    assert seen[-1]["output_format"] == "json"
+
+    assert main(["-p", "hi", "--output-format", "stream-json"]) == 0
+    assert seen[-1]["output_format"] == "stream-json"
+
+    # Consistent alias (--json + --output-format json) is accepted.
+    assert main(["-p", "hi", "--json", "--output-format", "json"]) == 0
+    assert seen[-1]["output_format"] == "json"
+
+    # Default is text.
+    assert main(["-p", "hi"]) == 0
+    assert seen[-1]["output_format"] == "text"
+
+    # Conflicting combo → argparse usage error (SystemExit 2).
+    with pytest.raises(SystemExit) as exc:
+        main(["-p", "hi", "--json", "--output-format", "stream-json"])
+    assert exc.value.code == 2

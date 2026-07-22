@@ -59,6 +59,13 @@ class CostTracker:
     total: Usage = field(default_factory=Usage)
     per_model: dict[str, Usage] = field(default_factory=dict)
     per_tool: dict[str, Usage] = field(default_factory=dict)
+    #: Per-namespace attribution for parallel subagent fan-out
+    #: (``spawn_parallel_tasks``). Keyed by an opaque per-task namespace label so
+    #: two same-model tasks running at once can be told apart — which the streamed
+    #: ``total``/``per_model`` path cannot do. This is a SEPARATE reporting/budget
+    #: dimension: it is intentionally NOT summed into ``total`` (the streaming path
+    #: owns that), so recording here never double-counts the session total.
+    per_namespace: dict[str, Usage] = field(default_factory=dict)
     context_tokens: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -204,6 +211,62 @@ class CostTracker:
         tool_bucket.cache_creation_tokens += cache_creation_tokens
         if unpriced:
             tool_bucket.unpriced_calls += calls
+
+    def record_task_usage(
+        self,
+        namespace: str,
+        model_id: str,
+        input_tokens: int,
+        output_tokens: int,
+        *,
+        cache_read_tokens: int = 0,
+        cache_creation_tokens: int = 0,
+    ) -> Usage:
+        """Attribute one parallel-subagent task's usage to a per-namespace bucket.
+
+        Parallel fan-out (:func:`jarn.agent.fanout`) runs several subagents at once.
+        Their model usage still streams into ``total``/``per_model`` via the session
+        driver, but that path keys by model and so cannot separate two tasks that
+        share a model. This records a per-task (``namespace``-keyed) breakdown for
+        per-task budgets + observability, deliberately WITHOUT touching ``total`` so
+        it never double-counts the streamed figures.
+
+        Returns the namespace bucket's *cumulative* :class:`Usage` (so a caller can
+        read ``.cost_usd`` for a soft per-task budget check). Cost is priced through
+        :func:`jarn.cost.pricing.cost_of`; an unpriced model contributes $0 and
+        increments ``unpriced_calls`` so a soft cap can flag that the spend is
+        unknown rather than silently pass.
+        """
+        cost = pricing.cost_of(
+            model_id,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+        )
+        unpriced = cost is None
+        cost = cost or 0.0
+        with self._lock:
+            u = self.per_namespace.setdefault(namespace, Usage())
+            u.input_tokens += input_tokens
+            u.output_tokens += output_tokens
+            u.cost_usd += cost
+            u.calls += 1
+            u.cache_read_tokens += cache_read_tokens
+            u.cache_creation_tokens += cache_creation_tokens
+            if unpriced:
+                u.unpriced_calls += 1
+            # Return a snapshot copy so the caller reads a stable value even if
+            # another task records into a different namespace concurrently.
+            return Usage(
+                input_tokens=u.input_tokens,
+                output_tokens=u.output_tokens,
+                cost_usd=u.cost_usd,
+                calls=u.calls,
+                unpriced_calls=u.unpriced_calls,
+                cache_read_tokens=u.cache_read_tokens,
+                cache_creation_tokens=u.cache_creation_tokens,
+            )
 
     def top_tools(self, limit: int = 5) -> list[tuple[str, Usage]]:
         """The biggest per-tool cost contributors, most expensive first."""

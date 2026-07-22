@@ -13,12 +13,147 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from jarn.config.schema import MCPServer
+from jarn.config.secrets import SecretResolutionError, redact_secrets, resolve
+
+if TYPE_CHECKING:
+    import httpx
+
+    from jarn.config.schema import NetworkPolicy
 
 logger = logging.getLogger("jarn.mcp")
+
+
+class MCPEgressBlocked(Exception):
+    """Raised inside the httpx request hook when an outgoing MCP request targets a
+    host forbidden by the ``permissions.network`` policy.
+
+    Raising here aborts the request BEFORE any bytes reach the denied host. Because
+    httpx re-issues a fresh request for every redirect hop (and the hook fires on
+    each), this closes the gap where an allow-listed endpoint 3xx-redirects to a
+    denied host: the redirect target is classified and refused per-hop, not just
+    the configured endpoint (see :func:`_egress_request_hook`)."""
+
+
+def run_blocking(coro: Any) -> Any:
+    """Run an async coroutine to completion from synchronous code.
+
+    The controller command registry (``/mcp …``) is invoked synchronously from
+    the REPL's already-running event loop, where ``asyncio.run`` would raise
+    "loop already running". When a loop is live we run the coroutine on a
+    one-shot worker thread with its own loop; outside a loop (tests / headless
+    callers) we ``asyncio.run`` it inline. Mirrors the pattern the ``/mcp
+    refresh`` handler used before this was factored out for reuse by the prompt
+    and resource fetch paths."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(asyncio.run, coro).result()
+
+
+def _network_block_reason(
+    server: MCPServer, network_policy: NetworkPolicy | None
+) -> str | None:
+    """Egress-policy check for an http/sse endpoint host; ``None`` = permitted.
+
+    ``stdio`` servers spawn a local subprocess with no egress host, so they are
+    never blocked here. Mirrors the SSRF host semantics of web_fetch: ``deny``
+    always wins, and a non-empty ``allow`` restricts to listed hosts.
+    """
+    if network_policy is None or not (network_policy.allow or network_policy.deny):
+        return None
+    if server.transport not in ("http", "sse", "streamable_http"):
+        return None
+    from jarn.permissions.guard import NetworkVerdict, classify_host
+
+    host = urlparse(server.url or "").hostname or ""
+    verdict = classify_host(host, network_policy)
+    if verdict is NetworkVerdict.DENIED:
+        return f"endpoint host {host!r} is denied by the permissions.network policy"
+    if verdict is NetworkVerdict.NOT_ALLOWED:
+        return f"endpoint host {host!r} is not on the permissions.network allowlist"
+    return None
+
+
+def _egress_request_hook(
+    network_policy: NetworkPolicy,
+) -> Callable[[httpx.Request], Any]:
+    """Build an httpx async ``request`` event hook that enforces the egress policy
+    on EVERY outgoing request host, not just the configured endpoint.
+
+    :func:`_network_block_reason` validates only the *configured* endpoint host at
+    build time. The underlying httpx transport follows redirects, so an allow-listed
+    host that 3xx-redirects to a denied host would otherwise reach it. httpx fires
+    the ``request`` hook once per hop (the original request and each redirect it
+    follows are all distinct :class:`httpx.Request` objects), so classifying
+    ``request.url.host`` here makes enforcement request-scoped: a redirect to a
+    denied/not-allowed host raises :class:`MCPEgressBlocked` before bytes leave."""
+    from jarn.permissions.guard import NetworkVerdict, classify_host
+
+    async def _hook(request: httpx.Request) -> None:
+        host = request.url.host or ""
+        verdict = classify_host(host, network_policy)
+        if verdict is NetworkVerdict.DENIED:
+            raise MCPEgressBlocked(
+                f"request host {host!r} is denied by the permissions.network policy"
+            )
+        if verdict is NetworkVerdict.NOT_ALLOWED:
+            raise MCPEgressBlocked(
+                f"request host {host!r} is not on the permissions.network allowlist"
+            )
+
+    return _hook
+
+
+def _egress_httpx_client_factory(
+    network_policy: NetworkPolicy,
+) -> Callable[..., httpx.AsyncClient]:
+    """An ``McpHttpClientFactory`` returning MCP's default httpx client augmented
+    with the request-scoped egress hook (:func:`_egress_request_hook`).
+
+    Delegates to the SDK's ``create_mcp_http_client`` so the MCP defaults
+    (``follow_redirects=True``, timeouts) are preserved verbatim, then appends the
+    hook to the client's public ``event_hooks['request']`` list. If that private
+    SDK helper ever moves, we fall back to constructing an equivalent client
+    ourselves (still ``follow_redirects=True``) rather than silently dropping the
+    egress control — this is a security guard, so it must fail closed, never open."""
+    import httpx  # noqa: PLC0415
+
+    hook = _egress_request_hook(network_policy)
+
+    def _factory(
+        headers: dict[str, str] | None = None,
+        timeout: httpx.Timeout | None = None,
+        auth: httpx.Auth | None = None,
+    ) -> httpx.AsyncClient:
+        try:
+            from mcp.shared._httpx_utils import (  # noqa: PLC0415
+                create_mcp_http_client,
+            )
+
+            client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
+        except Exception:  # noqa: BLE001 - private SDK path moved: rebuild MCP defaults
+            kwargs: dict[str, Any] = {"follow_redirects": True}
+            kwargs["timeout"] = timeout or httpx.Timeout(30.0, read=300.0)
+            if headers is not None:
+                kwargs["headers"] = headers
+            if auth is not None:
+                kwargs["auth"] = auth
+            client = httpx.AsyncClient(**kwargs)
+        client.event_hooks["request"].append(hook)
+        return client
+
+    return _factory
 
 
 @dataclass(slots=True)
@@ -87,8 +222,86 @@ def _namespace_tool(tool: Any, server_name: str) -> Any:
     return tool
 
 
-def to_connection(server: MCPServer) -> dict[str, Any]:
-    """Build the per-server connection dict for MultiServerMCPClient."""
+def _resolve_secret_map(
+    mapping: dict[str, str],
+    *,
+    kind: str,
+    server: str,
+    sink: set[str] | None = None,
+) -> dict[str, str]:
+    """Resolve ``${ENV}`` / ``keychain:`` / ``file:`` references in a header/env map.
+
+    Reuses :func:`jarn.config.secrets.resolve` — the SINGLE secret-resolution
+    helper — per value, so a header or env value that is a reference is turned
+    into its concrete secret ONLY here, at connection-build (spawn) time. The
+    on-disk config keeps the reference (this returns a fresh dict and never
+    mutates the server), so ``/mcp status`` and any config dump still show the
+    reference, never the secret. A literal value (no recognised prefix) passes
+    through unchanged. A resolution failure is raised as ``ValueError`` (so
+    :func:`build_client` records the server as ``error`` in isolation) with a
+    secret-redacted message so no key value leaks into logs or health output.
+
+    When ``sink`` is supplied, every resolved non-empty value is also recorded
+    into it. This is how :func:`build_client` captures the exact credential VALUES
+    the live connection will send — snapshotted here, at build, so error-time
+    redaction never has to re-resolve the reference (a re-resolve after a rotation
+    would miss the old value the live client still holds; see :func:`_known_secrets`)."""
+    resolved: dict[str, str] = {}
+    for key, value in mapping.items():
+        try:
+            concrete = resolve(value) or ""
+        except SecretResolutionError as exc:
+            raise ValueError(
+                redact_secrets(f"MCP server {server!r} {kind} {key!r}: {exc}")
+            ) from exc
+        resolved[key] = concrete
+        if sink is not None and concrete:
+            sink.add(concrete)
+    return resolved
+
+
+#: Attribute name under which :func:`build_client` stashes the per-server captured
+#: credential VALUES on the constructed client (``{server_name: set[str]}``).
+_KNOWN_SECRETS_ATTR = "_jarn_known_secrets"
+
+
+def _known_secrets(client: Any, name: str) -> set[str] | None:
+    """The header/env credential VALUES captured for server *name* at the moment
+    its connection was built (stashed on *client* by :func:`build_client`).
+
+    This is the SINGLE source for verbatim (``redact_secrets(..., known=…)``)
+    scrubbing at every error boundary. It is an IMMUTABLE snapshot of exactly what
+    the live client sends — deliberately NOT a re-resolution of the config
+    reference at error time. Re-resolving would miss a credential that rotated
+    after the connection was built: the live client still holds the OLD value, so
+    a malicious/compromised server can echo that OLD credential back in an error
+    (prompt errors reach the model turn); a re-resolve yields the NEW value and
+    fails to scrub the OLD one. Reading the build-time snapshot closes that leak.
+
+    The pattern net in :func:`jarn.config.secrets.redact_secrets` only recognises
+    secret-SHAPED strings, so an opaque, unlabelled credential survives it — these
+    captured values scrub it verbatim regardless of shape. Values shorter than 8
+    chars are dropped by ``redact_secrets`` itself."""
+    captured = getattr(client, _KNOWN_SECRETS_ATTR, None)
+    if not captured:
+        return None
+    return captured.get(name) or None
+
+
+def to_connection(
+    server: MCPServer, *, secrets_sink: set[str] | None = None
+) -> dict[str, Any]:
+    """Build the per-server connection dict for MultiServerMCPClient.
+
+    Header and env values are secret-resolved here (at spawn), not at config
+    load, so a ``${ENV}`` / ``keychain:`` / ``file:`` reference in ``headers`` or
+    ``env`` becomes its concrete secret only in the connection dict handed to the
+    transport — the persisted config keeps the reference. See
+    :func:`_resolve_secret_map`.
+
+    When ``secrets_sink`` is supplied, the concrete credential VALUES resolved for
+    this connection are recorded into it — the immutable snapshot :func:`build_client`
+    carries to every error-redaction boundary (see :func:`_known_secrets`)."""
     if server.transport == "stdio":
         if not server.command:
             raise ValueError(f"MCP server {server.name!r} (stdio) needs a 'command'.")
@@ -96,7 +309,10 @@ def to_connection(server: MCPServer) -> dict[str, Any]:
             "transport": "stdio",
             "command": server.command,
             "args": list(server.args),
-            "env": dict(server.env) or None,
+            "env": _resolve_secret_map(
+                dict(server.env), kind="env", server=server.name, sink=secrets_sink
+            )
+            or None,
         }
     if server.transport in ("http", "streamable_http", "sse"):
         if not server.url:
@@ -104,18 +320,26 @@ def to_connection(server: MCPServer) -> dict[str, Any]:
         transport = "sse" if server.transport == "sse" else "streamable_http"
         conn: dict[str, Any] = {"transport": transport, "url": server.url}
         if server.headers:
-            conn["headers"] = dict(server.headers)
+            conn["headers"] = _resolve_secret_map(
+                dict(server.headers),
+                kind="header",
+                server=server.name,
+                sink=secrets_sink,
+            )
         return conn
     raise ValueError(f"MCP server {server.name!r}: unknown transport {server.transport!r}")
 
 
-def build_client(servers: list[MCPServer]):
+def build_client(
+    servers: list[MCPServer], network_policy: NetworkPolicy | None = None
+):
     """Construct a MultiServerMCPClient from enabled servers (or ``None``).
 
     Returns the client paired with the list of server names whose connection
     dict was built successfully. Servers with an invalid connection (e.g. a
-    stdio server missing ``command``) are omitted here and surfaced separately
-    by :func:`load_mcp_tools` so they still show up as ``error`` in health.
+    stdio server missing ``command``) — or whose http/sse endpoint host is
+    refused by *network_policy* — are omitted here and surfaced separately by
+    :func:`load_mcp_tools` so they still show up as ``error`` in health.
     """
     enabled = [s for s in servers if s.enabled]
     if not enabled:
@@ -124,18 +348,51 @@ def build_client(servers: list[MCPServer]):
 
     connections: dict[str, Any] = {}
     bad: dict[str, str] = {}
+    # Per-server snapshot of the credential VALUES each connection was built with,
+    # captured at build so error-time redaction never re-resolves a reference (a
+    # re-resolve after a rotation would miss the value the live client holds).
+    known_by_name: dict[str, set[str]] = {}
     for server in enabled:
+        sink: set[str] = set()
         try:
-            connections[server.name] = to_connection(server)
+            conn = to_connection(server, secrets_sink=sink)
         except ValueError as exc:
             logger.warning("Skipping MCP server: %s", exc)
             bad[server.name] = str(exc)
+            continue
+        reason = _network_block_reason(server, network_policy)
+        if reason is not None:
+            logger.warning("MCP server %r blocked by network policy: %s",
+                           server.name, reason)
+            bad[server.name] = reason
+            continue
+        # Request-scoped enforcement: when a policy is active, wrap the http/sse
+        # transport so EVERY outgoing request host (including redirect hops) is
+        # re-classified, not just the configured endpoint host checked above. The
+        # transport follows redirects, so an allow-listed host that 3xx-redirects to
+        # a denied host would otherwise bypass the endpoint check. stdio has no
+        # egress host and gets no factory; an empty/inert policy is left untouched so
+        # existing http servers and their connection dicts are byte-for-byte the same.
+        if (
+            network_policy is not None
+            and (network_policy.allow or network_policy.deny)
+            and conn.get("transport") in ("streamable_http", "sse")
+        ):
+            conn["httpx_client_factory"] = _egress_httpx_client_factory(network_policy)
+        connections[server.name] = conn
+        known_by_name[server.name] = sink
     if not connections:
         return None, list(bad.items())
-    return MultiServerMCPClient(connections), list(bad.items())
+    client = MultiServerMCPClient(connections)
+    # Stash the build-time credential snapshot so every error boundary redacts
+    # against what the live client actually sends (see _known_secrets).
+    setattr(client, _KNOWN_SECRETS_ATTR, known_by_name)
+    return client, list(bad.items())
 
 
-async def load_mcp_tools(servers: list[MCPServer]) -> MCPLoadResult:
+async def load_mcp_tools(
+    servers: list[MCPServer], network_policy: NetworkPolicy | None = None
+) -> MCPLoadResult:
     """Load tools from every enabled MCP server, each in isolation.
 
     The installed ``langchain-mcp-adapters`` ``MultiServerMCPClient`` exposes
@@ -150,7 +407,7 @@ async def load_mcp_tools(servers: list[MCPServer]) -> MCPLoadResult:
     so there is no client to close.
     """
     result = MCPLoadResult()
-    client, invalid = build_client(servers)
+    client, invalid = build_client(servers, network_policy)
     # Servers whose connection dict was malformed: mark error up front.
     for name, message in invalid:
         result.health[name] = "error"
@@ -172,8 +429,13 @@ async def load_mcp_tools(servers: list[MCPServer]) -> MCPLoadResult:
             logger.warning("Timed out loading MCP tools from %s after %ss", name, secs)
             return name, None, f"timed out after {secs}s"
         except Exception as exc:  # noqa: BLE001 - one bad server must not kill startup
-            logger.warning("Failed to load MCP tools from %s: %s", name, exc)
-            return name, None, str(exc)
+            # A compromised server can echo the configured credential in its error;
+            # scrub the VALUES captured when this connection was built (known=…) since
+            # the pattern net misses an opaque, unlabelled secret.
+            known = _known_secrets(client, name)
+            redacted = redact_secrets(str(exc), known=known)
+            logger.warning("Failed to load MCP tools from %s: %s", name, redacted)
+            return name, None, redacted
 
     # gather preserves argument order, so tools are extended in client.connections
     # iteration order regardless of which handshake completes first.
@@ -190,3 +452,398 @@ async def load_mcp_tools(servers: list[MCPServer]) -> MCPLoadResult:
             result.tools.extend(_namespace_tool(t, name) for t in tools)
             result.health[name] = "ok"
     return result
+
+
+# ── MCP prompts → invokable slash commands ──────────────────────────────────
+# A server-published prompt is exposed as a runtime-invokable command named
+# ``mcp__<server>__<prompt>`` (same provenance scheme as tools). Registering these
+# into the runtime's command table (see the /mcp handler) means the REPL's EXISTING
+# dispatch — ``rt.commands[name].render(args)`` fed to a turn — injects the prompt
+# text with no change to the turn path. Discovery (list) is cheap; the prompt body
+# is fetched lazily on invoke so per-prompt ``arguments`` can be supplied.
+
+
+def _message_text(message: Any) -> str:
+    """Flatten a LangChain message's content to plain text."""
+    content = getattr(message, "content", message)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            b.get("text", "") if isinstance(b, dict) else str(b) for b in content
+        )
+    return str(content)
+
+
+def _join_prompt_messages(messages: Any) -> str:
+    """Join the text of every prompt message into one injectable block."""
+    parts = [t for m in (messages or []) if (t := _message_text(m))]
+    return "\n\n".join(parts)
+
+
+def _parse_prompt_args(args: str, names: tuple[str, ...]) -> dict[str, Any]:
+    """Parse a raw ``/mcp__srv__p`` argument string into MCP prompt arguments.
+
+    ``key=value key2=value2`` tokens map to named arguments. When the prompt
+    declares exactly one argument and no ``=`` is present, the whole string is
+    that argument's value (so ``/mcp__srv__greet Ada`` works). Otherwise an
+    argument-less prompt just gets ``{}``."""
+    args = args.strip()
+    if not args:
+        return {}
+    if "=" in args:
+        # shlex (POSIX) tokenises so a quoted value keeps its spaces: ``topic=
+        # "hello world"`` → one token ``topic=hello world`` (quotes consumed).
+        # Plain str.split() would shear it at the space into ``topic="hello``.
+        try:
+            tokens = shlex.split(args)
+        except ValueError:
+            tokens = args.split()  # unbalanced quotes → best-effort, never crash
+        out: dict[str, Any] = {}
+        for token in tokens:
+            if "=" in token:
+                key, _, value = token.partition("=")
+                # value is already de-quoted; keep it verbatim so intentional
+                # inner whitespace (and any ``=`` in the value) survives.
+                out[key.strip()] = value
+        if out:
+            return out
+    if len(names) == 1:
+        return {names[0]: args}
+    return {}
+
+
+@dataclass(slots=True)
+class MCPPromptCommand:
+    """An MCP server prompt exposed as a runtime-invokable slash command.
+
+    Duck-types :class:`jarn.extensibility.commands.CustomCommand` (``name``,
+    ``description``, ``render(args) -> str``) so it can be dropped straight into
+    the runtime's ``commands`` table: the REPL then injects ``render(args)`` into
+    a turn exactly as it does for user-defined ``.jarn/commands`` files. ``render``
+    fetches the prompt body from the server on demand (``fetch``), so invoking
+    ``/mcp__<server>__<prompt> key=value`` resolves the live prompt text."""
+
+    name: str  # namespaced: mcp__<server>__<prompt>
+    server: str
+    prompt_name: str  # original server-side name (used for get_prompt)
+    description: str = ""
+    argument_names: tuple[str, ...] = ()
+    fetch: Callable[[dict[str, Any]], str] | None = field(default=None, repr=False)
+
+    def render(self, args: str) -> str:
+        """Fetch and return the prompt text to inject into the turn."""
+        if self.fetch is None:  # pragma: no cover - always bound by the loader
+            return ""
+        return self.fetch(_parse_prompt_args(args, self.argument_names))
+
+
+@dataclass(slots=True)
+class MCPPromptLoadResult:
+    """Outcome of discovering MCP prompts across enabled servers."""
+
+    prompts: dict[str, MCPPromptCommand] = field(default_factory=dict)
+    health: dict[str, str] = field(default_factory=dict)
+    errors: dict[str, str] = field(default_factory=dict)
+
+
+async def _list_prompts(client: Any, server_name: str) -> list[Any]:
+    async with client.session(server_name) as session:
+        listed = await session.list_prompts()
+    return list(getattr(listed, "prompts", []) or [])
+
+
+async def _get_prompt_text(
+    client: Any,
+    server_name: str,
+    prompt_name: str,
+    arguments: dict[str, Any],
+    timeout_secs: float,
+    known: set[str] | None = None,
+) -> str:
+    """Fetch one prompt's text, bounded by the server's ``timeout_secs``.
+
+    Discovery already wraps ``list_prompts`` in ``wait_for``; the lazy fetch must
+    do the same or a server that stalls on ``get_prompt`` hangs the synchronous
+    REPL command forever. On timeout a redacted error string is returned (render
+    contracts on a string), never raised, so a direct ``/mcp__srv__p`` invoke
+    can't crash the turn.
+
+    EVERY other non-cancellation failure is likewise caught, redacted, and
+    returned as a stable string. The redirect egress hook raises
+    :class:`MCPEgressBlocked` and the transport raises ``RuntimeError``/httpx
+    errors — these previously escaped ``render()``, and the REPL's direct
+    extension-command dispatch has no exception boundary, so the raw message was
+    shown verbatim (a repro leaked ``Authorization=Bearer sk-…``). ``render``
+    contracts on a string, so we redact and return one. ``asyncio.CancelledError``
+    is re-raised untouched: cancellation is control flow, never an error to
+    swallow or redact."""
+    try:
+        messages = await asyncio.wait_for(
+            client.get_prompt(server_name, prompt_name, arguments=arguments or None),
+            timeout=timeout_secs,
+        )
+    except TimeoutError:
+        return redact_secrets(
+            f"MCP prompt {prompt_name!r} fetch timed out after {timeout_secs}s",
+            known=known,
+        )
+    except asyncio.CancelledError:
+        raise  # cancellation must propagate — never swallowed or redacted
+    except Exception as exc:  # noqa: BLE001 - egress-block/transport errors must not leak
+        # ``known`` carries the server's resolved header/env credential values so an
+        # opaque, unlabelled secret the server echoes back is scrubbed verbatim (the
+        # pattern net alone would miss it and it would reach the model turn).
+        return redact_secrets(
+            f"MCP prompt {prompt_name!r} fetch failed: {exc}", known=known
+        )
+    return _join_prompt_messages(messages)
+
+
+def _build_prompt_command(
+    client: Any,
+    server_obj: MCPServer,
+    prompt: Any,
+    network_policy: NetworkPolicy | None,
+    timeout_secs: float,
+) -> MCPPromptCommand:
+    server = server_obj.name
+    raw_name = str(getattr(prompt, "name", "") or "")
+    # Collapse any server-supplied mcp__ prefix (provenance is ours to stamp) but
+    # keep the ORIGINAL name for the get_prompt call.
+    display = _strip_mcp_prefix(raw_name) or raw_name
+    arg_names = tuple(
+        str(getattr(a, "name", "") or "")
+        for a in (getattr(prompt, "arguments", None) or [])
+    )
+
+    def _fetch(arguments: dict[str, Any]) -> str:
+        # Re-enforce the egress policy at fetch time. The command is registered
+        # into rt.commands and can be invoked long after discovery (even across a
+        # policy tightening), so it must independently refuse a denied HTTP host
+        # rather than trusting the discovery-time client filtering. stdio has no
+        # egress host and is never blocked. The per-server timeout is carried in
+        # so a stalled get_prompt cannot hang the REPL (BUG 2). The credential
+        # values captured when THIS client's connection was built are threaded
+        # through so an opaque secret echoed in an error is scrubbed before it
+        # reaches the model turn — and, because the command is invoked long after
+        # discovery, the captured snapshot (not a re-resolve) is what the live
+        # client still sends, so a credential rotation cannot leak the old value.
+        known = _known_secrets(client, server)
+        reason = _network_block_reason(server_obj, network_policy)
+        if reason is not None:
+            return redact_secrets(reason, known=known)
+        return run_blocking(
+            _get_prompt_text(client, server, raw_name, arguments, timeout_secs, known)
+        )
+
+    return MCPPromptCommand(
+        name=f"mcp__{server}__{display}",
+        server=server,
+        prompt_name=raw_name,
+        description=str(getattr(prompt, "description", "") or ""),
+        argument_names=arg_names,
+        fetch=_fetch,
+    )
+
+
+async def load_mcp_prompts(
+    servers: list[MCPServer], network_policy: NetworkPolicy | None = None
+) -> MCPPromptLoadResult:
+    """Discover prompts from every enabled MCP server, each in isolation.
+
+    Mirrors :func:`load_mcp_tools`: one bad/unreachable server records an error
+    and is skipped rather than losing every other server's prompts. Only prompt
+    metadata is fetched here (a ``list_prompts`` round-trip); each returned
+    :class:`MCPPromptCommand` fetches its body lazily when invoked. *network_policy*
+    is enforced identically to tool-loading — an http/sse endpoint the egress
+    policy denies is skipped (error), and each command RETAINS the policy so its
+    lazy fetch re-checks it too (stdio is never blocked)."""
+    result = MCPPromptLoadResult()
+    client, invalid = build_client(servers, network_policy)
+    for name, message in invalid:
+        result.health[name] = "error"
+        result.errors[name] = message
+    if client is None:
+        return result
+
+    server_by_name = {s.name: s for s in servers if s.enabled}
+    timeout_by_name = {s.name: s.timeout_secs for s in servers if s.enabled}
+
+    async def _one(name: str) -> tuple[str, list[Any] | None, str | None]:
+        secs = timeout_by_name.get(name, 30)
+        try:
+            prompts = await asyncio.wait_for(_list_prompts(client, name), timeout=secs)
+            return name, prompts, None
+        except TimeoutError:
+            return name, None, f"timed out after {secs}s"
+        except Exception as exc:  # noqa: BLE001 - one bad server must not kill discovery
+            redacted = redact_secrets(str(exc), known=_known_secrets(client, name))
+            logger.warning("Failed to list MCP prompts from %s: %s", name, redacted)
+            return name, None, redacted
+
+    for name, prompts, err in await asyncio.gather(
+        *(_one(n) for n in client.connections)
+    ):
+        if err is not None:
+            result.health[name] = "error"
+            result.errors[name] = redact_secrets(
+                err, known=_known_secrets(client, name)
+            )
+            continue
+        result.health[name] = "ok"
+        for prompt in prompts or []:
+            command = _build_prompt_command(
+                client,
+                server_by_name[name],
+                prompt,
+                network_policy,
+                timeout_by_name.get(name, 30),
+            )
+            result.prompts[command.name] = command
+    return result
+
+
+# ── MCP resources → listing + read ──────────────────────────────────────────
+
+
+@dataclass(slots=True)
+class MCPResource:
+    """A resource published by an MCP server (metadata only)."""
+
+    server: str
+    uri: str
+    name: str = ""
+    description: str = ""
+    mime_type: str = ""
+
+
+@dataclass(slots=True)
+class MCPResourceListResult:
+    """Outcome of listing MCP resources across enabled servers."""
+
+    resources: list[MCPResource] = field(default_factory=list)
+    health: dict[str, str] = field(default_factory=dict)
+    errors: dict[str, str] = field(default_factory=dict)
+
+
+async def _list_resources(client: Any, server_name: str) -> list[Any]:
+    async with client.session(server_name) as session:
+        listed = await session.list_resources()
+    return list(getattr(listed, "resources", []) or [])
+
+
+async def list_mcp_resources(
+    servers: list[MCPServer], network_policy: NetworkPolicy | None = None
+) -> MCPResourceListResult:
+    """List resources from every enabled MCP server, each in isolation.
+
+    *network_policy* is enforced as in tool-loading: an http/sse endpoint the
+    egress policy denies is skipped and recorded as an error; stdio is never
+    blocked."""
+    result = MCPResourceListResult()
+    client, invalid = build_client(servers, network_policy)
+    for name, message in invalid:
+        result.health[name] = "error"
+        result.errors[name] = message
+    if client is None:
+        return result
+
+    timeout_by_name = {s.name: s.timeout_secs for s in servers if s.enabled}
+
+    async def _one(name: str) -> tuple[str, list[Any] | None, str | None]:
+        secs = timeout_by_name.get(name, 30)
+        try:
+            resources = await asyncio.wait_for(
+                _list_resources(client, name), timeout=secs
+            )
+            return name, resources, None
+        except TimeoutError:
+            return name, None, f"timed out after {secs}s"
+        except Exception as exc:  # noqa: BLE001 - one bad server must not kill discovery
+            redacted = redact_secrets(str(exc), known=_known_secrets(client, name))
+            logger.warning("Failed to list MCP resources from %s: %s", name, redacted)
+            return name, None, redacted
+
+    for name, resources, err in await asyncio.gather(
+        *(_one(n) for n in client.connections)
+    ):
+        if err is not None:
+            result.health[name] = "error"
+            result.errors[name] = redact_secrets(
+                err, known=_known_secrets(client, name)
+            )
+            continue
+        result.health[name] = "ok"
+        for res in resources or []:
+            result.resources.append(
+                MCPResource(
+                    server=name,
+                    uri=str(getattr(res, "uri", "") or ""),
+                    name=str(getattr(res, "name", "") or ""),
+                    description=str(getattr(res, "description", "") or ""),
+                    mime_type=str(getattr(res, "mimeType", "") or ""),
+                )
+            )
+    return result
+
+
+def _blob_text(blob: Any) -> str:
+    """Best-effort text of one resource Blob (falls back to its raw data)."""
+    try:
+        return blob.as_string()
+    except Exception:  # noqa: BLE001 - binary blob or missing encoding
+        data = getattr(blob, "data", "")
+        return data if isinstance(data, str) else str(data)
+
+
+async def read_mcp_resource(
+    servers: list[MCPServer],
+    server: str,
+    uri: str,
+    network_policy: NetworkPolicy | None = None,
+) -> str:
+    """Read one resource's content into text.
+
+    Raises ``ValueError`` when ``server`` is not a configured/enabled MCP server,
+    or when its http/sse endpoint host is refused by *network_policy* (the block
+    reason is surfaced so the /mcp handler can redact and display it). ``stdio``
+    servers have no egress host and are never policy-blocked. The read is bounded
+    by the server's ``timeout_secs`` so a stalled ``get_resources`` cannot hang
+    the synchronous REPL command (BUG 2)."""
+    client, invalid = build_client(servers, network_policy)
+    blocked = dict(invalid)
+    if server in blocked:
+        # Policy-denied (or otherwise unbuildable) endpoint: surface the reason.
+        raise ValueError(blocked[server])
+    if client is None or server not in getattr(client, "connections", {}):
+        raise ValueError(f"MCP server {server!r} is not configured or not enabled.")
+    srv = next((s for s in servers if s.name == server and s.enabled), None)
+    secs = srv.timeout_secs if srv is not None else 30
+    # The credential values captured when THIS client's connection was built,
+    # scrubbed verbatim from any surfaced error so an opaque secret the server
+    # echoes back can't leak (the pattern net alone misses an unlabelled value).
+    # Using the build-time snapshot, not a re-resolve, means a credential that
+    # rotated after the connection was built cannot leak its old value.
+    known = _known_secrets(client, server)
+    try:
+        blobs = await asyncio.wait_for(
+            client.get_resources(server, uris=uri), timeout=secs
+        )
+    except TimeoutError as exc:
+        raise TimeoutError(
+            redact_secrets(
+                f"reading {uri!r} from {server!r} timed out after {secs}s", known=known
+            )
+        ) from exc
+    except asyncio.CancelledError:
+        raise  # cancellation must propagate — never swallowed or redacted
+    except Exception as exc:  # noqa: BLE001 - egress-block/transport errors must not leak
+        # An MCPEgressBlocked (redirect hop) or httpx/transport error can carry a
+        # raw (secret-bearing) message. Re-raise a STABLE redacted error and drop
+        # the ``__cause__`` chain (``from None``) so the raw text can't ride along
+        # in a traceback (BUG C).
+        raise RuntimeError(
+            redact_secrets(f"reading {uri!r} from {server!r} failed: {exc}", known=known)
+        ) from None
+    return "\n\n".join(t for b in (blobs or []) if (t := _blob_text(b)))

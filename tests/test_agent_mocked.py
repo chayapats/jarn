@@ -71,9 +71,99 @@ def test_readonly_network_auto_allowed_in_auto_edit():
 
 
 def test_interrupt_map_gates_all_mutating_tools():
-    # Every mutating tool is gated in every mode (the engine decides the verdict),
-    # so edit_file can never skip the danger-guard.
-    assert set(interrupt_map()) == {"write_file", "edit_file", "execute"}
+    # Mutating tools AND read tools are gated in every mode (the engine decides the
+    # verdict), so edit_file can never skip the danger-guard and a read cannot skip
+    # the sensitive-path check. The engine auto-ALLOWs normal reads SILENTLY
+    # (interrupts.py resumes without prompting), so gating reads adds no approval
+    # flood — only a sensitive-path read (.env/id_rsa) reaches the approver.
+    assert set(interrupt_map()) == {
+        "write_file", "edit_file", "execute",
+        "read_file", "ls", "glob", "grep",
+    }
+
+
+def test_read_tools_routed_through_engine():
+    """Read tools must be gated so they reach the permission engine.
+
+    Without this, a sensitive read (.env / id_rsa / .aws/credentials) never hits
+    the engine at runtime and is completely ungated — the exfiltration gap.
+    """
+    from jarn.agent.permissions_bridge import READONLY_TOOLS
+
+    m = interrupt_map()
+    for t in READONLY_TOOLS:
+        assert t in m, f"read tool {t} is not gated → never reaches the engine"
+
+
+def test_sensitive_read_gated_end_to_end():
+    """Bridge + engine together: a read_file/grep of a secret path → ASK; a read
+    of ordinary source → ALLOW. Demonstrates the full closed path in YOLO."""
+    engine = PermissionEngine(mode=PermissionMode.YOLO)
+    assert engine.evaluate(
+        tool_to_action("read_file", {"file_path": ".env"})
+    ).decision.value == "ask"
+    assert engine.evaluate(
+        tool_to_action("read_file", {"file_path": "/home/u/.ssh/id_rsa"})
+    ).decision.value == "ask"
+    assert engine.evaluate(
+        tool_to_action("grep", {"path": "/proj/.aws/credentials"})
+    ).decision.value == "ask"
+    assert engine.evaluate(
+        tool_to_action("read_file", {"file_path": "src/app.py"})
+    ).decision.value == "allow"
+
+
+def test_grep_glob_targets_sensitive_file_gated():
+    """Codex second-eye #1: a grep whose ``glob`` narrows to a secret is gated
+    ASK even when its search ``path`` is benign. The old extraction returned only
+    the benign path and auto-ALLOWed the read."""
+    engine = PermissionEngine(mode=PermissionMode.YOLO)
+    action = tool_to_action(
+        "grep", {"pattern": "TOKEN=", "path": "/repo", "glob": "**/.env"}
+    )
+    assert "**/.env" in action.read_targets
+    assert engine.evaluate(action).decision.value == "ask"
+
+
+def test_grep_glob_denied_is_denied_not_allowed():
+    """The exact executed repro: grep(path='/repo', glob='**/.env') with a
+    read-deny on ``**/.env`` resolves to DENY, not ALLOW."""
+    from jarn.config.schema import PermissionRules
+
+    engine = PermissionEngine(
+        mode=PermissionMode.YOLO, rules=PermissionRules(deny=["**/.env"])
+    )
+    action = tool_to_action(
+        "grep", {"pattern": "TOKEN=", "path": "/repo", "glob": "**/.env"}
+    )
+    assert engine.evaluate(action).decision.value == "deny"
+
+
+def test_grep_pattern_is_not_a_path_target():
+    """A pattern-only grep is NOT gated on its search text: the old code used
+    ``pattern`` as the target, which misclassified plain searches."""
+    engine = PermissionEngine(mode=PermissionMode.ASK)
+    action = tool_to_action("grep", {"pattern": "PRIVATE KEY"})
+    assert action.read_targets == ()
+    assert engine.evaluate(action).decision.value == "allow"
+
+
+def test_ordinary_source_grep_still_auto_allows():
+    """No approval flood: an ordinary source grep with a benign glob auto-ALLOWs."""
+    engine = PermissionEngine(mode=PermissionMode.ASK)
+    action = tool_to_action(
+        "grep", {"pattern": "def foo", "path": "/repo/src", "glob": "*.py"}
+    )
+    assert engine.evaluate(action).decision.value == "allow"
+
+
+def test_glob_tool_sensitive_pattern_gated():
+    """The ``glob`` tool's path-glob lives in its ``pattern`` arg: glob('**/*.pem')
+    is gated ASK; the grep tool's ``pattern`` (search text) is never a target."""
+    engine = PermissionEngine(mode=PermissionMode.YOLO)
+    action = tool_to_action("glob", {"pattern": "**/*.pem"})
+    assert "**/*.pem" in action.read_targets
+    assert engine.evaluate(action).decision.value == "ask"
 
 
 def test_interrupt_map_gates_extra_network_and_mcp_tools():

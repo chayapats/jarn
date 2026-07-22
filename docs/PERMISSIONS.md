@@ -319,7 +319,9 @@ failure mode. The authoritative pattern list is in `src/jarn/permissions/guard.p
 ### Precedence
 
 ```
-0. reads                  → ALLOW (always)
+0. reads                  → ALLOW, EXCEPT a target matching
+                            `permissions.sensitive_read_globs` → ASK (every mode,
+                            incl. YOLO) unless an explicit `allow` rule covers it
 1. guard BLOCKED          → DENY  (cannot be allowlisted)
 2. explicit deny rule     → DENY
 3. guard DANGEROUS        → ASK   (force confirm, even in YOLO)
@@ -327,6 +329,19 @@ failure mode. The authoritative pattern list is in `src/jarn/permissions/guard.p
 5. coarse mode            → ALLOW | ASK | DENY
 [launch boundary] untrusted floor → clamp mode=plan + review-only sandbox posture (applied last, always wins)
 ```
+
+> **Sensitive reads and broad search.** A read whose target matches
+> `permissions.sensitive_read_globs` (`.env`, SSH/AWS keys, `*.pem`, … by default;
+> configurable, `[]` to opt out) routes to **ASK in every mode including YOLO**, so
+> the agent can't silently read a secret and ship it out over an allowed network
+> tool. The scope-only gate can't see a broad `grep(pattern, path=/repo)` that
+> returns secret *contents*, so a result-filter also strips hits in sensitive /
+> read-denied files from `grep` output on the main agent **and** every
+> subagent/fan-out stack. This is defense-in-depth, not a hard boundary (it parses
+> tool display text); the hard controls are pre-exec gating of explicit read targets
+> and `execution.backend: docker`. Network egress (`web_fetch`, MCP endpoints,
+> best-effort shell `curl`/`wget`) is governed by `permissions.network` (per-host
+> allow/deny globs; `deny` always wins). See [CONFIGURATION.md](CONFIGURATION.md).
 
 ### How it's wired
 

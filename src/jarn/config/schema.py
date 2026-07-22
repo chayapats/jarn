@@ -245,16 +245,74 @@ class PolicyConfig:
     web_tools: bool = True
 
 
+#: Default glob patterns for sensitive paths whose *reads* must be confirmed.
+#: Reads are normally auto-allowed (so approvals aren't flooded), but reading a
+#: secret store and shipping it out through an allowed network tool is a real
+#: exfiltration path. A read whose target matches any of these routes to ASK
+#: (unless an explicit ``allow`` rule covers it, or a ``deny`` rule forces DENY).
+#: fnmatch's ``*`` spans ``/``, so ``*.pem`` matches a .pem file at any depth;
+#: the ``**/``-anchored forms also catch bare relative targets (see the engine's
+#: ``_is_sensitive_read``). Set ``sensitive_read_globs: []`` to opt out.
+DEFAULT_SENSITIVE_READ_GLOBS: tuple[str, ...] = (
+    ".env",
+    ".env.*",
+    "**/.env",
+    "**/.env.*",
+    "**/.ssh/**",
+    "**/.aws/credentials",
+    "**/.git/config",
+    "*_rsa",
+    "*.pem",
+    "**/id_*",
+    "**/*.key",
+)
+
+
+@dataclass(slots=True)
+class NetworkPolicy:
+    """Unified per-host network egress allow/deny policy (host globs).
+
+    Applied uniformly to ``web_fetch``, MCP http/sse endpoints, and — best
+    effort — shell ``curl``/``wget``. Semantics: ``deny`` always wins; an empty
+    ``allow`` means allow-all (back-compat); a non-empty ``allow`` restricts
+    egress to hosts matching one of its globs. Globs are shell-style and matched
+    case-insensitively against the resolved target host (e.g. ``*.github.com``
+    matches ``api.github.com`` but not the bare ``github.com``).
+
+    Composition with the legacy ``JARN_WEB_FETCH_ALLOW_HOSTS`` env var: that var
+    still governs the web_fetch SSRF private-IP bypass, and for web_fetch its
+    hosts are additionally treated as permitted egress (union) so existing
+    setups keep working. A config ``deny`` overrides the env var — deny always
+    wins. When both ``allow`` and ``deny`` are empty the policy is inert and
+    default behaviour is unchanged.
+    """
+
+    allow: list[str] = field(default_factory=list)
+    deny: list[str] = field(default_factory=list)
+
+
 @dataclass(slots=True)
 class PermissionRules:
     """Persisted fine-grained allow/deny rules layered under the coarse mode.
 
     Patterns are shell-glob-style and matched against the normalized command
     string for shell, or the path for filesystem writes.
+
+    ``sensitive_read_globs`` gates *reads* of secret stores: a read matching one
+    of these is confirmed (ASK) rather than silently auto-allowed, closing the
+    "read ``.env`` then exfiltrate over an allowed network tool" gap. It defaults
+    to :data:`DEFAULT_SENSITIVE_READ_GLOBS`; an empty list disables the extra
+    gating (reads then behave exactly as before).
     """
 
     allow: list[str] = field(default_factory=list)
     deny: list[str] = field(default_factory=list)
+    sensitive_read_globs: list[str] = field(
+        default_factory=lambda: list(DEFAULT_SENSITIVE_READ_GLOBS)
+    )
+    #: Per-host network egress allow/deny policy (see :class:`NetworkPolicy`).
+    #: Enforced across web_fetch, MCP endpoints, and best-effort shell egress.
+    network: NetworkPolicy = field(default_factory=NetworkPolicy)
 
 
 @dataclass(slots=True)

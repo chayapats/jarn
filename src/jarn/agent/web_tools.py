@@ -20,6 +20,7 @@ endpoints, not user-supplied URLs):
 
 from __future__ import annotations
 
+import contextvars
 import html
 import ipaddress
 import os
@@ -55,8 +56,38 @@ _TAVILY_URL = "https://api.tavily.com/search"
 _BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
 _EXA_URL = "https://api.exa.ai/search"
 
-#: Active config — set by :func:`build_web_tools` at session start.
+#: Module-level fallback config, used ONLY by the module-level ``web_search`` /
+#: ``web_fetch`` singletons (kept for direct-import tests that monkeypatch it).
+#: Production tools come from :func:`build_web_tools`, which binds each runtime's
+#: config into an invocation-scoped ContextVar instead of this global.
 _active_config: Config | None = None
+
+#: Sentinel distinguishing "no per-invocation config was bound" from a runtime
+#: that explicitly bound ``None`` (allow-all). Without it, binding ``None`` would
+#: be indistinguishable from unset and fall back to the shared ``_active_config``.
+_UNSET: object = object()
+
+#: Per-invocation config bound by a per-runtime tool (see :func:`build_web_tools`).
+#: A ContextVar — not a plain global — so two runtimes with OPPOSITE egress
+#: policies invoked concurrently each read their OWN policy; the previous
+#: process-global ``_active_config`` let the last ``build_web_tools`` win and a
+#: restricted runtime silently inherited a later permissive policy.
+_config_ctx: contextvars.ContextVar[object] = contextvars.ContextVar(
+    "jarn_web_active_config", default=_UNSET
+)
+
+
+def _current_config() -> Config | None:
+    """Config in effect for the current web-tool invocation.
+
+    Returns the per-runtime config bound in :data:`_config_ctx` when a
+    ``build_web_tools`` tool set it (possibly ``None`` = allow-all for that
+    runtime), else the module-level :data:`_active_config` fallback.
+    """
+    bound = _config_ctx.get()
+    if bound is _UNSET:
+        return _active_config
+    return bound  # type: ignore[return-value]  # bound is Config | None here
 
 #: Hard cap on bytes downloaded by web_fetch (DoS / memory guard).
 _MAX_FETCH_BYTES = 2_000_000
@@ -71,6 +102,33 @@ def _allowlisted_hosts() -> set[str]:
     """Hosts the user has explicitly opted to allow (comma-separated env var)."""
     raw = os.environ.get("JARN_WEB_FETCH_ALLOW_HOSTS", "")
     return {h.strip().lower() for h in raw.split(",") if h.strip()}
+
+
+def _egress_block_reason(host: str) -> str | None:
+    """Config ``permissions.network`` egress check for *host*; ``None`` = allowed.
+
+    ``deny`` always wins; an empty ``allow`` allows all (back-compat); and a host
+    on ``JARN_WEB_FETCH_ALLOW_HOSTS`` is treated as permitted egress too (union),
+    so existing env-based allowlists keep working. A config ``deny`` still
+    overrides the env var. Inert (returns ``None``) until a config with a
+    non-empty policy has been wired via :func:`build_web_tools`.
+    """
+    cfg = _current_config()
+    if cfg is None:
+        return None
+    policy = cfg.permissions.network
+    if not policy.allow and not policy.deny:
+        return None
+    from jarn.permissions.guard import NetworkVerdict, classify_host
+
+    verdict = classify_host(host, policy)
+    if verdict is NetworkVerdict.DENIED:
+        return f"host {host!r} is denied by the permissions.network policy"
+    if verdict is NetworkVerdict.NOT_ALLOWED:
+        if host.lower() in _allowlisted_hosts():
+            return None  # env allowlist grants egress (union, back-compat)
+        return f"host {host!r} is not on the permissions.network allowlist"
+    return None
 
 
 def _resolve_ips(host: str) -> list[str]:
@@ -118,6 +176,12 @@ def _check_host(host: str) -> tuple[list[str], str | None]:
     """
     if not host:
         return [], "missing host"
+    # Per-host egress policy (permissions.network) is enforced first, before DNS
+    # resolution: a denied / non-allowlisted host is refused without a lookup,
+    # and a config deny wins even over the env allowlist below.
+    egress = _egress_block_reason(host)
+    if egress is not None:
+        return [], egress
     allowlisted = host.lower() in _allowlisted_hosts()
     try:
         ipaddress.ip_address(host)
@@ -444,14 +508,12 @@ def _ddg_search(query: str, max_results: int) -> str:
     return _format_results(query, items)
 
 
-@tool
-def web_search(query: str, max_results: int = 5) -> str:
-    """Search the web and return the top results (title, URL, snippet).
+def _web_search_core(query: str, max_results: int) -> str:
+    """Body shared by the module-level ``web_search`` and every per-runtime one.
 
-    Use this to find current information. Follow up with web_fetch on a URL to
-    read a page in full.
-    """
-    cfg = _active_config
+    Reads the config via :func:`_current_config` so it honours whichever runtime
+    (or the module fallback) bound it for this invocation."""
+    cfg = _current_config()
 
     if cfg is None:
         return _ddg_search(query, max_results)
@@ -478,14 +540,12 @@ def web_search(query: str, max_results: int = 5) -> str:
     return _ddg_search(query, max_results)
 
 
-@tool
-def web_fetch(url: str, max_chars: int = 6000) -> str:
-    """Fetch a URL and return its readable text content (HTML stripped).
+def _web_fetch_core(url: str, max_chars: int) -> str:
+    """Body shared by the module-level ``web_fetch`` and every per-runtime one.
 
-    Refuses private/loopback/link-local targets (SSRF guard) — re-checked on
-    every redirect hop — and caps the download size. Set
-    ``JARN_WEB_FETCH_ALLOW_HOSTS`` to allow specific internal hosts explicitly.
-    """
+    The egress policy is read (via :func:`_current_config`, deep inside
+    :func:`_check_host`) from whatever config the current invocation bound, so a
+    per-runtime tool enforces its OWN policy."""
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
 
@@ -524,15 +584,71 @@ def web_fetch(url: str, max_chars: int = 6000) -> str:
     return body or "(empty response)"
 
 
-def build_web_tools(config: Config | None = None) -> list:
-    """Return the built-in web tools, wiring in the active config.
+def _make_web_tools(config: object) -> tuple:
+    """Build one fresh ``(web_search, web_fetch)`` pair.
 
-    The config is stored in the module-level ``_active_config`` so the
-    ``@tool``-decorated ``web_search`` can read it at call time without
-    changing its LangChain-visible signature (``query``, ``max_results``).
-    This avoids both a closure (which would break direct-import tests) and
-    any framework-visible signature change.
+    ``config is _UNSET`` produces the module-level singletons: they read the
+    shared :data:`_active_config` fallback (so direct-import tests that
+    monkeypatch it keep working). Any other value is a PER-RUNTIME binding
+    (a ``Config`` or ``None``): the returned tools push it into
+    :data:`_config_ctx` for the duration of each call so they enforce THAT
+    runtime's egress policy no matter how many other runtimes are built later.
+    Fresh instances (not the shared module objects) are what make per-runtime
+    isolation possible. Docstrings live here once so both flavours stay identical
+    (the docstring is the tool's LLM-visible description).
     """
-    global _active_config
-    _active_config = config
-    return [web_search, web_fetch]
+
+    @tool
+    def web_search(query: str, max_results: int = 5) -> str:
+        """Search the web and return the top results (title, URL, snippet).
+
+        Use this to find current information. Follow up with web_fetch on a URL to
+        read a page in full.
+        """
+        if config is _UNSET:
+            return _web_search_core(query, max_results)
+        token = _config_ctx.set(config)
+        try:
+            return _web_search_core(query, max_results)
+        finally:
+            _config_ctx.reset(token)
+
+    @tool
+    def web_fetch(url: str, max_chars: int = 6000) -> str:
+        """Fetch a URL and return its readable text content (HTML stripped).
+
+        Refuses private/loopback/link-local targets (SSRF guard) — re-checked on
+        every redirect hop — and caps the download size. Also enforces the unified
+        ``permissions.network`` egress policy (host allow/deny globs): a denied or
+        non-allowlisted host is refused. Set ``JARN_WEB_FETCH_ALLOW_HOSTS`` to allow
+        specific internal hosts explicitly (it also composes with the policy —
+        config deny wins).
+        """
+        if config is _UNSET:
+            return _web_fetch_core(url, max_chars)
+        token = _config_ctx.set(config)
+        try:
+            return _web_fetch_core(url, max_chars)
+        finally:
+            _config_ctx.reset(token)
+
+    return web_search, web_fetch
+
+
+#: Module-level singletons kept for ``from jarn.agent.web_tools import web_fetch``
+#: (direct-import tests); they read the :data:`_active_config` fallback.
+web_search, web_fetch = _make_web_tools(_UNSET)
+
+
+def build_web_tools(config: Config | None = None) -> list:
+    """Return a FRESH pair of built-in web tools bound to *config*.
+
+    Each call returns new tool instances whose closures capture *config* and
+    bind it into an invocation-scoped ContextVar on every call, so a restricted
+    runtime and a permissive one hold independent policies. This replaces the old
+    process-global ``_active_config`` assignment, under which building any later
+    runtime overwrote every earlier runtime's egress policy (the shared module
+    tool objects all read the one global).
+    """
+    ws, wf = _make_web_tools(config)
+    return [ws, wf]

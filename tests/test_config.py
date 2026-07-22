@@ -96,6 +96,128 @@ def test_permission_rules_concatenate(tmp_path):
     assert cfg.permissions.deny == ["rm *"]
 
 
+def test_network_policy_round_trip(tmp_path):
+    """permissions.network host globs load through pydantic → dataclass (Wave B)."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"permissions": {"network": {"allow": ["*.github.com"], "deny": ["evil.com"]}}})
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.permissions.network.allow == ["*.github.com"]
+    assert cfg.permissions.network.deny == ["evil.com"]
+
+
+def test_network_policy_merges_across_tiers(tmp_path):
+    """Both tiers' network allow/deny concatenate (project extends global)."""
+    gp = tmp_path / "g.yaml"
+    pp = tmp_path / "p.yaml"
+    _write(gp, {"permissions": {"network": {"allow": ["*.github.com"]}}})
+    _write(pp, {"permissions": {"network": {"allow": ["*.pypi.org"], "deny": ["evil.com"]}}})
+    cfg = load_config(global_path=gp, project_path=pp)
+    assert cfg.permissions.network.allow == ["*.github.com", "*.pypi.org"]
+    assert cfg.permissions.network.deny == ["evil.com"]
+
+
+def test_network_policy_defaults_empty(tmp_path):
+    cfg = load_config(
+        global_path=tmp_path / "none-g.yaml", project_path=tmp_path / "none-p.yaml"
+    )
+    assert cfg.permissions.network.allow == []
+    assert cfg.permissions.network.deny == []
+
+
+def test_network_policy_coexists_with_allow_deny(tmp_path):
+    """A permissions block can carry allow/deny AND network without losing either."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {
+        "permissions": {
+            "allow": ["git status"],
+            "network": {"deny": ["evil.com"]},
+        }
+    })
+    # Pin project_root to an empty tmp dir so project-config discovery can't
+    # pick up the repo's own .jarn/config.yaml (this test asserts exact allow).
+    cfg = load_config(global_path=gp, project_path=None, project_root=tmp_path)
+    assert cfg.permissions.allow == ["git status"]
+    assert cfg.permissions.network.deny == ["evil.com"]
+
+
+def test_network_policy_scalar_overlay_not_split_into_char_globs(tmp_path):
+    """A scalar (non-list) network allow in an overlay tier must NOT be splatted
+    into per-character host globs when BOTH tiers define permissions.network; it
+    surfaces as the intended clean validation error, not garbage 1-char globs."""
+    gp = tmp_path / "g.yaml"
+    pp = tmp_path / "p.yaml"
+    _write(gp, {"permissions": {"network": {"allow": ["*.github.com"]}}})
+    _write(pp, {"permissions": {"network": {"allow": "evil.com"}}})
+    with pytest.raises(ConfigError) as exc:
+        load_config(global_path=gp, project_path=pp)
+    assert "must be a list" in str(exc.value)
+
+
+def test_network_policy_null_overlay_preserves_base_allow(tmp_path):
+    """A null network allow in an overlay (project) tier means "inherit the base"
+    — it must PRESERVE the global allow list, NOT erase it to []. Erasing it lets
+    a project DELETE a restrictive global allowlist (privilege escalation, E)."""
+    gp = tmp_path / "g.yaml"
+    pp = tmp_path / "p.yaml"
+    _write(gp, {"permissions": {"network": {"allow": ["*.github.com"]}}})
+    _write(pp, {"permissions": {"network": {"allow": None, "deny": ["evil.com"]}}})
+    cfg = load_config(global_path=gp, project_path=pp)
+    assert cfg.permissions.network.allow == ["*.github.com"]  # base preserved
+    assert cfg.permissions.network.deny == ["evil.com"]
+
+
+def test_network_policy_null_overlay_preserves_base_deny(tmp_path):
+    """A null network.deny in the project (overlay) tier must INHERIT the global
+    deny, not ERASE it — a null overlay is an empty contribution, so a project
+    can't wipe a restrictive global deny by setting it to null (FINDING E)."""
+    gp = tmp_path / "g.yaml"
+    pp = tmp_path / "p.yaml"
+    _write(gp, {"permissions": {"network": {"deny": ["metadata.internal"]}}})
+    _write(pp, {"permissions": {"network": {"deny": None}}})
+    cfg = load_config(global_path=gp, project_path=pp)
+    assert cfg.permissions.network.deny == ["metadata.internal"]  # base preserved
+
+
+def test_sensitive_read_globs_custom_survives_merge(tmp_path):
+    """A configured custom ``sensitive_read_globs`` REPLACES the built-in defaults
+    through the merge — previously it was silently dropped so the defaults always
+    won (BUG D)."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"permissions": {"sensitive_read_globs": ["custom/*.secret"]}})
+    cfg = load_config(global_path=gp, project_path=None, project_root=tmp_path)
+    assert cfg.permissions.sensitive_read_globs == ["custom/*.secret"]
+
+
+def test_sensitive_read_globs_empty_opt_out_survives_merge(tmp_path):
+    """The documented empty-list opt-out reaches the config, not the 11 defaults."""
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"permissions": {"sensitive_read_globs": []}})
+    cfg = load_config(global_path=gp, project_path=None, project_root=tmp_path)
+    assert cfg.permissions.sensitive_read_globs == []
+
+
+def test_sensitive_read_globs_default_when_unset(tmp_path):
+    """When no tier sets it, the built-in defaults still apply (regression guard)."""
+    from jarn.config.schema import DEFAULT_SENSITIVE_READ_GLOBS
+
+    cfg = load_config(
+        global_path=tmp_path / "none-g.yaml",
+        project_path=tmp_path / "none-p.yaml",
+        project_root=tmp_path,
+    )
+    assert cfg.permissions.sensitive_read_globs == list(DEFAULT_SENSITIVE_READ_GLOBS)
+
+
+def test_sensitive_read_globs_project_replaces_global(tmp_path):
+    """Last-writer wins: a project list replaces the global one (tier precedence)."""
+    gp = tmp_path / "g.yaml"
+    pp = tmp_path / "p.yaml"
+    _write(gp, {"permissions": {"sensitive_read_globs": ["global/*.key"]}})
+    _write(pp, {"permissions": {"sensitive_read_globs": ["proj/*.pem"]}})
+    cfg = load_config(global_path=gp, project_path=pp)
+    assert cfg.permissions.sensitive_read_globs == ["proj/*.pem"]
+
+
 def test_hooks_and_mcp_extend(tmp_path):
     gp = tmp_path / "g.yaml"
     pp = tmp_path / "p.yaml"
