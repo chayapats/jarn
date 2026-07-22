@@ -82,7 +82,10 @@ def cmd_mcp(ctrl, args: str) -> CommandResult:
     if sub == "prompts":
         return _mcp_prompts(ctrl)
     if sub == "prompt":
-        return _mcp_prompt(ctrl, rest)
+        # Split off only ``prompt <server> <name>`` and hand the RAW remainder
+        # to the parser: str.split()+" ".join() would collapse the quoting/
+        # whitespace of ``key="multi word"`` values before they reach shlex.
+        return _mcp_prompt(ctrl, args.strip().split(maxsplit=3)[1:])
     if sub in ("resources", "resource"):
         return _mcp_resources(ctrl)
     if sub == "read":

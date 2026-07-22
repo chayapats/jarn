@@ -25,6 +25,7 @@ from jarn.config.schema import MCPServer, NetworkPolicy
 from jarn.config.secrets import redact_secrets
 from jarn.extensibility.mcp import (
     _build_prompt_command,
+    _parse_prompt_args,
     build_client,
     list_mcp_resources,
     load_mcp_prompts,
@@ -321,6 +322,100 @@ def test_cmd_mcp_prompt_single_fetch(monkeypatch):
     out = cmd_mcp(ctrl, "prompt srv greet name=Cy").text
     assert "Hello, Cy!" in out
     assert "mcp__srv__greet" in rt.commands  # also registered for direct invoke
+
+
+# ── prompt-argument quoting (whitespace inside quoted values) ─────────────────
+
+
+def _echo_meta():
+    """A prompt declaring two named args, so key=value parsing is exercised."""
+    return SimpleNamespace(
+        name="echo",
+        description="",
+        arguments=[SimpleNamespace(name="topic"), SimpleNamespace(name="style")],
+    )
+
+
+def _capture(store):
+    """A prompt_fn that records the resolved arguments dict for assertions."""
+
+    def _fn(server, prompt_name, arguments):
+        store.clear()
+        store.update(arguments or {})
+        return [_Msg("ok")]
+
+    return _fn
+
+
+def test_parse_prompt_args_preserves_quoted_whitespace():
+    """Quoted multiword values keep their spaces; quotes are consumed (shlex),
+    not left dangling on a truncated first word (the old str.split() bug)."""
+    two = ("topic", "style")
+    # double quotes
+    assert _parse_prompt_args('topic="hello world" style=brief', two) == {
+        "topic": "hello world",
+        "style": "brief",
+    }
+    # single quotes
+    assert _parse_prompt_args("topic='hello world' style=brief", two) == {
+        "topic": "hello world",
+        "style": "brief",
+    }
+    # mixed quoted / unquoted
+    assert _parse_prompt_args('topic=plain style="two words"', two) == {
+        "topic": "plain",
+        "style": "two words",
+    }
+    # an ``=`` inside the (quoted) value is preserved, not re-split
+    assert _parse_prompt_args('topic="a=b" style=x', two) == {
+        "topic": "a=b",
+        "style": "x",
+    }
+    # single-arg no-``=`` fallback: a bare multiword value still works
+    assert _parse_prompt_args("hello world", ("name",)) == {"name": "hello world"}
+    # malformed quoting must not raise (graceful best-effort fallback)
+    assert isinstance(_parse_prompt_args('topic="unterminated', ("topic",)), dict)
+
+
+def test_mcp_prompt_render_preserves_quoted_whitespace(monkeypatch):
+    """Direct namespaced invocation: render() → _parse_prompt_args keeps spaces."""
+    got: dict = {}
+    _patch_client(
+        monkeypatch, prompts={"srv": [_echo_meta()]}, prompt_fn=_capture(got)
+    )
+    result = asyncio.run(load_mcp_prompts([_stdio("srv")]))
+    cmd = result.prompts["mcp__srv__echo"]
+
+    cmd.render('topic="hello world" style=brief')
+    assert got == {"topic": "hello world", "style": "brief"}
+
+    cmd.render("topic='hello world' style=brief")
+    assert got == {"topic": "hello world", "style": "brief"}
+
+
+def test_cmd_mcp_prompt_path_preserves_quoted_whitespace(monkeypatch):
+    """The /mcp prompt <server> <name> <args…> dispatcher preserves quoting all the
+    way to the parser (no split()+join() collapse of token boundaries)."""
+    from jarn.controller.commands.diagnostics import cmd_mcp
+
+    got: dict = {}
+    _patch_client(
+        monkeypatch, prompts={"srv": [_echo_meta()]}, prompt_fn=_capture(got)
+    )
+    rt = SimpleNamespace(commands={})
+    ctrl = SimpleNamespace(
+        config=SimpleNamespace(
+            mcp_servers=[_stdio("srv")],
+            permissions=SimpleNamespace(network=NetworkPolicy()),
+        ),
+        runtime=rt,
+    )
+
+    cmd_mcp(ctrl, 'prompt srv echo topic="hello world" style=brief')
+    assert got == {"topic": "hello world", "style": "brief"}
+
+    cmd_mcp(ctrl, "prompt srv echo topic='hello world' style=brief")
+    assert got == {"topic": "hello world", "style": "brief"}
 
 
 # ── resources ─────────────────────────────────────────────────────────────────

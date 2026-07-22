@@ -735,3 +735,34 @@ def test_virtual_spelling_collision_still_sensitive(tmp_path):
     assert eng.evaluate(
         Action(ActionKind.READ, target=collision)
     ).decision is Decision.ASK
+
+
+def test_virtual_canonicalization_runs_once_per_decision(tmp_path):
+    """round-8 #1: one evaluate()/read_content_blocked() decision maps each raw READ
+    path to host identity EXACTLY ONCE — the deny/allow/sensitive checks share a single
+    canonical candidate set rather than each re-resolving the path."""
+    from unittest.mock import patch
+
+    proj = tmp_path / "project"
+    proj.mkdir()
+    eng = PermissionEngine(
+        rules=PermissionRules(sensitive_read_globs=["secrets/*.txt"]),
+        project_root=proj,
+    )
+    eng.virtual_reads = True
+
+    calls: list[str] = []
+    real = PermissionEngine._canonical_read_target
+
+    def spy(self, target, _real=real, _calls=calls):
+        _calls.append(target)
+        return _real(self, target)
+
+    with patch.object(PermissionEngine, "_canonical_read_target", spy):
+        calls.clear()
+        eng.evaluate(Action(ActionKind.READ, target="/secrets/a.txt"))
+        assert calls == ["/secrets/a.txt"], calls  # exactly one, not three
+
+        calls.clear()
+        eng.read_content_blocked("/secrets/a.txt")
+        assert calls == ["/secrets/a.txt"], calls

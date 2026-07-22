@@ -11,7 +11,7 @@ see CHANGELOG §0.3.0 for the remaining road-to-1.0 work.
 uv sync --extra dev
 uv run ruff check src tests scripts
 uv run mypy src/
-uv run pytest -q                    # 1981 tests
+uv run pytest -q                    # 1985 tests
 uv run pytest tests/test_packaging.py -q
 uv build
 ```

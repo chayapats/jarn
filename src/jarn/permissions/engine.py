@@ -14,7 +14,7 @@ from __future__ import annotations
 import fnmatch
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
 
@@ -140,6 +140,9 @@ class PermissionEngine:
     # -- public API ---------------------------------------------------------
 
     def evaluate(self, action: Action) -> PermissionResult:
+        # Map any virtual READ targets to host identity ONCE up front, so the deny →
+        # allow → sensitive precedence below runs over one stable candidate set.
+        action = self._canonicalized_action(action)
         guard = self._guard_for(action)
 
         if guard.level is GuardLevel.BLOCKED:
@@ -210,7 +213,8 @@ class PermissionEngine:
         Defense-in-depth backstop for ``read_file``: a denied read is already
         blocked pre-exec, but the result-filter re-checks so a denied file's
         contents can never reach the model even if that gate is bypassed."""
-        return self._matches(Action(ActionKind.READ, target=path), self._all_deny())
+        act = self._canonicalized_action(Action(ActionKind.READ, target=path))
+        return self._matches(act, self._all_deny())
 
     def read_content_blocked(self, path: str) -> bool:
         """True when a file at *path* must not have its CONTENTS surfaced by a
@@ -222,14 +226,13 @@ class PermissionEngine:
         benign scope silently drops hits from ``.env``/keys (the exfiltration the
         gate cannot catch), while an explicitly allow-listed secret path still
         comes through."""
-        act = Action(ActionKind.READ, target=path)
+        # Canonicalize the path ONCE, then run deny → allow → sensitive over that one
+        # canonical action (mirrors evaluate()'s precedence for the result filter).
+        act = self._canonicalized_action(Action(ActionKind.READ, target=path))
         if self._matches(act, self._all_deny()):
             return True
         if self._matches(act, self._all_allow()):
             return False
-        # Route the sensitive check through the SAME canonical-candidate path as
-        # deny/allow so ``path`` is canonicalized once (never chained): every READ
-        # entry maps a backend-namespace path to host identity exactly once.
         return self._is_sensitive_read(act)
 
     # -- internals ----------------------------------------------------------
@@ -361,14 +364,29 @@ class PermissionEngine:
             for cand in self._read_candidates(action)  # already host-canonical
         )
 
+    def _canonicalized_action(self, action: Action) -> Action:
+        """Return ``action`` with its READ targets mapped to host identity EXACTLY
+        ONCE, so one precedence decision (deny → allow → sensitive) runs over a single
+        stable canonical candidate set — no repeated per-check ``resolve()``. Applied
+        at each public READ entry (:meth:`evaluate`, :meth:`read_content_blocked`,
+        :meth:`is_read_denied_path`); non-READ actions and the no-op modes
+        (``virtual_reads`` off) are returned unchanged."""
+        if action.kind is not ActionKind.READ or not self.virtual_reads:
+            return action
+        target = self._canonical_read_target(action.target)
+        read_targets = tuple(self._canonical_read_target(t) for t in action.read_targets)
+        if target == action.target and read_targets == action.read_targets:
+            return action
+        return replace(action, target=target, read_targets=read_targets)
+
     def _read_candidates(self, action: Action) -> tuple[str, ...]:
-        """Every path-like target a READ is judged against: the primary ``target``
-        plus any extra ``read_targets`` (a grep/glob ``glob`` value), each
-        canonicalized to host identity (:meth:`_canonical_read_target`), then
-        de-duplicated with empties dropped (order preserved for stable reasoning)."""
+        """The path-like targets a READ is judged against: the primary ``target`` plus
+        any extra ``read_targets`` (a grep/glob ``glob`` value), de-duplicated with
+        empties dropped (order preserved). The action's targets are ALREADY
+        host-canonical — mapped once by :meth:`_canonicalized_action` at the public
+        entry — so this does NOT re-map (that would resolve the same path repeatedly)."""
         out: list[str] = []
         for cand in (action.target, *action.read_targets):
-            cand = self._canonical_read_target(cand)
             if cand and cand not in out:
                 out.append(cand)
         return tuple(out)

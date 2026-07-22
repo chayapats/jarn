@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -491,11 +492,20 @@ def _parse_prompt_args(args: str, names: tuple[str, ...]) -> dict[str, Any]:
     if not args:
         return {}
     if "=" in args:
+        # shlex (POSIX) tokenises so a quoted value keeps its spaces: ``topic=
+        # "hello world"`` → one token ``topic=hello world`` (quotes consumed).
+        # Plain str.split() would shear it at the space into ``topic="hello``.
+        try:
+            tokens = shlex.split(args)
+        except ValueError:
+            tokens = args.split()  # unbalanced quotes → best-effort, never crash
         out: dict[str, Any] = {}
-        for token in args.split():
+        for token in tokens:
             if "=" in token:
                 key, _, value = token.partition("=")
-                out[key.strip()] = value.strip()
+                # value is already de-quoted; keep it verbatim so intentional
+                # inner whitespace (and any ``=`` in the value) survives.
+                out[key.strip()] = value
         if out:
             return out
     if len(names) == 1:
