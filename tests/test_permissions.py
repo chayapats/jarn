@@ -619,7 +619,9 @@ def test_no_network_policy_leaves_curl_unaffected():
 
 def test_virtual_direct_read_asks_on_relative_sensitive_glob(tmp_path):
     """round-6 #1 (pre-exec gate): a direct read_file of a VIRTUAL sensitive path
-    ASKs (not silent ALLOW) when the sensitive glob is RELATIVE."""
+    ASKs (not silent ALLOW) when the sensitive glob is RELATIVE. Under virtual_reads
+    every backend READ path is virtual-namespace, so the engine only receives the
+    virtual spelling (`/secrets/notes.txt`), never the host spelling of that file."""
     proj = tmp_path / "project"
     proj.mkdir()
     eng = PermissionEngine(
@@ -629,10 +631,6 @@ def test_virtual_direct_read_asks_on_relative_sensitive_glob(tmp_path):
     eng.virtual_reads = True
     assert eng.evaluate(
         Action(ActionKind.READ, target="/secrets/notes.txt")  # virtual-absolute
-    ).decision is Decision.ASK
-    # The host spelling of the SAME file also ASKs (file-identity match).
-    assert eng.evaluate(
-        Action(ActionKind.READ, target=str(proj / "secrets" / "notes.txt"))
     ).decision is Decision.ASK
 
 
@@ -668,11 +666,11 @@ def test_virtual_remembered_allow_beats_sensitive_at_gate(tmp_path):
     assert eng.evaluate(act).decision is Decision.ALLOW  # explicit allow wins
 
 
-def test_virtual_canonicalization_preserves_added_root_paths(tmp_path):
-    """round-6 #3: ``_canonical_read_target`` rebases a VIRTUAL path under the primary
-    root but leaves a HOST-absolute --add-dir path unchanged (the backend returns
-    those as-is), and is idempotent — so an unrelated primary-root rule can't falsely
-    flag a benign added-root read."""
+def test_virtual_canonicalization_rules(tmp_path):
+    """round-7 #2/#3: ``_canonical_read_target`` rebases every VIRTUAL absolute path
+    under the primary root (even one whose SPELLING falls under the host root — the
+    round-7 #2 collision), but leaves a real ``--add-dir`` host path unchanged
+    (round-7 #3). Globs rebase lexically; flag-off is a no-op."""
     proj = tmp_path / "project"
     proj.mkdir()
     added = tmp_path / "added"
@@ -681,15 +679,59 @@ def test_virtual_canonicalization_preserves_added_root_paths(tmp_path):
     eng.virtual_reads = True
     virt = "/secrets/notes.txt"
     host_added = str(added / "notes.txt")
-    host_primary = str(proj / "secrets" / "notes.txt")
     # Virtual-absolute → rebased under the primary root.
-    assert eng._canonical_read_target(virt) == host_primary
-    # Idempotent: a host path already under the primary root is untouched.
-    assert eng._canonical_read_target(host_primary) == host_primary
-    # A real --add-dir host path is preserved (NOT rebased under the primary root).
+    assert eng._canonical_read_target(virt) == str(proj / "secrets" / "notes.txt")
+    # round-7 #2: a virtual path whose SPELLING resolves under the host project root
+    # is STILL virtual (the backend never emits primary-tree files by host spelling)
+    # and is rebased — NOT mistaken for an already-canonical host path.
+    collision = str(proj / "secrets" / "notes.txt")  # spells under proj
+    assert eng._canonical_read_target(collision) == str(
+        proj / collision.lstrip("/")
+    )
+    # round-7 #3: a real --add-dir host path is preserved (never rebased).
     assert eng._canonical_read_target(host_added) == host_added
-    # A glob pattern is never rebased (it's a pattern, not a concrete file).
-    assert eng._canonical_read_target("/secrets/*.txt") == "/secrets/*.txt"
+    # round-7 #1: a virtual-absolute glob rebases LEXICALLY to project-relative.
+    assert eng._canonical_read_target("/secrets/*.txt") == "secrets/*.txt"
     # OFF → no-op (docker/sandbox host paths pass straight through).
     eng.virtual_reads = False
     assert eng._canonical_read_target(virt) == virt
+
+
+def test_virtual_glob_candidate_asks_on_relative_sensitive_glob(tmp_path):
+    """round-7 #1: a grep narrowed to a VIRTUAL-absolute glob (`/secrets/*.txt`) is
+    caught by a RELATIVE sensitive rule at the PRE-EXEC gate — the glob candidate is
+    lexically canonicalized so the hard pre-exec control isn't lost to a best-effort
+    result filter."""
+    proj = tmp_path / "project"
+    proj.mkdir()
+    eng = PermissionEngine(
+        rules=PermissionRules(sensitive_read_globs=["secrets/*.txt"]),
+        project_root=proj,
+    )
+    eng.virtual_reads = True
+    # grep(path='/', glob='/secrets/*.txt') — the glob rides in read_targets.
+    act = Action(
+        ActionKind.READ, target="/", tool="grep", read_targets=("/", "/secrets/*.txt")
+    )
+    assert eng.evaluate(act).decision is Decision.ASK
+    # Without the flag the virtual-absolute glob misses the relative rule (guard).
+    eng.virtual_reads = False
+    assert eng.evaluate(act).decision is Decision.ALLOW
+
+
+def test_virtual_spelling_collision_still_sensitive(tmp_path):
+    """round-7 #2 end-to-end: a virtual path that SPELLS under the host project root
+    is rebased correctly, so a sensitive rule still ASKs (it is not silently ALLOWed
+    by a heuristic that mistook it for a host path)."""
+    proj = tmp_path / "project"
+    proj.mkdir()
+    eng = PermissionEngine(
+        rules=PermissionRules(sensitive_read_globs=["**/*.txt"]),
+        project_root=proj,
+    )
+    eng.virtual_reads = True
+    # A virtual path whose spelling coincides with a host path under proj.
+    collision = str(proj / "notes.txt")
+    assert eng.evaluate(
+        Action(ActionKind.READ, target=collision)
+    ).decision is Decision.ASK

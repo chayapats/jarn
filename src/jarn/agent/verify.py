@@ -10,11 +10,14 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shlex
 import time as _time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from jarn.permissions.guard import GuardLevel, inspect_command
 
 if TYPE_CHECKING:
     from jarn.agent.session import SessionDriver
@@ -59,11 +62,24 @@ def _is_verify_safe(name: str, body: object) -> bool:
     the command body for inlined mutating/watch flags. This keeps plain ``test``,
     ``lint``, ``typecheck`` and ``build`` scripts while excluding ``lint:fix``,
     ``format:write``, ``test:watch``, ``dev``/``serve``/``start`` and the like.
+
+    The name/body denylist cannot prove an arbitrary script body safe, so as a final
+    gate the body is run through the project's own danger-guard: a body the guard flags
+    DANGEROUS/BLOCKED (e.g. an ``rm -rf`` or a pipe-to-shell hidden inside an
+    innocuously named ``test``/``lint`` script) is not auto-runnable. This reuses the
+    exact danger detection the shell gate applies, so the destructive body is excluded
+    at detection time instead of slipping through under a benign command name.
     """
     if _UNSAFE_SCRIPT_TOKENS.intersection(_split_script_tokens(name)):
         return False
-    body_lower = str(body or "").lower()
-    return not any(marker in body_lower for marker in _UNSAFE_SCRIPT_BODY_MARKERS)
+    body_text = str(body or "")
+    if any(marker in body_text.lower() for marker in _UNSAFE_SCRIPT_BODY_MARKERS):
+        return False
+    if body_text.strip():
+        level = inspect_command(body_text).level
+        if level in (GuardLevel.DANGEROUS, GuardLevel.BLOCKED):
+            return False
+    return True
 
 
 @dataclass(slots=True)
@@ -124,7 +140,10 @@ def _detect_node(root: Path, caps: ProjectCapabilities) -> None:
         for keywords, bucket_name in _NODE_SCRIPT_BUCKETS:
             if tokens.intersection(keywords):
                 bucket = getattr(caps, bucket_name)
-                cmd = f"{runner} {script_name}"
+                # Quote the script name: it is later run via ``shell=True``, so an
+                # unquoted key containing shell syntax (``lint; rm -rf .``) would
+                # inject a second command. Quoting makes it a single runner argument.
+                cmd = f"{runner} {shlex.quote(script_name)}"
                 if cmd not in bucket:
                     bucket.append(cmd)
                 break

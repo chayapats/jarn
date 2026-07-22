@@ -495,8 +495,10 @@ def test_relative_session_deny_redacts_absolute_grep_header(tmp_path):
 
 def test_relative_deny_covers_main_and_subagent_absolute_grep(base_config, tmp_path):
     """End-to-end: a RELATIVE session deny (``secrets/notes.txt``) on the shared,
-    project-rooted engine redacts an ABSOLUTE grep header on BOTH the main agent and
-    the general-purpose sub-graph (the ``task``/fan-out target)."""
+    project-rooted engine redacts a PRODUCTION (virtual-mode) grep header on BOTH the
+    main agent and the general-purpose sub-graph (the ``task``/fan-out target).
+    ``build_runtime`` marks the shared engine ``virtual_reads`` for the local backend,
+    so the header is fed as the real backend emits it (virtual-absolute)."""
     from unittest.mock import patch
 
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -504,7 +506,7 @@ def test_relative_deny_covers_main_and_subagent_absolute_grep(base_config, tmp_p
     from jarn.agent import builder
     from jarn.agent.fanout import extract_subagent_graphs
 
-    src = _make_secrets_tree(tmp_path)
+    _make_secrets_tree(tmp_path)
 
     engine = PermissionEngine(rules=PermissionRules(), project_root=tmp_path)
     fake = GenericFakeChatModel(messages=iter([]))
@@ -521,17 +523,17 @@ def test_relative_deny_covers_main_and_subagent_absolute_grep(base_config, tmp_p
     # A relative-path session deny (as typed by the user) on the shared engine.
     engine.deny_session(Action(ActionKind.READ, target="secrets/notes.txt"))
 
-    backend = CancellableLocalShellBackend(root_dir=str(tmp_path), virtual_mode=False)
-    msg = _grep_tool_message(backend, "PRIVATE KEY", str(tmp_path), "content")
-    assert "leaked-secret-material" in msg.content  # real grep leaked it (absolute header)
+    backend = CancellableLocalShellBackend(root_dir=str(tmp_path), virtual_mode=True)
+    msg = _grep_tool_message(backend, "PRIVATE KEY", "/", "content")
+    assert "leaked-secret-material" in msg.content  # real grep leaked it (virtual header)
 
     req = _Req(
         {"name": "grep", "args": {"pattern": "PRIVATE KEY", "output_mode": "content"}, "id": "t1"}
     )
     for flt in (main_filters[0], gp_filters[0]):
         out = flt.wrap_tool_call(req, lambda _r: msg)
-        assert "leaked-secret-material" not in out.content  # relative deny caught absolute header
-        assert str(src / "app.py") in out.content           # benign source hit preserved
+        assert "leaked-secret-material" not in out.content  # relative deny caught virtual header
+        assert "/src/app.py" in out.content                 # benign source hit preserved
 
 
 # ---------------------------------------------------------------------------

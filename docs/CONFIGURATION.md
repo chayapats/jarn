@@ -445,10 +445,17 @@ mcp_servers:
 # ── Verification gate (post-edit) ────────────────────────────────────────
 verify:
   gate: suggest            # off | suggest | auto — once per turn, after all
-                           # write_file/edit_file calls complete: suggest emits
-                           # the detected test command; auto runs it and renders
-                           # a badge: ⎿ verified: pytest ✓ 214 passed · 3.2s
-                           # (permissions + danger-guard still apply)
+                           # write_file/edit_file calls complete: suggest (default)
+                           # only SHOWS the detected command; auto runs it and
+                           # renders a badge: ⎿ verified: pytest ✓ 214 passed · 3.2s.
+                           # `auto` is an opt-in trust decision — it executes your
+                           # project's own test/lint/build scripts, so every command
+                           # still routes through the permission engine (danger-guard
+                           # + per-command approval unless yolo) and the backend
+                           # sandbox. Detection excludes mutating/watch scripts and
+                           # any whose body trips the danger-guard, and shell-quotes
+                           # script names; it can't prove an arbitrary script body is
+                           # side-effect-free, so untrusted repos should use docker.
   max_repair_rounds: 1      # after an auto verification failure, feed the
                            # command/output back to the same agent and retry this
                            # many times; persistent failure is terminal/non-zero

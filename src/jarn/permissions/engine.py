@@ -227,7 +227,10 @@ class PermissionEngine:
             return True
         if self._matches(act, self._all_allow()):
             return False
-        return self.is_sensitive_read_path(path)
+        # Route the sensitive check through the SAME canonical-candidate path as
+        # deny/allow so ``path`` is canonicalized once (never chained): every READ
+        # entry maps a backend-namespace path to host identity exactly once.
+        return self._is_sensitive_read(act)
 
     # -- internals ----------------------------------------------------------
 
@@ -354,8 +357,8 @@ class PermissionEngine:
         is caught even though ``/repo`` alone is benign.
         """
         return any(
-            self.is_sensitive_read_path(cand)
-            for cand in self._read_candidates(action)
+            self._is_sensitive_read_canonical(cand)
+            for cand in self._read_candidates(action)  # already host-canonical
         )
 
     def _read_candidates(self, action: Action) -> tuple[str, ...]:
@@ -371,34 +374,50 @@ class PermissionEngine:
         return tuple(out)
 
     def _canonical_read_target(self, target: str) -> str:
-        """Canonicalize a READ path from the execution backend's namespace to a
-        HOST filesystem path, so the engine's file-identity matching sees the real
-        file both at the pre-exec gate and in the result filter.
+        """Map ONE backend-namespace READ path to host identity.
 
-        Active ONLY when :attr:`virtual_reads` is set — the local backend formats
-        read/grep paths as VIRTUAL-absolute (rooted at ``project_root``): ``/x``
-        means ``<project_root>/x`` on the host. A virtual-absolute target is rebased
-        under the primary root; a HOST-absolute target ALREADY under an active root
-        (primary or an added ``--add-dir`` root, which the backend returns unchanged)
-        is kept as-is — that also makes this IDEMPOTENT. A glob pattern or a
-        non-absolute target is returned unchanged. With ``virtual_reads`` off or no
-        anchor, this is a no-op (docker/sandbox host paths, ``project_root=None``) —
-        the engine never guesses a namespace it was not told about."""
+        CONTRACT: called EXACTLY ONCE per raw path, and only on a path in the
+        execution backend's namespace — a virtual grep/read target or its glob
+        candidate, supplied by the pre-exec bridge or the result filter. It is never
+        given its own output, nor an arbitrary host path the engine picked. Active
+        only when :attr:`virtual_reads` is set (the local backend formats read/grep
+        paths as VIRTUAL-absolute, rooted at ``project_root``: ``/x`` means
+        ``<project_root>/x`` on the host).
+
+        - A real host-absolute path inside an added ``--add-dir`` root — which the
+          local backend emits UNCHANGED — is kept as-is (round-7 #3: never rebased,
+          so an unrelated primary-root rule can't falsely redact an added-root read).
+        - Every OTHER absolute concrete target is VIRTUAL and is rebased under
+          ``project_root``. We deliberately do NOT exempt "already under
+          ``project_root``": in virtual mode the backend never emits a primary-tree
+          file by its host spelling (it shows ``/x``), so a string that happens to
+          resolve under ``project_root`` is a virtual path and MUST rebase — closing
+          the spelling-collision hole where the engine and backend disagreed on which
+          file a name denotes (round-7 #2). Because canonicalization runs exactly
+          once, this needs no idempotence exemption.
+        - A virtual-absolute GLOB candidate (grep's ``glob`` narrowed to
+          ``/secrets/*.txt``) is rebased LEXICALLY to its project-relative spelling
+          so it meets a relative sensitive rule — it can't be ``resolve()``d without
+          destroying the metacharacters (round-7 #1).
+        - A relative target, and everything when ``virtual_reads`` is off or there is
+          no root anchor, is returned unchanged — no guessing."""
         if not self.virtual_reads or not target or self.project_root is None:
             return target
-        if _is_glob(target) or not target.startswith("/"):
+        if not target.startswith("/"):
             return target
+        if _is_glob(target):
+            return target.lstrip("/")
         try:
             resolved = Path(target).resolve()
         except (OSError, RuntimeError, ValueError):
             resolved = Path(target)
-        for root in (self.project_root, *self.roots):
+        for root in self.roots:  # ADDED roots only — backend keeps these as host paths
             try:
                 r = root.resolve()
             except (OSError, RuntimeError, ValueError):
                 continue
             if resolved == r or r in resolved.parents:
-                return target  # real host path under an active root — leave it
+                return target
         return (self.project_root / target.lstrip("/")).as_posix()
 
     def is_sensitive_read_path(self, path: str) -> bool:
@@ -418,10 +437,16 @@ class PermissionEngine:
         ``/``, so ``*.pem`` matches a .pem file at any depth. An empty
         ``sensitive_read_globs`` disables the check entirely.
         """
+        return self._is_sensitive_read_canonical(self._canonical_read_target(path))
+
+    def _is_sensitive_read_canonical(self, path: str) -> bool:
+        """Sensitive-glob check on an ALREADY host-canonical READ path — no further
+        canonicalization. Internal callers pass canonical ``_read_candidates`` so a
+        backend-namespace path is mapped to host identity EXACTLY ONCE (never
+        chained); the public :meth:`is_sensitive_read_path` canonicalizes first."""
         globs = self.rules.sensitive_read_globs
         if not globs or not path:
             return False
-        path = self._canonical_read_target(path)
         aliases, _ = self._read_alias_set(path)
         return any(
             fnmatch.fnmatch(alias, pattern)
