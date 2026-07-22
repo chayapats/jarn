@@ -162,10 +162,34 @@ class PermissionEngine:
                 dangerous=True, block_remember_always=True,
             )
 
+        if action.kind is ActionKind.READ:
+            # Reads auto-ALLOW except SENSITIVE candidates, which ASK — but each
+            # candidate is judged on its own: an allow rule matching a BENIGN
+            # candidate must NOT mask a DIFFERENT sensitive one (e.g. an allow on
+            # the search scope ``/repo`` cannot suppress the sensitive ``**/.env``
+            # glob of the same grep). A sensitive candidate is cleared only by an
+            # allow matching THAT candidate (the explicit escape hatch).
+            return self._read_decision(action)
+
         if self._matches(action, self._all_allow()):
             return PermissionResult(Decision.ALLOW, "matched an allow rule")
 
         return self._mode_decision(action)
+
+    def _read_decision(self, action: Action) -> PermissionResult:
+        """READ verdict (deny already cleared): ASK if ANY candidate is sensitive and
+        NOT covered by an allow matching that same candidate; otherwise ALLOW. Reads
+        are always permitted (any mode) unless an un-allowed sensitive candidate
+        forces confirmation — an allow on another candidate cannot mask it."""
+        allow = self._all_allow()
+        for cand in self._read_candidates(action):
+            if self._is_sensitive_read_canonical(cand) and not self._read_candidate_matches(
+                cand, allow
+            ):
+                return PermissionResult(
+                    Decision.ASK, "sensitive-path read requires confirmation"
+                )
+        return PermissionResult(Decision.ALLOW, "reads are always permitted")
 
     def remember(self, action: Action, scope: RememberScope) -> str | None:
         """Record an approval. For ALWAYS, also persist the rule via
@@ -248,21 +272,10 @@ class PermissionEngine:
         return GuardVerdict(GuardLevel.SAFE)
 
     def _mode_decision(self, action: Action) -> PermissionResult:
+        # READ actions never reach here — :meth:`evaluate` routes them to
+        # :meth:`_read_decision` (per-candidate sensitive/allow) after the deny +
+        # danger-guard checks. This handles WRITE/SHELL/NETWORK by coarse mode.
         mode = self.mode
-        if action.kind is ActionKind.READ:
-            # Reads reaching here already cleared the deny check (line ~121) and
-            # the allow check (line ~132), so an explicit deny/allow rule wins.
-            # Otherwise reads auto-ALLOW EXCEPT for sensitive secret stores: those
-            # are confirmed (ASK) in every mode — including YOLO — so the agent
-            # cannot silently read ``.env``/``id_rsa``/``.aws/credentials`` and
-            # exfiltrate them through an allowed network tool. An explicit allow
-            # rule (checked earlier) is the escape hatch for a specific path.
-            if self._is_sensitive_read(action):
-                return PermissionResult(
-                    Decision.ASK, "sensitive-path read requires confirmation"
-                )
-            return PermissionResult(Decision.ALLOW, "reads are always permitted")
-
         if mode is PermissionMode.PLAN:
             return PermissionResult(Decision.DENY, "plan mode is read-only")
 
@@ -373,8 +386,17 @@ class PermissionEngine:
         (``virtual_reads`` off) are returned unchanged."""
         if action.kind is not ActionKind.READ or not self.virtual_reads:
             return action
-        target = self._canonical_read_target(action.target)
-        read_targets = tuple(self._canonical_read_target(t) for t in action.read_targets)
+        # Memoize by raw spelling: tool_to_action stores the primary path in BOTH
+        # ``target`` and ``read_targets[0]``, so map each DISTINCT raw path once.
+        cache: dict[str, str] = {}
+
+        def canon(raw: str) -> str:
+            if raw not in cache:
+                cache[raw] = self._canonical_read_target(raw)
+            return cache[raw]
+
+        target = canon(action.target)
+        read_targets = tuple(canon(t) for t in action.read_targets)
         if target == action.target and read_targets == action.read_targets:
             return action
         return replace(action, target=target, read_targets=read_targets)

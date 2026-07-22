@@ -53,6 +53,7 @@ from typing import Any
 
 from langgraph.errors import GraphBubbleUp
 
+from jarn.config.secrets import redact_secrets
 from jarn.cost import pricing
 from jarn.cost.tracker import CostTracker
 
@@ -268,11 +269,15 @@ async def run_parallel_tasks(
                 # (See ``run_parallel_tasks`` for the concurrent-resume limitation.)
                 raise
             except Exception as exc:  # noqa: BLE001 - report, never crash the batch
+                # A subagent's provider/MCP/subprocess exception text can carry
+                # credentials (e.g. an echoed ``Authorization: Bearer …``). This
+                # summary is fed back to the orchestrating model, so scrub it with
+                # the shared redactor before it leaves the batch (round-9 #3).
                 return TaskOutcome(
                     index=index,
                     subagent_type=sub_type,
                     status="error",
-                    summary=f"{type(exc).__name__}: {exc}",
+                    summary=redact_secrets(f"{type(exc).__name__}: {exc}"),
                     duration_s=clock() - started,
                 )
         duration = clock() - started

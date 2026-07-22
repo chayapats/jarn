@@ -183,6 +183,28 @@ async def test_aggregation_shape_and_error_isolation():
     assert "[task 2] does-not-exist — unknown_subagent" in rendered
 
 
+@pytest.mark.asyncio
+async def test_error_summary_redacts_credentials():
+    """round-9 #3: a subagent exception whose text carries a credential is scrubbed
+    before it reaches the orchestrating model — in the outcome summary AND the
+    rendered roll-up (fan-out errors previously copied ``str(exc)`` verbatim)."""
+    secret = "sk-proj-ABCDEFGH1234567890WXYZ"
+
+    async def invoke(subagent_type: str, description: str):
+        raise RuntimeError(f"Authorization: Bearer {secret}")
+
+    result = await run_parallel_tasks(
+        [ParallelTask("boom", subagent_type="general-purpose")],
+        invoke=invoke,
+        available_subagents=["general-purpose"],
+        default_model_ref=MODEL,
+    )
+    outcome = result.outcomes[0]
+    assert outcome.status == "error"
+    assert secret not in outcome.summary       # credential scrubbed from the summary
+    assert secret not in format_result(result)  # …and from the model-facing roll-up
+
+
 # --- 3. per-task budget accounting -----------------------------------------
 
 

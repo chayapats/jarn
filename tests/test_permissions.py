@@ -766,3 +766,37 @@ def test_virtual_canonicalization_runs_once_per_decision(tmp_path):
         calls.clear()
         eng.read_content_blocked("/secrets/a.txt")
         assert calls == ["/secrets/a.txt"], calls
+
+        # PRODUCTION grep: tool_to_action stores the path in BOTH target and
+        # read_targets[0], so each DISTINCT raw path must still map exactly once —
+        # '/' is not canonicalized twice (round-9 #1).
+        from jarn.agent.permissions_bridge import tool_to_action
+
+        calls.clear()
+        eng.evaluate(
+            tool_to_action("grep", {"path": "/", "glob": "/secrets/*.txt", "pattern": "x"})
+        )
+        assert calls == ["/", "/secrets/*.txt"], calls  # '/' mapped once despite dup
+
+
+def test_read_allow_on_benign_candidate_does_not_mask_sensitive(tmp_path):
+    """round-9 #2: an allow rule matching a BENIGN grep candidate (the search scope
+    ``/repo``) must NOT suppress the sensitive-glob gating of a DIFFERENT candidate
+    (``**/.env``). Each candidate is judged on its own; the escape hatch requires an
+    allow matching the SENSITIVE candidate itself."""
+    from jarn.agent.permissions_bridge import tool_to_action
+
+    # Allow the benign scope only.
+    eng = _engine(PermissionMode.YOLO, rules=PermissionRules(allow=["/repo"]))
+    act = tool_to_action("grep", {"path": "/repo", "glob": "**/.env", "pattern": "TOKEN="})
+    assert eng.evaluate(act).decision is Decision.ASK  # sensitive glob still gated
+
+    # Escape hatch: an allow matching the SENSITIVE candidate clears it.
+    eng2 = _engine(PermissionMode.YOLO, rules=PermissionRules(allow=["/repo", "**/.env"]))
+    assert eng2.evaluate(act).decision is Decision.ALLOW
+
+    # Deny still wins over everything.
+    eng3 = _engine(
+        PermissionMode.YOLO, rules=PermissionRules(allow=["**/.env"], deny=["**/.env"])
+    )
+    assert eng3.evaluate(act).decision is Decision.DENY
