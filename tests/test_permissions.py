@@ -679,16 +679,23 @@ def test_virtual_canonicalization_rules(tmp_path):
     eng.virtual_reads = True
     virt = "/secrets/notes.txt"
     host_added = str(added / "notes.txt")
-    # Virtual-absolute → rebased under the primary root.
-    assert eng._canonical_read_target(virt) == str(proj / "secrets" / "notes.txt")
+    # Virtual-absolute → rebased under the primary root. The engine's canonical READ
+    # identity is the POSIX form (``.as_posix()``, matching ``_read_alias_set``'s
+    # ``\\`` → ``/`` normalization) — so compare against ``.as_posix()``, not
+    # ``str(Path)`` (which is backslash-separated on Windows and would spuriously
+    # mismatch the forward-slash canonical output).
+    assert eng._canonical_read_target(virt) == (proj / "secrets" / "notes.txt").as_posix()
     # round-7 #2: a virtual path whose SPELLING resolves under the host project root
     # is STILL virtual (the backend never emits primary-tree files by host spelling)
-    # and is rebased — NOT mistaken for an already-canonical host path.
-    collision = str(proj / "secrets" / "notes.txt")  # spells under proj
-    assert eng._canonical_read_target(collision) == str(
-        proj / collision.lstrip("/")
-    )
-    # round-7 #3: a real --add-dir host path is preserved (never rebased).
+    # and is rebased — NOT mistaken for an already-canonical host path. A virtual path
+    # always starts with ``/`` (the virtual-FS root is POSIX regardless of host OS), so
+    # build the collision from proj's own anchor-relative spelling rather than
+    # ``str(proj / ...)`` (which on Windows is a ``C:\`` host path, not a virtual one).
+    collision = "/" + (proj / "secrets" / "notes.txt").relative_to(proj.anchor).as_posix()
+    assert eng._canonical_read_target(collision) == (proj / collision.lstrip("/")).as_posix()
+    # round-7 #3: a real --add-dir host path is preserved (never rebased). On Windows a
+    # host absolute (``C:\...``) has no leading ``/`` so the flag-on rebase never fires;
+    # on POSIX the added-root exemption preserves it — the contract holds either way.
     assert eng._canonical_read_target(host_added) == host_added
     # round-7 #1: a virtual-absolute glob rebases LEXICALLY to project-relative.
     assert eng._canonical_read_target("/secrets/*.txt") == "secrets/*.txt"

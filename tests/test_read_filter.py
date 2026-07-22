@@ -679,3 +679,109 @@ def test_virtual_relative_deny_covers_main_and_subagent(base_config, tmp_path):
         out = flt.wrap_tool_call(req, lambda _r: msg)
         assert "leaked-secret-material" not in out.content  # virtual header redacted on both
         assert "/src/app.py" in out.content                 # benign hit preserved
+
+
+# ---------------------------------------------------------------------------
+# Windows path shape (CI regression: the redaction filter silently no-op'd on
+# Windows). The real local backend (``virtual_mode=False``) reports grep hits by
+# OS-NATIVE path — on Windows that is a drive-letter absolute ``C:\...`` (backslash;
+# see deepagents ``to_posix_path``: "Backends running on Windows return OS-native
+# paths using backslashes"), NOT a leading-``/`` POSIX path. ``_looks_absolute`` only
+# recognized ``/x``, so every grep header on Windows failed the path-line test and
+# NO secret was ever dropped — the exact leak the middleware exists to close.
+#
+# These feed SYNTHETIC drive-letter / UNC grep output straight to the pure parser
+# (``_filter_grep_content``) with a stub ``blocked`` callback, so they reproduce the
+# Windows leak on any host (Linux/macOS) with no Windows runner — the reproduction
+# the CI-only failures (``test_broad_content_grep_over_secrets_is_filtered`` et al.)
+# could not give locally. They RED before the ``_looks_absolute`` fix and GREEN after.
+
+from jarn.agent.read_filter import _filter_grep_content, _looks_absolute  # noqa: E402
+
+
+def _blocks_pem_or_rsa(path: str) -> bool:
+    """Stub for ``PermissionEngine.read_content_blocked`` — a secret is any ``.pem``
+    or ``id_rsa`` file, spelled with either separator (mirrors the real engine, which
+    normalizes ``\\`` → ``/`` before matching)."""
+    norm = path.replace("\\", "/")
+    return norm.endswith(".pem") or norm.endswith("/id_rsa")
+
+
+def test_looks_absolute_recognizes_windows_paths():
+    """The path-line test must accept Windows drive-letter (both separators) and UNC
+    absolutes, still accept POSIX/virtual ``/x``, and reject indented match lines and
+    relative/plain text."""
+    assert _looks_absolute("/proj/server.pem:")               # POSIX / virtual
+    assert _looks_absolute(r"C:\Users\me\server.pem:")        # drive-letter, backslash
+    assert _looks_absolute("C:/Users/me/server.pem:")         # drive-letter, forward slash
+    assert _looks_absolute(r"\\host\share\server.pem:")       # UNC
+    assert not _looks_absolute("  1: PRIVATE KEY material")    # indented match line
+    assert not _looks_absolute("relative/server.pem:")        # relative — not a header
+    assert not _looks_absolute("No matches found")            # backend sentinel
+
+
+def test_windows_content_mode_redacts_backslash_header():
+    """content-mode grep whose headers are Windows ``C:\\...`` paths: the secret file's
+    header + body are dropped, the benign source hit survives."""
+    content = (
+        r"C:\Users\runner\Temp\proj\server.pem:" + "\n"
+        "  1: PRIVATE KEY pem-secret-material\n"
+        r"C:\Users\runner\Temp\proj\src\app.py:" + "\n"
+        "  1: # handles the PRIVATE KEY lookup"
+    )
+    out, removed = _filter_grep_content(content, "content", _blocks_pem_or_rsa)
+    assert removed
+    assert "pem-secret-material" not in out              # secret redacted on Windows shape
+    assert r"C:\Users\runner\Temp\proj\server.pem" not in out
+    assert r"C:\Users\runner\Temp\proj\src\app.py" in out  # benign source hit preserved
+    assert "handles the PRIVATE KEY lookup" in out
+
+
+def test_windows_content_mode_redacts_forward_slash_header():
+    """A drive-letter path spelled with forward slashes (``C:/...``) is redacted too."""
+    content = (
+        "C:/Users/runner/Temp/proj/id_rsa:\n"
+        "  1: PRIVATE KEY rsa-secret-material\n"
+        "C:/Users/runner/Temp/proj/src/app.py:\n"
+        "  1: # PRIVATE KEY doc"
+    )
+    out, removed = _filter_grep_content(content, "content", _blocks_pem_or_rsa)
+    assert removed
+    assert "rsa-secret-material" not in out
+    assert "C:/Users/runner/Temp/proj/src/app.py" in out
+
+
+def test_windows_files_with_matches_mode_drops_secret_paths():
+    content = (
+        r"C:\Users\runner\Temp\proj\id_rsa" + "\n"
+        r"C:\Users\runner\Temp\proj\server.pem" + "\n"
+        r"C:\Users\runner\Temp\proj\src\app.py"
+    )
+    out, removed = _filter_grep_content(content, "files_with_matches", _blocks_pem_or_rsa)
+    assert removed
+    assert "id_rsa" not in out
+    assert "server.pem" not in out
+    assert r"C:\Users\runner\Temp\proj\src\app.py" in out
+
+
+def test_windows_count_mode_drops_secret_paths():
+    content = (
+        r"C:\Users\runner\Temp\proj\server.pem: 3" + "\n"
+        r"C:\Users\runner\Temp\proj\src\app.py: 1"
+    )
+    out, removed = _filter_grep_content(content, "count", _blocks_pem_or_rsa)
+    assert removed
+    assert "server.pem" not in out
+    assert r"C:\Users\runner\Temp\proj\src\app.py: 1" in out
+
+
+def test_engine_classifies_windows_secret_path_as_blocked():
+    """The engine side already handles Windows paths (it normalizes ``\\`` → ``/`` and
+    matches by lexical alias), so once the parser recognizes the header, the real
+    ``read_content_blocked`` callback blocks a Windows-shaped secret and passes a
+    benign one. Proves the ONLY product gap was the parser's path-line test — no engine
+    change is needed. Runs on any host (pure lexical, no filesystem resolution)."""
+    engine = _default_engine()  # default sensitive globs include **/*.pem, **/id_rsa
+    assert engine.read_content_blocked(r"C:\Users\runner\Temp\proj\server.pem")
+    assert engine.read_content_blocked(r"C:\Users\runner\Temp\proj\id_rsa")
+    assert not engine.read_content_blocked(r"C:\Users\runner\Temp\proj\src\app.py")
