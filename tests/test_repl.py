@@ -544,8 +544,17 @@ async def test_single_stop_message(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
 
+    # Signal the instant the turn is actually streaming (parked in the long sleep,
+    # INSIDE _run_turn's try/except) so the cancel deterministically lands there —
+    # not in the pre-stream ``await to_thread(enrich_turn_input)`` that precedes the
+    # try. A fixed ``sleep`` before cancel races that pre-stream await and, on a slow
+    # runner (Windows CI), the cancel escaped the try → the renderer's stop message
+    # was never emitted ("got 0"). Waiting on the event removes the race entirely.
+    streaming = asyncio.Event()
+
     async def _slow_stream():
         yield Event(EventKind.TEXT, "starting…")
+        streaming.set()
         await asyncio.sleep(10)  # long wait — will be cancelled here
 
     class _SlowDriver:
@@ -559,7 +568,7 @@ async def test_single_stop_message(tmp_path, monkeypatch):
     task = asyncio.create_task(
         _rt(console, ctrl, "hi", _ask_returning(""), live_sink=lambda s: None, spinner=False)
     )
-    await asyncio.sleep(0.05)  # let the turn start
+    await asyncio.wait_for(streaming.wait(), timeout=5)  # turn is now mid-stream
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
@@ -568,6 +577,59 @@ async def test_single_stop_message(tmp_path, monkeypatch):
     stop_words = ["cancelled", "interrupted"]
     count = sum(out.count(w) for w in stop_words)
     assert count == 1, f"expected 1 stop message, got {count}: {out!r}"
+    assert "cancelled" in out, f"renderer should own the cancel message: {out!r}"
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_prestream_enrich_still_reports(tmp_path, monkeypatch):
+    """Cancelling BEFORE the stream starts — while parked in the pre-stream
+    ``await to_thread(enrich_turn_input)`` — must still print exactly one stop message,
+    not vanish silently. This is the real defect the deterministic mid-stream test
+    (:func:`test_single_stop_message`) can no longer catch: ``InlineApp._handle``
+    suppresses a turn's ``CancelledError`` assuming the renderer already printed, so a
+    cancel that escapes ``_run_turn``'s handler leaves the user with NO feedback."""
+    import threading
+
+    from jarn.repl.turn import _run_turn as _rt
+
+    ctrl = _controller(tmp_path, monkeypatch)
+
+    async def _noop_runtime() -> None:
+        return None
+
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop_runtime)
+
+    # Block enrich_turn_input (runs in a worker thread via asyncio.to_thread) so the
+    # cancel deterministically lands during the PRE-STREAM phase — before any driver
+    # event, before the streaming loop.
+    entered = threading.Event()
+    proceed = threading.Event()
+
+    def _blocking_enrich(text: str) -> str:
+        entered.set()
+        proceed.wait(timeout=5)  # released after we cancel, so the thread unwinds
+        return text
+
+    monkeypatch.setattr(ctrl, "enrich_turn_input", _blocking_enrich)
+
+    console = Console(file=StringIO(), width=80)
+    task = asyncio.create_task(
+        _rt(console, ctrl, "hi", _ask_returning(""), live_sink=lambda s: None, spinner=False)
+    )
+    for _ in range(500):  # wait (≤5s) until enrich is actually running
+        if entered.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert entered.is_set(), "enrich_turn_input never started — test setup race"
+    task.cancel()
+    proceed.set()  # let the worker thread finish promptly
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    out = console.file.getvalue()
+    count = sum(out.count(w) for w in ("cancelled", "interrupted"))
+    assert count == 1, f"pre-stream cancel must report exactly one stop message, got {count}: {out!r}"
     assert "cancelled" in out, f"renderer should own the cancel message: {out!r}"
     ctrl.close()
 

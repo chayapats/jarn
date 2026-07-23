@@ -107,55 +107,62 @@ async def _run_turn(
     (the REPL's ``InputQueue.append``), a diagnostics auto-fix round is queued
     through it as an *internal* item (``internal=True``) so the drain runs it
     without a ``» queued:`` / ``› …`` user-line echo."""
-    try:
-        await controller.ensure_runtime()
-    except Exception as exc:  # noqa: BLE001
-        console.print(
-            f"[{palette.C_ERROR}]agent not ready: {_rich_escape(str(exc))}[/{palette.C_ERROR}]  "
-            f"[{palette.C_DIM}]· /help or jarn setup[/{palette.C_DIM}]"
-        )
-        return []
-
-    # Surface a degraded/error runtime state once per session (MCP server down,
-    # sandbox fell back to host, or an ambient key would leak to a non-local
-    # async-subagent url). Without this it lands only in the rotating log file.
-    if (
-        not controller.health_notice_shown
-        and controller.last_error
-        and controller.health in ("degraded", "error")
-    ):
-        controller.health_notice_shown = True
-        _warn_color, _glyph = (
-            (palette.C_ERROR, "✗") if controller.health == "error" else (palette.C_WARN, "⚠")
-        )
-        _doctor_hint = (
-            f" [{palette.C_DIM}]— run /doctor[/{palette.C_DIM}]"
-            if controller.health == "error"
-            else ""
-        )
-        console.print(
-            f"[{_warn_color}]{_glyph} {_rich_escape(controller.last_error)}[/{_warn_color}]{_doctor_hint}",
-            highlight=False,
-        )
-
-    controller.record_session_title(text, when=time.time())
-    # enrich_turn_input does synchronous memory-file reads + vector-index builds;
-    # run it off the event loop so the REPL stays responsive during a turn.
-    turn_text = await asyncio.to_thread(controller.enrich_turn_input, text)
-
-    async def approver(req: ApprovalRequest) -> ApprovalReply:
-        if title_hook is not None:
-            title_hook("approval")
-        result = await _approve(console, controller, req, ask=ask, pick=pick, view=view, edit=edit)
-        if title_hook is not None:
-            title_hook("working")
-        return result
-
     renderer = TurnRenderer(
         console, lambda: controller.tracker.total.total_tokens,
         live_sink=live_sink, spinner=spinner, tool_sink=tool_sink,
     )
+    # ONE cancellation handler spans the whole turn — runtime warm-up, enrich, AND
+    # streaming — so a cancel during the PRE-STREAM awaits (``ensure_runtime`` or the
+    # off-thread ``enrich_turn_input``) still routes through ``renderer.cancel()``.
+    # The caller (``InlineApp._handle``) suppresses a turn's ``CancelledError`` on the
+    # assumption the renderer already printed the stop message; a cancel that escaped
+    # this handler (as one during setup used to, when the try started only at the
+    # stream loop) was therefore SILENT — the user got no feedback at all.
     try:
+        try:
+            await controller.ensure_runtime()
+        except Exception as exc:  # noqa: BLE001  (CancelledError is BaseException → the outer handler)
+            console.print(
+                f"[{palette.C_ERROR}]agent not ready: {_rich_escape(str(exc))}[/{palette.C_ERROR}]  "
+                f"[{palette.C_DIM}]· /help or jarn setup[/{palette.C_DIM}]"
+            )
+            return []
+
+        # Surface a degraded/error runtime state once per session (MCP server down,
+        # sandbox fell back to host, or an ambient key would leak to a non-local
+        # async-subagent url). Without this it lands only in the rotating log file.
+        if (
+            not controller.health_notice_shown
+            and controller.last_error
+            and controller.health in ("degraded", "error")
+        ):
+            controller.health_notice_shown = True
+            _warn_color, _glyph = (
+                (palette.C_ERROR, "✗") if controller.health == "error" else (palette.C_WARN, "⚠")
+            )
+            _doctor_hint = (
+                f" [{palette.C_DIM}]— run /doctor[/{palette.C_DIM}]"
+                if controller.health == "error"
+                else ""
+            )
+            console.print(
+                f"[{_warn_color}]{_glyph} {_rich_escape(controller.last_error)}[/{_warn_color}]{_doctor_hint}",
+                highlight=False,
+            )
+
+        controller.record_session_title(text, when=time.time())
+        # enrich_turn_input does synchronous memory-file reads + vector-index builds;
+        # run it off the event loop so the REPL stays responsive during a turn.
+        turn_text = await asyncio.to_thread(controller.enrich_turn_input, text)
+
+        async def approver(req: ApprovalRequest) -> ApprovalReply:
+            if title_hook is not None:
+                title_hook("approval")
+            result = await _approve(console, controller, req, ask=ask, pick=pick, view=view, edit=edit)
+            if title_hook is not None:
+                title_hook("working")
+            return result
+
         # Turn loop with transparent model fallback: if a turn fails with a
         # retryable provider error *before* emitting any visible output, rotate
         # to the next fallback model and retry; otherwise surface the error.

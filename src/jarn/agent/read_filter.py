@@ -34,6 +34,7 @@ filter narrows the broad-grep exfiltration window; it does not replace either.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -144,9 +145,24 @@ class ReadResultFilterMiddleware(AgentMiddleware):
         return result
 
 
+#: A Windows OS-native absolute path prefix: a drive-letter root (``C:\`` or ``C:/``)
+#: or a UNC share (``\\host\share``). The real local backend (``virtual_mode=False``)
+#: reports grep hits by OS-native path, so on Windows a header has NO leading ``/`` —
+#: deepagents ``to_posix_path`` documents this ("Backends running on Windows return
+#: OS-native paths using backslashes"). Missing these made the redaction filter a
+#: silent no-op on Windows (every secret grep header leaked through).
+_ABS_WINDOWS = re.compile(r"[A-Za-z]:[\\/]|\\\\")
+
+
 def _looks_absolute(line: str) -> bool:
-    """True for a grep-output path line (backend paths are always absolute)."""
-    return line[:1] == "/"
+    """True for a grep-output path line (backend paths are always absolute).
+
+    Absolute means a leading ``/`` (POSIX / the virtual-mode backend) OR a Windows
+    drive-letter/UNC prefix (the real local backend on Windows). Match lines are
+    space/tab-indented and relative spellings have neither prefix, so both are
+    correctly rejected as non-headers.
+    """
+    return line[:1] == "/" or _ABS_WINDOWS.match(line) is not None
 
 
 def _filter_grep_content(
@@ -166,7 +182,8 @@ def _filter_grep_content(
       lines -> drop a blocked file's header and all its (space-indented) lines.
 
     Non-path lines (an error prefix, ``"Partial matches:"``, the truncation
-    guidance, ``"No matches found"``) never start with ``/`` and pass through.
+    guidance, ``"No matches found"``) are not absolute path lines (see
+    :func:`_looks_absolute` — no ``/`` or Windows drive/UNC prefix) and pass through.
     """
     if output_mode == "content":
         filtered, removed = _filter_content_mode(content, blocked)
