@@ -833,6 +833,31 @@ async def test_duplicate_task_launch_not_double_counted():
     )
 
 
+@pytest.mark.asyncio
+async def test_duplicate_tool_start_emitted_once():
+    """A replayed update for one tool call yields one TOOL_START event."""
+    launch = {
+        "model": {
+            "messages": [SimpleNamespace(tool_calls=[{
+                "name": "write_file",
+                "args": {"file_path": "example.py"},
+                "id": "call-1",
+            }])]
+        }
+    }
+    agent = _NSAgent([
+        ((), "updates", launch),
+        ((), "updates", launch),
+    ])
+
+    events = [ev async for ev in _ns_driver(agent).run_turn("go")]
+    starts = [ev for ev in events if ev.kind is EventKind.TOOL_START]
+
+    assert len(starts) == 1
+    assert starts[0].text == "write_file"
+    assert starts[0].data["tool_call_id"] == "call-1"
+
+
 # -- T-4-6: mid-turn steering (cooperative checkpoint) -----------------------
 #
 # The driver injects a steer as a HumanMessage via aupdate_state ONLY at a

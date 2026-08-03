@@ -147,6 +147,12 @@ def handle_update_chunk(
             messages = messages.value or []
         for msg in messages:
             for call in getattr(msg, "tool_calls", None) or []:
+                call_id = call.get("id")
+                call_key = str(call_id) if call_id is not None else None
+                if call_key is not None:
+                    if call_key in driver._seen_tool_start_calls:
+                        continue
+                    driver._seen_tool_start_calls.add(call_key)
                 name = call.get("name", "tool")
                 args = call.get("args", {}) or {}
                 # A ``task`` launch names the subagent it spawns (in its args); record
@@ -160,23 +166,13 @@ def handle_update_chunk(
                         or args.get("name") or ""
                     ).strip()
                     if sub:
-                        # Dedup by call id: stream_mode=["messages","updates"] +
-                        # subgraphs=True can re-emit the same TOOL_START chunk;
-                        # a duplicate append would shift the FIFO and mislabel
-                        # later subagents. Fall back to appending when call has no id
-                        # (shouldn't happen for a real tool call, but be safe).
-                        call_id = call.get("id")
-                        if call_id is None or call_id not in driver._subagent_seen_calls:
-                            driver._subagent_pending.append(sub)
-                            if call_id is not None:
-                                driver._subagent_seen_calls.add(call_id)
+                        driver._subagent_pending.append(sub)
                 if name in ("write_file", "edit_file"):
                     driver._last_edit_target = str(
                         args.get("file_path") or args.get("path")
                         or args.get("filename") or ""
                     )
                 data: dict[str, Any] = {"args": args}
-                call_id = call.get("id")
                 if call_id:
                     data["tool_call_id"] = str(call_id)
                 if agent:
