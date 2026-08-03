@@ -90,8 +90,9 @@ def _make_sandbox_backend(config: Config):
             from langgraph_sandbox import Sandbox  # type: ignore
         except ImportError as exc:
             raise SandboxUnavailable(
-                "LangSmith sandbox runtime not installed. Install the sandbox "
-                "extra and set credentials, or use execution.backend: local."
+                "LangSmith sandbox runtime not installed. Run `pip install "
+                "\"langsmith[sandbox]\"` and set credentials, or use "
+                "execution.backend: local."
             ) from exc
         try:
             from jarn.agent.sandbox_backend import CancellableLangSmithSandbox

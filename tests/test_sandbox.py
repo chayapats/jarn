@@ -35,7 +35,9 @@ def test_make_local_backend(base_config, tmp_path):
 
 def test_sandbox_unavailable_raises(base_config):
     base_config.execution.backend = "sandbox"
-    with pytest.raises(SandboxUnavailable):
+    with pytest.raises(
+        SandboxUnavailable, match=r'pip install "langsmith\[sandbox\]"'
+    ):
         _make_backend(base_config, None)
 
 
