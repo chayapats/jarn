@@ -7,6 +7,7 @@ permission-engine → approval flow deterministically, without any LLM.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -233,6 +234,40 @@ class FakeAgent:
             yield ("messages", (_FakeAIChunk("done.", {"input_tokens": 3, "output_tokens": 2}),))
 
 
+class ParkedAgent:
+    """Checkpoint starts with one durable execute approval already parked."""
+
+    def __init__(self, *, pending: bool = True) -> None:
+        self.pending = pending
+        self.payloads: list[Any] = []
+
+    async def aget_state(self, config):
+        interrupts = ()
+        if self.pending:
+            interrupts = (
+                SimpleNamespace(
+                    id="parked-1",
+                    value={
+                        "action_requests": [
+                            {"action": "execute", "args": {"command": "npm test"}}
+                        ]
+                    },
+                ),
+            )
+        tasks = (SimpleNamespace(interrupts=interrupts),) if interrupts else ()
+        return SimpleNamespace(tasks=tasks, values={"messages": []})
+
+    async def astream(self, payload, config, stream_mode=None, **kwargs):
+        from langgraph.types import Command
+
+        self.payloads.append(payload)
+        if isinstance(payload, Command):
+            self.pending = False
+            yield ("messages", (_FakeAIChunk("parked action resumed."),))
+        else:
+            yield ("messages", (_FakeAIChunk("new prompt handled."),))
+
+
 class NamespacedAgent:
     """A single-pass agent that streams chunks under explicit subgraph
     namespaces, mimicking ``astream(subgraphs=True)`` where a delegated subagent
@@ -261,6 +296,47 @@ def _driver(agent, mode=PermissionMode.ASK, approver=None, **extra):
 
 async def _collect(driver, text):
     return [ev async for ev in driver.run_turn(text)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("resume", "text", "expected_calls"),
+    [(True, "", 1), (False, "what happened?", 2)],
+)
+async def test_parked_approval_resumes_before_state_input(resume, text, expected_calls):
+    """Both /resume and a new prompt preserve and resolve the parked tool call."""
+    agent = ParkedAgent()
+    approvals: list[str] = []
+
+    async def approver(req):
+        approvals.append(req.action.target)
+        return ApprovalReply(approved=True)
+
+    driver = _driver(agent, approver=approver)
+    events = [ev async for ev in driver.run_turn(text, resume=resume)]
+
+    from langgraph.types import Command
+
+    assert approvals == ["npm test"]
+    assert isinstance(agent.payloads[0], Command)
+    assert agent.payloads[0].resume["decisions"] == [{"type": "approve"}]
+    assert len(agent.payloads) == expected_calls
+    if not resume:
+        sent = agent.payloads[1]["messages"]
+        assert sent[-1]["content"] == "what happened?"
+    assert any(ev.kind is EventKind.DONE for ev in events)
+
+
+@pytest.mark.asyncio
+async def test_pending_only_does_not_invoke_settled_thread():
+    """The TUI /resume picker must not create an empty turn when none is parked."""
+    agent = ParkedAgent(pending=False)
+    driver = _driver(agent)
+
+    events = [ev async for ev in driver.run_turn("", pending_only=True)]
+
+    assert events == []
+    assert agent.payloads == []
 
 
 @pytest.mark.asyncio

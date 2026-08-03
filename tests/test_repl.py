@@ -1492,6 +1492,37 @@ def _spy_run_turn(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_resume_picker_attempts_pending_approval(tmp_path, monkeypatch):
+    """Selecting a session immediately drives only its parked approval, if any."""
+    from types import SimpleNamespace
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    chosen = SimpleNamespace(
+        updated_human="now", title="parked work", thread_id="thread-parked"
+    )
+    monkeypatch.setattr(app.controller.sessions, "list", lambda: [chosen])
+    monkeypatch.setattr(
+        app,
+        "_pick_menu",
+        lambda *args, **kwargs: asyncio.sleep(0, result=chosen),
+    )
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr(app, "_replay_transcript", _noop)
+    monkeypatch.setattr(app, "_render_todos", _noop)
+    monkeypatch.setattr(app, "_maybe_autocheckpoint_hint", lambda: None)
+    captured = _spy_run_turn(monkeypatch)
+
+    await app._resume_picker()
+
+    assert app.controller.thread_id == "thread-parked"
+    assert captured and captured[0].get("pending_only") is True
+    app.controller.close()
+
+
+@pytest.mark.asyncio
 async def test_custom_command_turn_wires_queue_sink(tmp_path, monkeypatch):
     """A custom-command turn passes ``queue_sink`` so a diagnostics auto-fix round
     under ``diagnostics: auto`` is queued rather than silently discarded."""

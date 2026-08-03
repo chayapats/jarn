@@ -314,12 +314,100 @@ class SessionDriver:
     def _config(self) -> dict[str, Any]:
         return {"configurable": {"thread_id": self.thread_id}}
 
+    async def _pending_interrupts(self) -> tuple[Any | None, list[Any]]:
+        """Return the checkpoint state and its unique pending interrupts.
+
+        Real compiled graphs expose ``aget_state``; small test doubles predating
+        durable approvals may not. A real state-read failure deliberately
+        propagates so :meth:`run_turn` can fail closed instead of submitting a
+        state input that would cancel an approval we could not inspect.
+        """
+        get_state = getattr(self.agent, "aget_state", None)
+        if get_state is None:
+            return None, []
+        state = await get_state(self._config())
+        pending: list[Any] = []
+        seen: set[Any] = set()
+        for task in getattr(state, "tasks", ()) or ():
+            for intr in getattr(task, "interrupts", ()) or ():
+                key = getattr(intr, "id", None) or id(intr)
+                if key not in seen:
+                    seen.add(key)
+                    pending.append(intr)
+        return state, pending
+
+    async def resume_pending_approval(
+        self, state: Any | None = None, pending: list[Any] | None = None
+    ):
+        """Resolve checkpointed approvals and resume them with a raw Command.
+
+        This is the cold/restart-safe path: the interrupt ids and full action
+        requests come from the checkpoint, are passed through the existing
+        permission engine + approver, and are delivered through
+        :func:`_resume_payload`. No state input is submitted until the hanging
+        tool call has settled.
+        """
+        if pending is None:
+            state, pending = await self._pending_interrupts()
+        if not pending:
+            return
+
+        # Re-establish the mutation-gate invariant for a cold resume. The
+        # CheckpointManager de-duplicates an identical tree, so a live process
+        # whose original turn already snapshotted does not grow a duplicate undo
+        # entry; a restarted process still gets protection before the tool runs.
+        if self.checkpoint is not None and self._snapshot_task is None:
+            messages = (getattr(state, "values", {}) or {}).get("messages", []) or []
+            human_count = sum(1 for msg in messages if getattr(msg, "type", "") == "human")
+            self._start_snapshot(
+                "resume pending approval",
+                _time.time(),
+                turn_index=max(0, human_count - 1),
+            )
+
+        resolved: list[tuple[Any, list[Any]]] = []
+        for intr in pending:
+            decisions: list[Any] = []
+            async for ev, decision in self._resolve_interrupts([intr]):
+                if ev is not None:
+                    yield ev
+                if decision is not None:
+                    decisions.append(decision)
+            resolved.append((getattr(intr, "id", None), decisions))
+
+        # The resumed Command may execute a mutating tool immediately on the
+        # first graph step, so settle the snapshot before entering the stream.
+        await self._ensure_snapshot()
+        notice = self._pending_snapshot_notice()
+        if notice is not None:
+            yield notice
+        async for ev in self._stream_turn(_resume_payload(resolved)):
+            yield ev
+
+    def _reset_turn_state(self, *, resume: bool) -> None:
+        """Reset per-turn streaming, verification, and usage-dedup state."""
+        self._turn_text = ""
+        self._committed_turn_text = ""
+        self._verify_dirty = False
+        self._verify_repair_round = 0
+        self._edited_paths = set()
+        self._subagent_pending = []
+        self._ns_agent = {}
+        self._seen_tool_start_calls = set()
+        self._active_execute_call_id = None
+        self._active_execute_agent = None
+        if self.progress_queue is not None:
+            _drain_progress(self.progress_queue)
+        if not resume:
+            self._last_usage_totals.clear()
+
     async def run_turn(
         self,
         user_input: str,
         *,
         resume: bool = False,
         images: list[Path] | None = None,
+        pending_only: bool = False,
     ):
         """Async-generate :class:`Event`s for one user turn.
 
@@ -331,6 +419,12 @@ class SessionDriver:
         since LangGraph already checkpointed the user message before the (failed)
         model call. This prevents a duplicate human message in the thread.
 
+        Before either a resume state-input or a new user message is submitted, the
+        checkpoint is inspected for parked approvals. Any pending interrupt is
+        resolved first with a raw ``Command(resume=...)``; ``pending_only=True``
+        returns without invoking the graph when there is nothing parked, which is
+        used by the interactive ``/resume`` picker.
+
         ``images`` (T-3-7) is a list of image paths to inline as native multimodal
         content blocks alongside the text. When provided (and not a ``resume``), the
         user message ``content`` becomes ``[{"type":"text",…}, {"type":"image",…}]``
@@ -341,59 +435,11 @@ class SessionDriver:
         """
         self.tracker.check_or_raise()
         _log.info(
-            "turn start thread=%s model=%s resume=%s",
-            self.thread_id, self.main_model_ref, resume,
+            "turn start thread=%s model=%s resume=%s pending_only=%s",
+            self.thread_id, self.main_model_ref, resume, pending_only,
         )
 
-        messages: list[dict[str, Any]] = []
-        date_block = date_context()
-        # Dedup PER THREAD: a new thread (after /clear, /compact, /rewind, /resume)
-        # must get its own date message even if another thread already stamped today.
-        if self.date_state.get(self.thread_id) != date_block:
-            messages.append({"role": "system", "content": date_block})
-            self.date_state[self.thread_id] = date_block
-
-        if resume:
-            payload: Any = {"messages": messages}
-        else:
-            messages.append(
-                {"role": "user", "content": _build_user_content(user_input, images)}
-            )
-            payload = {"messages": messages}
-
-        # Emit the user prompt to the transcript before the model is called so a
-        # crash mid-turn still records what the user asked.
-        if self.transcript is not None and not resume:
-            self.transcript.write_user(user_input, ts=_time.time())
-        self._turn_text = ""
-        self._committed_turn_text = ""
-        self._verify_dirty = False
-        self._verify_repair_round = 0
-        self._edited_paths = set()
-        # Fresh subagent-tagging state each turn (correlation is per-turn only).
-        self._subagent_pending = []
-        self._ns_agent = {}
-        self._seen_tool_start_calls = set()
-        # Fresh live-progress correlation each turn; discard any progress a cancelled
-        # prior turn left queued so it can't leak stale tail lines into this one.
-        self._active_execute_call_id = None
-        self._active_execute_agent = None
-        if self.progress_queue is not None:
-            _drain_progress(self.progress_queue)
-        if not resume:
-            # Clear ALL entries at turn start, not just the current thread's.
-            # The cumulative-stream dedup uses this dict to baseline provider totals
-            # WITHIN a turn (a provider resends cumulative counts on each chunk; we
-            # delta them). Clearing at turn start is correct: deltas are only
-            # meaningful within a single turn, and a fresh turn always starts from
-            # zero. The old inverted filter (`if k[0] != self.thread_id`) kept OTHER
-            # threads' keys forever — after /clear, /compact, or /rewind those stale
-            # (thread_id, model_ref) pairs accumulated unboundedly. Clearing also
-            # cannot break mid-turn dedup: keys are re-populated by record_usage as
-            # each streaming chunk arrives, so the first chunk of a new turn gets
-            # treated as an absolute count (no prev → delta = cumulative) which is
-            # the correct baseline for a fresh API call.
-            self._last_usage_totals.clear()
+        self._reset_turn_state(resume=resume)
 
         # A snapshot failure detected during a PRIOR turn's cleanup (after that
         # turn's last yield) could not be surfaced then — emit its NOTICE now, at
@@ -402,19 +448,89 @@ class SessionDriver:
         if notice is not None:
             yield notice
 
-        # Snapshot the working tree BEFORE the agent can edit files (so /undo can
-        # revert this turn) — but OFF the event loop, so turn start no longer
-        # blocks on O(repo) git work. The model call runs concurrently; the
-        # snapshot is awaited at the first mutation gate (and, for a no-mutation
-        # turn, at turn end) so no mutating tool ever runs against an uncaptured
-        # tree. Best-effort: a failure never aborts the turn — it is logged with a
-        # traceback and surfaced as a NOTICE exactly once per session.
-        if self.checkpoint is not None and not resume:
-            turn_index = await self._current_turn_index()
-            self._start_snapshot(user_input[:80], _time.time(), turn_index=turn_index)
-
         with _span("jarn.turn", thread_id=self.thread_id, model=self.main_model_ref):
             try:
+                try:
+                    state, pending = await self._pending_interrupts()
+                except Exception as exc:  # noqa: BLE001 - fail closed; see helper
+                    _log.warning(
+                        "pending approval inspection failed thread=%s: %.300s",
+                        self.thread_id,
+                        str(exc),
+                    )
+                    yield Event(
+                        EventKind.ERROR,
+                        text=f"could not inspect pending approvals: {exc}",
+                        data={"retryable": False},
+                    )
+                    return
+
+                if pending:
+                    async for ev in self.resume_pending_approval(state, pending):
+                        yield ev
+                    if resume or pending_only or not user_input:
+                        return
+                    try:
+                        _, still_pending = await self._pending_interrupts()
+                    except Exception as exc:  # noqa: BLE001 - same fail-closed rule
+                        yield Event(
+                            EventKind.ERROR,
+                            text=f"could not verify approval completion: {exc}",
+                            data={"retryable": False},
+                        )
+                        return
+                    if still_pending:
+                        yield Event(
+                            EventKind.ERROR,
+                            text=(
+                                "the prior tool approval is still pending; "
+                                "the new prompt was not submitted"
+                            ),
+                            data={"retryable": False},
+                        )
+                        return
+                    # A newly typed prompt is not discarded: after the parked
+                    # action and its continuation settle, start a clean second
+                    # graph turn for that prompt.
+                    self._reset_turn_state(resume=False)
+                elif pending_only:
+                    return
+
+                messages: list[dict[str, Any]] = []
+                date_block = date_context()
+                # Dedup PER THREAD: a new thread (after /clear, /compact, /rewind,
+                # /resume) must get its own date message even if another thread
+                # already stamped today.
+                if self.date_state.get(self.thread_id) != date_block:
+                    messages.append({"role": "system", "content": date_block})
+                    self.date_state[self.thread_id] = date_block
+
+                if resume:
+                    payload: Any = {"messages": messages}
+                else:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": _build_user_content(user_input, images),
+                        }
+                    )
+                    payload = {"messages": messages}
+
+                # Emit the user prompt to the transcript before the model is called
+                # so a crash mid-turn still records what the user asked.
+                if self.transcript is not None and not resume:
+                    self.transcript.write_user(user_input, ts=_time.time())
+
+                # Snapshot the working tree BEFORE the agent can edit files (so
+                # /undo can revert this turn), off the event loop. A pending cold
+                # resume takes its own de-duplicated snapshot in
+                # resume_pending_approval before its Command can execute.
+                if self.checkpoint is not None and not resume:
+                    turn_index = await self._current_turn_index()
+                    self._start_snapshot(
+                        user_input[:80], _time.time(), turn_index=turn_index
+                    )
+
                 async for ev in self._stream_turn(payload):
                     yield ev
                 # Turn-end reap (reached only on a NON-cancelled completion): wait for

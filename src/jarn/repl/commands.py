@@ -449,6 +449,29 @@ class CommandMixin:
         self.controller.resume_thread(chosen.thread_id)
         self._last_todos_sig = None
         await self._replay_transcript()
+        # A selected thread may be parked on a checkpointed approval from a
+        # cancelled or crashed process. Ask for the verdict immediately and
+        # resume with a Command; ``pending_only`` is a no-op for settled threads,
+        # so merely browsing history never creates an empty user turn.
+        self._last_tool_outputs = []
+        await repl_turn._run_turn(
+            self.console,
+            self.controller,
+            "",
+            self._ask,
+            pick=self._pick_approval,
+            view=self._view_full_diff,
+            edit=self._edit_before_apply,
+            live_sink=self._set_stream,
+            spinner=False,
+            tool_sink=self._last_tool_outputs,
+            token_sink=self._count_stream_chars,
+            todos_sink=self._on_todos_live,
+            queue_sink=self._input_queue.append,
+            pending_only=True,
+        )
+        await self._render_todos()
+        self._maybe_autocheckpoint_hint()
 
     async def _rewind_picker(self) -> None:
         """`/rewind`: pick an earlier user turn, fork onto a NEW thread keeping

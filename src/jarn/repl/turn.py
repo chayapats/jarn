@@ -97,6 +97,7 @@ async def _run_turn(
     title_hook: Callable[[str], None] | None = None,
     queue_sink: Callable[..., int] | None = None,
     images: list[Path] | None = None,
+    pending_only: bool = False,
 ) -> list[tuple[str, str]]:
     """Stream a turn; return the turn's expandable ``(tool, full output)`` pairs.
 
@@ -150,10 +151,13 @@ async def _run_turn(
                 highlight=False,
             )
 
-        controller.record_session_title(text, when=time.time())
-        # enrich_turn_input does synchronous memory-file reads + vector-index builds;
-        # run it off the event loop so the REPL stays responsive during a turn.
-        turn_text = await asyncio.to_thread(controller.enrich_turn_input, text)
+        if not pending_only:
+            controller.record_session_title(text, when=time.time())
+            # enrich_turn_input does synchronous memory-file reads + vector-index
+            # builds; run it off the event loop so the REPL stays responsive.
+            turn_text = await asyncio.to_thread(controller.enrich_turn_input, text)
+        else:
+            turn_text = ""
 
         async def approver(req: ApprovalRequest) -> ApprovalReply:
             if title_hook is not None:
@@ -171,6 +175,7 @@ async def _run_turn(
         # message before the failed model call) so the user turn isn't duplicated.
         resume = False
         image_fallback_done = False
+        had_events = False
         while True:
             driver = controller.make_driver(approver)
             produced = False
@@ -189,7 +194,10 @@ async def _run_turn(
             run_kwargs: dict[str, Any] = {"resume": resume}
             if turn_images:
                 run_kwargs["images"] = turn_images
+            if pending_only:
+                run_kwargs["pending_only"] = True
             async for event in driver.run_turn(payload, **run_kwargs):
+                had_events = True
                 if event.kind is EventKind.TEXT:
                     renderer.on_text(event.text, agent=event.data.get("agent"))
                     if token_sink is not None:
@@ -360,7 +368,8 @@ async def _run_turn(
     finally:
         renderer.finish()
 
-    controller.record_turn(when=time.time())
+    if not pending_only or had_events:
+        controller.record_turn(when=time.time())
     # Auto-compaction is handled in-graph by the summarization middleware wired in
     # build_runtime (summarizer model, context.compact_at_pct) — no controller-side
     # thread-forking trigger here. Manual /compact still forks the thread on demand.
