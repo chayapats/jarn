@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import os
 
 from jarn.config.schema import ObservabilityConfig, TracingConfig
-from jarn.observability.logging import setup_logging
+from jarn.observability.logging import ConcurrentRotatingFileHandler, setup_logging
 from jarn.observability.tracing import (
     configure_langsmith,
     configure_otel,
@@ -26,6 +27,42 @@ def test_setup_logging_writes_to_file(isolated_home):
     setup_logging("info")
     handlers = [h for h in logger.handlers if isinstance(h, logging.handlers.RotatingFileHandler)]
     assert len(handlers) == 1
+
+
+def _write_rotating_log(path: str, worker: int) -> None:
+    """Child-process target for the concurrent rollover regression test."""
+    logger = logging.getLogger(f"jarn-rollover-{os.getpid()}")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    handler = ConcurrentRotatingFileHandler(
+        path, maxBytes=25_000, backupCount=8, encoding="utf-8"
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+    for line in range(400):
+        logger.info("P%02d-%04d %s", worker, line, "x" * 64)
+    handler.close()
+
+
+def test_concurrent_log_rollover_preserves_every_line(tmp_path):
+    """Regression for #58: separate processes cannot race the rollover chain."""
+    path = tmp_path / "jarn.log"
+    ctx = multiprocessing.get_context("spawn")
+    processes = [ctx.Process(target=_write_rotating_log, args=(str(path), i)) for i in range(4)]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=30)
+        assert process.exitcode == 0
+
+    actual: set[str] = set()
+    for log_path in tmp_path.glob("jarn.log*"):
+        if log_path.suffix == ".lock":
+            continue
+        for text in log_path.read_text(encoding="utf-8").splitlines():
+            actual.add(text.split(maxsplit=1)[0])
+    expected = {f"P{worker:02d}-{line:04d}" for worker in range(4) for line in range(400)}
+    assert actual == expected
 
 
 def test_configure_langsmith_disabled(monkeypatch):

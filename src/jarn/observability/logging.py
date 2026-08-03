@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
+import time
+from collections.abc import Iterator
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from typing import BinaryIO
 
 from jarn.config import paths
 from jarn.config.secrets import redact_secrets
@@ -14,6 +20,74 @@ _LEVELS = {
     "warning": logging.WARNING,
     "error": logging.ERROR,
 }
+
+
+@contextlib.contextmanager
+def _interprocess_lock(path: Path) -> Iterator[None]:
+    """Hold an exclusive OS lock on *path* for the duration of one log emit."""
+    lock_file: BinaryIO = path.open("a+b")
+    try:
+        if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+            import msvcrt
+
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(  # type: ignore[attr-defined]
+                        lock_file.fileno(), msvcrt.LK_NBLCK, 1  # type: ignore[attr-defined]
+                    )
+                    break
+                except OSError:
+                    time.sleep(0.01)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+            import msvcrt
+
+            lock_file.seek(0)
+            with contextlib.suppress(OSError):
+                msvcrt.locking(  # type: ignore[attr-defined]
+                    lock_file.fileno(), msvcrt.LK_UNLCK, 1  # type: ignore[attr-defined]
+                )
+        else:
+            import fcntl
+
+            with contextlib.suppress(OSError):
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
+
+
+class ConcurrentRotatingFileHandler(RotatingFileHandler):
+    """A ``RotatingFileHandler`` safe for Jarn's multi-process log file.
+
+    The standard handler protects threads in one process only. Every CLI process
+    otherwise races the shared rename/remove rollover chain. Serializing the whole
+    emit makes the size check, optional rollover, and write atomic across processes.
+    ``delay=True`` plus closing after every write ensures no process retains a stale
+    handle to a file another process has renamed (and permits renames on Windows).
+    """
+
+    def __init__(self, filename: str | Path, **kwargs) -> None:
+        kwargs["delay"] = True
+        super().__init__(filename, **kwargs)
+        self.lock_path = Path(f"{self.baseFilename}.lock")
+
+    def emit(self, record: logging.LogRecord) -> None:
+        with _interprocess_lock(self.lock_path):
+            try:
+                super().emit(record)
+            finally:
+                if self.stream is not None:
+                    self.stream.close()
+                    self.stream = None
 
 
 class RedactingFilter(logging.Filter):
@@ -57,7 +131,7 @@ def setup_logging(level: str = "info") -> logging.Logger:
     if any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
         return logger
 
-    handler = RotatingFileHandler(
+    handler = ConcurrentRotatingFileHandler(
         logs_dir / "jarn.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8"
     )
     handler.setFormatter(
