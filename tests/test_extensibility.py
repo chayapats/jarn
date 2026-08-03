@@ -434,6 +434,43 @@ def test_mcp_http_headers_round_trip(tmp_path):
     assert conn["transport"] == "streamable_http"
 
 
+def test_mcp_websocket_connection_round_trip():
+    """Websocket config is passed through in the adapter's expected shape."""
+    from jarn.extensibility.mcp import to_connection
+
+    server = MCPServer(
+        name="events", transport="websocket", url="wss://mcp.example/events"
+    )
+    assert to_connection(server) == {
+        "transport": "websocket",
+        "url": "wss://mcp.example/events",
+    }
+
+
+@pytest.mark.asyncio
+async def test_mcp_websocket_missing_dependency_degrades_in_isolation(monkeypatch):
+    """The adapter's lazy websocket ImportError must not drop healthy servers."""
+    class _OptionalDependencyClient(_FakeMCPClient):
+        async def get_tools(self, *, server_name=None):
+            if self.connections[server_name]["transport"] == "websocket":
+                raise ImportError(
+                    "Could not import websocket_client; pip install mcp[ws]"
+                )
+            return await super().get_tools(server_name=server_name)
+
+    import langchain_mcp_adapters.client as client_mod
+
+    monkeypatch.setattr(client_mod, "MultiServerMCPClient", _OptionalDependencyClient)
+    websocket = MCPServer(
+        name="events", transport="websocket", url="wss://mcp.example/events"
+    )
+    result = await load_mcp_tools([websocket, _stdio("local")])
+
+    assert _tool_names(result.tools) == ["mcp__local__local_tool"]
+    assert result.health == {"events": "error", "local": "ok"}
+    assert "pip install mcp[ws]" in result.errors["events"]
+
+
 # --- Wave B: MCP endpoint host egress policy -----------------------------
 
 
@@ -469,6 +506,20 @@ async def test_mcp_non_allowlisted_host_marked_error_others_load(monkeypatch):
     assert _tool_names(result.tools) == ["mcp__ok__ok_tool"]
     assert result.health == {"ok": "ok", "bad": "error"}
     assert "allowlist" in result.errors["bad"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_websocket_endpoint_obeys_network_policy(monkeypatch):
+    """Websocket endpoints receive the same configured-host policy check as HTTP."""
+    from jarn.config.schema import NetworkPolicy
+
+    _patch_client(monkeypatch)
+    server = MCPServer(
+        name="events", transport="websocket", url="wss://evil.com/events"
+    )
+    result = await load_mcp_tools([server], NetworkPolicy(deny=["evil.com"]))
+    assert result.health == {"events": "error"}
+    assert "denied" in result.errors["events"]
 
 
 @pytest.mark.asyncio

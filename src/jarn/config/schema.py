@@ -342,10 +342,10 @@ class MCPServer:
     """An MCP server the agent connects to for extra tools."""
 
     name: str
-    transport: str = "stdio"     # "stdio" | "http"
+    transport: str = "stdio"     # stdio | http | sse | streamable_http | websocket
     command: str | None = None   # stdio
     args: list[str] = field(default_factory=list)
-    url: str | None = None       # http
+    url: str | None = None       # http/sse/websocket
     headers: dict[str, str] = field(default_factory=dict)  # http/sse auth
     env: dict[str, str] = field(default_factory=dict)
     enabled: bool = True

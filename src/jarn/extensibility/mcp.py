@@ -72,7 +72,7 @@ def _network_block_reason(
     """
     if network_policy is None or not (network_policy.allow or network_policy.deny):
         return None
-    if server.transport not in ("http", "sse", "streamable_http"):
+    if server.transport not in ("http", "sse", "streamable_http", "websocket"):
         return None
     from jarn.permissions.guard import NetworkVerdict, classify_host
 
@@ -327,6 +327,12 @@ def to_connection(
                 sink=secrets_sink,
             )
         return conn
+    if server.transport == "websocket":
+        if not server.url:
+            raise ValueError(
+                f"MCP server {server.name!r} (websocket) needs a 'url'."
+            )
+        return {"transport": "websocket", "url": server.url}
     raise ValueError(f"MCP server {server.name!r}: unknown transport {server.transport!r}")
 
 

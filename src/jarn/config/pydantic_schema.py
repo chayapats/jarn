@@ -65,7 +65,9 @@ _PROVIDER_EXTRA_KEYS = frozenset({
     "keep_alive",
 })
 
-_VALID_MCP_TRANSPORTS = frozenset({"stdio", "http", "sse", "streamable_http"})
+_VALID_MCP_TRANSPORTS = frozenset(
+    {"stdio", "http", "sse", "streamable_http", "websocket"}
+)
 _STDIO_CMD_META = re.compile(r"[;|&`$<>(){}]")
 
 
@@ -114,6 +116,12 @@ def _validate_absolute_http_url(url: str, *, context: str) -> None:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise ConfigValidationError(f"{context} must be an absolute http(s) URL (got {url!r}).")
+
+
+def _validate_absolute_websocket_url(url: str, *, context: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in ("ws", "wss") or not parsed.netloc:
+        raise ConfigValidationError(f"{context} must be an absolute ws(s) URL (got {url!r}).")
 
 
 def _validate_stdio_command(command: str, *, context: str) -> None:
@@ -566,6 +574,15 @@ class MCPServerModel(_StrictModel):
                     "needs a 'url' string."
                 )
             _validate_absolute_http_url(self.url, context=f"MCP server {self.name!r} url")
+        if self.transport == "websocket":
+            if not self.url or not isinstance(self.url, str):
+                raise ConfigValidationError(
+                    f"MCP server {self.name!r} with transport 'websocket' "
+                    "needs a 'url' string."
+                )
+            _validate_absolute_websocket_url(
+                self.url, context=f"MCP server {self.name!r} url"
+            )
         return self
 
 

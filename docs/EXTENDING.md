@@ -309,6 +309,9 @@ mcp_servers:
     transport: http              # streamable_http
     url: https://internal.example.com/mcp
     enabled: true
+  - name: event-stream
+    transport: websocket         # requires mcp[ws] or websockets
+    url: wss://internal.example.com/mcp
 ```
 
 Tools from all enabled servers are loaded at session start and handed to the agent

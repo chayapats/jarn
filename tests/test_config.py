@@ -450,6 +450,28 @@ def test_mcp_validation_rejects_bad_transport(tmp_path):
         load_config(global_path=gp, project_path=None)
 
 
+@pytest.mark.parametrize("url", ["ws://localhost:8765/mcp", "wss://mcp.example/ws"])
+def test_mcp_validation_accepts_websocket_urls(tmp_path, url):
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"mcp_servers": [{"name": "ws", "transport": "websocket", "url": url}]})
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.mcp_servers[0].url == url
+
+
+def test_mcp_validation_rejects_non_websocket_url(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(
+        gp,
+        {
+            "mcp_servers": [
+                {"name": "ws", "transport": "websocket", "url": "https://mcp.example/ws"}
+            ]
+        },
+    )
+    with pytest.raises(ConfigError, match=r"absolute ws\(s\) URL"):
+        load_config(global_path=gp, project_path=None)
+
+
 def test_mcp_validation_rejects_shell_metacharacters(tmp_path):
     gp = tmp_path / "g.yaml"
     _write(

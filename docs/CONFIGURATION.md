@@ -430,13 +430,14 @@ hooks:
 # ── MCP servers (extra tools) ────────────────────────────────────────────
 mcp_servers:
   - name: filesystem
-    transport: stdio       # stdio | http (streamable_http) | sse
+    transport: stdio       # stdio | http (streamable_http) | sse | websocket
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
   - name: remote-tools
     transport: http
     url: https://example.com/mcp
     timeout_secs: 30       # per-server tool-load timeout (default 30)
+# websocket uses a ws:// or wss:// URL and requires mcp[ws] or websockets.
 # Tools are loaded per-server in isolation: one server failing to start no longer
 # drops the others (see EXTENDING.md). After a load, J.A.R.N. mirrors each server's
 # last-known status onto an optional `health` field ("ok" | "error"; default unset).
