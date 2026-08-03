@@ -107,14 +107,16 @@ def _mcp_status(ctrl, parts: list[str]) -> CommandResult:
         # loop; run_blocking probes on a one-shot worker thread there, and
         # asyncio.run inline when no loop is running (tests / headless).
         net = ctrl.config.permissions.network
-        mcp = run_blocking(load_mcp_tools(ctrl.config.mcp_servers, net))
+        # This synchronous command may run its probe on a one-shot worker loop,
+        # which cannot own sessions used later by the controller's main loop.
+        # Probe ephemerally, then force the next runtime build to establish fresh
+        # persistent sessions on the correct loop.
+        mcp = run_blocking(
+            load_mcp_tools(ctrl.config.mcp_servers, net, persistent=False)
+        )
         ctrl.mcp_health = dict(mcp.health)
         ctrl.mcp_errors = dict(mcp.errors)
-        # Replace the runtime's MCP cache with this fresh probe so the NEXT
-        # rebuild (auto model rotation, mode change, /config set) mirrors the
-        # refreshed health/tools instead of reverting to the stale cached values
-        # ensure_runtime would otherwise re-apply on a cache hit.
-        ctrl._mcp_cache = mcp
+        ctrl._invalidate_runtime(drop_mcp_cache=True)
         for server in ctrl.config.mcp_servers:
             if server.name in ctrl.mcp_health:
                 server.health = ctrl.mcp_health[server.name]

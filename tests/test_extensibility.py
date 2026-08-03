@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 
 from jarn.config.schema import HookSpec, MCPServer
@@ -349,6 +351,59 @@ def _patch_client(monkeypatch, fail=None):
 
 def _stdio(name):
     return MCPServer(name=name, transport="stdio", command="run-" + name)
+
+
+@pytest.mark.asyncio
+async def test_tool_calls_reuse_one_persistent_server_session(monkeypatch):
+    """Regression for #61: discovery and repeated calls share one MCP session."""
+    counts = {"entered": 0, "called": 0, "exited": 0}
+
+    class _Session:
+        async def call_tool(self):
+            counts["called"] += 1
+            return counts["called"]
+
+    class _Tool(_MCPTool):
+        def __init__(self, session):
+            super().__init__("ping")
+            self._session = session
+
+        async def ainvoke(self):
+            return await self._session.call_tool()
+
+    class _PersistentClient:
+        def __init__(self, connections):
+            self.connections = connections
+            self.callbacks = None
+            self.tool_interceptors = None
+
+        @contextlib.asynccontextmanager
+        async def session(self, server_name):
+            assert server_name == "srv"
+            counts["entered"] += 1
+            try:
+                yield _Session()
+            finally:
+                counts["exited"] += 1
+
+    async def _adapter_load(session, **kwargs):
+        return [_Tool(session)]
+
+    import langchain_mcp_adapters.client as client_mod
+    import langchain_mcp_adapters.tools as tools_mod
+
+    monkeypatch.setattr(client_mod, "MultiServerMCPClient", _PersistentClient)
+    monkeypatch.setattr(tools_mod, "load_mcp_tools", _adapter_load)
+
+    result = await load_mcp_tools([_stdio("srv")])
+    tool = result.tools[0]
+    assert counts == {"entered": 1, "called": 0, "exited": 0}
+    assert await tool.ainvoke() == 1
+    assert await tool.ainvoke() == 2
+    assert counts == {"entered": 1, "called": 2, "exited": 0}
+
+    await result.aclose()
+    assert counts == {"entered": 1, "called": 2, "exited": 1}
 
 
 @pytest.mark.asyncio
@@ -843,7 +898,7 @@ def test_mcp_status_refresh(tmp_path, monkeypatch, base_config):
     ctrl = Controller(base_config, tmp_path / "proj")
     calls: list[int] = []
 
-    async def _fake_load(servers, network_policy=None):
+    async def _fake_load(servers, network_policy=None, **kwargs):
         calls.append(1)
         return MCPLoadResult(
             tools=["a_tool"], health={"a": "ok"}, errors={},

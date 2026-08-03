@@ -672,12 +672,11 @@ async def test_mcp_loaded_once_across_rebuilds_and_reset_on_invalidate(
     ctrl.close()
 
 
-def test_mcp_refresh_updates_cache_so_rebuild_keeps_fresh_health(
+def test_mcp_refresh_drops_cache_so_rebuild_opens_fresh_sessions(
     tmp_path, monkeypatch, base_config
 ):
-    """`/mcp refresh` replaces the runtime MCP cache, so a later rebuild mirrors
-    the refreshed (recovered) health instead of reverting to the stale degraded
-    values ensure_runtime would otherwise re-apply on a cache hit."""
+    """`/mcp refresh` probes health, then rebuilds persistent sessions on the
+    controller loop instead of caching tools bound to its one-shot worker loop."""
     import asyncio
 
     import jarn.controller.commands.diagnostics as diag_mod
@@ -696,18 +695,21 @@ def test_mcp_refresh_updates_cache_so_rebuild_keeps_fresh_health(
     # The server recovers; `/mcp refresh` re-probes and must also refresh the cache.
     healthy = MCPLoadResult(tools=["s_tool"], health={"s": "ok"}, errors={})
 
-    async def _healthy_loader(servers, network_policy=None):
+    async def _healthy_loader(servers, network_policy=None, **kwargs):
         return healthy
 
     monkeypatch.setattr(diag_mod, "load_mcp_tools", _healthy_loader)
     ctrl.handle_command("mcp", "refresh")
-    assert ctrl._mcp_cache is healthy
+    assert ctrl._mcp_cache is None
+    assert ctrl.runtime is None
     assert ctrl.mcp_health == {"s": "ok"}
 
-    # A rebuild (model rotation, mode change, /config set) reuses the fresh cache:
-    # health recovers to ok and the stale MCP degradation is cleared, not re-applied.
-    ctrl.runtime = None
+    # The next build opens and caches the recovered server on its durable loop.
+    import jarn.controller.core as controller_mod
+
+    monkeypatch.setattr(controller_mod, "load_mcp_tools", _healthy_loader)
     asyncio.run(ctrl.ensure_runtime())
+    assert ctrl._mcp_cache is healthy
     assert ctrl.mcp_health == {"s": "ok"}
     assert ctrl.health == "ok"
     assert ctrl.last_error is None
@@ -927,12 +929,12 @@ async def test_ensure_runtime_single_flight_under_concurrency(
 
 
 @pytest.mark.asyncio
-async def test_mcp_refresh_from_running_loop_stores_cache(
+async def test_mcp_refresh_from_running_loop_invalidates_cache(
     tmp_path, monkeypatch, base_config
 ):
     """BLOCKER 1: the sync /mcp refresh handler runs FROM the async REPL's running
     loop, where asyncio.run() raises. The loop-aware path probes on a worker thread
-    and still stores the fresh probe into _mcp_cache (the sync test would miss this)."""
+    and invalidates the cache so persistent sessions are rebuilt on the main loop."""
     import jarn.controller.commands.diagnostics as diag_mod
     from jarn.config.schema import MCPServer
     from jarn.extensibility.mcp import MCPLoadResult
@@ -942,7 +944,7 @@ async def test_mcp_refresh_from_running_loop_stores_cache(
 
     healthy = MCPLoadResult(tools=["s_tool"], health={"s": "ok"}, errors={})
 
-    async def _healthy_loader(servers, network_policy=None):
+    async def _healthy_loader(servers, network_policy=None, **kwargs):
         return healthy
 
     monkeypatch.setattr(diag_mod, "load_mcp_tools", _healthy_loader)
@@ -950,7 +952,7 @@ async def test_mcp_refresh_from_running_loop_stores_cache(
     # A running loop is active (this coroutine); the sync handler must not raise.
     ctrl.handle_command("mcp", "refresh")
 
-    assert ctrl._mcp_cache is healthy
+    assert ctrl._mcp_cache is None
     assert ctrl.mcp_health == {"s": "ok"}
     ctrl.close()
 

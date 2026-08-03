@@ -328,6 +328,9 @@ class Controller:
         Clears its own task slot last so the next ensure_runtime rebuilds fresh."""
         from jarn.agent.builder import AmbientKeyLeakError, SandboxUnavailable
 
+        mcp = None
+        loaded_mcp = False
+        retained_mcp = False
         try:
             # Load MCP servers once per session and reuse across rebuilds: a
             # rebuild triggered only by a main-model / mode / backend change must
@@ -340,6 +343,7 @@ class Controller:
                 mcp = await load_mcp_tools(
                     self.config.mcp_servers, self.config.permissions.network
                 )
+                loaded_mcp = True
             tools = mcp.tools
             try:
                 # build_runtime is pure-sync and does O(repo) file I/O (skills /
@@ -417,10 +421,16 @@ class Controller:
                 self._dispose_runtime(runtime)
                 return None
             self._mcp_cache = mcp
+            retained_mcp = True
             self._mirror_mcp_health(mcp)
             self.runtime = runtime
             return runtime
         finally:
+            # A failed or generation-stale build must not orphan the persistent
+            # MCP sessions it opened locally. Cached sessions are owned by the
+            # controller and are closed by cache invalidation / aclose instead.
+            if loaded_mcp and not retained_mcp and mcp is not None:
+                await mcp.aclose()
             # Free the slot last so the next ensure_runtime starts a new worker
             # for a stale (uncommitted) or failed build. Safe to clear
             # unconditionally: the commit/dispose above ran without awaiting, so
@@ -481,7 +491,10 @@ class Controller:
         self._runtime_generation += 1
         self.runtime = None
         if drop_mcp_cache:
+            stale_mcp = self._mcp_cache
             self._mcp_cache = None
+            if stale_mcp is not None:
+                stale_mcp.close_soon()
 
     def _hook_runner(self):
         """Lazily build the lifecycle :class:`HookRunner` (None if no hooks).
@@ -858,6 +871,10 @@ class Controller:
     def close(self) -> None:
         import contextlib
 
+        # ``close`` is synchronous for legacy callers; signal the same-task MCP
+        # session owners here and let ``aclose`` await them when available.
+        if self._mcp_cache is not None:
+            self._mcp_cache.close_soon()
         with contextlib.suppress(Exception):
             self.telemetry.flush()
         # Tear down the execution backend deterministically (e.g. remove the
@@ -891,6 +908,7 @@ class Controller:
             # and leak.
             self._closed = True
             committed = self.runtime
+            committed_mcp = self._mcp_cache
             self._invalidate_runtime(drop_mcp_cache=True)
             # Await the in-flight worker so it has committed-or-disposed before
             # teardown. The generation bump above forces its dispose path; shield
@@ -914,6 +932,9 @@ class Controller:
             # committed runtime's backend too (best-effort, no double close — a
             # committed runtime and an in-flight build never coexist).
             self._dispose_runtime(committed)
+            if committed_mcp is not None:
+                with contextlib.suppress(Exception):
+                    await committed_mcp.aclose()
             if self._saver_cm is not None:
                 with contextlib.suppress(Exception):
                     await self._saver_cm.__aexit__(None, None, None)

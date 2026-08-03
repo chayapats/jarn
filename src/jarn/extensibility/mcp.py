@@ -12,6 +12,7 @@ and is skipped rather than taking down the tools of every other server.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import shlex
 from collections.abc import Callable
@@ -169,11 +170,100 @@ class MCPLoadResult:
     tools: list[Any] = field(default_factory=list)
     health: dict[str, str] = field(default_factory=dict)
     errors: dict[str, str] = field(default_factory=dict)
+    _session_owners: list[_MCPSessionOwner] = field(
+        default_factory=list, repr=False
+    )
 
     @property
     def degraded(self) -> bool:
         """True when at least one enabled server failed to load."""
         return bool(self.errors)
+
+    def close_soon(self) -> None:
+        """Ask every persistent server session to close without blocking.
+
+        Controller invalidation is synchronous, so it cannot await teardown. The
+        owner task that entered each MCP session performs the actual context-manager
+        exit; signalling it here preserves that same-task lifecycle requirement.
+        """
+        for owner in self._session_owners:
+            owner.request_close()
+
+    async def aclose(self) -> None:
+        """Close all persistent server sessions owned by this load result."""
+        self.close_soon()
+        loop = asyncio.get_running_loop()
+        tasks = [o.task for o in self._session_owners if o.task.get_loop() is loop]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._session_owners.clear()
+
+
+@dataclass(slots=True)
+class _MCPSessionOwner:
+    """A task that keeps one adapter session open until explicitly released."""
+
+    task: asyncio.Task[None]
+    stop: asyncio.Event
+
+    def request_close(self) -> None:
+        loop = self.task.get_loop()
+        if loop.is_closed():
+            return
+        if loop.is_running():
+            loop.call_soon_threadsafe(self.stop.set)
+        else:
+            self.stop.set()
+
+
+async def _load_tools_with_persistent_session(
+    client: Any, name: str
+) -> tuple[list[Any], _MCPSessionOwner]:
+    """Load one server's tools and keep their backing session alive.
+
+    MCP transports use AnyIO task groups whose context must be exited by the task
+    that entered it. A small owner task therefore enters, initializes, and later
+    exits the session, while the returned LangChain tools retain that live session
+    for every invocation in between.
+    """
+    ready: asyncio.Future[list[Any]] = asyncio.get_running_loop().create_future()
+    stop = asyncio.Event()
+
+    async def _own_session() -> None:
+        try:
+            async with client.session(name) as session:
+                from langchain_mcp_adapters.tools import (
+                    load_mcp_tools as adapter_load_mcp_tools,
+                )
+
+                tools = await adapter_load_mcp_tools(
+                    session,
+                    callbacks=getattr(client, "callbacks", None),
+                    tool_interceptors=getattr(client, "tool_interceptors", None),
+                    server_name=name,
+                )
+                ready.set_result(tools)
+                await stop.wait()
+        except asyncio.CancelledError:
+            if not ready.done():
+                ready.cancel()
+            raise
+        except Exception as exc:  # noqa: BLE001 - surfaced to loader or logged on exit
+            if not ready.done():
+                ready.set_exception(exc)
+            else:
+                logger.warning("Persistent MCP session %s ended: %s", name, exc)
+
+    task = asyncio.create_task(_own_session(), name=f"jarn-mcp-{name}")
+    owner = _MCPSessionOwner(task=task, stop=stop)
+    try:
+        tools = await asyncio.shield(ready)
+    except BaseException:
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+        raise
+    return tools, owner
 
 
 def _strip_mcp_prefix(name: str) -> str:
@@ -397,20 +487,23 @@ def build_client(
 
 
 async def load_mcp_tools(
-    servers: list[MCPServer], network_policy: NetworkPolicy | None = None
+    servers: list[MCPServer],
+    network_policy: NetworkPolicy | None = None,
+    *,
+    persistent: bool = True,
 ) -> MCPLoadResult:
     """Load tools from every enabled MCP server, each in isolation.
 
-    The installed ``langchain-mcp-adapters`` ``MultiServerMCPClient`` exposes
-    ``get_tools(server_name=...)``, which opens and tears down a fresh session
-    for just that one server. We call it once per server inside a try/except so
-    one bad server's failure is recorded and skipped, never losing the tools of
-    the healthy ones. Servers are loaded CONCURRENTLY (via ``asyncio.gather``)
-    so startup latency is the slowest server's handshake, not the sum of all;
-    per-server isolation and per-server ``timeout_secs`` are preserved because
-    each ``_load_one`` owns its own ``wait_for`` and try/except. The client
-    itself holds no persistent connection (it is not an async context manager),
-    so there is no client to close.
+    One persistent adapter session is opened per server and retained by the
+    returned result. Tools are built from that session, so repeated invocations
+    reuse the same initialized MCP connection instead of spawning a server per
+    call. Call :meth:`MCPLoadResult.aclose` when the controller cache is replaced
+    or shut down.
+
+    Servers are loaded CONCURRENTLY (via ``asyncio.gather``), so startup latency
+    is the slowest server's handshake, not the sum of all. Per-server isolation
+    and ``timeout_secs`` are preserved because each ``_load_one`` owns its own
+    ``wait_for`` and try/except.
     """
     result = MCPLoadResult()
     client, invalid = build_client(servers, network_policy)
@@ -427,13 +520,22 @@ async def load_mcp_tools(
         """Load one server's tools in isolation; never raises."""
         secs = timeout_by_name.get(name, 30)
         try:
-            tools = await asyncio.wait_for(
-                client.get_tools(server_name=name), timeout=secs
-            )
-            return name, tools, None
+            # Current adapters expose ``session``. The fallback keeps test doubles
+            # and older compatible adapter releases working, albeit without the
+            # persistent-session optimization they cannot express.
+            if persistent and callable(getattr(client, "session", None)):
+                tools, owner = await asyncio.wait_for(
+                    _load_tools_with_persistent_session(client, name), timeout=secs
+                )
+            else:
+                tools = await asyncio.wait_for(
+                    client.get_tools(server_name=name), timeout=secs
+                )
+                owner = None
+            return name, tools, None, owner
         except TimeoutError:
             logger.warning("Timed out loading MCP tools from %s after %ss", name, secs)
-            return name, None, f"timed out after {secs}s"
+            return name, None, f"timed out after {secs}s", None
         except Exception as exc:  # noqa: BLE001 - one bad server must not kill startup
             # A compromised server can echo the configured credential in its error;
             # scrub the VALUES captured when this connection was built (known=…) since
@@ -441,11 +543,11 @@ async def load_mcp_tools(
             known = _known_secrets(client, name)
             redacted = redact_secrets(str(exc), known=known)
             logger.warning("Failed to load MCP tools from %s: %s", name, redacted)
-            return name, None, redacted
+            return name, None, redacted, None
 
     # gather preserves argument order, so tools are extended in client.connections
     # iteration order regardless of which handshake completes first.
-    for name, tools, err in await asyncio.gather(
+    for name, tools, err, owner in await asyncio.gather(
         *(_load_one(n) for n in client.connections)
     ):
         if err is not None:
@@ -457,6 +559,8 @@ async def load_mcp_tools(
             # never mistake an MCP tool for a jarn builtin (see _namespace_tool).
             result.tools.extend(_namespace_tool(t, name) for t in tools)
             result.health[name] = "ok"
+            if owner is not None:
+                result._session_owners.append(owner)
     return result
 
 
