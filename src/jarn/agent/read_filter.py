@@ -35,13 +35,13 @@ filter narrows the broad-grep exfiltration window; it does not replace either.
 from __future__ import annotations
 
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
 
-from jarn.agent.files import is_multimodal_path
+from jarn.agent.files import is_multimodal_path, modality_of
 
 if TYPE_CHECKING:
     from langgraph.prebuilt.tool_node import ToolCallRequest
@@ -78,9 +78,16 @@ class ReadResultFilterMiddleware(AgentMiddleware):
     defense-in-depth (it parses grep display text), not a hard boundary.
     """
 
-    def __init__(self, engine: PermissionEngine, *, multimodal: bool = True) -> None:
+    def __init__(
+        self,
+        engine: PermissionEngine,
+        *,
+        multimodal: bool = True,
+        unsupported_media: Collection[str] = (),
+    ) -> None:
         self._engine = engine
         self._multimodal = multimodal
+        self._unsupported_media = frozenset(unsupported_media)
         # AgentMiddleware.tools is read by create_agent; a wrap-only middleware
         # registers none (mirrors langchain's own ToolRetryMiddleware).
         self.tools = []
@@ -96,6 +103,9 @@ class ReadResultFilterMiddleware(AgentMiddleware):
         denied = self._disabled_multimodal_read(request)
         if denied is not None:
             return denied
+        denied = self._unsupported_media_read(request)
+        if denied is not None:
+            return denied
         return self._filter(request, handler(request))
 
     async def awrap_tool_call(
@@ -105,6 +115,9 @@ class ReadResultFilterMiddleware(AgentMiddleware):
     ) -> ToolMessage | Any:
         """Async path (``ainvoke``/``astream`` — jarn's production driver)."""
         denied = self._disabled_multimodal_read(request)
+        if denied is not None:
+            return denied
+        denied = self._unsupported_media_read(request)
         if denied is not None:
             return denied
         return self._filter(request, await handler(request))
@@ -123,6 +136,20 @@ class ReadResultFilterMiddleware(AgentMiddleware):
         if not path or not is_multimodal_path(path):
             return None
         return _multimodal_disabled_message(call, path)
+
+    def _unsupported_media_read(self, request: ToolCallRequest) -> ToolMessage | None:
+        """Reject media the active provider cannot serialize before reading it."""
+        if not self._unsupported_media:
+            return None
+        call = getattr(request, "tool_call", None) or {}
+        if call.get("name") != "read_file":
+            return None
+        args = call.get("args") or {}
+        path = str(args.get("file_path") or "")
+        modality = modality_of(path)
+        if modality not in self._unsupported_media:
+            return None
+        return _unsupported_media_message(call, path, modality)
 
     def _filter(self, request: ToolCallRequest, result: Any) -> Any:
         # Only content-returning read tools that produce a plain-text ToolMessage
@@ -175,6 +202,18 @@ class ReadResultFilterMiddleware(AgentMiddleware):
             )
         ):
             return _multimodal_disabled_message(call, path)
+        if isinstance(result.content, list):
+            unsupported = next(
+                (
+                    str(block.get("type"))
+                    for block in result.content
+                    if isinstance(block, dict)
+                    and block.get("type") in self._unsupported_media
+                ),
+                None,
+            )
+            if unsupported is not None:
+                return _unsupported_media_message(call, path, unsupported)
         return result
 
 
@@ -185,6 +224,22 @@ def _multimodal_disabled_message(call: dict[str, Any], path: str) -> ToolMessage
         content=(
             f"Error: multimodal read disabled for {target}; "
             "set execution.multimodal to true to read media files"
+        ),
+        name="read_file",
+        tool_call_id=call.get("id"),
+        status="error",
+    )
+
+
+def _unsupported_media_message(
+    call: dict[str, Any], path: str, modality: str
+) -> ToolMessage:
+    """Return plain text instead of checkpointing provider-incompatible media."""
+    target = path or "this file"
+    return ToolMessage(
+        content=(
+            f"Error: the active model provider cannot accept {modality} content "
+            f"from {target}; use a compatible model or convert the file first"
         ),
         name="read_file",
         tool_call_id=call.get("id"),

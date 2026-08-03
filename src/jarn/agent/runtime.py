@@ -35,12 +35,12 @@ from jarn.agent.permissions_bridge import (
 )
 from jarn.agent.verify import ProjectCapabilities, detect_capabilities
 from jarn.config import paths
-from jarn.config.schema import Config
+from jarn.config.schema import Config, ProviderType
 from jarn.extensibility.commands import CustomCommand, load_commands
 from jarn.extensibility.skills import Skill, auto_skill_catalog, load_skills
 from jarn.extensibility.subagents import CustomSubagent, load_subagents
 from jarn.memory.context import assemble_system_context
-from jarn.providers import ModelFactory, ModelResolutionError
+from jarn.providers import ModelFactory, ModelResolutionError, parse_model_ref
 
 logger = logging.getLogger("jarn.agent")
 
@@ -222,7 +222,26 @@ def _general_purpose_subagent_spec(model: Any) -> dict[str, Any]:
     return {**GENERAL_PURPOSE_SUBAGENT, "model": model}
 
 
-def _read_filter_middleware(engine: PermissionEngine, *, multimodal: bool = True) -> Any:
+def _unsupported_read_media(config: Config, model_ref: str | None) -> frozenset[str]:
+    """Media block types known to be rejected by the selected provider adapter."""
+    if not model_ref:
+        return frozenset()
+    try:
+        parsed = parse_model_ref(model_ref, default_profile=config.default_profile)
+    except ModelResolutionError:
+        return frozenset()
+    provider = config.providers.get(parsed.profile)
+    if provider and provider.type in {ProviderType.ANTHROPIC, ProviderType.OLLAMA}:
+        return frozenset({"audio", "video"})
+    return frozenset()
+
+
+def _read_filter_middleware(
+    engine: PermissionEngine,
+    *,
+    multimodal: bool = True,
+    unsupported_media: frozenset[str] = frozenset(),
+) -> Any:
     """A result-filter middleware bound to the session's AUTHORITATIVE permission
     engine — the controller's request-scoped instance that gates tool calls and
     receives runtime ``deny_session``/``remember`` (see ``interrupts.py``).
@@ -239,11 +258,19 @@ def _read_filter_middleware(engine: PermissionEngine, *, multimodal: bool = True
     """
     from jarn.agent.read_filter import ReadResultFilterMiddleware
 
-    return ReadResultFilterMiddleware(engine, multimodal=multimodal)
+    return ReadResultFilterMiddleware(
+        engine,
+        multimodal=multimodal,
+        unsupported_media=unsupported_media,
+    )
 
 
 def _attach_read_filter(
-    spec: dict[str, Any], engine: PermissionEngine, *, multimodal: bool = True
+    spec: dict[str, Any],
+    engine: PermissionEngine,
+    *,
+    multimodal: bool = True,
+    unsupported_media: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Prepend jarn's result-filter middleware to a declarative subagent ``spec``.
 
@@ -266,7 +293,11 @@ def _attach_read_filter(
     if "graph_id" in spec or "runnable" in spec:
         return spec
     spec["middleware"] = [
-        _read_filter_middleware(engine, multimodal=multimodal),
+        _read_filter_middleware(
+            engine,
+            multimodal=multimodal,
+            unsupported_media=unsupported_media,
+        ),
         *list(spec.get("middleware") or []),
     ]
     return spec
@@ -643,11 +674,13 @@ def build_runtime(
     # pass the available set so to_spec can resolve names and reject typos. Each
     # declarative spec also carries the result-filter middleware so a subagent's
     # broad grep is redacted just like the main agent's (second-eye #1 residual).
+    main_ref = config.resolved_main_model()
     subagent_specs: list[Any] = [
         _attach_read_filter(
             s.to_spec(factory, available_tools=tools),
             read_filter_engine,
             multimodal=config.execution.multimodal,
+            unsupported_media=_unsupported_read_media(config, s.model or main_ref),
         )
         for s in subagents.values()
     ]
@@ -660,7 +693,6 @@ def build_runtime(
     # subagent that runs on its own model, and the summarizer. The session driver
     # canonicalizes the model each provider reports (response_metadata) against
     # this set, so a delegated subagent on a different model is billed correctly.
-    main_ref = config.resolved_main_model()
     known_refs: set[str] = {main_ref} if main_ref else set()
     known_refs.update(s.model for s in subagents.values() if s.model)
     summarizer_ref = config.resolved_summarizer_model()
@@ -684,9 +716,11 @@ def build_runtime(
     has_custom_gp = any(s.get("name") == "general-purpose" for s in subagent_specs)
     if not has_custom_gp:
         gp_model: Any = model
+        gp_ref = main_ref
         if subagent_ref and subagent_ref != main_ref:
             try:
                 gp_model = factory.build_subagent()
+                gp_ref = subagent_ref
                 known_refs.add(subagent_ref)
             except ModelResolutionError:
                 gp_model = model
@@ -700,6 +734,7 @@ def build_runtime(
                 _general_purpose_subagent_spec(gp_model),
                 read_filter_engine,
                 multimodal=config.execution.multimodal,
+                unsupported_media=_unsupported_read_media(config, gp_ref),
             )
         )
 
@@ -856,7 +891,9 @@ def build_runtime(
     # session denies (second-eye #1 residual closed). Remote async subagents run out
     # of process → out of scope.
     read_filter_mw = _read_filter_middleware(
-        read_filter_engine, multimodal=config.execution.multimodal
+        read_filter_engine,
+        multimodal=config.execution.multimodal,
+        unsupported_media=_unsupported_read_media(config, main_ref),
     )
 
     agent = create_deep_agent(

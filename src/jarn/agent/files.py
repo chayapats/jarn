@@ -15,7 +15,7 @@ from typing import Any
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 DOC_EXTS = {".pdf"}
-AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
+AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".oga", ".flac"}
 VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
 
 MULTIMODAL_EXTS = IMAGE_EXTS | DOC_EXTS | AUDIO_EXTS | VIDEO_EXTS

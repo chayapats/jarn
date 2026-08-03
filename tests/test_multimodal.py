@@ -36,6 +36,7 @@ def test_modality_detection():
     assert modality_of("doc.pdf") == "document"
     assert modality_of("clip.mp4") == "video"
     assert modality_of("sound.mp3") == "audio"
+    assert modality_of("telegram-voice.oga") == "audio"
     assert modality_of("main.py") == "text"
 
 
@@ -110,6 +111,63 @@ def test_multimodal_off_filters_unknown_binary_result():
     assert "YWJj" not in result.content
 
 
+@pytest.mark.parametrize(
+    ("path", "modality"),
+    [("/project/voice.oga", "audio"), ("/project/clip.mp4", "video")],
+)
+def test_unsupported_provider_rejects_media_before_read(path, modality):
+    """Provider-incompatible media must never enter the checkpointed result."""
+    middleware = ReadResultFilterMiddleware(
+        PermissionEngine(), unsupported_media={"audio", "video"}
+    )
+    request = SimpleNamespace(
+        tool_call={
+            "name": "read_file",
+            "args": {"file_path": path},
+            "id": "read-provider-1",
+        }
+    )
+    called = False
+
+    def handler(_request):
+        nonlocal called
+        called = True
+        raise AssertionError("unsupported media must be rejected before backend I/O")
+
+    result = middleware.wrap_tool_call(request, handler)
+
+    assert called is False
+    assert result.status == "error"
+    assert modality in result.content
+    assert "compatible model" in result.content
+
+
+def test_unsupported_provider_filters_media_result_backstop():
+    """Unknown extensions are replaced if the backend still returns audio."""
+    middleware = ReadResultFilterMiddleware(
+        PermissionEngine(), unsupported_media={"audio", "video"}
+    )
+    request = SimpleNamespace(
+        tool_call={
+            "name": "read_file",
+            "args": {"file_path": "/project/media.bin"},
+            "id": "read-provider-2",
+        }
+    )
+    audio = ToolMessage(
+        content_blocks=[
+            {"type": "audio", "base64": "YWJj", "mime_type": "audio/wav"}
+        ],
+        name="read_file",
+        tool_call_id="read-provider-2",
+    )
+
+    result = middleware.wrap_tool_call(request, lambda _request: audio)
+
+    assert result.status == "error"
+    assert "YWJj" not in result.content
+
+
 def test_build_runtime_wires_multimodal_off(base_config, tmp_path, monkeypatch):
     """The config switch reaches both the main and delegated agent stacks."""
     from unittest.mock import MagicMock
@@ -136,6 +194,35 @@ def test_build_runtime_wires_multimodal_off(base_config, tmp_path, monkeypatch):
     delegated_filter = general_purpose["middleware"][0]
     assert main_filter._multimodal is False
     assert delegated_filter._multimodal is False
+
+
+def test_build_runtime_blocks_anthropic_ollama_media(base_config, tmp_path, monkeypatch):
+    """The main and delegated filters inherit their active provider capability."""
+    from unittest.mock import MagicMock
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from jarn.agent import builder
+
+    captured = {}
+    model = GenericFakeChatModel(messages=iter([]))
+    monkeypatch.setattr("jarn.providers.models.ModelFactory.build", lambda self, ref: model)
+    monkeypatch.setattr(
+        "deepagents.create_deep_agent",
+        lambda **kwargs: captured.update(kwargs) or MagicMock(),
+    )
+    base_config.routing.main = "ollama/llama3"
+    base_config.routing.subagent = "ollama/llama3"
+
+    builder.build_runtime(base_config, project_root=tmp_path)
+
+    main_filter = captured["middleware"][0]
+    general_purpose = next(
+        spec for spec in captured["subagents"] if spec["name"] == "general-purpose"
+    )
+    delegated_filter = general_purpose["middleware"][0]
+    assert main_filter._unsupported_media == frozenset({"audio", "video"})
+    assert delegated_filter._unsupported_media == frozenset({"audio", "video"})
 
 
 def test_diff_skips_binary():
