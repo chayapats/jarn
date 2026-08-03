@@ -2,12 +2,14 @@
 
 Shows how a future web backend would reuse the existing UI-agnostic core. This is
 illustrative pseudocode-grade Python: it references FastAPI/uvicorn which are NOT
-dependencies of jarn. Do not import this module from the package or tests.
+dependencies of jarn. Do not import this module from the jarn package runtime.
 
 See ../docs/WEB_UI.md for the full plan.
 """
 
 from __future__ import annotations
+
+from dataclasses import asdict
 
 # NOTE: these imports are real and would work; the FastAPI bits are illustrative.
 from jarn.agent.session import ApprovalReply, ApprovalRequest, EventKind
@@ -29,12 +31,21 @@ async def run_turn_over_websocket(ws, controller: Controller, text: str) -> None
             "target": request.action.target,
             "dangerous": request.result.dangerous,
             "reason": request.result.reason,
+            "description": request.description,
+            "args": request.args,
+            "plan": request.plan,
+            "suggested_memory": (
+                asdict(request.suggested_memory) if request.suggested_memory else None
+            ),
         })
         reply = await ws.receive_json()
         from jarn.permissions import RememberScope
         return ApprovalReply(
             approved=bool(reply.get("approved")),
             scope=RememberScope(reply.get("scope", "once")),
+            message=str(reply.get("message", "") or ""),
+            edited_args=reply.get("edited_args"),
+            plan_mode_target=reply.get("plan_mode_target"),
         )
 
     await controller.ensure_runtime()
@@ -61,6 +72,6 @@ def build_app():
                 msg = await ws.receive_json()
                 await run_turn_over_websocket(ws, controller, msg["text"])
         finally:
-            controller.close()
+            await controller.aclose()
 
     return app
