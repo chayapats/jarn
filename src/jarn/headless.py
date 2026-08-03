@@ -13,12 +13,13 @@ Output formats (``--output-format text|json|stream-json``):
 
 * ``text`` — the assistant's final reply as plain text (the default).
 * ``json`` — a single buffered final object (the :func:`_result_payload`
-  envelope). ``--json`` is a legacy alias for this.
+  envelope), including the session ``thread_id``. ``--json`` is a legacy alias
+  for this.
 * ``stream-json`` — newline-delimited JSON (NDJSON): one object per Event as the
   turn runs, then a terminal ``{"type": "result", ...}`` object carrying the
-  same envelope plus the session ``thread_id`` (and ``transcript_path`` when a
-  transcript is being written) so a CI caller can locate/resume the session it
-  just ran. This mirrors the spirit of ``claude -p --output-format stream-json``
+  same envelope (plus ``transcript_path`` when a transcript is being written),
+  so a CI caller can locate/resume the session it just ran. This mirrors the
+  spirit of ``claude -p --output-format stream-json``
   (one event per line, a terminal result object); each line is flushed as it is
   emitted so the stream is live.
 """
@@ -186,6 +187,7 @@ def _result_payload(result: HeadlessResult) -> dict[str, Any]:
         "verification": result.verification,
         "project_trusted": result.project_trusted,
         "permission_mode": result.permission_mode,
+        "thread_id": result.thread_id,
     }
 
 

@@ -209,6 +209,7 @@ def test_run_headless_json_output_has_result_key(tmp_path, monkeypatch, base_con
     assert "turns" in data
     assert data["project_trusted"] is True
     assert data["permission_mode"] == "ask"
+    assert isinstance(data["thread_id"], str) and data["thread_id"]
 
 
 def test_json_output_records_untrusted_plan_clamp(
@@ -1241,8 +1242,7 @@ def test_stream_json_error_event_streams_then_terminal(
 def test_output_format_json_matches_as_json(
     tmp_path, monkeypatch, base_config, capsys
 ):
-    """output_format='json' emits the buffered envelope unchanged (no streaming
-    schema, no thread_id leak into the buffered json contract)."""
+    """Buffered JSON includes the resumable thread id without streaming schema."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     _stub_controller(monkeypatch, text="buf")
 
@@ -1252,7 +1252,7 @@ def test_output_format_json_matches_as_json(
     data = json.loads(capsys.readouterr().out)
     assert data["result"] == "buf"
     assert "type" not in data       # buffered json is NOT the streaming schema
-    assert "thread_id" not in data  # json mode is unchanged
+    assert isinstance(data["thread_id"], str) and data["thread_id"]
 
 
 def test_output_format_text_matches_default(
