@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from unittest.mock import patch
 
 import pytest
@@ -14,6 +15,57 @@ from jarn.agent.session import EventKind, SessionDriver
 from jarn.cost import CostTracker
 from jarn.memory import create_async_checkpointer
 from jarn.permissions import PermissionEngine
+
+
+@pytest.mark.asyncio
+async def test_checkpointer_setup_retries_transient_first_run_lock(monkeypatch, tmp_path):
+    """Regression for #57: WAL setup retries SQLITE_BUSY after setting a timeout."""
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    statements: list[str] = []
+
+    class _Cursor:
+        async def close(self):
+            return None
+
+    class _Connection:
+        async def execute(self, statement):
+            statements.append(statement)
+            return _Cursor()
+
+    class _Saver:
+        def __init__(self):
+            self.conn = _Connection()
+            self.setup_calls = 0
+
+        async def setup(self):
+            self.setup_calls += 1
+            if self.setup_calls < 3:
+                raise sqlite3.OperationalError("database is locked")
+
+    class _ContextManager:
+        def __init__(self):
+            self.saver = _Saver()
+
+        async def __aenter__(self):
+            return self.saver
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    cm = _ContextManager()
+    monkeypatch.setattr(
+        AsyncSqliteSaver,
+        "from_conn_string",
+        classmethod(lambda cls, conn_string: cm),
+    )
+
+    saver, returned_cm = await create_async_checkpointer(tmp_path / "state.sqlite")
+
+    assert saver is cm.saver
+    assert returned_cm is cm
+    assert cm.saver.setup_calls == 3
+    assert statements == ["PRAGMA busy_timeout=5000"]
 
 
 class _FakeToolModel(GenericFakeChatModel):

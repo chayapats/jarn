@@ -12,6 +12,8 @@ and survive crashes (partial transcript beats no transcript).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import sqlite3
 import time
@@ -27,6 +29,19 @@ from jarn.config.secrets import redact_secrets as _central_redact_secrets
 # Maximum characters retained from a tool output in the transcript.
 # Large outputs (e.g. full file reads) are truncated to keep JSONL files sane.
 _TRANSCRIPT_MAX_TOOL_CHARS = 2_000
+_SQLITE_BUSY_TIMEOUT_MS = 5_000
+_SQLITE_SETUP_ATTEMPTS = 8
+_SQLITE_RETRY_BASE_SECS = 0.025
+
+
+def _is_sqlite_busy(exc: BaseException) -> bool:
+    """Return whether *exc* is SQLite's transient lock-contention error."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(code, int) and code & 0xFF == sqlite3.SQLITE_BUSY:
+        return True
+    return "database is locked" in str(exc).lower()
 
 
 def redact_secrets(text: str) -> str:
@@ -99,7 +114,28 @@ async def create_async_checkpointer(db_path: Path | None = None):
     path.parent.mkdir(parents=True, exist_ok=True)
     cm = AsyncSqliteSaver.from_conn_string(str(path))
     saver = await cm.__aenter__()
-    await saver.setup()
+    try:
+        # LangGraph's setup starts with ``PRAGMA journal_mode=WAL``. On a new DB,
+        # two processes can race that mode change; SQLite returns BUSY immediately
+        # for this operation instead of honoring the connection's default timeout.
+        cursor = await saver.conn.execute(
+            f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}"
+        )
+        await cursor.close()
+        for attempt in range(_SQLITE_SETUP_ATTEMPTS):
+            try:
+                await saver.setup()
+                break
+            except sqlite3.OperationalError as exc:
+                if not _is_sqlite_busy(exc) or attempt == _SQLITE_SETUP_ATTEMPTS - 1:
+                    raise
+                delay = min(_SQLITE_RETRY_BASE_SECS * (2**attempt), 0.25)
+                await asyncio.sleep(delay)
+    except BaseException:
+        # Do not leak aiosqlite's worker thread/connection when setup never succeeds.
+        with contextlib.suppress(Exception):
+            await cm.__aexit__(None, None, None)
+        raise
     return saver, cm
 
 
