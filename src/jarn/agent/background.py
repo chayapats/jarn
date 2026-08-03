@@ -30,6 +30,16 @@ from jarn.agent.process_util import terminate_process_group
 _log = logging.getLogger("jarn.background")
 
 
+# A finished job's record outlives its OS resources: the temp dir is freed on the
+# first sweep after exit, but the record (exit code, kill reason, captured tail)
+# is retained so a later ``check_background`` can still report what happened. An
+# agent turn routinely outlives the sweep interval, so evicting on reap would
+# make the tool useless for its main purpose.
+_RETAIN_SECS = 300.0
+_RETAIN_MAX = 20
+_RETAIN_TAIL_LINES = 200
+
+
 @dataclass(slots=True)
 class BackgroundProc:
     id: str
@@ -40,6 +50,12 @@ class BackgroundProc:
     cwd: str
     started_at: float = field(default_factory=time.monotonic)
     killed_reason: str | None = None
+    #: Set when the sweep has reaped the child and removed ``tmpdir``.
+    finished_at: float | None = None
+    #: Output captured just before ``tmpdir`` was removed; served by ``status()``.
+    final_tail: str | None = None
+    #: Signalled after cleanup completes — a happens-before edge for observers.
+    reaped: threading.Event = field(default_factory=threading.Event)
 
     def running(self) -> bool:
         return self.popen.poll() is None
@@ -47,6 +63,12 @@ class BackgroundProc:
     @property
     def exit_code(self) -> int | None:
         return self.popen.poll()
+
+    def tail(self, lines: int) -> str:
+        """Recent output, from the live log or the tail cached at reap time."""
+        if self.final_tail is None:
+            return _tail(self.log_path, lines)
+        return "\n".join(self.final_tail.splitlines()[-lines:])
 
 
 def _tail(path: Path, lines: int) -> str:
@@ -62,7 +84,11 @@ def _terminate(popen: subprocess.Popen) -> None:
     """Best-effort terminate the whole process group (SIGTERM, then SIGKILL)."""
     if popen.poll() is not None:
         return
-    terminate_process_group(popen.pid, grace_secs=3)
+    # ``reap`` is load-bearing, not an optimisation: a SIGTERM'd child stays a
+    # zombie in its own process group until someone waits on it, and on Linux
+    # ``killpg(pgid, 0)`` keeps succeeding for a zombie. Without reaping as we
+    # wait, the liveness probe never clears and every kill burns the full grace.
+    terminate_process_group(popen.pid, grace_secs=3, reap=popen.poll)
 
 
 def _open_fd_count() -> int | None:
@@ -111,11 +137,33 @@ class ProcessManager:
         )
 
     def _prune_exited(self) -> None:
-        """Drop registry entries whose processes have already exited; clean up tmpdirs."""
-        exited = [pid for pid, proc in self._procs.items() if proc.popen.poll() is not None]
-        for pid in exited:
-            proc = self._procs.pop(pid)
+        """Reap exited children, then retire records that have aged out.
+
+        Two distinct jobs that used to be one. *Reaping* frees OS resources (the
+        zombie and the temp log dir) and must happen promptly on every sweep.
+        *Retiring* forgets the job entirely and must not: the record is the only
+        way ``check_background`` can report an exit code or a kill reason after
+        the fact, so it survives for ``_RETAIN_SECS`` (bounded by ``_RETAIN_MAX``).
+        """
+        now = time.monotonic()
+        for proc in list(self._procs.values()):
+            if proc.finished_at is not None or proc.popen.poll() is None:
+                continue
+            # Capture the output before the directory holding it goes away.
+            proc.final_tail = _tail(proc.log_path, _RETAIN_TAIL_LINES)
             shutil.rmtree(proc.tmpdir, ignore_errors=True)
+            proc.finished_at = now
+            # Set last: an observer waking on this must see cleanup completed.
+            proc.reaped.set()
+
+        done = sorted(
+            (p for p in self._procs.values() if p.finished_at is not None),
+            key=lambda p: p.finished_at or 0.0,
+        )
+        retire = {p.id for p in done if now - (p.finished_at or 0.0) > _RETAIN_SECS}
+        retire.update(p.id for p in done[: max(0, len(done) - _RETAIN_MAX)])
+        for pid in retire:
+            self._procs.pop(pid, None)
 
     def _check_limits(self, proc: BackgroundProc) -> None:
         """Kill *proc* if it has exceeded ``max_lifetime_secs``; set ``killed_reason``."""
@@ -208,21 +256,24 @@ class ProcessManager:
         return proc
 
     def status(self, pid: str, *, tail_lines: int = 40) -> dict | None:
-        proc = self._procs.get(pid)
+        with self._lock:
+            proc = self._procs.get(pid)
         if proc is None:
             return None
+        # Outside the lock — _check_limits can terminate, which blocks.
         self._check_limits(proc)
         return {
             "id": pid,
             "command": proc.command,
             "running": proc.running(),
             "exit_code": proc.exit_code,
-            "tail": _tail(proc.log_path, tail_lines),
+            "tail": proc.tail(tail_lines),
             "killed_reason": proc.killed_reason,
         }
 
     def kill(self, pid: str) -> bool:
-        proc = self._procs.get(pid)
+        with self._lock:
+            proc = self._procs.get(pid)
         if proc is None:
             return False
         _terminate(proc.popen)

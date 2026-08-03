@@ -313,14 +313,20 @@ execution:
                                     #   free up capacity automatically.
   background_max_lifetime_secs: null # float — processes running longer than this
                                      #   number of seconds are killed (SIGTERM then
-                                     #   SIGKILL) on the next sweep, which happens on
+                                     #   SIGKILL) on the next sweep. Sweeps run on
                                      #   every run_in_background / check_background /
-                                     #   list_background call. Killed processes appear
-                                     #   in check_background / list_background with
-                                     #   the note "killed: exceeded max_lifetime_secs"
-                                     #   so the model can distinguish them from normal
-                                     #   exits. Per-process temp log dirs are also
-                                     #   removed when a process is swept.
+                                     #   list_background call AND on a background
+                                     #   monitor, so a limit is enforced even while the
+                                     #   model is idle. Killed processes appear in
+                                     #   check_background / list_background with the
+                                     #   note "killed: exceeded max_lifetime_secs" so
+                                     #   the model can distinguish them from normal
+                                     #   exits. Per-process temp log dirs are removed
+                                     #   as soon as a process is swept; the job's
+                                     #   *record* (exit code, kill reason, and the last
+                                     #   200 lines of output) is kept for 5 minutes —
+                                     #   at most 20 finished jobs — so check_background
+                                     #   can still report what happened a turn later.
   backend: local           # local | docker | sandbox  (toggle at runtime with /sandbox)
                            # local  — run on the host (permission engine is the only
                            #          authorizer; NO isolation)

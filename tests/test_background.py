@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
+from jarn.agent import background
 from jarn.agent.background import ProcessManager, build_background_tools
 from jarn.agent.permissions_bridge import tool_to_action
 from jarn.permissions import ActionKind
@@ -26,6 +27,34 @@ def _wait(mgr, pid, *, timeout=4.0):
             return st
         time.sleep(0.05)
     return mgr.status(pid)
+
+
+@pytest.fixture(autouse=True)
+def _shutdown_managers(monkeypatch):
+    """Stop every ProcessManager a test creates.
+
+    Each manager runs a daemon monitor thread that outlives the test unless it is
+    shut down. Leaking them makes the suite contend with itself, which is what
+    turns the timing-sensitive assertions here flaky on a loaded CI runner.
+    """
+    created: list[ProcessManager] = []
+    original_init = ProcessManager.__init__
+
+    def tracking_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(ProcessManager, "__init__", tracking_init)
+    yield
+    for mgr in created:
+        with contextlib.suppress(Exception):
+            mgr.shutdown()
+
+
+def _quiesce(mgr):
+    """Park the monitor so only explicit sweeps run — for order-sensitive tests."""
+    mgr._interval = 3600.0
+    return mgr
 
 
 # -- ProcessManager ----------------------------------------------------------
@@ -261,12 +290,57 @@ def test_no_fd_leak(tmp_path):
         assert after <= before + 2, "parent should not retain per-job log FDs"
 
 
-def test_prune_exited(tmp_path):
-    mgr = ProcessManager()
+def test_exited_job_frees_resources_but_keeps_its_record(tmp_path):
+    """Reaping frees the OS resources; the record survives so it stays inspectable.
+
+    ``check_background`` is normally called a turn or more after the job ends, so
+    evicting the record on reap would lose the exit code and the output for good.
+    """
+    mgr = _quiesce(ProcessManager())
     proc = mgr.start("echo prune-me", cwd=str(tmp_path))
     _wait(mgr, proc.id)
-    assert mgr.list() == []
+
+    mgr.list()  # explicit sweep: reap + free the temp log dir
+
+    assert proc.reaped.is_set()
+    assert not proc.tmpdir.exists(), "temp log dir must be freed on reap"
+
+    st = mgr.status(proc.id)
+    assert st is not None, "record must outlive the reap"
+    assert st["running"] is False
+    assert st["exit_code"] == 0
+    assert "prune-me" in st["tail"], "tail must be served from the cached copy"
+
+
+def test_retained_records_are_capped(tmp_path):
+    """Retention is bounded — the oldest finished records are retired first."""
+    mgr = _quiesce(ProcessManager())
+    procs = [
+        mgr.start(f"echo job-{i}", cwd=str(tmp_path))
+        for i in range(background._RETAIN_MAX + 3)
+    ]
+    for proc in procs:
+        _wait(mgr, proc.id)
+
+    mgr.list()  # one sweep reaps them all, then applies the cap
+
+    assert len(mgr.list()) == background._RETAIN_MAX
+    assert mgr.status(procs[0].id) is None, "oldest must be retired"
+    assert mgr.status(procs[-1].id) is not None, "newest must be retained"
+
+
+def test_retained_records_age_out(tmp_path, monkeypatch):
+    """A record past the retention window is retired on the next sweep."""
+    monkeypatch.setattr(background, "_RETAIN_SECS", 0.0)
+    mgr = _quiesce(ProcessManager())
+    proc = mgr.start("echo age-me", cwd=str(tmp_path))
+    _wait(mgr, proc.id)
+
+    mgr.list()  # reaps and stamps finished_at
+    mgr.list()  # now older than the (zero) window
+
     assert mgr.status(proc.id) is None
+    assert not proc.tmpdir.exists()
 
 
 # -- enforcement (T-1-5) -----------------------------------------------------
@@ -344,9 +418,10 @@ def test_monitor_reaps_exited_child_without_api_sweep(tmp_path):
     proc = mgr.start("echo reap-me", cwd=str(tmp_path))
 
     try:
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline and proc.popen.returncode is None:
-            time.sleep(0.05)
+        # Wait on the reap signal, not on returncode: returncode is published by
+        # the very poll() that *begins* cleanup, so observing it says nothing
+        # about whether the temp dir has been removed yet.
+        assert proc.reaped.wait(5.0), "monitor must reap the exited child"
 
         assert proc.popen.returncode == 0
         assert not proc.tmpdir.exists()
@@ -356,7 +431,9 @@ def test_monitor_reaps_exited_child_without_api_sweep(tmp_path):
 
 def test_tmpdir_removed_on_prune(tmp_path):
     """Pruning a finished process removes its per-process temp log directory."""
-    mgr = ProcessManager()
+    # Parked monitor: the "still present" assertion below states that cleanup has
+    # NOT happened yet, so it must not race a background sweep.
+    mgr = _quiesce(ProcessManager())
     proc = mgr.start("echo prune-tmpdir", cwd=str(tmp_path))
     proc_dir = proc.tmpdir
     assert proc_dir.exists()
