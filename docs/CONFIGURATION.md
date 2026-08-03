@@ -774,8 +774,15 @@ jarn -p "follow up" --resume-session abc  # send a new message on thread abc
 `--json` prints one JSON object on stdout:
 
 - **Success:** `{result, tokens, cost, turns, tool_calls, verification, project_trusted, permission_mode}` — `result` is a string, or a parsed JSON object when `--output-schema` is used; `verification` is the final structured acceptance result when configured. `project_trusted` and `permission_mode` expose trust downgrades to automation.
-- **Failure:** `{error: {kind, message, verification?}}` (kinds include `error`, `refusal`,
-  `budget`, `timeout`, `verification`, `schema`, `usage`)
+- **Failure:** `{error: {kind, message, project_trusted, permission_mode, verification?}}`
+  (kinds include `error`, `refusal`, `budget`, `timeout`, `verification`, `schema`,
+  `usage`). `project_trusted` and `permission_mode` appear on failures for the same
+  reason as on success — an untrusted project clamps an explicit `--permission-mode`
+  down to `plan`, and that clamp is a common cause of a `refusal`.
+
+Failures raised *before* the agent starts — an empty prompt, a missing global
+config, a bad `--add-dir` or `--preset` — emit the same terminal record, so every
+run produces one regardless of where it fails.
 
 `--output-format stream-json` emits NDJSON event records as the run progresses,
 followed by one terminal record: `{type: "result", ...}` on success or

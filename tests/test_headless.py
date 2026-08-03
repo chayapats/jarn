@@ -1329,3 +1329,105 @@ def test_output_format_cli_alias_and_conflict(tmp_path, monkeypatch, base_config
     with pytest.raises(SystemExit) as exc:
         main(["-p", "hi", "--json", "--output-format", "stream-json"])
     assert exc.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# Failure envelopes: trust locus, pre-run guards, and actionable hints
+# ---------------------------------------------------------------------------
+
+
+def _stub_refusing_controller(monkeypatch) -> None:
+    """Wire a Controller whose turn immediately raises HeadlessRefusal."""
+
+    async def _raising_run_turn(prompt, *, resume: bool = False):
+        raise HeadlessRefusal("execute", "ask mode requires confirmation")
+        yield  # pragma: no cover - makes this an async generator
+
+    fake_driver = MagicMock()
+    fake_driver.run_turn = _raising_run_turn
+    fake_driver.transcript = None
+
+    import jarn.headless as headless_mod
+
+    async def _noop(self):
+        pass
+
+    monkeypatch.setattr(headless_mod.Controller, "ensure_runtime", _noop)
+    monkeypatch.setattr(
+        headless_mod.Controller, "make_driver", lambda self, a: fake_driver
+    )
+    monkeypatch.setattr(headless_mod.Controller, "validate", lambda self: (True, "ready"))
+    monkeypatch.setattr(headless_mod.Controller, "enrich_turn_input", lambda self, t: t)
+    monkeypatch.setattr(headless_mod.Controller, "aclose", _noop)
+
+
+def test_failure_envelope_carries_the_trust_locus(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """project_trusted / permission_mode ride on failures, not only successes.
+
+    The untrusted floor clamps an explicit --permission-mode down to plan, and
+    that clamp is a leading cause of a refusal. Without these fields automation
+    cannot tell a trust downgrade from any other refusal — the exact distinction
+    they were added to expose.
+    """
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _stub_refusing_controller(monkeypatch)
+
+    code = run_headless(
+        "risky",
+        base_config,
+        tmp_path,
+        project_trusted=False,
+        output_format="stream-json",
+    )
+
+    assert code == EXIT_REFUSED
+    error = _parse_ndjson(capsys.readouterr().out)[-1]["error"]
+    assert error["kind"] == "refusal"
+    assert error["project_trusted"] is False
+    assert error["permission_mode"] == base_config.permission_mode.value
+
+
+def test_untrusted_refusal_hint_names_the_real_remedy(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """Advising --permission-mode on an untrusted project is useless advice.
+
+    The untrusted floor discards the explicit mode, so the operator may well have
+    passed it already; `jarn trust .` is what actually lifts the clamp.
+    """
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _stub_refusing_controller(monkeypatch)
+
+    run_headless(
+        "risky", base_config, tmp_path, project_trusted=False, output_format="text"
+    )
+
+    err = capsys.readouterr().err
+    assert "jarn trust ." in err
+    assert "--permission-mode auto-edit or yolo" not in err
+
+
+@pytest.mark.parametrize("output_format", ["json", "stream-json"])
+def test_pre_run_failure_still_emits_a_terminal_record(capsys, output_format):
+    """A guard that fires before the agent starts still owes the wire its record.
+
+    These paths used to `return 1` after a bare stderr line, leaving stream-json
+    with zero bytes on stdout — so a consumer written against the documented
+    contract raises on the empty parse instead of reading a `run_error`.
+    """
+    from jarn import cli as cli_mod
+
+    code = cli_mod._cmd_headless(prompt_arg="", output_format=output_format)
+
+    assert code == EXIT_ERROR
+    out = capsys.readouterr().out
+    if output_format == "stream-json":
+        record = _parse_ndjson(out)[-1]
+        assert record["type"] == "run_error"
+        error = record["error"]
+    else:
+        error = json.loads(out)["error"]
+    assert error["kind"] == "usage"
+    assert "prompt is empty" in error["message"]

@@ -400,6 +400,21 @@ def _cmd_headless(
     """
     import sys
 
+    def _fail(kind: str, message: str) -> int:
+        """Emit a pre-run failure in the caller's output format.
+
+        A failure before the agent starts still owes the wire its terminal
+        record. A bare ``return 1`` leaves ``--output-format stream-json`` with
+        zero bytes on stdout and ``--json`` with no envelope, so a consumer
+        written against the documented contract hangs or raises on an empty
+        parse instead of reading a ``run_error``. Text output is unchanged.
+        """
+        from jarn.headless import HeadlessFailure, _emit_headless_failure
+
+        return _emit_headless_failure(
+            HeadlessFailure(kind, message), output_format=output_format
+        )
+
     # Resolve working directory (used as the project root).
     root = Path(cwd_override).expanduser().resolve() if cwd_override else Path.cwd()
 
@@ -408,15 +423,13 @@ def _cmd_headless(
         try:
             prompt = sys.stdin.read()
         except (EOFError, KeyboardInterrupt):
-            print("error: could not read prompt from stdin", file=sys.stderr)
-            return 1
+            return _fail("usage", "could not read prompt from stdin")
     else:
         prompt = prompt_arg
 
     prompt = prompt.strip()
     if not prompt and not resume_session:
-        print("error: prompt is empty", file=sys.stderr)
-        return 1
+        return _fail("usage", "prompt is empty")
 
     from jarn.config import paths
     from jarn.config.loader import ConfigError, load_config
@@ -424,11 +437,7 @@ def _cmd_headless(
     from jarn.observability import configure_tracing, setup_logging
 
     if not paths.global_config_path().is_file():
-        print(
-            "error: no configuration found — run `jarn setup` first.",
-            file=sys.stderr,
-        )
-        return 1
+        return _fail("error", "no configuration found — run `jarn setup` first.")
 
     # Use the same trust logic as the interactive launch. The project tier is
     # read once and passed forward so the fingerprinted content is exactly what
@@ -442,8 +451,7 @@ def _cmd_headless(
     else:
         trusted, project_raw, trust_err = _resolve_project_trust(root)
         if trust_err is not None:
-            print(f"error: {trust_err}", file=sys.stderr)
-            return 1
+            return _fail("error", str(trust_err))
         cfg = load_config(
             project_root=root, project_trusted=trusted, project_raw=project_raw
         )
@@ -454,8 +462,7 @@ def _cmd_headless(
     # root that isn't there). Same validation as the interactive launch.
     extra_roots, add_dir_err = _validate_add_dirs(add_dirs)
     if add_dir_err is not None:
-        print(f"error: {add_dir_err}", file=sys.stderr)
-        return 1
+        return _fail("usage", str(add_dir_err))
 
     # T-3-3 (item G): in -p mode the diagnostics NOTICE is dropped, but ruff/pyright
     # would still spend up to 30s per edit-turn. Gate the whole feature off so a
@@ -483,8 +490,7 @@ def _cmd_headless(
             cli_permission_mode=permission_mode_override,
         )
     except ConfigError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        return _fail("usage", str(exc))
 
     # Warn about yolo only when it actually survives the untrusted clamp, so an
     # untrusted run (pinned to plan) is never mislabelled as "no approval prompts".

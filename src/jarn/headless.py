@@ -516,10 +516,20 @@ def run_headless(
     fmt = output_format if output_format is not None else ("json" if as_json else "text")
     streaming = fmt == "stream-json"
 
-    refusal_hint = (
-        "hint: pass --permission-mode auto-edit or yolo to allow unattended tool use "
-        "(at your own risk)."
-    )
+    if project_trusted:
+        refusal_hint = (
+            "hint: pass --permission-mode auto-edit or yolo to allow unattended tool use "
+            "(at your own risk)."
+        )
+    else:
+        # Suggesting --permission-mode here would be useless advice: on an
+        # untrusted project the untrusted floor clamps an explicit mode back down,
+        # so the operator may well have passed it already. Name the actual remedy.
+        refusal_hint = (
+            "hint: this project is untrusted, so --permission-mode is clamped to plan. "
+            "Run `jarn trust .` to lift the clamp, or --ignore-project-config to run "
+            "without the project's config at all."
+        )
     try:
         result = asyncio.run(
             _run_headless(
@@ -536,6 +546,13 @@ def run_headless(
         )
     except Exception as exc:  # noqa: BLE001
         failure = _classify_exception(exc)
+        # The trust locus travels with failures too, not just successes. The
+        # untrusted floor silently clamps an explicit --permission-mode down to
+        # plan, and that clamp is a leading cause of the refusal below — without
+        # these fields automation cannot tell "I was downgraded" from any other
+        # refusal, which is the exact distinction they were added to expose.
+        failure.details.setdefault("project_trusted", project_trusted)
+        failure.details.setdefault("permission_mode", config.permission_mode.value)
         hint = refusal_hint if failure.kind == "refusal" else None
         return _emit_headless_failure(failure, output_format=fmt, hint=hint)
 

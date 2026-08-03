@@ -187,14 +187,44 @@ test(
       chmodSync(binaryPath, 0o755)
 
       launcherProcess = spawn(process.execPath, [launcherPath, pidPath], {
-        stdio: 'ignore',
+        stdio: ['ignore', 'ignore', 'pipe'],
       })
-      await waitFor(() => existsSync(pidPath))
-      childPid = Number(readFileSync(pidPath, 'utf8'))
+      // Keep the launcher's stderr: with stdio 'ignore' every genuine failure
+      // here presented as the same opaque waitFor timeout.
+      let launcherStderr = ''
+      launcherProcess.stderr.setEncoding('utf8')
+      launcherProcess.stderr.on('data', (chunk) => {
+        launcherStderr += chunk
+      })
+
+      // Wait for content, not for the file. writeFileSync is not atomic, so
+      // existsSync() goes true at open(O_CREAT) — before the write lands. The
+      // empty read then yields Number('') === 0, and kill(0, 0) signals our own
+      // process group rather than the child, so it never throws ESRCH and the
+      // liveness check below waits out its full timeout on a passing launcher.
+      await waitFor(() => {
+        try {
+          return readFileSync(pidPath, 'utf8').trim().length > 0
+        } catch {
+          return false
+        }
+      })
+      childPid = Number(readFileSync(pidPath, 'utf8').trim())
+      assert.ok(
+        Number.isInteger(childPid) && childPid > 0,
+        `child pid must be a real pid, got ${JSON.stringify(childPid)}${
+          launcherStderr ? `\nlauncher stderr:\n${launcherStderr}` : ''
+        }`
+      )
 
       launcherProcess.kill('SIGTERM')
       const [code, signal] = await once(launcherProcess, 'exit')
-      assert.ok(signal === 'SIGTERM' || code === 143)
+      assert.ok(
+        signal === 'SIGTERM' || code === 143,
+        `launcher should exit on SIGTERM, got code=${code} signal=${signal}${
+          launcherStderr ? `\nlauncher stderr:\n${launcherStderr}` : ''
+        }`
+      )
 
       await waitFor(() => {
         try {
