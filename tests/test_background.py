@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
+import signal
+import subprocess
+import sys
 import time
 from unittest.mock import patch
 
+import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
 from jarn.agent.background import ProcessManager, build_background_tools
@@ -68,6 +74,59 @@ def test_shutdown_terminates_running(tmp_path):
     mgr.shutdown()
     st = _wait(mgr, proc.id)
     assert st["running"] is False
+
+
+@pytest.mark.skipif(os.name != "posix", reason="SIGTERM process-group semantics are POSIX-only")
+def test_sigterm_guard_terminates_background_process(tmp_path):
+    """The CLI SIGTERM guard reaps a detached background process before exit."""
+    pid_file = tmp_path / "child.pid"
+    parent_code = """
+import signal
+import sys
+from pathlib import Path
+from jarn.agent.background import manager
+from jarn.cli import _shutdown_background_on_sigterm
+
+with _shutdown_background_on_sigterm():
+    proc = manager().start("sleep 30", cwd=sys.argv[2])
+    Path(sys.argv[1]).write_text(str(proc.popen.pid), encoding="utf-8")
+    signal.pause()
+"""
+    parent = subprocess.Popen([  # noqa: S603 - fixed interpreter and test script
+        sys.executable,
+        "-c",
+        parent_code,
+        str(pid_file),
+        str(tmp_path),
+    ])
+    child_pid: int | None = None
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not pid_file.exists():
+            assert parent.poll() is None, "fixture parent exited before starting its child"
+            time.sleep(0.05)
+        assert pid_file.exists(), "fixture parent did not report its child pid"
+        child_pid = int(pid_file.read_text(encoding="utf-8"))
+
+        parent.send_signal(signal.SIGTERM)
+        assert parent.wait(timeout=10) == 128 + signal.SIGTERM
+
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(child_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("background process group survived the parent's SIGTERM cleanup")
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+            parent.wait(timeout=5)
+        if child_pid is not None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(child_pid, signal.SIGKILL)
 
 
 # -- tools -------------------------------------------------------------------

@@ -13,7 +13,10 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import signal
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -248,7 +251,36 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+@contextlib.contextmanager
+def _shutdown_background_on_sigterm() -> Iterator[None]:
+    """Clean up detached jobs before the default SIGTERM process exit."""
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def _handle_sigterm(signum, _frame) -> None:
+        from jarn.agent.background import shutdown
+
+        shutdown()
+        raise SystemExit(128 + signum)
+
+    try:
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+    except (OSError, ValueError):
+        # Signal handlers can only be installed from the main thread.
+        yield
+        return
+    try:
+        yield
+    finally:
+        with contextlib.suppress(OSError, ValueError):
+            signal.signal(signal.SIGTERM, previous)
+
+
 def main(argv: list[str] | None = None) -> int:
+    with _shutdown_background_on_sigterm():
+        return _main(argv)
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = build_parser()
 
     # --profile was removed in v0.6.0 (deprecated since v0.5.0). Without this
