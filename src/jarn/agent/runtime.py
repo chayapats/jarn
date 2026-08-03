@@ -222,7 +222,7 @@ def _general_purpose_subagent_spec(model: Any) -> dict[str, Any]:
     return {**GENERAL_PURPOSE_SUBAGENT, "model": model}
 
 
-def _read_filter_middleware(engine: PermissionEngine) -> Any:
+def _read_filter_middleware(engine: PermissionEngine, *, multimodal: bool = True) -> Any:
     """A result-filter middleware bound to the session's AUTHORITATIVE permission
     engine — the controller's request-scoped instance that gates tool calls and
     receives runtime ``deny_session``/``remember`` (see ``interrupts.py``).
@@ -239,10 +239,12 @@ def _read_filter_middleware(engine: PermissionEngine) -> Any:
     """
     from jarn.agent.read_filter import ReadResultFilterMiddleware
 
-    return ReadResultFilterMiddleware(engine)
+    return ReadResultFilterMiddleware(engine, multimodal=multimodal)
 
 
-def _attach_read_filter(spec: dict[str, Any], engine: PermissionEngine) -> dict[str, Any]:
+def _attach_read_filter(
+    spec: dict[str, Any], engine: PermissionEngine, *, multimodal: bool = True
+) -> dict[str, Any]:
     """Prepend jarn's result-filter middleware to a declarative subagent ``spec``.
 
     Closes the second-eye #1 residual for subagents: pre-exec gating sees only a
@@ -264,7 +266,7 @@ def _attach_read_filter(spec: dict[str, Any], engine: PermissionEngine) -> dict[
     if "graph_id" in spec or "runnable" in spec:
         return spec
     spec["middleware"] = [
-        _read_filter_middleware(engine),
+        _read_filter_middleware(engine, multimodal=multimodal),
         *list(spec.get("middleware") or []),
     ]
     return spec
@@ -642,7 +644,11 @@ def build_runtime(
     # declarative spec also carries the result-filter middleware so a subagent's
     # broad grep is redacted just like the main agent's (second-eye #1 residual).
     subagent_specs: list[Any] = [
-        _attach_read_filter(s.to_spec(factory, available_tools=tools), read_filter_engine)
+        _attach_read_filter(
+            s.to_spec(factory, available_tools=tools),
+            read_filter_engine,
+            multimodal=config.execution.multimodal,
+        )
         for s in subagents.values()
     ]
     subagent_specs += _async_subagent_specs(config)
@@ -691,7 +697,9 @@ def build_runtime(
                 )
         subagent_specs.append(
             _attach_read_filter(
-                _general_purpose_subagent_spec(gp_model), read_filter_engine
+                _general_purpose_subagent_spec(gp_model),
+                read_filter_engine,
+                multimodal=config.execution.multimodal,
             )
         )
 
@@ -847,7 +855,9 @@ def build_runtime(
     # compiled sub-graphs — so the whole in-process subagent surface honors the same
     # session denies (second-eye #1 residual closed). Remote async subagents run out
     # of process → out of scope.
-    read_filter_mw = _read_filter_middleware(read_filter_engine)
+    read_filter_mw = _read_filter_middleware(
+        read_filter_engine, multimodal=config.execution.multimodal
+    )
 
     agent = create_deep_agent(
         model=model,

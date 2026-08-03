@@ -41,6 +41,8 @@ from typing import TYPE_CHECKING, Any
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
 
+from jarn.agent.files import is_multimodal_path
+
 if TYPE_CHECKING:
     from langgraph.prebuilt.tool_node import ToolCallRequest
 
@@ -76,8 +78,9 @@ class ReadResultFilterMiddleware(AgentMiddleware):
     defense-in-depth (it parses grep display text), not a hard boundary.
     """
 
-    def __init__(self, engine: PermissionEngine) -> None:
+    def __init__(self, engine: PermissionEngine, *, multimodal: bool = True) -> None:
         self._engine = engine
+        self._multimodal = multimodal
         # AgentMiddleware.tools is read by create_agent; a wrap-only middleware
         # registers none (mirrors langchain's own ToolRetryMiddleware).
         self.tools = []
@@ -90,6 +93,9 @@ class ReadResultFilterMiddleware(AgentMiddleware):
         handler: Callable[[ToolCallRequest], ToolMessage | Any],
     ) -> ToolMessage | Any:
         """Sync path (``invoke``/``stream``)."""
+        denied = self._disabled_multimodal_read(request)
+        if denied is not None:
+            return denied
         return self._filter(request, handler(request))
 
     async def awrap_tool_call(
@@ -98,9 +104,25 @@ class ReadResultFilterMiddleware(AgentMiddleware):
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Any]],
     ) -> ToolMessage | Any:
         """Async path (``ainvoke``/``astream`` — jarn's production driver)."""
+        denied = self._disabled_multimodal_read(request)
+        if denied is not None:
+            return denied
         return self._filter(request, await handler(request))
 
     # -- filtering (pure/sync — shared by both paths) -----------------------
+
+    def _disabled_multimodal_read(self, request: ToolCallRequest) -> ToolMessage | None:
+        """Reject known media paths before the backend reads their bytes."""
+        if self._multimodal:
+            return None
+        call = getattr(request, "tool_call", None) or {}
+        if call.get("name") != "read_file":
+            return None
+        args = call.get("args") or {}
+        path = str(args.get("file_path") or "")
+        if not path or not is_multimodal_path(path):
+            return None
+        return _multimodal_disabled_message(call, path)
 
     def _filter(self, request: ToolCallRequest, result: Any) -> Any:
         # Only content-returning read tools that produce a plain-text ToolMessage
@@ -142,7 +164,32 @@ class ReadResultFilterMiddleware(AgentMiddleware):
                 tool_call_id=call.get("id") or result.tool_call_id,
                 status="error",
             )
+        # Extensionless/unknown binary files cannot be identified before the
+        # backend read. DeepAgents represents them as non-text content blocks;
+        # keep those blocks away from the model when multimodal reads are off.
+        if (
+            not self._multimodal
+            and isinstance(result.content, list)
+            and any(
+                isinstance(block, dict) and block.get("type") != "text" for block in result.content
+            )
+        ):
+            return _multimodal_disabled_message(call, path)
         return result
+
+
+def _multimodal_disabled_message(call: dict[str, Any], path: str) -> ToolMessage:
+    """Build the stable error returned when ``execution.multimodal`` is off."""
+    target = path or "this file"
+    return ToolMessage(
+        content=(
+            f"Error: multimodal read disabled for {target}; "
+            "set execution.multimodal to true to read media files"
+        ),
+        name="read_file",
+        tool_call_id=call.get("id"),
+        status="error",
+    )
 
 
 #: A Windows OS-native absolute path prefix: a drive-letter root (``C:\`` or ``C:/``)

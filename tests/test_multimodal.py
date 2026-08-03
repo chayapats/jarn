@@ -8,9 +8,11 @@ from io import StringIO
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.messages import ToolMessage
 from rich.console import Console
 
 from jarn.agent.files import is_multimodal_path, modality_of
+from jarn.agent.read_filter import ReadResultFilterMiddleware
 from jarn.agent.session import Event, EventKind, SessionDriver
 from jarn.config.schema import (
     Config,
@@ -40,6 +42,100 @@ def test_modality_detection():
 def test_is_multimodal():
     assert is_multimodal_path("photo.JPG")
     assert not is_multimodal_path("script.py")
+
+
+def test_multimodal_off_rejects_media_before_read():
+    """execution.multimodal=false must keep read_file from loading known media."""
+    middleware = ReadResultFilterMiddleware(PermissionEngine(), multimodal=False)
+    request = SimpleNamespace(
+        tool_call={
+            "name": "read_file",
+            "args": {"file_path": "/project/recording.mp3"},
+            "id": "read-1",
+        }
+    )
+    called = False
+
+    def handler(_request):
+        nonlocal called
+        called = True
+        raise AssertionError("media must be rejected before backend I/O")
+
+    result = middleware.wrap_tool_call(request, handler)
+
+    assert called is False
+    assert result.status == "error"
+    assert "execution.multimodal" in result.content
+
+
+def test_multimodal_off_preserves_text_reads():
+    middleware = ReadResultFilterMiddleware(PermissionEngine(), multimodal=False)
+    request = SimpleNamespace(
+        tool_call={
+            "name": "read_file",
+            "args": {"file_path": "/project/notes.txt"},
+            "id": "read-2",
+        }
+    )
+    original = ToolMessage(content="   1: hello", name="read_file", tool_call_id="read-2")
+
+    assert middleware.wrap_tool_call(request, lambda _request: original) is original
+
+
+def test_multimodal_off_filters_unknown_binary_result():
+    """Backend-declared binary data is blocked even without a known extension."""
+    middleware = ReadResultFilterMiddleware(PermissionEngine(), multimodal=False)
+    request = SimpleNamespace(
+        tool_call={
+            "name": "read_file",
+            "args": {"file_path": "/project/blob"},
+            "id": "read-3",
+        }
+    )
+    binary = ToolMessage(
+        content_blocks=[
+            {
+                "type": "file",
+                "base64": "YWJj",
+                "mime_type": "application/octet-stream",
+            }
+        ],
+        name="read_file",
+        tool_call_id="read-3",
+    )
+
+    result = middleware.wrap_tool_call(request, lambda _request: binary)
+
+    assert result.status == "error"
+    assert "YWJj" not in result.content
+
+
+def test_build_runtime_wires_multimodal_off(base_config, tmp_path, monkeypatch):
+    """The config switch reaches both the main and delegated agent stacks."""
+    from unittest.mock import MagicMock
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from jarn.agent import builder
+
+    captured = {}
+    model = GenericFakeChatModel(messages=iter([]))
+    monkeypatch.setattr("jarn.providers.models.ModelFactory.build", lambda self, ref: model)
+    monkeypatch.setattr(
+        "deepagents.create_deep_agent",
+        lambda **kwargs: captured.update(kwargs) or MagicMock(),
+    )
+    base_config.execution.multimodal = False
+
+    builder.build_runtime(base_config, project_root=tmp_path)
+
+    main_filter = captured["middleware"][0]
+    general_purpose = next(
+        spec for spec in captured["subagents"] if spec["name"] == "general-purpose"
+    )
+    delegated_filter = general_purpose["middleware"][0]
+    assert main_filter._multimodal is False
+    assert delegated_filter._multimodal is False
 
 
 def test_diff_skips_binary():
