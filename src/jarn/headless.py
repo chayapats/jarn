@@ -61,6 +61,13 @@ _TIMEOUT_MSG_HINTS = (
     "time out",
 )
 
+_UNSERIALIZABLE = "<unserializable>"
+
+
+def _json_dumps(value: Any) -> str:
+    """Serialize headless output without exposing non-JSON object representations."""
+    return json.dumps(value, default=lambda _value: _UNSERIALIZABLE)
+
 
 @dataclass(slots=True)
 class HeadlessResult:
@@ -169,7 +176,7 @@ def _emit_failure(
 ) -> int:
     if as_json:
         error = {"kind": failure.kind, "message": failure.message, **failure.details}
-        print(json.dumps({"error": error}))
+        print(_json_dumps({"error": error}))
     else:
         print(f"error: {failure.message}", file=sys.stderr)
         if hint:
@@ -199,7 +206,7 @@ def _event_to_json(event: Event) -> dict[str, Any]:
     new ``EventKind`` or a new ``Event`` attribute streams through untouched
     (nothing to keep in sync). Mirrors the one-event-per-line NDJSON of
     ``claude -p --output-format stream-json``. Non-JSON values inside ``data`` are
-    rendered by the emitter's ``default=str`` fallback.
+    replaced with a non-sensitive sentinel by the emitter.
     """
     out: dict[str, Any] = {}
     for f in fields(event):
@@ -214,10 +221,10 @@ def _event_to_json(event: Event) -> dict[str, Any]:
 def _emit_ndjson(obj: dict[str, Any]) -> None:
     """Write one NDJSON line to stdout and flush so the stream is live.
 
-    ``default=str`` keeps a rogue non-serialisable value in ``Event.data`` from
-    aborting the whole stream — it is rendered as its ``str()`` instead.
+    A rogue non-serialisable value is replaced with a fixed sentinel so it cannot
+    abort the stream or expose its potentially sensitive string representation.
     """
-    sys.stdout.write(json.dumps(obj, default=str) + "\n")
+    sys.stdout.write(_json_dumps(obj) + "\n")
     sys.stdout.flush()
 
 
@@ -541,11 +548,11 @@ def run_headless(
             terminal["transcript_path"] = result.transcript_path
         _emit_ndjson(terminal)
     elif fmt == "json":
-        print(json.dumps(_result_payload(result)))
+        print(_json_dumps(_result_payload(result)))
     else:
         if isinstance(result.result, str):
             print(result.result, end="" if result.result.endswith("\n") else "\n")
         else:
-            print(json.dumps(result.result))
+            print(_json_dumps(result.result))
 
     return EXIT_SUCCESS

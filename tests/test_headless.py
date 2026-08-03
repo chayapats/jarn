@@ -1150,6 +1150,36 @@ def test_stream_json_emits_events_then_result(
     assert isinstance(terminal["thread_id"], str) and terminal["thread_id"]
 
 
+@pytest.mark.parametrize("output_format", ["json", "stream-json"])
+def test_json_formats_replace_non_serializable_values_without_leaking_repr(
+    tmp_path, monkeypatch, base_config, capsys, output_format
+):
+    """Both machine formats stay valid without stringifying a sensitive object."""
+    import jarn.headless as headless_mod
+
+    exposed = "sk-live-abc123"
+
+    class Secret:
+        def __str__(self):
+            return f"<Secret token={exposed}>"
+
+    async def _fake_run_headless(*args, **kwargs):
+        return HeadlessResult(
+            result={"credential": Secret()},
+            thread_id="thread-with-secret-result",
+        )
+
+    monkeypatch.setattr(headless_mod, "_run_headless", _fake_run_headless)
+
+    code = run_headless("q", base_config, tmp_path, output_format=output_format)
+
+    assert code == EXIT_SUCCESS
+    output = capsys.readouterr().out
+    assert exposed not in output
+    payload = _parse_ndjson(output)[-1] if output_format == "stream-json" else json.loads(output)
+    assert payload["result"]["credential"] == "<unserializable>"
+
+
 def test_stream_json_includes_transcript_path_when_available(
     tmp_path, monkeypatch, base_config, capsys
 ):
