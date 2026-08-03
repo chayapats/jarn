@@ -513,3 +513,57 @@ def test_gp_subagent_no_summarization_when_auto_compact_off(tmp_path):
     _, main_mw, _main_fake, _summ_fake = _real_build(cfg, tmp_path)
 
     assert _summarization_mws(_gp_subagent_middleware(main_mw)) == []
+
+
+def test_concurrent_auto_compact_builds_keep_independent_profiles(tmp_path):
+    """An off build cannot clear an on build paused before profile materialization.
+
+    This deterministically widens the production race from #48: build A binds an
+    enabled builder and pauses inside ``create_deep_agent``; build B for the same
+    model materializes with auto-compaction off; then A materializes. A shared
+    process-global slot made A observe B's empty setting. The ContextVar binding
+    keeps both assemblies isolated.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from deepagents.profiles.harness.harness_profiles import (
+        _harness_profile_for_model,
+    )
+
+    from jarn.agent import builder
+
+    main_fake, summ_fake = _fake_models()
+    on_ready = threading.Event()
+    off_done = threading.Event()
+    main_thread = threading.current_thread()
+    captured: dict[str, list] = {}
+
+    def _build_model(self, ref):
+        return summ_fake if "summ" in ref else main_fake
+
+    def _create_deep_agent(**kwargs):
+        profile = _harness_profile_for_model(kwargs["model"], None)
+        if threading.current_thread() is main_thread:
+            captured["off"] = profile.materialize_extra_middleware()
+            off_done.set()
+        else:
+            on_ready.set()
+            assert off_done.wait(5), "off build did not reach profile materialization"
+            captured["on"] = profile.materialize_extra_middleware()
+        return object()
+
+    cfg_on = _summ_cfg(auto_compact=True, compact_at_pct=30)
+    cfg_off = _summ_cfg(auto_compact=False, compact_at_pct=90)
+    with patch("jarn.providers.models.ModelFactory.build", _build_model), patch(
+        "deepagents.create_deep_agent", side_effect=_create_deep_agent
+    ), ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(builder.build_runtime, cfg_on, project_root=tmp_path)
+        assert on_ready.wait(5), "on build did not reach profile materialization"
+        builder.build_runtime(cfg_off, project_root=tmp_path)
+        future.result(timeout=5)
+
+    assert _summarization_mws(captured["off"]) == []
+    on_mw = _summarization_mws(captured["on"])
+    assert len(on_mw) == 1
+    assert on_mw[0].model is summ_fake
