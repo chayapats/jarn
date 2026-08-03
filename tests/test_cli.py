@@ -504,6 +504,62 @@ def test_add_dir_flag_rejects_missing_dir(tmp_path, monkeypatch, capsys):
     assert "--add-dir" in capsys.readouterr().err
 
 
+def test_interactive_ignore_project_config_skips_trust_prompt(
+    tmp_path, monkeypatch
+):
+    """The global opt-out also applies to the interactive launch path."""
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+
+    gp = _make_headless_config(tmp_path)
+    root = tmp_path / "proj"
+    root.mkdir()
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: root)
+    monkeypatch.setattr(
+        cli_mod,
+        "_resolve_project_trust",
+        lambda *a, **k: pytest.fail("trust prompt must be skipped"),
+    )
+
+    captured: dict = {}
+
+    def _fake_run_inline(config, project_root, **kwargs):
+        captured["root"] = project_root
+        captured["trusted"] = kwargs["project_trusted"]
+        return 0
+
+    import jarn.repl as repl_mod
+
+    monkeypatch.setattr(repl_mod, "run_inline", _fake_run_inline)
+
+    assert main(["--ignore-project-config"]) == 0
+    assert captured == {"root": root, "trusted": True}
+
+
+def test_non_tty_trust_prompt_fails_closed_without_reading_stdin(
+    tmp_path, monkeypatch, capsys
+):
+    """Automation never blocks on input and the trust banner stays off stdout."""
+    from jarn import cli as cli_mod
+
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda *a, **k: pytest.fail("input() must not run without a TTY"),
+    )
+
+    granted = cli_mod._prompt_project_trust(
+        tmp_path,
+        {"hooks": [{"event": "session_start", "command": "echo nope"}]},
+        "untrusted",
+    )
+
+    captured = capsys.readouterr()
+    assert granted is False
+    assert captured.out == ""
+    assert "--ignore-project-config" in captured.err
+
+
 # ---------------------------------------------------------------------------
 # T-4-3: jarn bug — redacted report + prefilled GitHub issue
 # ---------------------------------------------------------------------------

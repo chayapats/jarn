@@ -24,7 +24,7 @@ Run J.A.R.N. in CI headless mode (`-p`) from any GitHub Actions workflow.
 The action calls `jarn` with `--json`, which emits a JSON envelope:
 
 ```json
-{"result": "…", "tokens": {…}, "cost": 0.0042, "turns": 1, "tool_calls": 7, "verification": {"cmd": "pytest -q", "ok": true}}
+{"result": "…", "tokens": {…}, "cost": 0.0042, "turns": 1, "tool_calls": 7, "verification": {"cmd": "pytest -q", "ok": true}, "project_trusted": true, "permission_mode": "auto-edit"}
 ```
 
 `result` and `turns` are forwarded as-is; `cost` is exposed as `cost_usd`. The

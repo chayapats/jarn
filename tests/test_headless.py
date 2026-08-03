@@ -207,6 +207,30 @@ def test_run_headless_json_output_has_result_key(tmp_path, monkeypatch, base_con
     assert "tokens" in data
     assert "cost" in data
     assert "turns" in data
+    assert data["project_trusted"] is True
+    assert data["permission_mode"] == "ask"
+
+
+def test_json_output_records_untrusted_plan_clamp(
+    tmp_path, monkeypatch, base_config, capsys
+):
+    """Automation can distinguish an untrusted, clamped run in its envelope."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    base_config.permission_mode = PermissionMode.PLAN
+    _stub_controller(monkeypatch, text="I can only propose a plan.")
+
+    code = run_headless(
+        "do something",
+        base_config,
+        tmp_path,
+        project_trusted=False,
+        output_format="json",
+    )
+
+    assert code == EXIT_SUCCESS
+    data = json.loads(capsys.readouterr().out)
+    assert data["project_trusted"] is False
+    assert data["permission_mode"] == "plan"
 
 
 # ---------------------------------------------------------------------------
@@ -939,8 +963,10 @@ def test_no_args_calls_launch_not_headless(tmp_path, monkeypatch):
     def _fake_launch(
         *, resume: bool = False, profile_override: str | None = None,
         add_dirs: list | None = None,
+        ignore_project_config: bool = False,
     ) -> int:
         called.append("launch")
+        assert ignore_project_config is False
         return 0
 
     def _fake_keyfix() -> None:
@@ -1110,7 +1136,15 @@ def test_stream_json_emits_events_then_result(
     # Terminal line carries the full envelope + thread_id (the CI-resume gap fix).
     terminal = results[0]
     assert terminal["result"] == "streamed answer"
-    for key in ("tokens", "cost", "turns", "tool_calls", "verification"):
+    for key in (
+        "tokens",
+        "cost",
+        "turns",
+        "tool_calls",
+        "verification",
+        "project_trusted",
+        "permission_mode",
+    ):
         assert key in terminal
     assert isinstance(terminal["thread_id"], str) and terminal["thread_id"]
 
@@ -1145,10 +1179,10 @@ def test_event_to_json_is_generic(base_config):
     assert out["data"] == {"future_key": 1}
 
 
-def test_stream_json_error_emits_error_line(
+def test_stream_json_failure_emits_run_error_line(
     tmp_path, monkeypatch, base_config, capsys
 ):
-    """stream-json error path: emits a terminal error line + the refusal exit code."""
+    """A run failure has its own terminal record type and refusal exit code."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
 
     async def _raising_run_turn(prompt, *, resume: bool = False):
@@ -1177,7 +1211,7 @@ def test_stream_json_error_emits_error_line(
 
     assert code == EXIT_REFUSED
     records = _parse_ndjson(capsys.readouterr().out)
-    assert records[-1]["type"] == "error"
+    assert records[-1]["type"] == "run_error"
     assert records[-1]["error"]["kind"] == "refusal"
     assert "confirmation" in records[-1]["error"]["message"]
 
@@ -1185,8 +1219,7 @@ def test_stream_json_error_emits_error_line(
 def test_stream_json_error_event_streams_then_terminal(
     tmp_path, monkeypatch, base_config, capsys
 ):
-    """An ERROR event streams as an event line AND closes with a terminal error
-    line carrying the correct (timeout) exit code."""
+    """An ERROR event and terminal run failure have distinct record types."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     from jarn.agent.session import Event
 
@@ -1198,8 +1231,11 @@ def test_stream_json_error_event_streams_then_terminal(
     code = run_headless("x", base_config, tmp_path, output_format="stream-json")
     assert code == EXIT_TIMEOUT
     records = _parse_ndjson(capsys.readouterr().out)
-    assert any(r.get("type") == "error" for r in records)
-    assert records[-1]["type"] == "error"
+    event = next(r for r in records if r.get("type") == "error")
+    assert event["text"] == "request timed out after 30s"
+    assert "error" not in event
+    assert records[-1]["type"] == "run_error"
+    assert records[-1]["error"]["kind"] == "timeout"
 
 
 def test_output_format_json_matches_as_json(

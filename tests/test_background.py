@@ -262,6 +262,39 @@ def test_lifetime_kill_on_sweep(tmp_path):
     assert st["running"] is False
 
 
+def test_lifetime_kill_happens_without_api_sweep(tmp_path):
+    """The monitor enforces max_lifetime_secs without list/status/start calls."""
+    mgr = ProcessManager()
+    mgr.configure(max_lifetime_secs=0.1)
+    proc = mgr.start("sleep 30", cwd=str(tmp_path))
+
+    try:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and proc.killed_reason is None:
+            time.sleep(0.05)
+
+        assert proc.killed_reason == "killed: exceeded max_lifetime_secs"
+    finally:
+        mgr.shutdown()
+
+
+def test_monitor_reaps_exited_child_without_api_sweep(tmp_path):
+    """The monitor polls exited children and removes their temporary logs."""
+    mgr = ProcessManager()
+    mgr.configure(max_lifetime_secs=1.0)
+    proc = mgr.start("echo reap-me", cwd=str(tmp_path))
+
+    try:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and proc.popen.returncode is None:
+            time.sleep(0.05)
+
+        assert proc.popen.returncode == 0
+        assert not proc.tmpdir.exists()
+    finally:
+        mgr.shutdown()
+
+
 def test_tmpdir_removed_on_prune(tmp_path):
     """Pruning a finished process removes its per-process temp log directory."""
     mgr = ProcessManager()

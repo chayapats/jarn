@@ -131,8 +131,8 @@ def build_parser() -> argparse.ArgumentParser:
         dest="headless_ignore_project_config",
         action="store_true",
         help=(
-            "With -p: ignore <cwd>/.jarn/config.yaml while still operating on "
-            "the project files (safe for CI on untrusted checkouts)."
+            "Ignore <cwd>/.jarn/config.yaml while still operating on the project "
+            "files (safe for automation on untrusted checkouts)."
         ),
     )
     parser.add_argument(
@@ -337,6 +337,7 @@ def main(argv: list[str] | None = None) -> int:
         resume=args.resume,
         profile_override=preset_override,
         add_dirs=args.add_dir,
+        ignore_project_config=args.headless_ignore_project_config,
     )
 
 
@@ -503,7 +504,19 @@ def _cmd_setup(*, force: bool = False) -> int:
     if result is None:
         print("Setup cancelled.")
         return 1
+    _warm_tokenizer_for_setup()
     return 0
+
+
+def _warm_tokenizer_for_setup() -> None:
+    """Populate tiktoken's persistent cache while network use is expected."""
+    from jarn.memory.tokens import warm_tokenizer_cache
+
+    print("Caching tokenizer data…", end=" ", flush=True)
+    if warm_tokenizer_cache():
+        print("done.")
+    else:
+        print("skipped (unavailable; token estimates will be used).")
 
 
 def _cmd_init(*, force: bool) -> int:
@@ -793,6 +806,7 @@ def _cmd_launch(
     resume: bool = False,
     profile_override: str | None = None,
     add_dirs: list[str] | None = None,
+    ignore_project_config: bool = False,
 ) -> int:
     from jarn.config import paths
     from jarn.config.loader import ConfigError, load_config
@@ -810,22 +824,27 @@ def _cmd_launch(
         if run_setup_tui() is None and not paths.global_config_path().is_file():
             print("Setup cancelled.")
             return 1
+        _warm_tokenizer_for_setup()
 
     root = paths.find_project_root() or Path.cwd()
 
-    # Trust boundary: a project's .jarn/config.yaml can run hooks / spawn MCP
-    # servers / override providers (secret exfil). Don't honour those keys from an
-    # untrusted project until the user explicitly approves them. The project tier
-    # is read once and passed forward so the fingerprinted content is exactly what
-    # gets loaded (no TOCTOU between the trust decision and the load).
-    trusted, project_raw, trust_err = _resolve_project_trust(root)
-    if trust_err is not None:
-        print(f"error: {trust_err}", file=sys.stderr)
-        return 1
+    if ignore_project_config:
+        trusted = True
+        cfg = load_config(project_root=None, project_trusted=True)
+    else:
+        # Trust boundary: a project's .jarn/config.yaml can run hooks / spawn MCP
+        # servers / override providers (secret exfil). Don't honour those keys from
+        # an untrusted project until the user explicitly approves them. The project
+        # tier is read once and passed forward so the fingerprinted content is
+        # exactly what gets loaded (no TOCTOU between the trust decision and load).
+        trusted, project_raw, trust_err = _resolve_project_trust(root)
+        if trust_err is not None:
+            print(f"error: {trust_err}", file=sys.stderr)
+            return 1
 
-    cfg = load_config(
-        project_root=root, project_trusted=trusted, project_raw=project_raw
-    )
+        cfg = load_config(
+            project_root=root, project_trusted=trusted, project_raw=project_raw
+        )
     setup_logging(cfg.observability.log_level)
     configure_tracing(cfg.observability)
 
@@ -904,9 +923,11 @@ def _resolve_project_trust(root: Path) -> tuple[bool, dict[str, Any], str | None
 
 
 def _prompt_project_trust(root: Path, danger: dict, status: str) -> bool:
+    import sys
+
     from rich.console import Console
 
-    console = Console()
+    console = Console(stderr=True)
     console.print(
         f"\n[yellow]⚠ This project's config[/yellow] ([dim]{root}/.jarn/config.yaml[/dim]) "
         "declares settings that can run code or access secrets:"
@@ -930,6 +951,13 @@ def _prompt_project_trust(root: Path, danger: dict, status: str) -> bool:
         "[dim]Trust only repositories you would run code from. If you decline, "
         "these settings are ignored and the session continues safely.[/dim]"
     )
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print(
+            "Project config was not trusted because no interactive terminal is "
+            "available; use --ignore-project-config to skip it explicitly.",
+            file=sys.stderr,
+        )
+        return False
     try:
         answer = input("Trust this project's config? [y/N]: ").strip().lower()
     except EOFError:

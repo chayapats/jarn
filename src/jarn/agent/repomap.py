@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from jarn.config import paths
+from jarn.memory.tokens import count_tokens
 
 logger = logging.getLogger("jarn.repomap")
 
@@ -67,9 +68,6 @@ _NOISE_DIRS: frozenset[str] = frozenset({
 
 #: Soft file-size cap — skip files over this (avoids reading minified bundles).
 _MAX_FILE_BYTES: int = 512_000
-
-#: Token estimation fallback: 4 chars ≈ 1 token.
-_CHARS_PER_TOKEN: int = 4
 
 # ---------------------------------------------------------------------------
 # Regex patterns for non-Python languages (JS/TS/Go/Rust)
@@ -316,14 +314,8 @@ def _rank(entries: list[FileEntry], root: Path, focus: str = "") -> list[FileEnt
 # ---------------------------------------------------------------------------
 
 def _count_tokens(text: str) -> int:
-    """Count tokens in *text*, falling back to len/4 if tiktoken fails."""
-    try:
-        import tiktoken  # already a project dependency
-
-        enc = tiktoken.get_encoding("cl100k_base")
-        return len(enc.encode(text))
-    except Exception:  # noqa: BLE001
-        return max(1, len(text) // _CHARS_PER_TOKEN)
+    """Use the shared bounded, process-wide tokenizer loader."""
+    return count_tokens(text)
 
 
 # ---------------------------------------------------------------------------

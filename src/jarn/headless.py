@@ -77,6 +77,10 @@ class HeadlessResult:
     """How many tool invocations the agent made across all turns."""
     verification: dict[str, Any] | None = None
     """Structured final verification outcome, when verification was requested."""
+    project_trusted: bool = True
+    """Whether project-level configuration was trusted for this run."""
+    permission_mode: str = PermissionMode.ASK.value
+    """The effective permission mode after presets, overrides, and trust clamping."""
     thread_id: str = ""
     """The session thread id, so a CI caller can locate/resume this run."""
     transcript_path: str | None = None
@@ -180,6 +184,8 @@ def _result_payload(result: HeadlessResult) -> dict[str, Any]:
         "turns": result.turns,
         "tool_calls": result.tool_calls,
         "verification": result.verification,
+        "project_trusted": result.project_trusted,
+        "permission_mode": result.permission_mode,
     }
 
 
@@ -226,13 +232,13 @@ def _emit_headless_failure(
 ) -> int:
     """Emit a failure in the requested output format and return its exit code.
 
-    * ``stream-json`` — a terminal ``{"type": "error", "error": {...}}`` NDJSON
+    * ``stream-json`` — a terminal ``{"type": "run_error", "error": {...}}`` NDJSON
       line (hint, if any, goes to stderr so stdout stays pure NDJSON).
     * ``json`` / ``text`` — delegates to :func:`_emit_failure` unchanged.
     """
     if output_format == "stream-json":
         error = {"kind": failure.kind, "message": failure.message, **failure.details}
-        _emit_ndjson({"type": "error", "error": error})
+        _emit_ndjson({"type": "run_error", "error": error})
         if hint:
             print(hint, file=sys.stderr)
         return failure.exit_code
@@ -448,6 +454,8 @@ async def _run_headless(
             turns=turns_completed,
             tool_calls=tool_calls,
             verification=verification,
+            project_trusted=project_trusted,
+            permission_mode=config.permission_mode.value,
             thread_id=controller.thread_id,
             transcript_path=transcript_path,
         )

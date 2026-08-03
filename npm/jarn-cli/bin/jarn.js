@@ -6,12 +6,14 @@
 // The real program is a self-contained binary shipped in a per-platform package
 // (jarn-cli-<platform>-<arch>) declared as an optionalDependency of jarn-cli.
 // npm installs only the package whose `os`/`cpu` match the host, so exactly one
-// binary is present. This launcher resolves it and execs it, passing through
-// argv, stdio (the app is a TUI — it must inherit the terminal), and exit code.
+// binary is present. This launcher resolves and spawns it, passing through argv
+// and stdio (the app is a TUI — it must inherit the terminal), forwarding stop
+// signals, and preserving its exit status.
 //
 // No third-party dependencies: this file must run with nothing but Node.
 
-const { spawnSync } = require('node:child_process')
+const { spawn } = require('node:child_process')
+const { constants } = require('node:os')
 
 // host key (`<platform>-<arch>`) → platform package name.
 const PLATFORM_PACKAGES = {
@@ -57,14 +59,15 @@ function missingBinaryMessage(pkg) {
   )
 }
 
-// Pure entry point: returns the process exit code instead of calling exit, so it
-// can be unit-tested. `opts` lets tests inject platform/arch/resolve/spawn/stderr.
-function run(argv, opts) {
+// Async entry point: resolves to the process exit code instead of calling exit,
+// so it can be unit-tested. `opts` lets tests inject dependencies.
+async function run(argv, opts) {
   const o = opts || {}
   const platform = o.platform || process.platform
   const arch = o.arch || process.arch
-  const spawn = o.spawn || spawnSync
+  const spawnChild = o.spawn || spawn
   const stderr = o.stderr || process.stderr
+  const parent = o.process || process
 
   const { key, pkg, binPath } = resolveBinary(platform, arch, o.resolve)
   if (!pkg) {
@@ -76,18 +79,71 @@ function run(argv, opts) {
     return 1
   }
 
-  const result = spawn(binPath, argv, { stdio: 'inherit' })
-  if (result.error) {
-    stderr.write(`jarn: failed to execute ${binPath}: ${result.error.message}\n`)
+  let child
+  try {
+    child = spawnChild(binPath, argv, { stdio: 'inherit' })
+  } catch (error) {
+    stderr.write(`jarn: failed to execute ${binPath}: ${error.message}\n`)
     return 1
   }
-  if (typeof result.status === 'number') return result.status
-  if (result.signal) return 1
-  return 0
+
+  return new Promise((resolve) => {
+    const forwardedSignals = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT']
+    const forwarders = new Map()
+    let settled = false
+
+    const cleanup = () => {
+      for (const [signal, handler] of forwarders) {
+        parent.removeListener(signal, handler)
+      }
+    }
+
+    const finish = (code) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(code)
+    }
+
+    for (const signal of forwardedSignals) {
+      const handler = () => {
+        try {
+          child.kill(signal)
+        } catch {
+          // The child may already have exited between signal delivery and here.
+        }
+      }
+      forwarders.set(signal, handler)
+      parent.on(signal, handler)
+    }
+
+    child.once('error', (error) => {
+      stderr.write(`jarn: failed to execute ${binPath}: ${error.message}\n`)
+      finish(1)
+    })
+
+    child.once('exit', (code, signal) => {
+      if (!signal) {
+        finish(typeof code === 'number' ? code : 0)
+        return
+      }
+
+      if (settled) return
+      settled = true
+      cleanup()
+      try {
+        parent.kill(parent.pid, signal)
+      } catch {
+        // Fall through to a conventional shell-compatible signal exit code.
+      }
+      const signalNumber = constants.signals[signal]
+      resolve(typeof signalNumber === 'number' ? 128 + signalNumber : 1)
+    })
+  })
 }
 
 if (require.main === module) {
-  process.exit(run(process.argv.slice(2)))
+  run(process.argv.slice(2)).then((code) => process.exit(code))
 }
 
 module.exports = {

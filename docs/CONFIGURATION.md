@@ -766,9 +766,14 @@ jarn -p "follow up" --resume-session abc  # send a new message on thread abc
 
 `--json` prints one JSON object on stdout:
 
-- **Success:** `{result, tokens, cost, turns, tool_calls, verification}` — `result` is a string, or a parsed JSON object when `--output-schema` is used; `verification` is the final structured acceptance result when configured.
+- **Success:** `{result, tokens, cost, turns, tool_calls, verification, project_trusted, permission_mode}` — `result` is a string, or a parsed JSON object when `--output-schema` is used; `verification` is the final structured acceptance result when configured. `project_trusted` and `permission_mode` expose trust downgrades to automation.
 - **Failure:** `{error: {kind, message, verification?}}` (kinds include `error`, `refusal`,
   `budget`, `timeout`, `verification`, `schema`, `usage`)
+
+`--output-format stream-json` emits NDJSON event records as the run progresses,
+followed by one terminal record: `{type: "result", ...}` on success or
+`{type: "run_error", error: {kind, message, ...}}` on failure. Agent error events
+remain `{type: "error", text, data}` and are distinct from terminal run failures.
 
 **Exit codes:**
 

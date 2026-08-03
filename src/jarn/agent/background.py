@@ -89,6 +89,9 @@ class ProcessManager:
         self._procs: dict[str, BackgroundProc] = {}
         self._counter = 0
         self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._monitor: threading.Thread | None = None
+        self._interval = 5.0
         self.max_concurrent: int | None = None
         self.max_lifetime_secs: float | None = None
 
@@ -101,6 +104,11 @@ class ProcessManager:
         """Apply optional limits from config (``None`` = unlimited)."""
         self.max_concurrent = max_concurrent
         self.max_lifetime_secs = max_lifetime_secs
+        self._interval = (
+            5.0
+            if max_lifetime_secs is None
+            else max(0.5, min(5.0, max_lifetime_secs / 4))
+        )
 
     def _prune_exited(self) -> None:
         """Drop registry entries whose processes have already exited; clean up tmpdirs."""
@@ -125,6 +133,20 @@ class ProcessManager:
                 self.max_lifetime_secs,
             )
             _terminate(proc.popen)
+
+    def _sweep(self) -> None:
+        """Reap exited children and enforce lifetime limits."""
+        with self._lock:
+            self._prune_exited()
+            procs = list(self._procs.values())
+        # Process-group termination can block for its grace period, so it must
+        # remain outside the registry lock.
+        for proc in procs:
+            self._check_limits(proc)
+
+    def _monitor_loop(self) -> None:
+        while not self._stop.wait(self._interval):
+            self._sweep()
 
     def start(self, command: str, cwd: str) -> BackgroundProc:
         # Sweep lifetime limits outside the lock (terminate_process_group may block 3 s).
@@ -175,6 +197,14 @@ class ProcessManager:
         )
         with self._lock:
             self._procs[pid] = proc
+            if self._monitor is None or not self._monitor.is_alive():
+                self._stop.clear()
+                self._monitor = threading.Thread(
+                    target=self._monitor_loop,
+                    name="jarn-background-monitor",
+                    daemon=True,
+                )
+                self._monitor.start()
         return proc
 
     def status(self, pid: str, *, tail_lines: int = 40) -> dict | None:
@@ -199,11 +229,9 @@ class ProcessManager:
         return True
 
     def list(self) -> list[dict]:
+        self._sweep()
         with self._lock:
-            self._prune_exited()
             procs = list(self._procs.values())
-        for p in procs:
-            self._check_limits(p)
         return [
             {
                 "id": p.id,
@@ -216,6 +244,10 @@ class ProcessManager:
         ]
 
     def shutdown(self) -> None:
+        self._stop.set()
+        monitor = self._monitor
+        if monitor is not None and monitor is not threading.current_thread():
+            monitor.join(timeout=4.0)
         with self._lock:
             procs = list(self._procs.values())
         for p in procs:

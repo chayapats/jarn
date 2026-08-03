@@ -86,8 +86,13 @@ def find_project_root(start: Path | None = None) -> Path | None:
     before the filesystem root.
     """
     current = (start or Path.cwd()).resolve()
+    global_jarn_dirs = {
+        global_home().resolve(),
+        default_global_home().resolve(),
+    }
     for directory in (current, *current.parents):
-        if (directory / PROJECT_DIR_NAME).is_dir():
+        marker = directory / PROJECT_DIR_NAME
+        if marker.is_dir() and marker.resolve() not in global_jarn_dirs:
             return directory
         if (directory / PROJECT_CONTEXT_FILE).is_file():
             return directory
@@ -101,7 +106,13 @@ def project_dir(root: Path | None = None) -> Path | None:
     root = root or find_project_root()
     if root is None:
         return None
-    return root / PROJECT_DIR_NAME
+    directory = root / PROJECT_DIR_NAME
+    if directory.resolve() in {
+        global_home().resolve(),
+        default_global_home().resolve(),
+    }:
+        return None
+    return directory
 
 
 def project_config_path(root: Path | None = None) -> Path | None:
@@ -162,4 +173,7 @@ def project_claude_dir(root: Path | None = None) -> Path | None:
     root = root or find_project_root()
     if root is None:
         return None
-    return root / CLAUDE_DIR_NAME
+    directory = root / CLAUDE_DIR_NAME
+    if directory.resolve() == global_claude_home().resolve():
+        return None
+    return directory

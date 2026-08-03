@@ -113,7 +113,7 @@ runs:
             EXTRA_FLAGS+=(--model "openrouter/$MODEL_OVERRIDE")
           fi
         fi
-        # Emit JSON envelope: {"result":…,"tokens":…,"cost":…,"turns":…,"tool_calls":…}
+        # Emit JSON envelope, including project_trusted and effective permission_mode.
         JARN_OUTPUT=$(jarn -p "$PROMPT" \
           --json \
           --preset "$PRESET" \
