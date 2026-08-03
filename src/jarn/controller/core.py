@@ -905,6 +905,10 @@ class Controller:
             if self._session_started:
                 self._fire_lifecycle("session_end")
                 self._session_started = False
+            transcript = getattr(self._active_driver, "transcript", None)
+            if transcript is not None:
+                with contextlib.suppress(Exception):
+                    transcript.close()
             self.close()
             # self.close() saw the invalidated None; tear down the captured
             # committed runtime's backend too (best-effort, no double close — a

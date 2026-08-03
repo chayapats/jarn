@@ -2136,6 +2136,32 @@ async def test_aclose_closes_committed_runtime_backend(
 
 
 @pytest.mark.asyncio
+async def test_aclose_closes_active_transcript(
+    tmp_path, monkeypatch, base_config
+):
+    """The active driver's lazily opened transcript handle closes at shutdown."""
+    from types import SimpleNamespace
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    ctrl.runtime = SimpleNamespace(
+        agent=object(),
+        main_model_ref="m",
+        known_model_refs=(),
+        backend=None,
+        progress_queue=None,
+    )
+    driver = ctrl.make_driver(approver=lambda *a, **k: None)
+    driver.transcript.write_user("hello", ts=1.0)
+    handle = driver.transcript._file
+    assert handle is not None and handle.closed is False
+
+    await ctrl.aclose()
+
+    assert handle.closed is True
+    assert driver.transcript._file is None
+
+
+@pytest.mark.asyncio
 async def test_aclose_serializes_after_live_caller_no_post_close_build(
     tmp_path, monkeypatch, base_config
 ):
