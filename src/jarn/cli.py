@@ -445,9 +445,18 @@ def _cmd_headless(
     if ignore_project_config:
         # CI can work on an untrusted checkout without either auto-trusting its
         # hooks/MCP/providers or being clamped to plan mode by the trust prompt.
-        trusted = True
+        #
+        # The project tier is dropped by passing an explicit empty dict. Do NOT
+        # express this as project_root=None: None means "discover the root", not
+        # "no project", so load_config re-finds this very checkout and reads its
+        # .jarn/config.yaml — and with project_trusted=True it merged the repo's
+        # hooks / mcp_servers / providers unsanitised, the exact opposite of what
+        # this flag promises. project_trusted=False is belt-and-braces: should the
+        # tier ever become non-empty again, the dangerous keys are still stripped.
         project_raw: dict[str, Any] = {}
-        cfg = load_config(project_root=None, project_trusted=True)
+        cfg = load_config(project_raw=project_raw, project_trusted=False)
+        # Nothing untrusted was loaded, so there is nothing to clamp to plan mode.
+        trusted = True
     else:
         trusted, project_raw, trust_err = _resolve_project_trust(root)
         if trust_err is not None:
@@ -867,8 +876,11 @@ def _cmd_launch(
     root = paths.find_project_root() or Path.cwd()
 
     if ignore_project_config:
+        # Drop the project tier entirely — see the identical branch in
+        # _cmd_headless for why this must not be spelled project_root=None.
+        cfg = load_config(project_raw={}, project_trusted=False)
+        # Nothing untrusted was loaded, so there is nothing to clamp to plan mode.
         trusted = True
-        cfg = load_config(project_root=None, project_trusted=True)
     else:
         # Trust boundary: a project's .jarn/config.yaml can run hooks / spawn MCP
         # servers / override providers (secret exfil). Don't honour those keys from
