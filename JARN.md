@@ -36,7 +36,7 @@ plan → act → verify, with a strict permission system in front of every mutat
 
 ```bash
 uv sync --extra dev
-uv run pytest                    # full suite (1995 tests)
+uv run pytest                    # full suite (2150 tests)
 uv run ruff check src tests      # lint
 uv run mypy src/                 # type-check (CI-gated)
 uv run jarn                      # launch the terminal REPL
