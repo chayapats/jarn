@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from langgraph.types import Overwrite
 
 from jarn.agent.events import Event, EventKind, ToolProgress
+from jarn.cost.usage import normalize_usage
 
 if TYPE_CHECKING:
     from jarn.agent.session import SessionDriver
@@ -222,30 +223,13 @@ def make_tool_progress_event(
 
 
 def record_usage(driver: SessionDriver, msg: Any, namespace: Any = ()) -> None:
-    usage = getattr(msg, "usage_metadata", None)
-    if not usage:
+    # LangChain reports prompt-cache tokens under ``input_token_details``, with a
+    # provider quirk around TTL-specific cache-write fields. That reading lives in
+    # ``jarn.cost.usage`` because the fan-out roll-up needs the identical one and a
+    # second copy is exactly what drifted (#82).
+    cumulative = normalize_usage(getattr(msg, "usage_metadata", None))
+    if cumulative is None:
         return
-    # LangChain reports prompt-cache tokens under ``input_token_details``
-    # (``cache_read`` / ``cache_creation``); absent for providers/turns
-    # without caching, in which case both default to 0.
-    details = usage.get("input_token_details") or {}
-    # Provider quirk: current langchain-anthropic, when TTL-specific cache fields
-    # are present, puts the cache-write tokens under ``ephemeral_5m_input_tokens``
-    # / ``ephemeral_1h_input_tokens`` and ZEROES the generic ``cache_creation``.
-    # Reading only ``cache_creation`` would then bill those writes at the full input
-    # rate instead of the cache-write rate. Prefer the generic field when nonzero,
-    # otherwise sum the TTL-specific fields.
-    cc = int(details.get("cache_creation", 0))
-    if not cc:
-        cc = int(details.get("ephemeral_5m_input_tokens", 0)) + int(
-            details.get("ephemeral_1h_input_tokens", 0)
-        )
-    cumulative = (
-        int(usage.get("input_tokens", 0)),
-        int(usage.get("output_tokens", 0)),
-        int(details.get("cache_read", 0)),
-        cc,
-    )
     model_ref = resolve_model_ref(driver, msg)
     # The subgraph namespace is part of the dedup key because two PARALLEL
     # subagents on the SAME model each stream their own CUMULATIVE totals; keyed

@@ -57,6 +57,7 @@ from langgraph.errors import GraphBubbleUp
 from jarn.config.secrets import redact_secrets
 from jarn.cost import pricing
 from jarn.cost.tracker import CostTracker
+from jarn.cost.usage import normalize_usage
 
 #: An async subagent invocation: ``(subagent_type, description) -> result state``.
 #: The result state is a mapping shaped like a deepagents/langchain agent result
@@ -206,18 +207,24 @@ def _extract_usage(
     ``model_id`` is the model the last usage-bearing message reported
     (``response_metadata['model_name']``), falling back to ``default_model_ref``
     (the ref this subagent is known to run on) so pricing has a key.
+
+    The per-message reading comes from :func:`jarn.cost.usage.normalize_usage`, the
+    same one the streaming path uses. It has to: this file used to read only the
+    generic ``cache_creation`` field, so every Anthropic turn reporting TTL-specific
+    cache writes was billed at the plain-input rate instead of the cache-write rate
+    and the fan-out roll-up came in under the streamed figures for identical work
+    (#82).
     """
     input_tokens = output_tokens = cache_read = cache_creation = 0
     model_id = default_model_ref
     for msg in result.get("messages") or []:
-        um = getattr(msg, "usage_metadata", None)
-        if not um:
+        counts = normalize_usage(getattr(msg, "usage_metadata", None))
+        if counts is None:
             continue
-        input_tokens += int(um.get("input_tokens", 0) or 0)
-        output_tokens += int(um.get("output_tokens", 0) or 0)
-        details = um.get("input_token_details") or {}
-        cache_read += int(details.get("cache_read", 0) or 0)
-        cache_creation += int(details.get("cache_creation", 0) or 0)
+        input_tokens += counts.input_tokens
+        output_tokens += counts.output_tokens
+        cache_read += counts.cache_read
+        cache_creation += counts.cache_creation
         meta = getattr(msg, "response_metadata", None) or {}
         reported = meta.get("model_name") or meta.get("model")
         if reported:
