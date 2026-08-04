@@ -472,6 +472,93 @@ def test_tool_arg_non_string_values_not_truncated(tmp_path: Path) -> None:
     assert args_recorded["items"] == [1, 2, 3]
 
 
+def test_tool_arg_cap_and_redaction_reach_inside_containers(tmp_path: Path) -> None:
+    """Structured tool arguments get the same treatment as top-level strings.
+
+    An edit list, or an MCP tool's object payload, is an ordinary argument shape.
+    Both halves of write_tool's contract — the length cap and the central redactor —
+    must apply to the strings inside one, not only to strings sitting at the top.
+    """
+    from jarn.memory.sessions import _TRANSCRIPT_MAX_TOOL_CHARS
+
+    big = "y" * (_TRANSCRIPT_MAX_TOOL_CHARS + 500)
+    token = "ghp_" + "b" * 36
+    w = TranscriptWriter("nested-args", sessions_dir=tmp_path)
+    w.write_tool(
+        "edit_file",
+        ts=1.0,
+        args={
+            "edits": [{"new": big}, {"header": f"Authorization: Bearer {token}"}],
+            "meta": {"note": big},
+        },
+    )
+    w.close()
+
+    args_recorded = json.loads(w.path.read_text(encoding="utf-8").strip())["args"]
+    assert len(args_recorded["edits"][0]["new"]) == _TRANSCRIPT_MAX_TOOL_CHARS
+    assert len(args_recorded["meta"]["note"]) == _TRANSCRIPT_MAX_TOOL_CHARS
+    assert args_recorded.get("edits__truncated") is True
+    assert args_recorded.get("meta__truncated") is True
+    assert token not in json.dumps(args_recorded)
+
+
+def test_tool_arg_wide_and_deep_containers_are_bounded(tmp_path: Path) -> None:
+    """Capping every leaf is not enough on its own.
+
+    A list of ten thousand short strings, or a structure nested far enough to walk
+    the stack down, still has to be bounded — and marked, so a reader can tell the
+    record is partial rather than believing it is the whole call.
+    """
+    from jarn.memory.sessions import (
+        _TRANSCRIPT_MAX_ARG_DEPTH,
+        _TRANSCRIPT_MAX_ARG_ITEMS,
+    )
+
+    deep: dict = {}
+    cursor = deep
+    for _ in range(_TRANSCRIPT_MAX_ARG_DEPTH + 6):
+        cursor["n"] = {}
+        cursor = cursor["n"]
+    cursor["leaf"] = "bottom"
+
+    w = TranscriptWriter("wide-deep", sessions_dir=tmp_path)
+    w.write_tool(
+        "bulk",
+        ts=1.0,
+        args={"many": ["z" * 10] * (_TRANSCRIPT_MAX_ARG_ITEMS * 50), "deep": deep},
+    )
+    w.close()
+
+    args_recorded = json.loads(w.path.read_text(encoding="utf-8").strip())["args"]
+    assert len(args_recorded["many"]) == _TRANSCRIPT_MAX_ARG_ITEMS
+    assert args_recorded.get("many__truncated") is True
+    assert args_recorded.get("deep__truncated") is True
+    assert "omitted" in json.dumps(args_recorded["deep"])
+
+
+def test_tool_arg_scalars_keep_their_type(tmp_path: Path) -> None:
+    """Walking the value must not start converting types it used to leave alone.
+
+    ``append`` serialises with a plain ``json.dumps`` and its docstring puts the
+    sanitising burden on the caller, so a scalar that used to pass through has to
+    keep passing through unchanged — including inside a container.
+    """
+    w = TranscriptWriter("scalars", sessions_dir=tmp_path)
+    w.write_tool(
+        "some_tool",
+        ts=1.0,
+        args={"count": 42, "enabled": True, "missing": None, "mixed": [1, False, None]},
+    )
+    w.close()
+
+    args_recorded = json.loads(w.path.read_text(encoding="utf-8").strip())["args"]
+    assert args_recorded["count"] == 42
+    assert args_recorded["enabled"] is True
+    assert args_recorded["missing"] is None
+    assert args_recorded["mixed"] == [1, False, None]
+    assert not [k for k in args_recorded if k.endswith("__truncated")]
+
+
 def test_tool_result_secret_is_redacted(tmp_path: Path) -> None:
     """A tool result containing a key-shaped string is scrubbed before persist."""
     w = TranscriptWriter("redact-tool", sessions_dir=tmp_path)
