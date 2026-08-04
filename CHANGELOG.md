@@ -77,6 +77,12 @@ the concurrency defects behind #45 and #46.
   (`atomic_write_text` + `file_lock`), adopted by `PermissionRuleStore`,
   `ConfigStore`, `TrustStore`, `WikiStore`, `MemoryStore` and the file secret
   store. (#45, #46)
+- Publishing by rename is retried on Windows, which refuses `os.replace` while any
+  process holds the destination open — even for reading. Without it the write
+  that fixes torn reads everywhere else would instead FAIL on Windows, under
+  exactly the concurrency it exists for. Note `chmod` there controls only the
+  read-only flag, so a `0600` request lands as `0666`; restricting a file to its
+  owner on Windows needs an ACL and is out of scope.
 - `MemoryStore._rebuild_index` also runs on the READ path — `index_text()` rebuilds
   on demand and that text goes straight into the system prompt — so a concurrent
   prompt assembly could read a truncated or empty `MEMORY.md`. (#46)

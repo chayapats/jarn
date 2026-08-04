@@ -49,6 +49,7 @@ def test_temp_name_is_unique_per_call(tmp_path, monkeypatch):
     assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows chmod only sets the read-only bit")
 def test_mode_is_applied_before_the_rename(tmp_path, monkeypatch):
     """A secret written then chmod'ed is world-readable in between. The mode must
     be on the temp file, so the published file is never briefly at the umask."""
@@ -182,6 +183,7 @@ def test_a_write_failure_inside_the_lock_still_propagates(tmp_path, monkeypatch)
         atomic_write_text(tmp_path / "config.yaml", "x")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows chmod only sets the read-only bit")
 def test_existing_file_mode_is_carried_over(tmp_path):
     """Publishing by rename installs a NEW inode, so unlike write_text it replaces
     the target's mode. A user's `chmod 600` on a memory page must survive a save."""
@@ -211,3 +213,57 @@ def test_publisher_takes_no_lock_so_a_store_can_wrap_one(tmp_path):
     t.join(timeout=5)
     assert done.is_set(), "atomic_write_text deadlocked against the caller's lock"
     assert target.read_text(encoding="utf-8") == "written under the caller's lock"
+
+
+def test_replace_is_retried_while_a_reader_holds_the_destination(tmp_path, monkeypatch):
+    """Windows refuses `os.replace` with ERROR_ACCESS_DENIED while ANY process has
+    the destination open — even for reading. POSIX has no such rule, so without a
+    retry the publish that fixes torn reads everywhere else instead makes the
+    WRITE fail on Windows, exactly under the concurrency it exists for.
+
+    Simulated: this path only runs on Windows, so it cannot be exercised directly
+    from a POSIX CI leg.
+    """
+    from jarn.util import atomic
+
+    monkeypatch.setattr(atomic.os, "name", "nt")
+    monkeypatch.setattr(atomic, "_REPLACE_RETRY_SECS", 0)
+    real = os.replace
+    calls = [0]
+
+    def flaky(src, dst):
+        calls[0] += 1
+        if calls[0] < 3:  # a reader still has it open
+            raise PermissionError(13, "Access is denied")
+        return real(src, dst)
+
+    monkeypatch.setattr(atomic.os, "replace", flaky)
+    target = tmp_path / "index.md"
+    atomic_write_text(target, "published")
+
+    assert calls[0] == 3
+    assert target.read_text(encoding="utf-8") == "published"
+    assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())
+
+
+def test_replace_gives_up_rather_than_writing_in_place(tmp_path, monkeypatch):
+    """Exhausting the retry deadline must RAISE, not fall back to a truncating
+    write — silently reintroducing the torn read would undo the whole fix."""
+    from jarn.util import atomic
+
+    monkeypatch.setattr(atomic.os, "name", "nt")
+    monkeypatch.setattr(atomic, "_REPLACE_RETRY_SECS", 0)
+    monkeypatch.setattr(atomic, "_REPLACE_DEADLINE_SECS", 0.05)
+
+    target = tmp_path / "index.md"
+    atomic_write_text(target, "original")  # seeded before the destination "locks"
+
+    def always_locked(src, dst):
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(atomic.os, "replace", always_locked)
+
+    with pytest.raises(PermissionError):
+        atomic_write_text(target, "replacement")
+    assert target.read_text(encoding="utf-8") == "original"
+    assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())

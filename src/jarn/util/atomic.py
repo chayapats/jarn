@@ -72,6 +72,17 @@ LOCK_SUFFIX = ".lock"
 #: Windows has no ``flock``; ``msvcrt.locking`` is blocking-with-retry, so poll.
 _WINDOWS_RETRY_SECS = 0.01
 
+#: Windows refuses ``os.replace`` with ``ERROR_ACCESS_DENIED`` while ANY process
+#: holds the destination open — even for reading. POSIX has no such rule, so the
+#: publish that fixes torn reads everywhere else would instead make the write FAIL
+#: on Windows, precisely under the concurrency it exists for (a reader on
+#: ``index.md`` while a rebuild republishes it). Readers hold the handle for
+#: microseconds, so a bounded retry closes it; exhausting the deadline raises
+#: rather than falling back to a truncating write, because silently reintroducing
+#: the torn read would undo the fix.
+_REPLACE_DEADLINE_SECS = 2.0
+_REPLACE_RETRY_SECS = 0.005
+
 
 def lock_path_for(path: Path) -> Path:
     """The sibling lock file guarding *path*."""
@@ -158,6 +169,25 @@ def _unique_tmp(path: Path) -> Path:
     return path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
 
 
+def _replace(tmp: Path, path: Path) -> None:
+    """``os.replace``, retried on Windows while a reader holds the destination.
+
+    A no-op wrapper on POSIX, where rename over an open file always succeeds.
+    """
+    if os.name != "nt":
+        os.replace(tmp, path)
+        return
+    deadline = time.monotonic() + _REPLACE_DEADLINE_SECS  # pragma: no cover - Windows
+    while True:  # pragma: no cover - exercised on Windows CI
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(_REPLACE_RETRY_SECS)
+
+
 def atomic_write_text(
     path: Path,
     text: str,
@@ -183,6 +213,12 @@ def atomic_write_text(
 
     The temp file is removed if publication fails, so a crashed write leaves the
     original intact and no debris behind.
+
+    Windows notes: the rename is retried briefly (see
+    :data:`_REPLACE_DEADLINE_SECS`), and ``mode`` is applied through ``chmod``,
+    which on Windows controls only the read-only flag — ``0o600`` lands as
+    ``0o666``. Restricting a file to its owner there needs an ACL, which is out of
+    scope here; the same limit applied before this helper existed.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _unique_tmp(path)
@@ -193,7 +229,7 @@ def atomic_write_text(
         tmp.write_text(text, encoding=encoding)
         if mode is not None:
             tmp.chmod(mode)
-        os.replace(tmp, path)
+        _replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
             tmp.unlink()
