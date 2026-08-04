@@ -331,13 +331,22 @@ def test_retained_records_are_capped(tmp_path):
 
 def test_retained_records_age_out(tmp_path, monkeypatch):
     """A record past the retention window is retired on the next sweep."""
-    monkeypatch.setattr(background, "_RETAIN_SECS", 0.0)
+    monkeypatch.setattr(background, "_RETAIN_SECS", 60.0)
     mgr = _quiesce(ProcessManager())
     proc = mgr.start("echo age-me", cwd=str(tmp_path))
     _wait(mgr, proc.id)
 
     mgr.list()  # reaps and stamps finished_at
-    mgr.list()  # now older than the (zero) window
+    assert mgr.status(proc.id) is not None, "still inside the window"
+
+    # Age the record rather than sleeping through the window or shrinking it to
+    # zero. Two back-to-back sweeps can read the *same* time.monotonic() value —
+    # Windows' clock is coarse enough that this lands in practice — so "elapsed
+    # > 0" is not a portable way to express "some time passed".
+    assert proc.finished_at is not None
+    proc.finished_at -= background._RETAIN_SECS + 1.0
+
+    mgr.list()
 
     assert mgr.status(proc.id) is None
     assert not proc.tmpdir.exists()
