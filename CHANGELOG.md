@@ -5,6 +5,52 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The `/undo` lock now spans linked git worktrees (#80).**
+  `refs/jarn/checkpoints/` is not a per-worktree ref namespace, so every linked
+  `git worktree` of a repo shares one undo/redo stack — but the lock guarding it
+  was derived from `root/".git"`, and in a linked worktree that is a *file*, not a
+  directory. The `is_dir()` test failed and the lock silently moved to the
+  worktree's own directory: two worktrees, one stack, two locks. Measured with 16
+  processes each pushing one checkpoint, **44–50% of entries were lost across two
+  worktrees against 0% for the identical workload inside one**, so a user's
+  `/undo` history was silently shallower than the number of turns taken. The path
+  now comes from `git rev-parse --git-common-dir`, which answers `.git` from a
+  main worktree — so the historical `.git/jarn-checkpoint.lock` file is unchanged
+  and an older jarn still excludes this one — and the shared common dir from a
+  linked worktree. Unrelated to #47, which is the separate *semantic* question of
+  two sessions inside one worktree.
+
+- **A second `spawn_parallel_tasks` call no longer inherits the first's spend
+  (#81).** The per-task cost namespace was built from the task's index within its
+  own batch, so it repeated on every invocation, and the soft `max_usd` cap is
+  checked against the bucket's *cumulative* cost. Three fan-outs each doing an
+  identical $0.60 of work under an identical $1.00 cap reported $0.60 / $1.20 /
+  $1.80 and flagged the last two as `budget_exceeded`. Each call now stamps its
+  buckets with a fresh invocation id; task index and subagent type stay in the
+  label, so attribution within a batch is unchanged.
+
+- **Fan-out no longer undercounts Anthropic cache writes (#82).** When
+  langchain-anthropic reports TTL-specific cache fields it puts the write tokens
+  under `ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` and zeroes the
+  generic `cache_creation`. The streaming path already handled this; the fan-out
+  roll-up carried its own second copy of the `usage_metadata` reading and did not,
+  billing those tokens at the plain-input rate — a 20% undercount on haiku. The
+  reading now lives once in `jarn.cost.usage` and both paths call it, with a
+  parity test asserting they price one message identically. Malformed counts
+  (`None`, a string, a negative) now coerce to 0 rather than raising or flowing
+  through, since these figures drive observability and a soft budget rather than
+  the correctness of the turn.
+
+### Changed
+
+- **The doc-sync gate discovers the docs that state a pytest count** instead of
+  naming four of them. The count appears in eight tracked files; the four the gate
+  did not name had drifted, `SPEC.md` by 469 while calling itself the current
+  gate. Any tracked `*.md` stating a count must now state the right one, with a
+  short explicit exemption list for genuine historical records.
+
 ## [0.9.2] - 2026-08-04
 
 Security patch release: the three findings from the private advisory queue, plus

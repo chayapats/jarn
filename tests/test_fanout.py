@@ -47,6 +47,25 @@ def _result(text: str, **usage) -> dict:
     return {"messages": [HumanMessage(content="go"), _ai(text, **usage)]}
 
 
+def _ai_raw(text: str, details: dict, *, in_tok: int, out_tok: int = 0) -> AIMessage:
+    """An AIMessage with a hand-written ``input_token_details``.
+
+    Lets a test reproduce a provider's exact field layout — notably the TTL-scoped
+    cache-write shape langchain-anthropic emits — instead of the tidy subset ``_ai``
+    builds.
+    """
+    return AIMessage(
+        content=text,
+        usage_metadata={
+            "input_tokens": in_tok,
+            "output_tokens": out_tok,
+            "total_tokens": in_tok + out_tok,
+            "input_token_details": details,
+        },
+        response_metadata={"model_name": MODEL},
+    )
+
+
 # --- 1. concurrency ---------------------------------------------------------
 
 
@@ -270,6 +289,194 @@ async def test_per_task_budget_records_namespace_and_flags_breach():
     assert tracker.total.cost_usd == 0.0
     ns_cost = sum(u.cost_usd for u in tracker.per_namespace.values())
     assert ns_cost == pytest.approx(6.0, abs=1e-3)  # big $6.00 + small ~$0
+
+
+@pytest.mark.asyncio
+async def test_a_later_fanout_does_not_inherit_an_earlier_ones_spend():
+    """#81: the cost namespace must be unique per INVOCATION, not just per task.
+
+    The namespace was ``fanout[<index>]:<type>``, built from the task's position in
+    its own batch — identical for every call. ``record_task_usage`` returns the
+    bucket's CUMULATIVE usage and the soft cap is checked against that, so a second
+    fan-out inherited the first's spend: same cap, same real cost, different verdict.
+    """
+    tracker = CostTracker()
+
+    async def invoke(subagent_type: str, description: str):
+        return _result("done", in_tok=100_000, out_tok=100_000)  # $0.60 on haiku
+
+    async def one_fanout():
+        result = await run_parallel_tasks(
+            [ParallelTask("t", subagent_type="general-purpose", max_usd=1.0)],
+            invoke=invoke,
+            available_subagents=["general-purpose"],
+            default_model_ref=MODEL,
+            cost_tracker=tracker,
+        )
+        return result.outcomes[0]
+
+    first, second, third = [await one_fanout() for _ in range(3)]
+
+    # Every call did the identical $0.60 of work under the identical $1.00 cap, so
+    # every call must reach the identical verdict.
+    for call, outcome in enumerate((first, second, third), start=1):
+        assert outcome.cost_usd == pytest.approx(0.60), f"call {call} reports cumulative spend"
+        assert outcome.status == "ok", f"call {call} breached on an earlier call's spend"
+        assert not outcome.budget_exceeded
+
+    # Three invocations ⇒ three buckets, not one bucket counted three times.
+    assert len(tracker.per_namespace) == 3
+    assert sum(u.calls for u in tracker.per_namespace.values()) == 3
+    assert sum(u.cost_usd for u in tracker.per_namespace.values()) == pytest.approx(1.80)
+
+
+@pytest.mark.asyncio
+async def test_ttl_scoped_cache_writes_are_billed_as_cache_writes():
+    """#82: fan-out read only the generic ``cache_creation`` field.
+
+    langchain-anthropic zeroes that field when it reports TTL-specific cache writes,
+    putting them under ``ephemeral_5m_input_tokens`` / ``ephemeral_1h_input_tokens``.
+    ``cost_of`` subtracts cache tokens from the plain-input charge and reprices them,
+    so missing them leaves the writes billed at the INPUT rate.
+
+    Repro (haiku: input $1.00/Mtok, cache_write $1.25/Mtok): 1,000,000 input of which
+    800k+200k are cache writes → plain 0 + write 1M @ $1.25 = **$1.25**. Reading only
+    the generic field saw 0 cache tokens → 1M @ $1.00 = $1.00, a 20% undercount.
+    """
+    tracker = CostTracker()
+
+    async def invoke(subagent_type: str, description: str):
+        return {
+            "messages": [
+                HumanMessage(content="go"),
+                _ai_raw(
+                    "done",
+                    {
+                        "cache_read": 0,
+                        "cache_creation": 0,  # zeroed by langchain-anthropic
+                        "ephemeral_5m_input_tokens": 800_000,
+                        "ephemeral_1h_input_tokens": 200_000,
+                    },
+                    in_tok=1_000_000,
+                ),
+            ]
+        }
+
+    result = await run_parallel_tasks(
+        [ParallelTask("t", subagent_type="general-purpose")],
+        invoke=invoke,
+        available_subagents=["general-purpose"],
+        default_model_ref=MODEL,
+        cost_tracker=tracker,
+    )
+    assert result.outcomes[0].cost_usd == pytest.approx(1.25)
+    bucket = next(iter(tracker.per_namespace.values()))
+    assert bucket.cache_creation_tokens == 1_000_000
+
+
+@pytest.mark.asyncio
+async def test_fanout_prices_a_message_exactly_as_the_streaming_path_does():
+    """Parity: one message, two readers, one cost.
+
+    Both paths feed the same tracker through the same ``cost_of``, so any divergence
+    is a cost error. They diverged because each had its own copy of the
+    ``usage_metadata`` reading; this pins them to the same answer for the layout that
+    exposed it.
+    """
+    from jarn.agent.session import SessionDriver
+    from jarn.permissions.engine import PermissionEngine, PermissionMode
+
+    details = {
+        "cache_read": 50_000,
+        "cache_creation": 0,
+        "ephemeral_5m_input_tokens": 800_000,
+        "ephemeral_1h_input_tokens": 200_000,
+    }
+    msg = _ai_raw("done", details, in_tok=1_500_000, out_tok=1_000)
+
+    # Streaming path.
+    stream_tracker = CostTracker()
+    driver = SessionDriver(
+        agent=None,
+        engine=PermissionEngine(mode=PermissionMode.ASK),
+        tracker=stream_tracker,
+        thread_id="t1",
+        main_model_ref=MODEL,
+    )
+    driver._record_usage(msg)
+
+    # Fan-out path.
+    fanout_tracker = CostTracker()
+
+    async def invoke(subagent_type: str, description: str):
+        return {"messages": [HumanMessage(content="go"), msg]}
+
+    await run_parallel_tasks(
+        [ParallelTask("t", subagent_type="general-purpose")],
+        invoke=invoke,
+        available_subagents=["general-purpose"],
+        default_model_ref=MODEL,
+        cost_tracker=fanout_tracker,
+    )
+
+    streamed = stream_tracker.total
+    fanned = next(iter(fanout_tracker.per_namespace.values()))
+    assert fanned.cost_usd == pytest.approx(streamed.cost_usd)
+    assert fanned.cache_creation_tokens == streamed.cache_creation_tokens == 1_000_000
+    assert fanned.cache_read_tokens == streamed.cache_read_tokens == 50_000
+    assert streamed.cost_usd > 0
+
+
+@pytest.mark.asyncio
+async def test_namespaces_stay_distinct_within_one_fanout_and_readable():
+    """Uniqueness must not come at the cost of attribution.
+
+    Within one invocation the buckets still separate by task index and subagent
+    type, and the label still carries the caller's prefix so a reader can tell what
+    produced it.
+    """
+    tracker = CostTracker()
+
+    async def invoke(subagent_type: str, description: str):
+        return _result(f"done {description}", in_tok=10, out_tok=5)
+
+    await run_parallel_tasks(
+        [
+            ParallelTask("a", subagent_type="general-purpose"),
+            ParallelTask("b", subagent_type="general-purpose"),
+            ParallelTask("c", subagent_type="general-purpose"),
+        ],
+        invoke=invoke,
+        available_subagents=["general-purpose"],
+        default_model_ref=MODEL,
+        cost_tracker=tracker,
+    )
+    keys = sorted(tracker.per_namespace)
+    assert len(keys) == 3, keys
+    assert all(k.startswith("fanout") for k in keys), keys
+    assert all("general-purpose" in k for k in keys), keys
+    # The task index survives, so a bucket is still attributable to a task.
+    assert {"[0]", "[1]", "[2]"} == {k[k.index("[") : k.index("]") + 1] for k in keys}
+
+
+@pytest.mark.asyncio
+async def test_explicit_namespace_prefix_is_still_honoured():
+    """A caller-supplied prefix keeps its place at the head of the label."""
+    tracker = CostTracker()
+
+    async def invoke(subagent_type: str, description: str):
+        return _result("done", in_tok=10, out_tok=5)
+
+    await run_parallel_tasks(
+        [ParallelTask("a", subagent_type="general-purpose")],
+        invoke=invoke,
+        available_subagents=["general-purpose"],
+        default_model_ref=MODEL,
+        cost_tracker=tracker,
+        namespace_prefix="research",
+    )
+    key = next(iter(tracker.per_namespace))
+    assert key.startswith("research"), key
 
 
 @pytest.mark.asyncio

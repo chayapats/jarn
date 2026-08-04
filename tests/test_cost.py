@@ -1317,3 +1317,90 @@ def test_gauge_not_clobbered_by_split_output_chunk(tracker: CostTracker) -> None
     # Output-only final chunk: non-monotonic path passes input=0 to record()
     tracker.record(model_id=_MAIN, input_tokens=0, output_tokens=500, is_main=True)
     assert tracker.context_tokens == 8_000  # must stay 8000, not drop to 0
+
+
+# ---------------------------------------------------------------------------
+# #82 — one reading of usage_metadata, shared by the streaming and fan-out paths.
+#
+# Both price through cost_of and feed the same buckets, so a disagreement between
+# them is a cost error. They disagreed because each carried its own copy.
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_usage_returns_none_for_nothing_to_record():
+    """Absent or empty metadata must not be recorded as a zero call."""
+    from jarn.cost.usage import normalize_usage
+
+    assert normalize_usage(None) is None
+    assert normalize_usage({}) is None
+
+
+def test_normalize_usage_sums_ttl_scoped_cache_writes():
+    """langchain-anthropic zeroes the generic field and reports the TTL pair."""
+    from jarn.cost.usage import normalize_usage
+
+    counts = normalize_usage({
+        "input_tokens": 1_000,
+        "output_tokens": 7,
+        "input_token_details": {
+            "cache_read": 100,
+            "cache_creation": 0,
+            "ephemeral_5m_input_tokens": 600,
+            "ephemeral_1h_input_tokens": 200,
+        },
+    })
+    assert counts == (1_000, 7, 100, 800)
+
+
+def test_normalize_usage_prefers_the_generic_cache_creation_field():
+    """When the provider does fill the generic field it is authoritative — the TTL
+    fields are a breakdown of it, so summing both would double-count the write."""
+    from jarn.cost.usage import normalize_usage
+
+    counts = normalize_usage({
+        "input_tokens": 1_000,
+        "output_tokens": 0,
+        "input_token_details": {
+            "cache_creation": 800,
+            "ephemeral_5m_input_tokens": 600,
+            "ephemeral_1h_input_tokens": 200,
+        },
+    })
+    assert counts.cache_creation == 800
+
+
+def test_normalize_usage_survives_malformed_counts():
+    """These figures drive observability and a soft cap, never correctness of the
+    turn itself — a provider sending None or a string must degrade to 0, not raise
+    on the streaming hot path."""
+    from jarn.cost.usage import normalize_usage
+
+    counts = normalize_usage({
+        "input_tokens": None,
+        "output_tokens": "not-a-number",
+        "input_token_details": {"cache_read": None, "cache_creation": {}},
+    })
+    assert counts == (0, 0, 0, 0)
+
+
+def test_normalize_usage_clamps_negative_counts():
+    """A negative token count is malformed by definition, and must not reach
+    ``cost_of`` as a negative charge. The streaming path reads a negative cumulative
+    as a fresh API call, so it would be recorded outright rather than differenced
+    away."""
+    from jarn.cost.usage import normalize_usage
+
+    counts = normalize_usage({
+        "input_tokens": -500,
+        "output_tokens": 10,
+        "input_token_details": {"cache_read": -1, "cache_creation": -9},
+    })
+    assert counts == (0, 10, 0, 0)
+
+
+def test_normalize_usage_without_cache_details():
+    """A provider or turn with no caching at all reports the plain pair."""
+    from jarn.cost.usage import normalize_usage
+
+    counts = normalize_usage({"input_tokens": 12, "output_tokens": 34})
+    assert counts == (12, 34, 0, 0)

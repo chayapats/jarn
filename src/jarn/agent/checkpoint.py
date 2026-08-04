@@ -230,14 +230,60 @@ _LOCK_BASENAME = "jarn-checkpoint"
 _THREAD_LOCK = threading.Lock()
 
 
+#: ``git rev-parse`` echoes an unrecognised option back verbatim, and
+#: ``--git-common-dir`` only exists from git 2.5 — so an echo means "unsupported",
+#: not "the common dir is literally named --git-common-dir".
+_GIT_COMMON_DIR_FLAG = "--git-common-dir"
+
+
+def _git_common_dir(root: Path) -> Path | None:
+    """The repo's COMMON git dir — the one every linked worktree shares — or None.
+
+    ``git rev-parse --git-common-dir`` answers ``.git`` from a main worktree's top
+    level and the main repo's absolute git dir from a linked worktree. Returns None
+    whenever the answer cannot be trusted, so the caller can fall back rather than
+    invent a path: git missing, ``root`` not a repo, or a git too old to know the
+    flag.
+    """
+    try:
+        result = _git(["rev-parse", _GIT_COMMON_DIR_FLAG], cwd=root)
+    except OSError:
+        # ``_git`` promises never to raise, but ``subprocess`` still does when
+        # ``cwd`` itself is gone (a repo deleted mid-session) or ``git`` is not on
+        # PATH. Taking a lock must degrade, never take the turn down.
+        return None
+    out = result.stdout.strip()
+    if result.returncode != 0 or not out or out == _GIT_COMMON_DIR_FLAG:
+        return None
+    common = Path(out)
+    # A relative answer ('.git') is relative to the directory we asked from.
+    return common if common.is_absolute() else root / common
+
+
 def _lock_base(root: Path) -> Path:
     """The lock BASE path — ``file_lock`` appends ``.lock`` to it.
 
-    Kept under ``.git/`` so snapshots stay clean. The base deliberately omits the
-    suffix so the resulting file keeps its historical name: a jarn from before the
-    shared primitive locks ``.git/jarn-checkpoint.lock``, and a lock on any other
-    path would silently stop the two versions excluding each other.
+    Kept under the COMMON git dir, so snapshots stay clean AND — the part that is
+    easy to get wrong — the lock lands where the refs it guards actually live.
+    ``refs/jarn/checkpoints/`` is not a per-worktree namespace (git keeps only
+    ``HEAD``, ``refs/bisect/*``, ``refs/worktree/*`` and ``refs/rewritten/*`` per
+    worktree), so every linked ``git worktree`` shares ONE undo/redo stack.
+
+    Deriving the path from ``root/".git"`` does not follow it: in a linked worktree
+    ``.git`` is a FILE holding ``gitdir: …``, the ``is_dir()`` test fails, and the
+    lock silently moves to that worktree's own directory — two worktrees, one stack,
+    two locks, and a measured 44-50% of concurrent pushes lost while the identical
+    workload inside one worktree loses none (#80).
+
+    ``--git-common-dir`` answers ``.git`` from a main worktree, so the historical
+    path is preserved byte-for-byte: a jarn from before the shared primitive locks
+    ``.git/jarn-checkpoint.lock`` and the two versions must keep excluding each
+    other. The base deliberately omits the suffix; ``file_lock`` appends it.
     """
+    common = _git_common_dir(root)
+    if common is not None and common.is_dir():
+        return common / _LOCK_BASENAME
+    # No usable git answer — keep the pre-#80 behaviour rather than invent a path.
     git_dir = root / ".git"
     if git_dir.is_dir():
         return git_dir / _LOCK_BASENAME

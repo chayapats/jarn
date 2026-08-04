@@ -18,6 +18,7 @@ Scenarios covered:
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -1124,3 +1125,199 @@ def test_jarn_write_locks_are_still_excluded_from_snapshots(repo: Path) -> None:
     # …while the real config beside them IS captured, so the anchor is not a
     # blanket exclusion of .jarn/.
     assert ".jarn/config.yaml" in listing
+
+
+# ---------------------------------------------------------------------------
+# #80 — the checkpoint lock must follow the refs it guards ACROSS worktrees.
+#
+# ``refs/jarn/checkpoints/`` is not a per-worktree namespace (git keeps only HEAD,
+# refs/bisect/*, refs/worktree/* and refs/rewritten/* per worktree), so every
+# linked ``git worktree`` shares one undo/redo stack. Deriving the lock path from
+# ``root/".git"`` did not follow it: in a linked worktree ``.git`` is a FILE, the
+# is_dir() test failed, and the lock moved to that worktree's own directory. Two
+# worktrees, one stack, two locks — 44-50% of concurrent pushes lost, against 0%
+# for the identical workload inside a single worktree.
+# ---------------------------------------------------------------------------
+
+#: Child probe: take the checkpoint lock for a root and say so. Must be a separate
+#: PROCESS — POSIX flock is per open file description, so a second open() from this
+#: process would block against our own lock even when the path is correctly shared,
+#: and would "prove" exclusion that isn't there.
+_LOCK_PROBE = (
+    "import sys;"
+    "from pathlib import Path;"
+    "from jarn.agent import checkpoint as cp;"
+    "ctx = cp._checkpoint_lock(Path(sys.argv[1]));"
+    "ctx.__enter__();"
+    "print('ACQUIRED', flush=True)"
+)
+
+
+@pytest.fixture()
+def linked_worktree(repo: Path, tmp_path: Path) -> Path:
+    """A linked ``git worktree`` of ``repo`` — its ``.git`` is a file, not a dir.
+
+    Placed BESIDE the repo rather than inside it. ``repo`` is ``tmp_path`` itself, so
+    a nested worktree would be an unusual shape that could mask a path difference the
+    real one (a sibling directory, which is how ``git worktree`` is actually used)
+    would expose. The name is derived from ``tmp_path`` so it stays unique per test.
+    """
+    linked = tmp_path.parent / f"linked-{tmp_path.name}"
+    _git(["worktree", "add", "-q", str(linked), "-b", "wt"], cwd=repo)
+    assert (linked / ".git").is_file(), "a linked worktree's .git must be a FILE"
+    return linked
+
+
+def test_lock_base_keeps_its_historical_path_in_a_plain_repo(repo: Path) -> None:
+    """The main-worktree path must not move.
+
+    A jarn from before the shared primitive locks ``.git/jarn-checkpoint.lock``
+    literally; relocating this would silently stop the two versions excluding each
+    other, which is worse than the bug being fixed.
+    """
+    from jarn.agent.checkpoint import _lock_base
+
+    assert _lock_base(repo) == repo / ".git" / "jarn-checkpoint"
+
+
+def test_lock_base_is_shared_with_a_linked_worktree(
+    repo: Path, linked_worktree: Path
+) -> None:
+    """Both worktrees must resolve to ONE lock file, because they share one stack."""
+    from jarn.agent import checkpoint as cp
+
+    # Precondition: the stack really is shared — a ref written from the linked
+    # worktree is visible from the main one. If this ever stops holding, the lock
+    # no longer needs to be shared either and this test is measuring the wrong thing.
+    sha = _head(repo)
+    cp._update_ref(f"{cp._UNDO_PREFIX}0", sha, linked_worktree)
+    assert cp._read_ref(f"{cp._UNDO_PREFIX}0", repo) == sha
+
+    main_base = cp._lock_base(repo)
+    linked_base = cp._lock_base(linked_worktree)
+    # Ask the OS whether it is the same directory rather than comparing resolved
+    # strings. The lock file itself does not exist yet (``file_lock`` appends
+    # ``.lock`` and creates that), and on Windows CI ``tmp_path`` lives under an
+    # 8.3 short name (``RUNNER~1``), where ``Path.resolve()`` on a not-yet-existing
+    # leaf is not a reliable way to decide identity. ``flock`` keys on the inode, so
+    # same-directory + same-name is the invariant that actually matters.
+    assert main_base.name == linked_base.name
+    assert os.path.samefile(main_base.parent, linked_base.parent), (
+        f"{main_base} and {linked_base} must be the same file"
+    )
+
+
+def test_a_linked_worktree_blocks_on_the_main_worktrees_lock(
+    repo: Path, linked_worktree: Path, tmp_path: Path
+) -> None:
+    """Behavioural half: holding the lock in one worktree excludes the other.
+
+    Path equality alone would still pass if ``file_lock`` degraded to a no-op, so
+    this asserts the exclusion itself — and runs a CONTROL probe first, since a
+    child that merely crashed on import would otherwise read as "blocked".
+    """
+    import sys
+
+    from jarn.agent import checkpoint as cp
+
+    def _probe(root: Path, timeout: float) -> str:
+        try:
+            done = subprocess.run(
+                [sys.executable, "-c", _LOCK_PROBE, str(root)],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return "BLOCKED"
+        return done.stdout.strip() or f"FAILED: {done.stderr.strip()[:200]}"
+
+    # CONTROL: an unrelated repo's lock is uncontended, so the probe must succeed.
+    # This proves the probe can acquire at all before we read a timeout as exclusion.
+    other = tmp_path / "other-repo"
+    other.mkdir()
+    _git(["init", "-b", "main"], cwd=other)
+    assert _probe(other, timeout=30) == "ACQUIRED"
+
+    # The real assertion: while THIS process holds the main worktree's lock, a
+    # process working in the linked worktree must not get it.
+    with cp._checkpoint_lock(repo):
+        assert _probe(linked_worktree, timeout=3) == "BLOCKED"
+
+    # …and once released, the same probe goes through — so the block above was the
+    # lock, not a wedged child.
+    assert _probe(linked_worktree, timeout=30) == "ACQUIRED"
+
+
+def test_lock_base_falls_back_when_git_cannot_answer(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing git binary (or a vanished cwd) must degrade, not raise."""
+    from jarn.agent import checkpoint as cp
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(cp, "_git", _boom)
+    assert cp._git_common_dir(repo) is None
+    # Falls back to the pre-#80 answer rather than inventing a path.
+    assert cp._lock_base(repo) == repo / ".git" / "jarn-checkpoint"
+
+
+def test_lock_base_ignores_a_git_too_old_for_the_flag(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``git rev-parse`` echoes an unknown option back verbatim.
+
+    ``--git-common-dir`` only exists from git 2.5, and an older one exits 0 having
+    printed the flag itself — which would otherwise be taken as a directory name.
+    """
+    from jarn.agent import checkpoint as cp
+
+    def _echo(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args, 0, stdout="--git-common-dir\n", stderr="")
+
+    monkeypatch.setattr(cp, "_git", _echo)
+    assert cp._git_common_dir(repo) is None
+    assert cp._lock_base(repo) == repo / ".git" / "jarn-checkpoint"
+
+
+def test_lock_base_outside_a_git_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not a repo at all: keep the historical sibling-file fallback.
+
+    ``GIT_CEILING_DIRECTORIES`` stops git's upward search, so this asserts the real
+    "no repo" branch no matter where the run put ``tmp_path``. Without it the test
+    silently measures the wrong thing whenever pytest's basetemp happens to sit
+    inside a checkout — as it does under ``--basetemp`` in a worktree, which is
+    exactly how this fragility surfaced.
+    """
+    from jarn.agent.checkpoint import _lock_base
+
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    assert _lock_base(plain) == plain / ".jarn-checkpoint"
+
+
+def test_lock_base_from_a_subdirectory_shares_the_repos_lock(repo: Path) -> None:
+    """A root BELOW the repo top level gets the repo's lock, not its own.
+
+    This is a deliberate behaviour change. Previously such a root had no `.git`
+    child, so it fell through to `<root>/.jarn-checkpoint` and two jarns in two
+    subdirectories of one repo excluded nothing — while sharing the one ref stack
+    that lives in the common dir. `--git-common-dir` answers relative to the
+    directory it is asked from, so the join lands on the same file.
+    """
+    from jarn.agent import checkpoint as cp
+
+    nested = repo / "pkg" / "deep"
+    nested.mkdir(parents=True)
+
+    top_base = cp._lock_base(repo)
+    nested_base = cp._lock_base(nested)
+    assert nested_base.name == top_base.name
+    assert os.path.samefile(nested_base.parent, top_base.parent), (
+        f"{nested_base} must be the same file as {top_base}"
+    )
