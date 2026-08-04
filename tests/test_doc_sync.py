@@ -40,9 +40,23 @@ HISTORICAL_COUNT_DOCS = frozenset({
     "PROJECT_AUDIT_2026-06-08.md",   # dated audit, deliberately frozen
 })
 
-# Match prose like "1320 tests", "**1320** tests", "1320 pytest cases".
+# Match prose like "1320 tests", "**1320** tests", "1320 pytest tests",
+# "**1320** pytest cases", "1320 test cases", "2,151 tests".
+#
+# The "cases" spelling is NOT optional to support: JARN.md said `**1995** pytest
+# cases` and the previous pattern — whose comment already claimed to match it —
+# required the word "tests", so that line sat 156 behind while the gate reported the
+# file clean off a second, current line in the same file.
+#
+# "cases" requires the "pytest" prefix. A bare "N cases" is ordinary English ("in 500
+# cases") and matching it would fail the build on prose that has nothing to do with
+# the suite; "N tests" and "N test cases" are not ambiguous that way.
+#
+# The count allows five and six digits and comma grouping, so passing 9,999 tests is
+# not a silent hole.
 _COUNT_RE = re.compile(
-    r"(?:\*\*)?(\d{3,4})(?:\*\*)?\s+(?:pytest\s+)?tests?\b",
+    r"(?:\*\*)?(\d{1,3}(?:,\d{3})+|\d{3,6})(?:\*\*)?\s+"
+    r"(?:pytest\s+cases?|(?:pytest\s+)?tests?)\b",
     re.IGNORECASE,
 )
 
@@ -86,7 +100,34 @@ def _doc_counts(path: Path) -> list[int]:
     if path.name == "RELEASE.md":
         # Only the live "Automated gates" block — sign-off tables are historical.
         text = text.split("## Manual QA", 1)[0]
-    return [int(m.group(1)) for m in _COUNT_RE.finditer(text)]
+    return [int(m.group(1).replace(",", "")) for m in _COUNT_RE.finditer(text)]
+
+
+def test_count_regex_matches_every_phrasing_the_docs_use() -> None:
+    """The pattern is the gate's blind spot, so pin it directly.
+
+    Discovering the right FILES is worth nothing if the pattern cannot see the
+    sentence inside them: JARN.md advertised `**1995** pytest cases` while the gate
+    read only its other, current line and called the file clean. This needs no
+    collection subprocess, so it fails fast and locally.
+    """
+    def seen(text: str) -> list[int]:
+        return [int(m.group(1).replace(",", "")) for m in _COUNT_RE.finditer(text)]
+
+    # Every spelling that appears, or has appeared, in this repo's docs.
+    assert seen("1320 tests") == [1320]
+    assert seen("**1320** tests") == [1320]
+    assert seen("currently **1320** tests)") == [1320]
+    assert seen("1320 pytest tests") == [1320]
+    assert seen("(**1995** pytest cases)") == [1995]      # JARN.md's spelling
+    assert seen("1320 test cases") == [1320]
+    assert seen("2,151 tests") == [2151]                  # comma grouping
+    assert seen("12345 tests") == [12345]                 # past four digits
+
+    # A bare "N cases" is ordinary English and must NOT fail a build.
+    assert seen("resolved in 500 cases") == []
+    # Too short to be a suite size — avoids matching version/section numbers.
+    assert seen("12 tests") == []
 
 
 @pytest.mark.parametrize("doc_path", CURRENT_COUNT_DOCS, ids=lambda p: p.name)
