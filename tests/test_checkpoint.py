@@ -18,6 +18,7 @@ Scenarios covered:
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -1154,8 +1155,14 @@ _LOCK_PROBE = (
 
 @pytest.fixture()
 def linked_worktree(repo: Path, tmp_path: Path) -> Path:
-    """A linked ``git worktree`` of ``repo`` — its ``.git`` is a file, not a dir."""
-    linked = tmp_path / "linked-wt"
+    """A linked ``git worktree`` of ``repo`` — its ``.git`` is a file, not a dir.
+
+    Placed BESIDE the repo rather than inside it. ``repo`` is ``tmp_path`` itself, so
+    a nested worktree would be an unusual shape that could mask a path difference the
+    real one (a sibling directory, which is how ``git worktree`` is actually used)
+    would expose. The name is derived from ``tmp_path`` so it stays unique per test.
+    """
+    linked = tmp_path.parent / f"linked-{tmp_path.name}"
     _git(["worktree", "add", "-q", str(linked), "-b", "wt"], cwd=repo)
     assert (linked / ".git").is_file(), "a linked worktree's .git must be a FILE"
     return linked
@@ -1186,7 +1193,18 @@ def test_lock_base_is_shared_with_a_linked_worktree(
     cp._update_ref(f"{cp._UNDO_PREFIX}0", sha, linked_worktree)
     assert cp._read_ref(f"{cp._UNDO_PREFIX}0", repo) == sha
 
-    assert cp._lock_base(repo).resolve() == cp._lock_base(linked_worktree).resolve()
+    main_base = cp._lock_base(repo)
+    linked_base = cp._lock_base(linked_worktree)
+    # Ask the OS whether it is the same directory rather than comparing resolved
+    # strings. The lock file itself does not exist yet (``file_lock`` appends
+    # ``.lock`` and creates that), and on Windows CI ``tmp_path`` lives under an
+    # 8.3 short name (``RUNNER~1``), where ``Path.resolve()`` on a not-yet-existing
+    # leaf is not a reliable way to decide identity. ``flock`` keys on the inode, so
+    # same-directory + same-name is the invariant that actually matters.
+    assert main_base.name == linked_base.name
+    assert os.path.samefile(main_base.parent, linked_base.parent), (
+        f"{main_base} and {linked_base} must be the same file"
+    )
 
 
 def test_a_linked_worktree_blocks_on_the_main_worktrees_lock(
