@@ -1282,10 +1282,42 @@ def test_lock_base_ignores_a_git_too_old_for_the_flag(
     assert cp._lock_base(repo) == repo / ".git" / "jarn-checkpoint"
 
 
-def test_lock_base_outside_a_git_repo(tmp_path: Path) -> None:
-    """Not a repo at all: keep the historical sibling-file fallback."""
+def test_lock_base_outside_a_git_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not a repo at all: keep the historical sibling-file fallback.
+
+    ``GIT_CEILING_DIRECTORIES`` stops git's upward search, so this asserts the real
+    "no repo" branch no matter where the run put ``tmp_path``. Without it the test
+    silently measures the wrong thing whenever pytest's basetemp happens to sit
+    inside a checkout — as it does under ``--basetemp`` in a worktree, which is
+    exactly how this fragility surfaced.
+    """
     from jarn.agent.checkpoint import _lock_base
 
     plain = tmp_path / "not-a-repo"
     plain.mkdir()
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     assert _lock_base(plain) == plain / ".jarn-checkpoint"
+
+
+def test_lock_base_from_a_subdirectory_shares_the_repos_lock(repo: Path) -> None:
+    """A root BELOW the repo top level gets the repo's lock, not its own.
+
+    This is a deliberate behaviour change. Previously such a root had no `.git`
+    child, so it fell through to `<root>/.jarn-checkpoint` and two jarns in two
+    subdirectories of one repo excluded nothing — while sharing the one ref stack
+    that lives in the common dir. `--git-common-dir` answers relative to the
+    directory it is asked from, so the join lands on the same file.
+    """
+    from jarn.agent import checkpoint as cp
+
+    nested = repo / "pkg" / "deep"
+    nested.mkdir(parents=True)
+
+    top_base = cp._lock_base(repo)
+    nested_base = cp._lock_base(nested)
+    assert nested_base.name == top_base.name
+    assert os.path.samefile(nested_base.parent, top_base.parent), (
+        f"{nested_base} must be the same file as {top_base}"
+    )
