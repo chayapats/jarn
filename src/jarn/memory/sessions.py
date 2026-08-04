@@ -29,6 +29,24 @@ from jarn.config.secrets import redact_secrets as _central_redact_secrets
 # Maximum characters retained from a tool output in the transcript.
 # Large outputs (e.g. full file reads) are truncated to keep JSONL files sane.
 _TRANSCRIPT_MAX_TOOL_CHARS = 2_000
+
+#: Depth limit when walking a tool-argument value. Tool arguments are shaped by the
+#: model and by MCP servers, so the structure is not ours to trust: a deeply nested
+#: payload must not recurse until the stack gives out.
+_TRANSCRIPT_MAX_ARG_DEPTH = 6
+
+#: Element limit per container. Capping each string bounds every leaf, but a list of
+#: ten thousand short strings is still a record nobody wants on disk.
+_TRANSCRIPT_MAX_ARG_ITEMS = 100
+
+#: Characters retained across ALL arguments of one tool call.
+#:
+#: The two bounds above are per-container, so they MULTIPLY: 100 items at each of 6
+#: levels is 10**12 leaves. A structure comfortably inside both can still write an
+#: enormous record — measured, a 60x60x60 nesting of 200-character strings produced a
+#: 44 MB line. This is the bound that actually holds, and it is shared by every
+#: argument of the call rather than granted per key.
+_TRANSCRIPT_MAX_ARG_TOTAL_CHARS = 20_000
 _SQLITE_BUSY_TIMEOUT_MS = 5_000
 _SQLITE_SETUP_ATTEMPTS = 8
 _SQLITE_RETRY_BASE_SECS = 0.025
@@ -204,6 +222,76 @@ class SessionIndex:
         return [SessionInfo(*row) for row in rows]
 
 
+def _cap_transcript_arg(
+    value: Any, *, depth: int = 0, budget: list[int] | None = None
+) -> tuple[Any, bool]:
+    """Redact and size-cap one tool-argument value. Returns ``(value, truncated)``.
+
+    ``budget`` is a single-element list holding the characters still available to the
+    whole call — a mutable cell so the walk spends one shared allowance instead of
+    granting each branch its own. Callers pass one; the default exists so the helper
+    can be exercised on its own.
+
+    :meth:`TranscriptWriter.append` states that the caller must sanitise before
+    passing a record in, and :meth:`TranscriptWriter.write_tool` is that caller. It
+    enforced both halves of the contract — the redactor and the length cap — on
+    TOP-LEVEL strings only, so a string reached through a list or a dict got
+    neither. Structured tool arguments are ordinary (an edit list, an MCP tool's
+    object payload), so this walks the whole value.
+
+    Containers are bounded as well as their leaves: ``_TRANSCRIPT_MAX_ARG_DEPTH``
+    stops the walk, ``_TRANSCRIPT_MAX_ARG_ITEMS`` stops a very wide one. Both mark
+    the result truncated rather than dropping it silently. Scalars pass through
+    untouched, exactly as before — ``append`` serialises with a plain
+    ``json.dumps``, so this must not start converting types it used to leave alone.
+    """
+    if budget is None:
+        budget = [_TRANSCRIPT_MAX_ARG_TOTAL_CHARS]
+
+    if isinstance(value, str):
+        redacted = _central_redact_secrets(value)
+        allowance = min(_TRANSCRIPT_MAX_TOOL_CHARS, max(0, budget[0]))
+        if len(redacted) > allowance:
+            budget[0] -= allowance
+            return redacted[:allowance], True
+        budget[0] -= len(redacted)
+        return redacted, False
+
+    if isinstance(value, dict):
+        if depth >= _TRANSCRIPT_MAX_ARG_DEPTH:
+            return f"<dict omitted: deeper than {_TRANSCRIPT_MAX_ARG_DEPTH} levels>", True
+        out: dict[str, Any] = {}
+        truncated = False
+        for index, (key, item) in enumerate(value.items()):
+            if index >= _TRANSCRIPT_MAX_ARG_ITEMS or budget[0] <= 0:
+                truncated = True
+                break
+            capped, item_truncated = _cap_transcript_arg(
+                item, depth=depth + 1, budget=budget
+            )
+            out[str(key)] = capped
+            truncated = truncated or item_truncated
+        return out, truncated
+
+    if isinstance(value, (list, tuple)):
+        if depth >= _TRANSCRIPT_MAX_ARG_DEPTH:
+            return f"<list omitted: deeper than {_TRANSCRIPT_MAX_ARG_DEPTH} levels>", True
+        items: list[Any] = []
+        truncated = False
+        for index, item in enumerate(value):
+            if index >= _TRANSCRIPT_MAX_ARG_ITEMS or budget[0] <= 0:
+                truncated = True
+                break
+            capped, item_truncated = _cap_transcript_arg(
+                item, depth=depth + 1, budget=budget
+            )
+            items.append(capped)
+            truncated = truncated or item_truncated
+        return items, truncated
+
+    return value, False
+
+
 class TranscriptWriter:
     """Append-only, human-readable JSONL transcript for a single session.
 
@@ -279,21 +367,19 @@ class TranscriptWriter:
         record: dict[str, Any] = {"ts": ts, "type": "tool", "name": name}
         if args is not None:
             # Truncate large string argument values so a wiki_write / write_file
-            # call with full file content doesn't bloat the transcript JSONL.
-            # Non-string values (ints, booleans, lists, …) are kept as-is. String
-            # values are run through the central redactor first so an API key
-            # passed in a tool arg is not persisted verbatim.
+            # call with full file content doesn't bloat the transcript JSONL, and
+            # run every one through the central redactor so a credential passed in a
+            # tool argument is not persisted verbatim. Both apply at any depth — see
+            # ``_cap_transcript_arg``; scalars (ints, booleans, None) are kept as-is.
             capped: dict[str, Any] = {}
+            # One budget for the whole call, so a wide record cannot spend the
+            # allowance once per key.
+            budget = [_TRANSCRIPT_MAX_ARG_TOTAL_CHARS]
             for k, v in args.items():
-                if isinstance(v, str):
-                    rv = _central_redact_secrets(v)
-                    if len(rv) > _TRANSCRIPT_MAX_TOOL_CHARS:
-                        capped[k] = rv[:_TRANSCRIPT_MAX_TOOL_CHARS]
-                        capped[f"{k}__truncated"] = True
-                    else:
-                        capped[k] = rv
-                else:
-                    capped[k] = v
+                value, truncated = _cap_transcript_arg(v, budget=budget)
+                capped[k] = value
+                if truncated:
+                    capped[f"{k}__truncated"] = True
             record["args"] = capped
         if result is not None:
             redacted = _central_redact_secrets(result) if isinstance(result, str) else result

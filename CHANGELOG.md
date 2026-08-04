@@ -7,6 +7,19 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Fixed
 
+- **Transcript tool arguments are capped and redacted at any depth.**
+  `write_tool` enforced both halves of its contract — the length cap and the
+  central redactor — on top-level string arguments only; everything else was
+  written through untouched. Structured arguments are an ordinary shape (an edit
+  list, an MCP tool's object payload), and `TranscriptWriter.append` puts the
+  sanitising burden on its caller. The walk now covers containers, bounded by
+  depth (6), per-container element count (100), and — the bound that actually holds,
+  since the first two multiply — a 20,000-character allowance shared by the whole
+  call. A 60x60x60 nesting of 200-character strings sits inside both per-container
+  limits and wrote a 44 MB line without it. A shortened result is marked
+  `__truncated` rather than dropped silently, and scalars still pass through with
+  their type intact.
+
 - **The `/undo` lock now spans linked git worktrees (#80).**
   `refs/jarn/checkpoints/` is not a per-worktree ref namespace, so every linked
   `git worktree` of a repo shares one undo/redo stack — but the lock guarding it
