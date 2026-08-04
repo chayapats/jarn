@@ -167,9 +167,9 @@ def _validate_account(account: str) -> None:
 def _secret_file_path(service: str, account: str) -> Path:
     _validate_account(service)
     _validate_account(account)
-    from jarn.config.paths import global_home
+    from jarn.config.paths import global_secrets_dir
 
-    return global_home() / "secrets" / service / account
+    return global_secrets_dir() / service / account
 
 
 def _keyring_call(
@@ -267,9 +267,9 @@ def _ensure_secret_tree_permissions(path: Path) -> None:
     Called after writing a file secret so a pre-existing permissive directory
     (e.g. ``~/.jarn`` left at ``755``) cannot expose secrets via group/other read.
     """
-    from jarn.config.paths import global_home
+    from jarn.config.paths import global_secrets_dir
 
-    secrets_root = global_home() / "secrets"
+    secrets_root = global_secrets_dir()
     current = path if path.is_dir() else path.parent
     while True:
         with contextlib.suppress(OSError):

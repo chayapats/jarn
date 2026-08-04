@@ -807,3 +807,282 @@ def test_read_allow_on_benign_candidate_does_not_mask_sensitive(tmp_path):
         PermissionMode.YOLO, rules=PermissionRules(allow=["**/.env"], deny=["**/.env"])
     )
     assert eng3.evaluate(act).decision is Decision.DENY
+
+
+# -- jarn's OWN secret store: un-allowlistable hard DENY (GHSA-x8cp-rh3m-m2gw) --
+#
+# `~/.jarn/secrets/<service>/<account>` holds the provider API keys behind every
+# `file:` secret reference. Its files have no extension and are named after the
+# account, so no `sensitive_read_globs` shape ever described them, and the store is
+# routinely IN SCOPE (find_project_root returns $HOME for any non-project launch dir
+# under it). A read used to auto-ALLOW with no prompt. There is no legitimate agent
+# access, so it is a hard DENY above the allow tier — not an ASK, and not
+# configurable.
+
+
+@pytest.fixture
+def secret_store(tmp_path, monkeypatch):
+    """A JARN_HOME whose secret store holds one stored credential."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / ".jarn"))
+    path = tmp_path / ".jarn" / "secrets" / "jarn" / "groq"
+    path.parent.mkdir(parents=True)
+    path.write_text("gsk_stored_provider_key")
+    return path
+
+
+def test_secret_store_read_is_denied_in_every_mode(secret_store, tmp_path):
+    """Before the fix every one of these auto-ALLOWed with sensitive=False.
+
+    Covers the store FILE and the directory ``ls`` would list, since every
+    path-addressed read tool arrives here as one READ candidate.
+    """
+    for mode in PermissionMode:
+        eng = _engine(mode, project_root=tmp_path)
+        for target in (secret_store, secret_store.parent, secret_store.parent.parent):
+            r = eng.evaluate(Action(ActionKind.READ, str(target)))
+            assert r.decision is Decision.DENY, (mode, target)
+            assert "secret store" in r.reason
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "~/.jarn/secrets/jarn/groq",       # the spelling a model reaches for
+        ".jarn/secrets/jarn/groq",         # relative to the project root
+        ".jarn/secrets",                   # the store directory itself
+        ".jarn/secrets/jarn",              # a service directory inside it
+    ],
+)
+def test_secret_store_denied_by_identity_not_spelling(
+    secret_store, tmp_path, monkeypatch, spelling
+):
+    """Every spelling of the same location resolves to the store and is denied."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    eng = _engine(PermissionMode.YOLO, project_root=tmp_path)
+    assert eng.evaluate(Action(ActionKind.READ, spelling)).decision is Decision.DENY
+
+
+def test_secret_store_symlink_is_denied(secret_store, tmp_path):
+    """A symlink is judged by the file it names, not by how it is spelled."""
+    link = tmp_path / "innocent-notes.txt"
+    link.symlink_to(secret_store)
+    eng = _engine(PermissionMode.YOLO, project_root=tmp_path)
+    assert eng.evaluate(Action(ActionKind.READ, str(link))).decision is Decision.DENY
+
+
+def test_secret_store_allow_rule_cannot_unlock_it(secret_store, tmp_path):
+    """The hard floor: no config allow, session allow, or YOLO reaches the store."""
+    eng = _engine(
+        PermissionMode.YOLO,
+        project_root=tmp_path,
+        rules=PermissionRules(allow=[str(secret_store), "**/secrets/**"]),
+    )
+    act = Action(ActionKind.READ, str(secret_store))
+    assert eng.evaluate(act).decision is Decision.DENY
+    eng._session_allow.append(str(secret_store))
+    assert eng.evaluate(act).decision is Decision.DENY
+
+
+def test_secret_store_deny_survives_empty_sensitive_globs(secret_store, tmp_path):
+    """`sensitive_read_globs: []` opts out of the ASK list — never out of this."""
+    eng = _engine(
+        PermissionMode.YOLO,
+        project_root=tmp_path,
+        rules=PermissionRules(sensitive_read_globs=[]),
+    )
+    assert eng.evaluate(Action(ActionKind.READ, str(secret_store))).decision is Decision.DENY
+
+
+def test_secret_store_glob_candidate_denied(secret_store, tmp_path):
+    """A benign grep scope cannot mask a `glob` narrowed onto the store.
+
+    The glob has no file identity to resolve, so this exercises the lexical backstop.
+    """
+    eng = _engine(PermissionMode.YOLO, project_root=tmp_path)
+    act = Action(
+        ActionKind.READ,
+        target=str(tmp_path),
+        read_targets=(str(tmp_path), ".jarn/secrets/**"),
+    )
+    assert eng.evaluate(act).decision is Decision.DENY
+
+
+def test_secret_store_denied_in_virtual_read_namespace(secret_store, tmp_path):
+    """The local backend shows `/x` for `<project_root>/x`; canonicalization runs
+    first, so the virtual spelling of the store is denied by host identity."""
+    eng = _engine(PermissionMode.YOLO, project_root=tmp_path, virtual_reads=True)
+    r = eng.evaluate(Action(ActionKind.READ, "/.jarn/secrets/jarn/groq"))
+    assert r.decision is Decision.DENY
+    # A benign virtual read is untouched.
+    assert eng.evaluate(Action(ActionKind.READ, "/notes.txt")).decision is Decision.ALLOW
+
+
+def test_secret_store_write_is_denied(secret_store, tmp_path):
+    """The agent may not clobber stored credentials either."""
+    eng = _engine(PermissionMode.YOLO, project_root=tmp_path)
+    r = eng.evaluate(Action(ActionKind.WRITE, str(secret_store)))
+    assert r.decision is Decision.DENY
+    assert "secret store" in r.reason
+
+
+def test_secret_store_denied_without_a_project_root(secret_store):
+    """No configured root (jarn launched outside a project) must not lift the floor."""
+    eng = _engine(PermissionMode.YOLO)
+    assert eng.evaluate(Action(ActionKind.READ, str(secret_store))).decision is Decision.DENY
+
+
+def test_default_home_store_denied_while_jarn_home_is_overridden(tmp_path, monkeypatch):
+    """An override does not retract keys an earlier run wrote to the default home."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "elsewhere"))
+    default_key = tmp_path / ".jarn" / "secrets" / "jarn" / "openrouter"
+    default_key.parent.mkdir(parents=True)
+    default_key.write_text("sk-or-v1-earlier-run")
+    eng = _engine(PermissionMode.YOLO, project_root=tmp_path)
+    assert eng.evaluate(Action(ActionKind.READ, str(default_key))).decision is Decision.DENY
+
+
+def test_secret_store_denied_when_home_is_unresolvable(tmp_path, monkeypatch):
+    """`Path.home()` raises when $HOME is unset and the uid has no passwd entry.
+
+    No store directory can be located, so the lexical backstop must still hold —
+    and locating nothing must not raise.
+    """
+    def _no_home():
+        raise RuntimeError("Could not determine home directory")
+
+    monkeypatch.delenv("JARN_HOME", raising=False)
+    monkeypatch.setattr("pathlib.Path.home", _no_home)
+    from jarn.config.paths import secret_store_dirs
+
+    assert secret_store_dirs() == set()
+    eng = _engine(PermissionMode.YOLO)
+    r = eng.evaluate(Action(ActionKind.READ, "/home/u/.jarn/secrets/jarn/groq"))
+    assert r.decision is Decision.DENY
+
+
+def test_secret_store_denial_is_never_remembered(secret_store, tmp_path):
+    """A DENY the user cannot approve must not be persistable as an ALWAYS rule."""
+    eng = _engine(PermissionMode.ASK, project_root=tmp_path)
+    r = eng.evaluate(Action(ActionKind.READ, str(secret_store)))
+    assert r.block_remember_always is True
+
+
+def test_secret_store_blocked_from_broad_grep_results(secret_store, tmp_path):
+    """The result filter agrees with the gate: a stored key never reaches the model,
+    and an allow rule cannot re-open it there either."""
+    eng = _engine(
+        PermissionMode.YOLO,
+        project_root=tmp_path,
+        rules=PermissionRules(allow=[str(secret_store)]),
+    )
+    assert eng.read_content_blocked(str(secret_store)) is True
+    assert eng.is_read_denied_path(str(secret_store)) is True
+
+
+def test_other_jarn_home_files_stay_readable(secret_store, tmp_path):
+    """Scope discipline: only the secret store is a hard floor. Config, sessions and
+    project files keep their existing treatment (this fix must not become a blanket
+    ban on ~/.jarn, which would break ordinary self-inspection)."""
+    eng = _engine(PermissionMode.ASK, project_root=tmp_path)
+    for readable in (
+        tmp_path / ".jarn" / "config.yaml",
+        tmp_path / ".jarn" / "sessions" / "abc.jsonl",
+        tmp_path / ".jarn" / "wiki" / "index.md",
+        tmp_path / "src" / "main.py",
+    ):
+        r = eng.evaluate(Action(ActionKind.READ, str(readable)))
+        assert r.decision is Decision.ALLOW, readable
+
+
+# -- Bypasses found by adversarial review of the fix above -------------------
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        ".jarn/SECRETS/jarn/groq",   # APFS/NTFS open the same inode
+        ".jarn/sEcReTs/jarn/groq",
+        ".JARN/secrets/jarn/groq",
+        ".jarn/ſecretſ/jarn/groq",  # U+017F folds to 's' on APFS
+    ],
+)
+def test_secret_store_case_variant_cannot_walk_past_the_floor(
+    secret_store, tmp_path, variant
+):
+    """`Path.resolve()` does not canonicalize case, and `PurePath.__eq__`/`fnmatch`
+    are byte-exact — so on a case-insensitive filesystem these spellings named the
+    SAME inode as the store while comparing unequal, defeating the gate and both
+    result-filter backstops at once. A plain `lower()` would still miss the U+017F
+    form; the check casefolds."""
+    eng = _engine(PermissionMode.YOLO, project_root=tmp_path)
+    target = str(tmp_path / variant)
+    assert eng.evaluate(Action(ActionKind.READ, target)).decision is Decision.DENY
+    assert eng.evaluate(Action(ActionKind.WRITE, target)).decision is Decision.DENY
+    assert eng.read_content_blocked(target) is True
+    assert eng.is_read_denied_path(target) is True
+
+
+@pytest.mark.parametrize("project_level", [False, True])
+def test_secret_store_symlink_denied_without_a_project_root(
+    secret_store, tmp_path, project_level
+):
+    """With no configured root the alias set derives no file identity of its own, so
+    a symlink into a store reached the lexical check under its innocent spelling and
+    passed. The resolved identity is now folded into the aliases.
+
+    The ``project_level`` case is the one that actually pins that fold: a
+    ``<repo>/.jarn/secrets`` is not in ``secret_store_dirs()``, so the identity check
+    is blind to it and only the folded alias can produce the deny.
+    """
+    if project_level:
+        target = tmp_path / "repo" / ".jarn" / "secrets" / "acme" / "token"
+        target.parent.mkdir(parents=True)
+        target.write_text("PROJECT_LEVEL_SECRET")
+    else:
+        target = secret_store
+    link = tmp_path / "innocent-notes.txt"
+    link.symlink_to(target)
+    eng = _engine(PermissionMode.YOLO)  # rootless
+    assert eng.evaluate(Action(ActionKind.READ, str(link))).decision is Decision.DENY
+    assert eng.read_content_blocked(str(link)) is True
+    assert eng.is_read_denied_path(str(link)) is True
+
+
+@pytest.mark.parametrize("variant", ["secrets", "SECRETS", "sEcReTs", "ſecretſ"])
+def test_case_variant_denied_under_a_jarn_home_not_spelled_dot_jarn(
+    tmp_path, monkeypatch, variant
+):
+    """``action/action.yml`` sets ``JARN_HOME=$RUNNER_TEMP/jarn-home``, so no
+    ``**/.jarn/secrets`` pattern can describe the store and ``_path_within``'s
+    casefold is the ONLY thing guarding it. Deliberately avoids the ``secret_store``
+    fixture, whose home always spells ``.jarn`` and would let the lexical backstop
+    mask a broken identity check."""
+    jarn_home = tmp_path / "runner-temp" / "jarn-home"
+    monkeypatch.setenv("JARN_HOME", str(jarn_home))
+    key = jarn_home / "secrets" / "jarn" / "openrouter"
+    key.parent.mkdir(parents=True)
+    key.write_text("sk-or-v1-key")
+    eng = _engine(PermissionMode.YOLO, project_root=tmp_path)
+    target = str(jarn_home / variant / "jarn" / "openrouter")
+    assert eng.evaluate(Action(ActionKind.READ, target)).decision is Decision.DENY
+    assert eng.evaluate(Action(ActionKind.WRITE, target)).decision is Decision.DENY
+
+
+def test_secret_store_write_denied_in_the_virtual_namespace(tmp_path, monkeypatch):
+    """WRITE targets are not canonicalized by ``_canonicalized_action`` (READ-only),
+    so under the local backend's virtual namespace a store write was judged on
+    ``/jarn-home/...`` as a HOST path — which is not the store — and only the lexical
+    ``.jarn`` glob stood in the way. A home not spelled ``.jarn`` had nothing."""
+    jarn_home = tmp_path / "jarn-home"
+    monkeypatch.setenv("JARN_HOME", str(jarn_home))
+    key = jarn_home / "secrets" / "jarn" / "groq"
+    key.parent.mkdir(parents=True)
+    key.write_text("gsk_key")
+    eng = _engine(PermissionMode.YOLO, project_root=tmp_path, virtual_reads=True)
+    virtual = "/jarn-home/secrets/jarn/groq"
+    assert eng.evaluate(Action(ActionKind.READ, virtual)).decision is Decision.DENY
+    assert eng.evaluate(Action(ActionKind.WRITE, virtual)).decision is Decision.DENY
+    # An ordinary virtual write is untouched.
+    assert eng.evaluate(Action(ActionKind.WRITE, "/src/main.py")).decision is not Decision.DENY

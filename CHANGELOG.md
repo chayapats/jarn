@@ -5,6 +5,27 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+### Security
+
+- **The agent's file tools can no longer read or write J.A.R.N.'s own secret
+  store.** `~/.jarn/secrets/` — the file store behind `file:<service>/<account>`
+  references, and where `jarn login` puts provider API keys when no OS keychain is
+  available — was not described by any `sensitive_read_globs` pattern, so a
+  `read_file` of a stored credential was evaluated as an ordinary read and
+  auto-allowed with no prompt. The store is now an un-allowlistable `DENY`
+  enforced above the allow tier for every path-addressed tool (`read_file`, `ls`,
+  `glob`, `grep`, `write_file`, `edit_file`): no permission mode (`yolo`
+  included), `allow` rule, remembered approval, or `sensitive_read_globs: []`
+  opt-out reaches it. The same check backs the result filter, so a stored key
+  cannot surface as a `grep` hit, and a `glob` listing has store paths dropped from
+  it even when the pattern never spells the path literally. Matching is by resolved
+  path identity — it follows `$JARN_HOME`, covers the default `~/.jarn` alongside
+  an override, catches a symlink by the file it names, and is case-insensitive so a
+  `SECRETS` spelling cannot walk past it on APFS or NTFS. Shell (`execute`,
+  `run_in_background`) is *not* covered and remains gated by the coarse mode and
+  the danger-guard, and the result filter stays best-effort — both boundaries are
+  documented in `SECURITY.md`. `GHSA-x8cp-rh3m-m2gw`.
+
 ## [0.9.1] - 2026-07-17
 
 ### Security

@@ -67,6 +67,38 @@ def _global_jarn_dirs() -> set[Path]:
     return dirs
 
 
+def global_secrets_dir() -> Path:
+    """Return ``~/.jarn/secrets/`` — J.A.R.N.'s own file-backed secret store.
+
+    The single source of truth for where ``file:<service>/<account>`` secret
+    references live (see :mod:`jarn.config.secrets`). The permission engine reads
+    it too, to refuse the agent any access to it.
+    """
+    return global_home() / "secrets"
+
+
+def secret_store_dirs() -> set[Path]:
+    """Every resolved directory that can hold J.A.R.N.'s own stored credentials.
+
+    Covers the active ``JARN_HOME`` *and* the default ``~/.jarn``: setting an
+    override does not retract keys an earlier run already wrote under the default
+    home, so both must stay off-limits to the agent.
+
+    Resolved best-effort with the same discipline as :func:`_global_jarn_dirs` —
+    ``Path.home()`` raises when ``$HOME`` is unset and the uid has no passwd
+    entry, and that must never take the permission layer down with it. An empty
+    result means "no store directory could be located", which callers treat as
+    "fall back to the lexical guard", never as "nothing to protect".
+    """
+    dirs: set[Path] = set()
+    for lookup in (global_home, default_global_home):
+        try:
+            dirs.add((lookup() / "secrets").resolve())
+        except (OSError, RuntimeError):
+            continue
+    return dirs
+
+
 def jarn_home_overridden() -> bool:
     """True when ``JARN_HOME`` redirects away from the default ``~/.jarn``."""
     override = os.environ.get("JARN_HOME")

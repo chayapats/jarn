@@ -42,6 +42,32 @@ in your project directory when you approve them (or automatically in permissive 
   `InlineSecretWarning` for any literal that looks like a real key, and rejects
   it outright when `strict_secrets: true` (recommended for CI / shared hosts).
   Prefer `keychain:jarn/<provider>`, `file:jarn/<provider>`, or `${ENV_VAR}`.
+  The file store behind `file:<service>/<account>` — `~/.jarn/secrets/` — is a
+  **hard floor for the agent's path-addressed tools**: `read_file`, `ls`, `glob`,
+  `grep`, `write_file` and `edit_file` are denied on it in every mode including
+  `yolo`, above the allow tier, so no `allow` rule, remembered approval, or
+  `sensitive_read_globs` setting can unlock it. Matching is by resolved path
+  identity — it follows `$JARN_HOME`, catches a symlink by the file it names, and
+  is case-insensitive so a `SECRETS` spelling cannot walk past it on a
+  case-insensitive filesystem (APFS, NTFS). A spelling backstop denies any path
+  ending in `.jarn/secrets` wherever it sits, so a project-level
+  `<repo>/.jarn/secrets/` is treated the same way. Three boundaries worth knowing:
+  - **Shell is not covered (`execute`, `run_in_background`).** A shell command
+    (`cat ~/.jarn/secrets/...`) is gated by the coarse permission mode and the
+    danger-guard like any other command — which means `yolo` runs it. Shell is a
+    general-purpose escape from every path-level control, not this one
+    specifically; run untrusted work under `execution.backend: docker` or an OS
+    sandbox.
+  - **`~/.jarn/config.yaml` is not covered**, so an inline plaintext key there
+    stays readable by the agent — another reason to prefer a secret reference
+    over a literal.
+  - **The `grep`/`glob` result filter is best-effort, not a boundary.** It is what
+    stops a broad search whose *scope* looked benign from returning restricted
+    content, but it works on tool output, and `grep` deliberately reports that it
+    redacted something. Repeated literal probing can therefore still infer facts
+    about a restricted file — that a given account exists, or that a string occurs
+    in it — without the contents ever being surfaced. The hard controls remain the
+    pre-execution gate above and OS-level isolation.
 - **`JARN_HOME` override:** Global state (config, secrets, trust store, sessions) lives
   under `~/.jarn` by default. Setting `JARN_HOME` redirects all of that to another
   directory. A hijacked environment — a CI job, a shared shell, or instructions in an

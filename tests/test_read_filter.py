@@ -19,7 +19,7 @@ from langchain_core.messages import ToolMessage
 
 from jarn.agent.local_backend import CancellableLocalShellBackend
 from jarn.agent.read_filter import ReadResultFilterMiddleware
-from jarn.config.schema import PermissionRules
+from jarn.config.schema import PermissionMode, PermissionRules
 from jarn.permissions import Action, ActionKind, PermissionEngine
 
 
@@ -785,3 +785,110 @@ def test_engine_classifies_windows_secret_path_as_blocked():
     assert engine.read_content_blocked(r"C:\Users\runner\Temp\proj\server.pem")
     assert engine.read_content_blocked(r"C:\Users\runner\Temp\proj\id_rsa")
     assert not engine.read_content_blocked(r"C:\Users\runner\Temp\proj\src\app.py")
+
+
+# -- glob: read-denied paths must not enumerate ------------------------------
+#
+# `glob` returns PATHS, not contents, and the pre-exec gate sees only the PATTERN.
+# A pattern that never spells the target literally — `glob('secrets/*/*',
+# path='/.jarn')`, or any pattern at all under a `JARN_HOME` no hardcoded glob can
+# predict — is judged benign and then enumerates jarn's own secret store: which
+# providers are configured, under which account names. Only the concrete matched
+# paths can be judged by identity, so the RESULT is the only place that reaches it.
+
+
+def _glob_message(paths: list[str]) -> ToolMessage:
+    """Mirror deepagents' glob rendering: `str(truncate_if_too_long(paths))`."""
+    return ToolMessage(content=str(paths), name="glob", tool_call_id="g1")
+
+
+def _glob_call() -> dict:
+    return {"name": "glob", "args": {"pattern": "secrets/*/*", "path": "/.jarn"}, "id": "g1"}
+
+
+def test_glob_results_drop_denied_paths(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / ".jarn"))
+    store = tmp_path / ".jarn" / "secrets" / "jarn"
+    store.mkdir(parents=True)
+    (store / "groq").write_text("gsk_key")
+    (store / "openrouter").write_text("sk-or-key")
+    eng = PermissionEngine(mode=PermissionMode.YOLO, project_root=tmp_path)
+    mw = ReadResultFilterMiddleware(eng)
+
+    listed = [str(store / "groq"), str(store / "openrouter"), str(tmp_path / "src.py")]
+    # Through the production seam, so deleting the `glob` branch in _filter's
+    # dispatch fails this test instead of silently unwiring the control.
+    out = mw.wrap_tool_call(_Req(_glob_call()), lambda _r: _glob_message(listed))
+    assert out.content == str([str(tmp_path / "src.py")])
+
+
+def test_glob_results_untouched_when_nothing_denied(tmp_path):
+    eng = PermissionEngine(mode=PermissionMode.YOLO, project_root=tmp_path)
+    mw = ReadResultFilterMiddleware(eng)
+    listed = [str(tmp_path / "a.py"), str(tmp_path / "b.py")]
+    original = _glob_message(listed)
+    out = mw._filter_glob(_glob_call(), original)
+    assert out is original  # identity: no copy when nothing changed
+
+
+def test_glob_sensitive_but_not_denied_paths_still_list(tmp_path):
+    """Deny-only, like the read_file backstop: a .env's NAME is not the secret, so a
+    merely sensitive path keeps listing."""
+    eng = PermissionEngine(mode=PermissionMode.YOLO, project_root=tmp_path)
+    mw = ReadResultFilterMiddleware(eng)
+    listed = [str(tmp_path / ".env")]
+    out = mw._filter_glob(_glob_call(), _glob_message(listed))
+    assert out.content == str(listed)
+
+
+def test_glob_error_content_passes_through(tmp_path):
+    eng = PermissionEngine(mode=PermissionMode.YOLO, project_root=tmp_path)
+    mw = ReadResultFilterMiddleware(eng)
+    err = ToolMessage(content="Error: glob timed out after 20.0s.", name="glob", tool_call_id="g1")
+    assert mw._filter_glob(_glob_call(), err) is err
+
+
+def test_glob_all_denied_is_indistinguishable_from_no_matches(tmp_path, monkeypatch):
+    """An all-denied glob must render exactly as the backend renders a genuine empty
+    result. A distinct sentinel would be a one-bit "did this pattern hit the store?"
+    oracle, and because the gate judges a glob on its PATTERN, an attacker can probe
+    it with patterns that never spell the store path and walk out the account names.
+    """
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / ".jarn"))
+    store = tmp_path / ".jarn" / "secrets" / "jarn"
+    store.mkdir(parents=True)
+    (store / "groq").write_text("gsk_key")
+    eng = PermissionEngine(mode=PermissionMode.YOLO, project_root=tmp_path)
+    mw = ReadResultFilterMiddleware(eng)
+    all_denied = mw._filter_glob(_glob_call(), _glob_message([str(store / "groq")]))
+    genuinely_empty = mw._filter_glob(_glob_call(), _glob_message([]))
+    assert all_denied.content == "[]"
+    assert all_denied.content == genuinely_empty.content
+
+
+def test_real_glob_tool_output_is_filtered(tmp_path, monkeypatch):
+    """Pin deepagents' glob RENDERING contract with the real tool.
+
+    ``_parse_glob_paths`` fails OPEN by design (an ``Error: glob timed out …`` string
+    must pass through untouched), so if deepagents ever stops rendering results as a
+    ``list[str]`` repr, this control dies silently and every unit test above — which
+    builds the ToolMessage itself — keeps passing. This one would go red.
+    """
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / ".jarn"))
+    store = tmp_path / ".jarn" / "secrets" / "jarn"
+    store.mkdir(parents=True)
+    (store / "groq").write_text("gsk_key")
+    (tmp_path / "src.py").write_text("print(1)\n")
+
+    backend = CancellableLocalShellBackend(root_dir=str(tmp_path), virtual_mode=True)
+    matches = backend.glob("**/*", path="/").matches or []
+    rendered = str([m.get("path", "") for m in matches])
+
+    eng = PermissionEngine(mode=PermissionMode.YOLO, project_root=tmp_path, virtual_reads=True)
+    mw = ReadResultFilterMiddleware(eng)
+    msg = ToolMessage(content=rendered, name="glob", tool_call_id="g1")
+    out = mw.wrap_tool_call(_Req(_glob_call()), lambda _r: msg)
+
+    assert "groq" in rendered, "fixture must actually produce a store hit to filter"
+    assert "groq" not in out.content
+    assert "src.py" in out.content
