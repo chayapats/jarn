@@ -38,15 +38,21 @@ class TokenCounts(NamedTuple):
 
 
 def _as_int(value: Any) -> int:
-    """Coerce a reported count to a non-negative-ish int, never raising.
+    """Coerce a reported count to a non-negative int, never raising.
 
     Providers have shipped ``None`` here, and a future one may ship a string.
-    These figures drive observability and a soft budget, so a malformed field must
-    degrade to 0 rather than take down a turn that is otherwise fine — the same
-    best-effort policy the write locks follow.
+    These figures drive observability and a soft budget, never the correctness of
+    the turn itself, so a malformed field must degrade to 0 rather than take down a
+    turn that is otherwise fine — the same best-effort policy the write locks follow.
+
+    Negatives are clamped for the same reason. A token count below zero is
+    malformed by definition, and letting one through would flow into ``cost_of`` as
+    a negative charge — the streaming path's monotonic check reads a negative
+    cumulative as a fresh API call, so the bogus figure would be recorded outright
+    rather than differenced away.
     """
     try:
-        return int(value or 0)
+        return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
 

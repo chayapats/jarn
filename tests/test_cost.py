@@ -1383,6 +1383,21 @@ def test_normalize_usage_survives_malformed_counts():
     assert counts == (0, 0, 0, 0)
 
 
+def test_normalize_usage_clamps_negative_counts():
+    """A negative token count is malformed by definition, and must not reach
+    ``cost_of`` as a negative charge. The streaming path reads a negative cumulative
+    as a fresh API call, so it would be recorded outright rather than differenced
+    away."""
+    from jarn.cost.usage import normalize_usage
+
+    counts = normalize_usage({
+        "input_tokens": -500,
+        "output_tokens": 10,
+        "input_token_details": {"cache_read": -1, "cache_creation": -9},
+    })
+    assert counts == (0, 10, 0, 0)
+
+
 def test_normalize_usage_without_cache_details():
     """A provider or turn with no caching at all reports the plain pair."""
     from jarn.cost.usage import normalize_usage
