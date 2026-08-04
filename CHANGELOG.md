@@ -13,9 +13,12 @@ All notable changes to J.A.R.N. are documented here. Format follows
   written through untouched. Structured arguments are an ordinary shape (an edit
   list, an MCP tool's object payload), and `TranscriptWriter.append` puts the
   sanitising burden on its caller. The walk now covers containers, bounded by
-  depth (6) and per-container element count (100) so capping each leaf is not the
-  only protection, and marks a shortened result `__truncated` rather than dropping
-  content silently. Scalars still pass through with their type intact.
+  depth (6), per-container element count (100), and — the bound that actually holds,
+  since the first two multiply — a 20,000-character allowance shared by the whole
+  call. A 60x60x60 nesting of 200-character strings sits inside both per-container
+  limits and wrote a 44 MB line without it. A shortened result is marked
+  `__truncated` rather than dropped silently, and scalars still pass through with
+  their type intact.
 
 - **The `/undo` lock now spans linked git worktrees (#80).**
   `refs/jarn/checkpoints/` is not a per-worktree ref namespace, so every linked

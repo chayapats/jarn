@@ -536,6 +536,46 @@ def test_tool_arg_wide_and_deep_containers_are_bounded(tmp_path: Path) -> None:
     assert "omitted" in json.dumps(args_recorded["deep"])
 
 
+def test_tool_arg_total_budget_bounds_the_multiplicative_worst_case(tmp_path: Path) -> None:
+    """The per-container bounds MULTIPLY, so on their own they bound very little.
+
+    100 items at each of 6 levels is 10**12 leaves. A structure comfortably inside
+    both limits still wrote a 44 MB line before the shared budget existed, from a
+    nesting no deeper than a tool returning grouped results.
+    """
+    from jarn.memory.sessions import _TRANSCRIPT_MAX_ARG_TOTAL_CHARS
+
+    node: object = ["s" * 200] * 60
+    for _ in range(2):
+        node = [node] * 60
+
+    w = TranscriptWriter("budget", sessions_dir=tmp_path)
+    w.write_tool("grouped", ts=1.0, args={"payload": node})
+    w.close()
+
+    written = w.path.stat().st_size
+    assert written < _TRANSCRIPT_MAX_ARG_TOTAL_CHARS * 2, (
+        f"one record wrote {written:,} bytes against a {_TRANSCRIPT_MAX_ARG_TOTAL_CHARS:,} "
+        "character budget"
+    )
+    assert json.loads(w.path.read_text(encoding="utf-8").strip())["args"]["payload__truncated"]
+
+
+def test_tool_arg_budget_is_shared_across_keys(tmp_path: Path) -> None:
+    """One allowance per CALL, not per argument — otherwise a wide record just
+    spends it again for every key it carries."""
+    from jarn.memory.sessions import _TRANSCRIPT_MAX_ARG_TOTAL_CHARS
+
+    w = TranscriptWriter("shared-budget", sessions_dir=tmp_path)
+    w.write_tool("many_args", ts=1.0, args={f"k{i}": "z" * 2_000 for i in range(50)})
+    w.close()
+
+    written = w.path.stat().st_size
+    assert written < _TRANSCRIPT_MAX_ARG_TOTAL_CHARS * 2, (
+        f"50 keys wrote {written:,} bytes; a per-key budget would allow ~100,000"
+    )
+
+
 def test_tool_arg_scalars_keep_their_type(tmp_path: Path) -> None:
     """Walking the value must not start converting types it used to leave alone.
 
