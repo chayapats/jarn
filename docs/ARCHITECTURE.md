@@ -148,6 +148,7 @@ can force a confirmation even in YOLO mode.
 - `config/profiles.py` — named policy presets; untrusted `review-only` floor logic.
 - `config/settings.py` — `SETTINGS` allowlist, `ConfigStore`, `ConfigPanel`; `/config` panel backend.
 - `memory/wiki.py` — wiki page CRUD, slug sanitization, trust-gated project tier.
+- `util/atomic.py` — `atomic_write_text` (unique tmp + `os.replace`) and `file_lock` (cross-process, POSIX `flock` / Windows `msvcrt`). Every store that derives new content from the current file holds the lock across load-mutate-publish; the publisher itself never locks, so a caller's lock cannot deadlock against it.
 - `headless.py` — single-turn agent runner for `jarn -p`; fail-closed tool gate.
 - `compat.py` — context-file resolution order and `.claude/` directory discovery.
 

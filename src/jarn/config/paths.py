@@ -8,7 +8,9 @@ directory, a ``JARN.md`` file, or a ``.git`` directory — in that order.
 
 from __future__ import annotations
 
+import logging
 import os
+import stat
 from pathlib import Path
 
 import platformdirs
@@ -62,6 +64,110 @@ def _global_jarn_dirs() -> set[Path]:
     for lookup in (global_home, default_global_home):
         try:
             dirs.add(lookup().resolve())
+        except (OSError, RuntimeError):
+            continue
+    return dirs
+
+
+#: Owner-only. The global tier holds the prompt history, session transcripts, the
+#: wiki and memory the agent writes for itself, the trust store, conversation
+#: state and the config — all of it readable by every other local account when the
+#: directory is created at the default umask (``0755`` on a stock macOS install).
+#: That is negligible on a single-user laptop and is not on a shared host or the
+#: always-on VPS appliance jarn is meant to run as.
+GLOBAL_HOME_MODE = 0o700
+
+#: Set when :func:`ensure_global_home` repairs the mode, and drained by
+#: ``setup_logging``. The repair necessarily happens BEFORE logging is configured
+#: — configuring it creates ``~/.jarn/logs``, which would itself create the home
+#: at the umask first — so a warning emitted at repair time reaches stderr through
+#: ``logging.lastResort`` and never the log file. Buffering it gives the operator
+#: both: the immediate notice, and a durable record.
+_pending_tighten_notice: str | None = None
+
+
+def take_tighten_notice() -> str | None:
+    """Return and clear the pending "tightened permissions" notice, if any."""
+    global _pending_tighten_notice
+    notice, _pending_tighten_notice = _pending_tighten_notice, None
+    return notice
+
+
+def ensure_global_home() -> Path | None:
+    """Create the global home if missing and hold it at owner-only permissions.
+
+    Idempotent, cheap, and safe to call on every start — which it must be, for two
+    reasons. ``mkdir(mode=…)`` is masked by the umask AND is a no-op for a
+    directory that already exists, so a create-time mode alone would leave every
+    install already in the field wide open; only the explicit ``chmod`` repairs
+    those. And the home is created implicitly by whichever subsystem touches it
+    first — the prompt history, the log file, the session index — so pinning it at
+    the two ``mkdir`` call sites that name it explicitly would miss most starts.
+
+    Only ever TIGHTENS, and says so when it does — immediately on stderr, and
+    again in the log file once logging is configured (see
+    :data:`_pending_tighten_notice` for why it takes two paths).
+
+    Never raises. A missing or read-only home is a real configuration (see
+    :func:`global_home`) and must not be what takes the process down. Returns the
+    home, or ``None`` when the host could not answer where it is.
+    """
+    try:
+        home = global_home()
+    except (OSError, RuntimeError):
+        return None
+    try:
+        home.mkdir(parents=True, exist_ok=True, mode=GLOBAL_HOME_MODE)
+    except OSError:
+        return home
+    if os.name == "nt":  # pragma: no cover - POSIX mode bits are not meaningful
+        return home
+    try:
+        current = stat.S_IMODE(home.stat().st_mode)
+    except OSError:
+        return home
+    if current & 0o077:
+        try:
+            home.chmod(GLOBAL_HOME_MODE)
+        except OSError:
+            return home
+        global _pending_tighten_notice
+        _pending_tighten_notice = (
+            f"Tightened permissions on {home} from {current:o} to "
+            f"{GLOBAL_HOME_MODE:o} — it held prompt history, transcripts, memory "
+            "and the trust store, readable by other local users."
+        )
+        logging.getLogger("jarn").warning("%s", _pending_tighten_notice)
+    return home
+
+
+def global_secrets_dir() -> Path:
+    """Return ``~/.jarn/secrets/`` — J.A.R.N.'s own file-backed secret store.
+
+    The single source of truth for where ``file:<service>/<account>`` secret
+    references live (see :mod:`jarn.config.secrets`). The permission engine reads
+    it too, to refuse the agent any access to it.
+    """
+    return global_home() / "secrets"
+
+
+def secret_store_dirs() -> set[Path]:
+    """Every resolved directory that can hold J.A.R.N.'s own stored credentials.
+
+    Covers the active ``JARN_HOME`` *and* the default ``~/.jarn``: setting an
+    override does not retract keys an earlier run already wrote under the default
+    home, so both must stay off-limits to the agent.
+
+    Resolved best-effort with the same discipline as :func:`_global_jarn_dirs` —
+    ``Path.home()`` raises when ``$HOME`` is unset and the uid has no passwd
+    entry, and that must never take the permission layer down with it. An empty
+    result means "no store directory could be located", which callers treat as
+    "fall back to the lexical guard", never as "nothing to protect".
+    """
+    dirs: set[Path] = set()
+    for lookup in (global_home, default_global_home):
+        try:
+            dirs.add((lookup() / "secrets").resolve())
         except (OSError, RuntimeError):
             continue
     return dirs

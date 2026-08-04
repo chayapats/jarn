@@ -18,6 +18,7 @@ from pathlib import Path
 
 from jarn.config import paths
 from jarn.memory.tokens import truncate_to_token_budget
+from jarn.util.atomic import atomic_write_text, file_lock
 
 #: Slugify: keep only letters, digits, hyphens, underscores. Max 80 chars.
 _SAFE_SLUG_RE = re.compile(r"[^a-z0-9_\-]+")
@@ -181,7 +182,7 @@ class WikiStore:
         pages_dir = self._resolve_write_dir(tier)
         pages_dir.mkdir(parents=True, exist_ok=True)
         path = pages_dir / f"{slug}.md"
-        path.write_text(content, encoding="utf-8")
+        atomic_write_text(path, content)
         self._rebuild_index(pages_dir.parent)
         return f"{tier}:{slug}.md"
 
@@ -194,27 +195,36 @@ class WikiStore:
         slug = _sanitize_page_name(page)
         pages_dir = self._resolve_write_dir(tier)
 
-        # Find the existing file to append to (either tier).
-        existing: Path | None = None
-        pdir = self._project_pages_dir
-        if pdir is not None and (pdir / f"{slug}.md").is_file():
-            existing = pdir / f"{slug}.md"
-        elif (self._global_pages_dir / f"{slug}.md").is_file():
-            existing = self._global_pages_dir / f"{slug}.md"
+        # ONE lock spanning existence check → read → publish. The whole sequence is
+        # a read-modify-write, and it is reachable from the agent's own wiki_write
+        # tool, so the agent can shred its own knowledge base unaided: unlocked,
+        # 89-97% of concurrent appends were lost, because each writer read the same
+        # starting text and then published a complete file over the others.
+        # Resolving the target inside the lock also closes the create/append race
+        # where two writers both saw "no page" and one create clobbered the other.
+        #
+        # The lock key is TIER-INDEPENDENT. The file actually mutated is chosen by
+        # the two-tier search below and may sit in the tier this caller does NOT
+        # write to, so a key derived from ``pages_dir`` would let two sessions with
+        # different write tiers mutate one global page while holding two different
+        # locks. Keying on the slug in the global dir gives every appender of a slug
+        # the same key, and keeps the lock file out of the user's repo.
+        with file_lock(self._global_pages_dir / f"{slug}.md"):
+            existing = self._find_page(slug)
+            if existing is not None:
+                current = existing.read_text(encoding="utf-8")
+                atomic_write_text(existing, current.rstrip() + "\n\n" + text)
+                target_dir = existing.parent.parent
+                label = target_dir.name
+            else:
+                atomic_write_text(pages_dir / f"{slug}.md", text)
+                target_dir = pages_dir.parent
+                label = tier
 
-        if existing is not None:
-            current = existing.read_text(encoding="utf-8")
-            new_content = current.rstrip() + "\n\n" + text
-            existing.write_text(new_content, encoding="utf-8")
-            self._rebuild_index(existing.parent.parent)
-            return f"{existing.parent.parent.name}:{slug}.md"
-
-        # Page does not exist; create it in the target tier.
-        pages_dir.mkdir(parents=True, exist_ok=True)
-        path = pages_dir / f"{slug}.md"
-        path.write_text(text, encoding="utf-8")
-        self._rebuild_index(pages_dir.parent)
-        return f"{tier}:{slug}.md"
+        # Rebuilt OUTSIDE the page lock: the index has its own lock, and holding
+        # two at once is how a cross-file deadlock starts.
+        self._rebuild_index(target_dir)
+        return f"{label}:{slug}.md"
 
     def index_text(self, *, token_budget: int | None = None) -> str:
         """Assemble the combined one-line catalog for system-prompt injection.
@@ -250,6 +260,14 @@ class WikiStore:
 
     # -- internals ------------------------------------------------------------
 
+    def _find_page(self, slug: str) -> Path | None:
+        """The existing page file for *slug*, project tier first, else ``None``."""
+        pdir = self._project_pages_dir
+        if pdir is not None and (pdir / f"{slug}.md").is_file():
+            return pdir / f"{slug}.md"
+        candidate = self._global_pages_dir / f"{slug}.md"
+        return candidate if candidate.is_file() else None
+
     def _resolve_write_dir(self, tier: str) -> Path:
         """Return the pages dir for *tier*, falling back to global."""
         if tier == "project" and self._project_pages_dir is not None:
@@ -261,14 +279,19 @@ class WikiStore:
         pages_dir = wiki_dir / "pages"
         if not pages_dir.is_dir():
             return
-        lines = ["# Wiki index", ""]
-        for page_file in sorted(pages_dir.glob("*.md")):
-            slug = page_file.stem
-            summary = _extract_summary(page_file)
-            lines.append(f"- [{slug}]({slug}.md) — {summary}")
-        text = "\n".join(lines) + "\n"
+        index_path = wiki_dir / "index.md"
         wiki_dir.mkdir(parents=True, exist_ok=True)
-        (wiki_dir / "index.md").write_text(text, encoding="utf-8")
+        # Locked so two rebuilds cannot interleave their directory scans, and
+        # published atomically so a concurrent READER never lands in the window
+        # between truncate and write — a bare write_text served an EMPTY index.md
+        # 334 times across ~175k reads.
+        with file_lock(index_path):
+            lines = ["# Wiki index", ""]
+            for page_file in sorted(pages_dir.glob("*.md")):
+                slug = page_file.stem
+                summary = _extract_summary(page_file)
+                lines.append(f"- [{slug}]({slug}.md) — {summary}")
+            atomic_write_text(index_path, "\n".join(lines) + "\n")
 
 
 def _extract_summary(page_file: Path) -> str:

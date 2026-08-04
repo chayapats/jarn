@@ -42,6 +42,45 @@ in your project directory when you approve them (or automatically in permissive 
   `InlineSecretWarning` for any literal that looks like a real key, and rejects
   it outright when `strict_secrets: true` (recommended for CI / shared hosts).
   Prefer `keychain:jarn/<provider>`, `file:jarn/<provider>`, or `${ENV_VAR}`.
+  The file store behind `file:<service>/<account>` — `~/.jarn/secrets/` — is a
+  **hard floor for the agent's path-addressed tools**: `read_file`, `ls`, `glob`,
+  `grep`, `write_file` and `edit_file` are denied on it in every mode including
+  `yolo`, above the allow tier, so no `allow` rule, remembered approval, or
+  `sensitive_read_globs` setting can unlock it. Matching is by resolved path
+  identity — it follows `$JARN_HOME`, catches a symlink by the file it names, and
+  is case-insensitive so a `SECRETS` spelling cannot walk past it on a
+  case-insensitive filesystem (APFS, NTFS). A spelling backstop denies any path
+  ending in `.jarn/secrets` wherever it sits, so a project-level
+  `<repo>/.jarn/secrets/` is treated the same way. Three boundaries worth knowing:
+  - **Shell is not covered (`execute`, `run_in_background`).** A shell command
+    (`cat ~/.jarn/secrets/...`) is gated by the coarse permission mode and the
+    danger-guard like any other command — which means `yolo` runs it. Shell is a
+    general-purpose escape from every path-level control, not this one
+    specifically; run untrusted work under `execution.backend: docker` or an OS
+    sandbox.
+  - **`~/.jarn/config.yaml` is not covered**, so an inline plaintext key there
+    stays readable by the agent — another reason to prefer a secret reference
+    over a literal.
+  - **The `grep`/`glob` result filter is best-effort, not a boundary.** It is what
+    stops a broad search whose *scope* looked benign from returning restricted
+    content, but it works on tool output, and `grep` deliberately reports that it
+    redacted something. Repeated literal probing can therefore still infer facts
+    about a restricted file — that a given account exists, or that a string occurs
+    in it — without the contents ever being surfaced. The hard controls remain the
+    pre-execution gate above and OS-level isolation.
+- **Global-tier permissions:** `~/.jarn` is created mode `0700` and re-tightened
+  on every start, because it holds the prompt history, session transcripts, the
+  wiki and memory the agent writes for itself, the trust store and conversation
+  state. Created at the default umask it is `0755`, which exposes all of that to
+  every other local account — negligible on a single-user laptop, not on a shared
+  host or an always-on VPS. `jarn doctor` reports the mode when it could not be
+  tightened (a directory owned by another user, or a filesystem with no POSIX
+  modes). Windows is skipped: POSIX mode bits are not meaningful there. Note the
+  limit of a mode check: `0700` describes the POSIX bits only. A filesystem ACL
+  (macOS `chmod +a`, POSIX ACLs on Linux) can still grant another user access, and
+  jarn neither inspects nor strips one — stripping could destroy a deliberate
+  protective entry. Check with `ls -le` on macOS or `getfacl` on Linux if you
+  share the host.
 - **`JARN_HOME` override:** Global state (config, secrets, trust store, sessions) lives
   under `~/.jarn` by default. Setting `JARN_HOME` redirects all of that to another
   directory. A hijacked environment — a CI job, a shared shell, or instructions in an
@@ -70,10 +109,16 @@ in your project directory when you approve them (or automatically in permissive 
 - **`@url:` mentions:** rewritten to a `web_fetch` instruction at submit time — **no
   pre-fetch occurs** in the REPL.  The agent's gated `web_fetch` tool (subject to the
   permission engine and SSRF guard) performs the actual network request.
-- **`jarn login` (OpenRouter OAuth PKCE):** when you run `jarn login`, a one-shot HTTP
-  server is bound to `127.0.0.1:<random-free-port>` for up to 300 seconds.  It serves
-  a single `/callback` endpoint and exits as soon as the authorization code arrives (or
-  times out).  Security properties: (a) bound to loopback only — no LAN exposure;
+- **`jarn login` (OpenRouter OAuth PKCE):** when you run `jarn login`, an HTTP server
+  is bound to `127.0.0.1:<random-free-port>` for up to 300 seconds.  It serves a
+  `/callback` endpoint and exits as soon as an authorization code is successfully
+  redeemed (or the window closes).  The `callback_url` carries an unguessable path
+  segment, and because any other local process could otherwise find the port and
+  deliver a bogus code first, codes are queued and tried in turn — one from the
+  nonce path first — rather than the first arrival winning outright.  An injected
+  code cannot be redeemed with our verifier (that is what PKCE guarantees), so the
+  only thing the race ever threatened was the login itself.
+  Security properties: (a) bound to loopback only — no LAN exposure;
   (b) no client secret is used (public-client PKCE — RFC 7636 S256); (c) the
   authorization code and PKCE verifier are memory-only and never logged or stored;
   (d) the raw API key received from OpenRouter is passed directly to `store_secret` and

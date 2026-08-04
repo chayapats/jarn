@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from jarn.util.atomic import atomic_write_text
+
 _ENV_RE = re.compile(r"^\$\{(?P<var>[A-Za-z_][A-Za-z0-9_]*)\}$")
 _KEYCHAIN_RE = re.compile(r"^keychain:(?P<service>[^/]+)/(?P<account>.+)$")
 _FILE_RE = re.compile(r"^file:(?P<service>[^/]+)/(?P<account>.+)$")
@@ -167,9 +169,9 @@ def _validate_account(account: str) -> None:
 def _secret_file_path(service: str, account: str) -> Path:
     _validate_account(service)
     _validate_account(account)
-    from jarn.config.paths import global_home
+    from jarn.config.paths import global_secrets_dir
 
-    return global_home() / "secrets" / service / account
+    return global_secrets_dir() / service / account
 
 
 def _keyring_call(
@@ -267,9 +269,9 @@ def _ensure_secret_tree_permissions(path: Path) -> None:
     Called after writing a file secret so a pre-existing permissive directory
     (e.g. ``~/.jarn`` left at ``755``) cannot expose secrets via group/other read.
     """
-    from jarn.config.paths import global_home
+    from jarn.config.paths import global_secrets_dir
 
-    secrets_root = global_home() / "secrets"
+    secrets_root = global_secrets_dir()
     current = path if path.is_dir() else path.parent
     while True:
         with contextlib.suppress(OSError):
@@ -284,8 +286,9 @@ def _ensure_secret_tree_permissions(path: Path) -> None:
 def _store_file_secret(service: str, account: str, value: str) -> Path:
     path = _secret_file_path(service, account)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(value, encoding="utf-8")
-    path.chmod(0o600)
+    # Mode is set on the temp file BEFORE the rename: a plain write-then-chmod
+    # leaves the key readable at the process umask for the window in between.
+    atomic_write_text(path, value, mode=0o600)
     _ensure_secret_tree_permissions(path)
     return path
 

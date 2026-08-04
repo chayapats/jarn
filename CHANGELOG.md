@@ -5,6 +5,114 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-08-04
+
+Security patch release: the three findings from the private advisory queue, plus
+the concurrency defects behind #45 and #46.
+
+### Security
+
+- **The agent's file tools can no longer read or write J.A.R.N.'s own secret
+  store.** `~/.jarn/secrets/` — the file store behind `file:<service>/<account>`
+  references, and where `jarn login` puts provider API keys when no OS keychain is
+  available — was not described by any `sensitive_read_globs` pattern, so a
+  `read_file` of a stored credential was evaluated as an ordinary read and
+  auto-allowed with no prompt. The store is now an un-allowlistable `DENY`
+  enforced above the allow tier for every path-addressed tool (`read_file`, `ls`,
+  `glob`, `grep`, `write_file`, `edit_file`): no permission mode (`yolo`
+  included), `allow` rule, remembered approval, or `sensitive_read_globs: []`
+  opt-out reaches it. The same check backs the result filter, so a stored key
+  cannot surface as a `grep` hit, and a `glob` listing has store paths dropped from
+  it even when the pattern never spells the path literally. Matching is by resolved
+  path identity — it follows `$JARN_HOME`, covers the default `~/.jarn` alongside
+  an override, catches a symlink by the file it names, and is case-insensitive so a
+  `SECRETS` spelling cannot walk past it on APFS or NTFS. Shell (`execute`,
+  `run_in_background`) is *not* covered and remains gated by the coarse mode and
+  the danger-guard, and the result filter stays best-effort — both boundaries are
+  documented in `SECURITY.md`. `GHSA-x8cp-rh3m-m2gw`.
+- **`~/.jarn` is no longer created at the process umask.** The global tier holds
+  the prompt history, session transcripts, the wiki and memory the agent writes
+  for itself, and the trust store; created with no `mode=` it landed at `0755` on
+  a stock macOS install and was never tightened, so every other local account
+  could read all of it. It is now created `0700` and re-tightened at every start —
+  both are needed, because `mkdir(mode=…)` is masked by the umask AND is a no-op
+  for a directory that already exists, so only the explicit `chmod` repairs an
+  install already in the field. The check only ever tightens, logs when it does,
+  and never raises. It runs at the CLI entry point in addition to the two call
+  sites that name the home explicitly, since whichever subsystem touches the tier
+  first is what actually creates it. `jarn doctor` now reports the mode when it
+  could not be fixed. `GHSA-hqcx-wg2w-6gv4`.
+- **`jarn login` no longer fails when another local process wins the loopback
+  race.** The OAuth callback server binds an ephemeral port and took the *first*
+  request carrying a `?code=`. PKCE already made an injected code unredeemable, so
+  this was never a takeover — but it was a denial of service: the bogus code was
+  returned, redemption failed, and the real browser response arrived at a socket
+  jarn had already closed, with nothing shown to explain why. Codes are now queued
+  and tried in turn until one redeems (a bounded number of attempts), and the
+  `callback_url` carries an unguessable path segment so a code that came back from
+  the URL jarn handed out is tried first. The nonce is in the PATH rather than a
+  `state` parameter deliberately: OpenRouter's PKCE flow documents only
+  `callback_url`, `code_challenge` and `code_challenge_method` and echoes back only
+  `code`, so requiring a `state` round-trip as RFC 6749 §10.12 describes would
+  reject every legitimate callback. A bare `/callback` is still accepted and ranked
+  second, so the flow keeps working if a provider normalises the path away.
+  Only *unverified* codes count against the attempt cap, so a flood bounds the
+  exchange round-trips without ending the login; a rejected nonce-path code is
+  terminal (no later code can be ours either), and a failure that another code
+  cannot repair — a dead network, a 5xx, a failed keychain write — is surfaced at
+  once rather than retried into the timeout. The callback handler also has a read
+  timeout now, so a peer that connects and sends nothing can no longer wedge it.
+  `GHSA-82cv-4xgg-jfqr`.
+
+### Fixed
+
+- **Concurrent writes no longer lose data across two sessions on one project.**
+  Every store that edits a shared file did an unlocked read-modify-write and
+  published through a *fixed* `<path>.tmp`, so two plain `jarn` CLIs on one repo
+  were enough to lose the edit and, when the temp names collided, to raise
+  `FileNotFoundError` out of `os.replace`. Measured on one machine, before → after:
+  concurrent `ALWAYS` permission grants 95% lost + 19 uncaught exceptions → 0% and
+  none; concurrent wiki appends 95% lost → 0%; `index.md` read empty 173 times →
+  never. Both halves now come from one primitive, `jarn.util.atomic`
+  (`atomic_write_text` + `file_lock`), adopted by `PermissionRuleStore`,
+  `ConfigStore`, `TrustStore`, `WikiStore`, `MemoryStore` and the file secret
+  store. (#45, #46)
+- Publishing by rename is retried on Windows, which refuses `os.replace` while any
+  process holds the destination open — even for reading. Without it the write
+  that fixes torn reads everywhere else would instead FAIL on Windows, under
+  exactly the concurrency it exists for. Note `chmod` there controls only the
+  read-only flag, so a `0600` request lands as `0666`; restricting a file to its
+  owner on Windows needs an ACL and is out of scope.
+- `MemoryStore._rebuild_index` also runs on the READ path — `index_text()` rebuilds
+  on demand and that text goes straight into the system prompt — so a concurrent
+  prompt assembly could read a truncated or empty `MEMORY.md`. (#46)
+- `WikiStore.append` resolves its target inside the lock, closing the create race
+  where two writers both saw "no page yet" and one `create` clobbered the other.
+- A failed rule persist no longer ends the turn: `PermissionEngine.remember` caught
+  only `ConfigCorruptError`, so the `OSError` half — a read-only disk, a lost race —
+  escaped into `_stream_turn` → `run_turn`. The in-memory allow still applies. (#45)
+- The file secret store is created with mode `0600` already set, instead of being
+  written at the process umask and chmod'ed a moment later.
+- The checkpoint undo/redo lock is no longer a no-op on Windows, where `fcntl` is
+  `None` and only the in-process thread lock remained — so two jarn processes could
+  interleave the ref read-modify-write on the one platform CI actually runs. Its
+  lock file keeps its existing name and location (`.git/jarn-checkpoint.lock`), so
+  a jarn from before this release still excludes one from after it.
+- Checkpoint snapshots now exclude `.jarn/*.lock`, so the new write-lock siblings
+  do not add churn to every `/undo` diff. The pathspec is anchored deliberately:
+  these entries are git pathspecs and `*` crosses `/`, so an unanchored form would
+  also match `uv.lock`, `Cargo.lock`, `yarn.lock` and friends — and because the
+  exclusion pins a path to its HEAD blob rather than skipping it, that would revert
+  a tracked lockfile past the user's uncommitted edits and delete an untracked one.
+
+### Note
+
+- Locking creates an empty `<file>.lock` sibling next to each guarded file under
+  `.jarn/`. They are ephemeral, recreated on demand, and intentionally never
+  removed — unlinking one on release would break mutual exclusion, because the next
+  process to open that path would get a different inode. The shipped `.gitignore`
+  covers them; a repo that commits its `.jarn/` should ignore `.jarn/**/*.lock`.
+
 ## [0.9.1] - 2026-07-17
 
 ### Security

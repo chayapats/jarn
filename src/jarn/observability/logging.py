@@ -139,4 +139,12 @@ def setup_logging(level: str = "info") -> logging.Logger:
     )
     handler.addFilter(RedactingFilter())
     logger.addHandler(handler)
+
+    # Replay anything the path layer had to say before a file handler existed.
+    # `ensure_global_home()` necessarily runs first — configuring logging creates
+    # ~/.jarn/logs, which would otherwise create the home at the umask — so its
+    # warning reached stderr through logging.lastResort and nothing durable.
+    notice = paths.take_tighten_notice()
+    if notice:
+        logger.warning("%s", notice)
     return logger

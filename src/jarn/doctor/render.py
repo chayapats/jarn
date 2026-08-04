@@ -32,6 +32,8 @@ def doctor_lines(diag: dict) -> list[str]:
     )
     if diag.get("jarn_home_warning"):
         lines.append(f"[yellow]{_esc(diag['jarn_home_warning'])}[/yellow]")
+    if diag.get("jarn_home_mode_warning"):
+        lines.append(f"[yellow]{_esc(diag['jarn_home_mode_warning'])}[/yellow]")
     root = diag.get("project_root")
     lines.append(f"project root: {_esc(root) if root else '[dim]none[/dim]'}")
     # Added (--add-dir / /add-dir) roots beyond the primary, if any.

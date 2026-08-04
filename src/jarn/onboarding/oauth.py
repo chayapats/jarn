@@ -8,12 +8,15 @@ pkce_verifier(length=64) -> str
 pkce_challenge(verifier) -> str
     Compute PKCE S256 challenge = BASE64URL(SHA256(verifier)) (no padding).
 
-_make_callback_server() -> (HTTPServer, port)
-    Create a loopback HTTP server on a random free port.
+_make_callback_server(nonce=None) -> (HTTPServer, port)
+    Create a loopback HTTP server on a random free port.  When *nonce* is given
+    the server also answers ``/callback/<nonce>`` and marks codes arriving there
+    as VERIFIED (see the loopback-race note below).
 
 _wait_for_callback(server, *, timeout=300.0) -> str
-    Block until GET /callback?code=X arrives; return the code.  Raises
-    TimeoutError when timeout expires without a callback.
+    Block until a ``GET /callback…?code=X`` arrives and POP the next code,
+    verified ones first.  Raises TimeoutError when timeout expires with no
+    code left to hand out.
 
 _exchange_and_store(code, verifier) -> StoredSecret
     POST the code + verifier to OpenRouter, receive the API key, and store
@@ -23,6 +26,37 @@ login_openrouter(open_browser, *, _timeout, _prompt_replace_or_keep) -> LoginRes
     Full OAuth PKCE flow.  ``open_browser`` is injectable so tests do not
     launch a real browser.  ``_prompt_replace_or_keep`` is injectable so
     tests can drive the replace/keep choice without a TTY.
+
+Loopback-race note (GHSA-82cv-4xgg-jfqr)
+----------------------------------------
+The callback server binds an ephemeral port, and any other local process can
+scan for it and deliver a bogus ``?code=`` first.  PKCE already makes that
+harmless for CONFIDENTIALITY — an injected code is bound to the attacker's own
+``code_challenge`` and cannot be redeemed with our verifier — but the original
+"first request wins" handling turned it into a denial of service: the bogus code
+was returned, redemption failed, and the real browser response arrived at a
+closed socket.
+
+Two changes close it, and neither can break the flow if the provider behaves
+differently than expected:
+
+1. Codes are QUEUED and tried in turn until one redeems.  An injected code fails
+   the exchange and we simply move on to the next.  This needs nothing from the
+   provider.
+2. The ``callback_url`` carries an unguessable path segment, so a code arriving
+   at ``/callback/<nonce>`` is known to correspond to the URL we handed out and
+   is tried FIRST.  That keeps a flood of bogus codes from spending the window on
+   exchange round-trips.
+
+The nonce lives in the PATH rather than a ``state`` query parameter on purpose:
+OpenRouter's PKCE flow (`docs/use-cases/oauth-pkce`) documents only
+``callback_url``, ``code_challenge`` and ``code_challenge_method``, and echoes
+back only ``code`` — it has no ``state`` support, so REQUIRING a ``state`` round
+trip as RFC 6749 §10.12 describes would reject every legitimate callback and
+break ``jarn login`` outright.  A path segment is part of the URL we supply, so
+it survives an ordinary redirect.  A bare ``/callback`` is still accepted, and
+its codes are tried after the verified ones, so the flow keeps working even if a
+provider normalises the path away.
 
 Security notes
 --------------
@@ -39,6 +73,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import secrets as _secrets_mod
+import select
 import string
 import urllib.parse
 from collections.abc import Callable
@@ -59,6 +94,11 @@ _PKCE_ALPHABET: str = string.ascii_letters + string.digits + "-._~"
 #: OpenRouter authorize and exchange endpoints (verified 2026-07-06).
 _AUTHORIZE_URL = "https://openrouter.ai/auth"
 _EXCHANGE_URL = "https://openrouter.ai/api/v1/auth/keys"
+
+#: How many callback codes to try redeeming before giving up. Bounded so a local
+#: process flooding bogus codes cannot spend the whole login window on 30 s
+#: exchange round-trips. A genuine flow uses exactly one.
+_MAX_EXCHANGE_ATTEMPTS = 5
 
 #: Keychain coordinates for the OpenRouter API key.
 _SERVICE = "jarn"
@@ -124,14 +164,47 @@ def pkce_challenge(verifier: str) -> str:
 # ---------------------------------------------------------------------------
 
 class _CallbackHandler(BaseHTTPRequestHandler):
-    """One-shot HTTP handler that captures the ``?code=`` query parameter."""
+    """Captures ``?code=`` values onto the server's queue.
+
+    Not one-shot: every accepted code is queued, because the first one to arrive
+    is not necessarily the one from our browser (see the loopback-race note in
+    the module docstring). A code on ``/callback/<nonce>`` came back from the URL
+    we handed out and is marked verified; a bare ``/callback`` is accepted too but
+    ranked below it.
+    """
+
+    #: Bound the read on an accepted connection. ``StreamRequestHandler`` defaults
+    #: to ``None`` — no socket timeout — so a peer that connects and sends nothing
+    #: blocks the handler forever. That is fatal inside :func:`_drain_pending`,
+    #: which would then never return and would discard a genuine code it had
+    #: already captured. ``handle_one_request`` catches the timeout, closes the
+    #: connection and returns cleanly, so an idle peer costs one timeout and the
+    #: loop moves on.
+    timeout = 10.0
 
     def do_GET(self) -> None:  # noqa: N802 - HTTP method naming
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
         codes = params.get("code", [])
-        if parsed.path == "/callback" and codes:
-            self.server._code_box["code"] = codes[0]  # type: ignore[attr-defined]
+        nonce: str | None = self.server._nonce  # type: ignore[attr-defined]
+        suffix = parsed.path[len("/callback/"):]
+        # ``compare_digest`` raises TypeError on a non-ASCII str, and the path is
+        # attacker-controlled. The nonce is token_urlsafe, always ASCII, so a
+        # non-ASCII suffix can never match — short-circuit instead of crashing.
+        verified = bool(
+            nonce
+            and parsed.path.startswith("/callback/")
+            and suffix.isascii()
+            and _secrets_mod.compare_digest(suffix, nonce)
+        )
+        # Once the flow has latched to verified-only, a bare callback is noise: a
+        # burst of them has already been tried and rejected.
+        bare_ok = parsed.path == "/callback" and not getattr(
+            self.server, "_verified_only", False
+        )
+        accepted = codes and (verified or bare_ok)
+        if accepted:
+            self.server._codes.append((verified, codes[0]))  # type: ignore[attr-defined]
             body = (
                 b"<html><body>"
                 b"<h2>Authorisation complete</h2>"
@@ -152,8 +225,15 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         pass
 
 
-def _make_callback_server() -> tuple[HTTPServer, int]:
+def _make_callback_server(nonce: str | None = None) -> tuple[HTTPServer, int]:
     """Create a loopback HTTP server on a random free port.
+
+    Parameters
+    ----------
+    nonce:
+        Unguessable path segment. When set, ``/callback/<nonce>`` is accepted and
+        its codes rank ahead of any arriving at a bare ``/callback``. ``None``
+        disables the distinction (every code is unverified).
 
     Returns
     -------
@@ -161,8 +241,17 @@ def _make_callback_server() -> tuple[HTTPServer, int]:
         The server instance and the port it is listening on.
     """
     server = HTTPServer(("127.0.0.1", 0), _CallbackHandler)
-    # Attach the box the handler drops the captured code into.
-    server._code_box = {}  # type: ignore[attr-defined]
+    # Attach the queue the handler appends captured codes to, as
+    # ``(verified, code)`` pairs, plus the nonce it checks the path against.
+    server._codes = []  # type: ignore[attr-defined]
+    server._nonce = nonce  # type: ignore[attr-defined]
+    # Set by _pop_code to say whether the code it just handed out came back on the
+    # nonce path. The redemption loop needs it to tell "our code was rejected"
+    # (terminal) from "somebody else's code was rejected" (keep listening).
+    server._last_pop_verified = False  # type: ignore[attr-defined]
+    #: Latched by :func:`_verified_only` once a burst of bare-path codes has each
+    #: been rejected; from then on only nonce-path codes are accepted.
+    server._verified_only = False  # type: ignore[attr-defined]
     port = server.server_address[1]
     return server, port
 
@@ -187,6 +276,9 @@ def _wait_for_callback(server: HTTPServer, *, timeout: float = 300.0) -> str:
     TimeoutError
         When no callback arrives within *timeout* seconds.
     """
+    queued = _pop_code(server)
+    if queued is not None:  # already arrived while we were exchanging another
+        return queued
     server.timeout = min(timeout, 5.0)  # handle_request poll interval
     deadline = _monotonic() + timeout
     while _monotonic() < deadline:
@@ -195,12 +287,58 @@ def _wait_for_callback(server: HTTPServer, *, timeout: float = 300.0) -> str:
             break
         server.timeout = min(remaining, 5.0)
         server.handle_request()
-        if server._code_box.get("code"):  # type: ignore[attr-defined]
-            return server._code_box["code"]  # type: ignore[attr-defined]
+        _drain_pending(server)
+        queued = _pop_code(server)
+        if queued is not None:
+            return queued
     raise TimeoutError(
         f"No OAuth callback received within {timeout:.0f} s. "
         "If the browser did not open, use `jarn setup` to paste a key manually."
     )
+
+
+#: Ceiling on the opportunistic drain, so a process flooding the port cannot keep
+#: us in the drain loop instead of redeeming the code we already hold.
+_MAX_DRAIN = 32
+
+
+def _drain_pending(server: HTTPServer) -> None:
+    """Handle any requests ALREADY waiting, without blocking for new ones.
+
+    ``handle_request`` returns after a single request, so without this the
+    verified-first ordering in :func:`_pop_code` would only ever see whichever
+    request the OS happened to hand over first. Draining the backlog lets it pick
+    the genuine callback out of a burst.
+    """
+    previous = server.timeout
+    server.timeout = 0.0  # non-blocking accept
+    try:
+        for _ in range(_MAX_DRAIN):
+            # Stop on "nothing is waiting", NOT on "that request carried no code":
+            # a single health probe or favicon fetch would otherwise truncate the
+            # drain and hand the ordering only whatever it had seen so far.
+            if not select.select([server.socket], [], [], 0)[0]:
+                return
+            server.handle_request()
+    finally:
+        server.timeout = previous
+
+
+def _pop_code(server: HTTPServer) -> str | None:
+    """Remove and return the next queued code — VERIFIED ones first — or ``None``.
+
+    Ordering is what keeps a flood of bogus codes from spending the whole window
+    on exchange round-trips: a code that came back on the nonce path is tried
+    before any that merely showed up at the bare callback.
+    """
+    queue: list[tuple[bool, str]] = server._codes  # type: ignore[attr-defined]
+    for want_verified in (True, False):
+        for i, (verified, code) in enumerate(queue):
+            if verified is want_verified:
+                del queue[i]
+                server._last_pop_verified = verified  # type: ignore[attr-defined]
+                return code
+    return None
 
 
 def _monotonic() -> float:
@@ -252,6 +390,97 @@ def _exchange_and_store(code: str, verifier: str) -> StoredSecret:
 
     stored = store_secret(_SERVICE, _ACCOUNT, raw_key)
     return stored
+
+
+def _redeem_first_working_code(
+    wait_fn: Callable[..., str],
+    server: HTTPServer,
+    verifier: str,
+    timeout: float,
+) -> StoredSecret:
+    """Take callback codes in turn until one redeems, or the window closes.
+
+    "First code wins" is what made the loopback race a denial of service: any
+    local process that found the ephemeral port could deliver a bogus code, and
+    the single attempt spent on it failed while the real callback arrived at a
+    socket we had already closed. PKCE guarantees an injected code cannot be
+    redeemed with OUR verifier, so a failed exchange is a reason to keep
+    listening rather than to give up.
+
+    Attempts are capped so a flood cannot spend the whole window on 30 s exchange
+    round-trips; the nonce path ordering in :func:`_pop_code` means a genuine
+    code is normally the very first one tried.
+    """
+    deadline = _monotonic() + timeout
+    last_error: Exception | None = None
+    unverified_attempts = 0
+    while True:
+        remaining = deadline - _monotonic()
+        if remaining <= 0:
+            break
+        # A TimeoutError from here is terminal: no code is waiting and the window
+        # is spent. Surface the last exchange failure instead when there was one,
+        # since "the code we tried was rejected" is the more useful diagnosis.
+        try:
+            code = wait_fn(server, timeout=remaining)
+        except TimeoutError:
+            if last_error is not None:
+                raise last_error from None
+            raise
+        verified = bool(getattr(server, "_last_pop_verified", False))
+        try:
+            return _exchange_and_store(code, verifier)
+        except Exception as exc:  # noqa: BLE001 - decide below whether to go on
+            last_error = exc
+            if verified:
+                # The nonce is 32 random bytes, so a code that came back on
+                # /callback/<nonce> provably came from the URL we handed out. If
+                # the provider rejects THAT, no later code can be ours either —
+                # waiting out the rest of the window would only hide the reason.
+                raise
+            if not _is_code_rejection(exc):
+                # A dead network, a provider 5xx or a failed keychain write is not
+                # something another code repairs. Burying it behind the remaining
+                # window leaves the user staring at nothing for five minutes.
+                raise
+            unverified_attempts += 1
+            if unverified_attempts >= _MAX_EXCHANGE_ATTEMPTS:
+                # Only UNVERIFIED codes are capped. An attacker cannot manufacture
+                # a verified one, so this bounds a flood without letting the flood
+                # end the login: we keep waiting for a nonce-path code below.
+                _verified_only(server)
+                unverified_attempts = 0
+    if last_error is not None:
+        raise last_error
+    raise TimeoutError(
+        f"No OAuth callback received within {timeout:.0f} s. "
+        "If the browser did not open, use `jarn setup` to paste a key manually."
+    )
+
+
+def _verified_only(server: HTTPServer) -> None:
+    """Drop queued bare-path codes and stop accepting more of them.
+
+    Reached only after a burst of unverified codes has each been rejected — at
+    which point the bare path is carrying nothing but noise, and continuing to
+    exchange from it would spend the window an attacker is trying to exhaust.
+    """
+    queue: list[tuple[bool, str]] = server._codes  # type: ignore[attr-defined]
+    queue[:] = [entry for entry in queue if entry[0]]
+    server._verified_only = True  # type: ignore[attr-defined]
+
+
+def _is_code_rejection(exc: Exception) -> bool:
+    """True when *exc* says THIS CODE was refused, so another one may still work.
+
+    A 4xx from the token endpoint is the provider rejecting the code — expected
+    when we redeem one an attacker injected. Anything else (a transport error, a
+    5xx, a failure storing the key) is a condition no other code improves, and is
+    re-raised immediately instead of being retried into the timeout.
+    """
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    return isinstance(status, int) and 400 <= status < 500
 
 
 # ---------------------------------------------------------------------------
@@ -445,8 +674,11 @@ def login_openrouter(
     verifier = pkce_verifier()
     challenge = pkce_challenge(verifier)
 
-    server, port = _make_callback_server()
-    cb_url = f"http://127.0.0.1:{port}/callback"
+    # Unguessable path segment on the callback URL. See the loopback-race note in
+    # the module docstring for why this is a PATH and not a `state` parameter.
+    nonce = _secrets_mod.token_urlsafe(32)
+    server, port = _make_callback_server(nonce)
+    cb_url = f"http://127.0.0.1:{port}/callback/{nonce}"
 
     authorize_url = (
         f"{_AUTHORIZE_URL}"
@@ -459,8 +691,7 @@ def login_openrouter(
 
     # Always release the loopback socket — including on the 300 s timeout path.
     try:
-        code = _wait_fn(server, timeout=_timeout)
-        stored = _exchange_and_store(code, verifier)
+        stored = _redeem_first_working_code(_wait_fn, server, verifier, _timeout)
     finally:
         server.server_close()
 

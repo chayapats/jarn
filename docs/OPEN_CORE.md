@@ -3,7 +3,7 @@
 > **Audience:** anyone curious about the project's business model and licensing.
 > This document describes future plans, not shipped features.
 
-## Today (v0.9.1, Alpha)
+## Today (v0.9.2, Alpha)
 
 - The project is **Apache-2.0** (see [LICENSE](../LICENSE)) and developed in a
   license-clean, "ready to open" state: no bundled secrets, no proprietary deps.

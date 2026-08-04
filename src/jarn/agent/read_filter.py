@@ -10,6 +10,10 @@ scope-only gate cannot see (Codex second-eye #1).
 This middleware closes the gap from the RESULT side: after the deepagents
 filesystem ``grep`` tool runs, any hit from a file matching ``sensitive_read_globs``
 or an explicit read-``deny`` rule is removed before the content reaches the model.
+``glob`` gets the same treatment for read-DENIED paths — it returns names rather
+than contents, but a pattern the gate judged benign can still enumerate a denied
+directory (jarn's own secret store: which providers are configured, under which
+accounts), and only the concrete matched paths can be judged by identity.
 ``read_file`` gets a defense-in-depth backstop for a directly-denied path. The
 :class:`~jarn.permissions.PermissionEngine` is the single source of truth for what
 counts as sensitive/denied — this module never re-implements the glob logic.
@@ -34,6 +38,7 @@ filter narrows the broad-grep exfiltration window; it does not replace either.
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Awaitable, Callable, Collection
 from typing import TYPE_CHECKING, Any
@@ -161,6 +166,8 @@ class ReadResultFilterMiddleware(AgentMiddleware):
         name = call.get("name") or result.name
         if name == "grep":
             return self._filter_grep(call, result)
+        if name == "glob":
+            return self._filter_glob(call, result)
         if name == "read_file":
             return self._filter_read_file(call, result)
         return result
@@ -177,6 +184,45 @@ class ReadResultFilterMiddleware(AgentMiddleware):
         if not removed:
             return result
         return result.model_copy(update={"content": new_content})
+
+    def _filter_glob(self, call: dict[str, Any], result: ToolMessage) -> ToolMessage:
+        """Drop read-denied paths from a ``glob`` listing.
+
+        ``glob`` returns PATHS, not contents, so it leaks names rather than
+        secrets — but the pre-exec gate only sees the *pattern*, and a pattern that
+        never spells the target literally (``glob('secrets/*/*', path='/.jarn')``,
+        or any pattern at all under a ``JARN_HOME`` no hardcoded glob can predict)
+        is judged benign and then enumerates jarn's own secret store: which
+        providers are configured, under which account names. Filtering the RESULT
+        is the only place that reaches every such pattern, because a matched path
+        is concrete and the engine can judge it by identity.
+
+        Deny-only, mirroring :meth:`_filter_read_file`: a merely *sensitive* path
+        keeps listing (its name is not the secret), so this drops exactly what
+        :meth:`~jarn.permissions.PermissionEngine.is_read_denied_path` refuses.
+
+        Unlike :meth:`_filter_grep` this drops SILENTLY — no redaction notice, and
+        an all-denied result renders as the backend's own ``[]`` rather than a
+        distinct sentinel. That is deliberate, and it is the opposite trade from
+        grep: any observable difference between "matched nothing" and "matched only
+        denied paths" is a one-bit oracle, and because the gate judges a glob on its
+        PATTERN, an attacker can probe it with patterns that never spell the store's
+        path (``glob('secrets/gro*/*', path='/.jarn')``) and walk out the account
+        names one character at a time. grep can afford the notice because it returns
+        CONTENT — the model must know its search was not exhaustive — and because a
+        grep is gated on a concrete scope. A glob returns NAMES, where the notice is
+        worth much less than the oracle costs.
+        """
+        content = result.content
+        if not isinstance(content, str) or not content:
+            return result
+        paths = _parse_glob_paths(content)
+        if paths is None:
+            return result
+        kept = [p for p in paths if not self._engine.is_read_denied_path(p)]
+        if len(kept) == len(paths):
+            return result
+        return result.model_copy(update={"content": str(kept)})
 
     def _filter_read_file(self, call: dict[str, Any], result: ToolMessage) -> ToolMessage:
         # Backstop only: a denied read is already blocked pre-exec, so this fires
@@ -215,6 +261,24 @@ class ReadResultFilterMiddleware(AgentMiddleware):
             if unsupported is not None:
                 return _unsupported_media_message(call, path, unsupported)
         return result
+
+
+def _parse_glob_paths(content: str) -> list[str] | None:
+    """Recover the path list from a ``glob`` ToolMessage, or ``None`` if it is not
+    one.
+
+    deepagents renders the tool result as ``str(truncate_if_too_long(paths))`` — the
+    repr of a ``list[str]``, and truncation appends its guidance AS A LIST ELEMENT,
+    so the literal stays well-formed either way. Anything else (an ``Error: …``
+    string) parses to ``None`` and passes through untouched.
+    """
+    try:
+        parsed = ast.literal_eval(content)
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        return None
+    if isinstance(parsed, list) and all(isinstance(p, str) for p in parsed):
+        return parsed
+    return None
 
 
 def _multimodal_disabled_message(call: dict[str, Any], path: str) -> ToolMessage:

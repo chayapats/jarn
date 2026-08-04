@@ -38,7 +38,7 @@ agents), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcrip
 base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists to
 `~/.jarn/config.yaml`), and per-server **MCP health** (`/mcp status`).
 
-> **Status:** v0.9.1 (Alpha) — on PyPI (`pip install jarn`) and npm (`npm install -g
+> **Status:** v0.9.2 (Alpha) — on PyPI (`pip install jarn`) and npm (`npm install -g
 > jarn-cli` — a standalone binary, no Python). v0.9 is a **hardening release**: a
 > full self-improvement audit plus adversarial multi-model review (47 repro-verified
 > fixes across permissions, cost integrity, concurrency, compaction, and
@@ -514,7 +514,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev
-uv run pytest                 # 2050 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 2133 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

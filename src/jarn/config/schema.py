@@ -253,6 +253,11 @@ class PolicyConfig:
 #: fnmatch's ``*`` spans ``/``, so ``*.pem`` matches a .pem file at any depth;
 #: the ``**/``-anchored forms also catch bare relative targets (see the engine's
 #: ``_is_sensitive_read``). Set ``sensitive_read_globs: []`` to opt out.
+#:
+#: J.A.R.N.'s OWN secret store (``~/.jarn/secrets/``) is deliberately absent: it is
+#: enforced separately as an un-allowlistable DENY above the allow tier
+#: (``PermissionEngine._touches_secret_store``), because there is no legitimate agent
+#: read of it and this list is both ASK-only and opt-out. Do not add it here.
 DEFAULT_SENSITIVE_READ_GLOBS: tuple[str, ...] = (
     ".env",
     ".env.*",

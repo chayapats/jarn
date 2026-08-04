@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 from typing import Any
 
 
@@ -40,6 +42,30 @@ def collect_doctor(
         )
     diag["global_config"] = str(gpath)
     diag["global_config_present"] = gpath.is_file()
+
+    # Permissions on the global tier. jarn tightens this at every start, so a
+    # finding here means the chmod could not be applied — a directory owned by
+    # another user, or a filesystem with no POSIX modes. Reported rather than
+    # fixed silently, because the contents (prompt history, transcripts, memory,
+    # the trust store) are already exposed by the time doctor sees it.
+    diag["jarn_home_mode"] = None
+    if os.name != "nt":
+        try:
+            mode = stat.S_IMODE(home.stat().st_mode)
+        except OSError:
+            mode = None
+        if mode is not None:
+            # POSIX bits only — a filesystem ACL can still grant access and is
+            # deliberately neither inspected nor stripped here (stripping could
+            # destroy a protective deny entry). SECURITY.md says so too.
+            diag["jarn_home_mode"] = f"{mode:04o}"
+            if mode & 0o077:
+                diag["jarn_home_mode_warning"] = (
+                    f"{home} is mode {mode:04o} — other local users can read your "
+                    "prompt history, session transcripts, memory and trust store. "
+                    f"Expected {paths.GLOBAL_HOME_MODE:04o}; run "
+                    f"`chmod 700 {home}` (jarn could not do it itself)."
+                )
 
     if config is None:
         from jarn.config.loader import load_config

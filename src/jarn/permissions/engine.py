@@ -3,10 +3,11 @@ danger-guard, and remembered approvals into a single decision per action.
 
 Decision precedence (highest first):
   1. danger-guard BLOCKED        -> DENY (un-allowlistable)
-  2. explicit deny rule          -> DENY
-  3. danger-guard DANGEROUS      -> ASK (force confirm, even in YOLO)
-  4. remembered/allowlisted      -> ALLOW
-  5. coarse permission mode       -> ALLOW | ASK | DENY
+  2. jarn's own secret store     -> DENY (un-allowlistable)
+  3. explicit deny rule          -> DENY
+  4. danger-guard DANGEROUS      -> ASK (force confirm, even in YOLO)
+  5. remembered/allowlisted      -> ALLOW
+  6. coarse permission mode       -> ALLOW | ASK | DENY
 """
 
 from __future__ import annotations
@@ -47,11 +48,57 @@ _WRAPPER_PROGRAMS = frozenset({
 #: never resolved as a filesystem path.
 _GLOB_METACHARS = frozenset("*?[")
 
+#: LEXICAL backstop for jarn's own secret store. Identity matching against
+#: :func:`~jarn.config.paths.secret_store_dirs` is the primary check; these
+#: patterns catch the two cases identity cannot: a GLOB candidate
+#: (``grep(glob='.jarn/secrets/**')`` narrows a benign scope onto the store but has
+#: no file to resolve), and a host where ``$HOME`` is unanswerable so no store
+#: directory could be located at all. They also cover a *project*-level
+#: ``.jarn/secrets/`` — same shape, same treatment. Matched against CASEFOLDED
+#: aliases (so keep them lowercase), for the reason in :func:`_path_within`.
+#:
+#: Deliberately NOT part of ``sensitive_read_globs``: that list routes to ASK and is
+#: opt-out (``sensitive_read_globs: []``). The secret store is a hard floor — see
+#: :meth:`PermissionEngine._touches_secret_store`.
+_SECRET_STORE_GLOBS: tuple[str, ...] = (
+    "**/.jarn/secrets",
+    "**/.jarn/secrets/**",
+)
+
 
 def _is_glob(text: str) -> bool:
     """True when *text* carries fnmatch glob metacharacters (so it is a pattern,
     not a concrete path to resolve to a file identity)."""
     return any(ch in _GLOB_METACHARS for ch in text)
+
+
+def _path_within(candidate: Path, directory: Path) -> bool:
+    """True when *candidate* IS *directory* or sits beneath it — matched exactly
+    AND case-insensitively.
+
+    ``Path.resolve()`` follows symlinks but does NOT canonicalize case, and both
+    ``PurePath.__eq__`` and ``fnmatch`` are byte-exact on POSIX. On a
+    case-insensitive filesystem — APFS (the macOS default) and NTFS —
+    ``~/.jarn/SECRETS/jarn/groq`` therefore opens the very same inode as the store
+    file while comparing unequal to ``~/.jarn/secrets``, which is enough to walk
+    straight through a path-identity check. ``str.casefold`` closes that, and also
+    folds the Unicode aliases such a filesystem accepts: APFS opens
+    ``.jarn/ſecretſ`` as ``.jarn/secrets``, and U+017F casefolds to ``s`` (which a
+    plain ``lower()`` would miss).
+
+    On a genuinely case-sensitive filesystem this can match a DIFFERENT directory
+    that merely differs in case. For a hard floor that is the safe direction, and
+    no legitimate read is lost by it.
+    """
+    if candidate == directory or directory in candidate.parents:
+        return True
+    parts = directory.parts
+    if len(candidate.parts) < len(parts):
+        return False
+    return all(
+        a.casefold() == b.casefold()
+        for a, b in zip(candidate.parts, parts, strict=False)  # candidate may be deeper
+    )
 
 
 class ActionKind(str, Enum):
@@ -97,6 +144,18 @@ class PermissionResult:
     dangerous: bool = False
     #: When True, an ALWAYS approval is refused (guard-dangerous actions).
     block_remember_always: bool = False
+
+
+#: The one verdict for any action touching jarn's own secret store. Un-allowlistable
+#: by construction: it is returned ABOVE the allow tier in :meth:`evaluate`, so no
+#: config ``allow``, session approval or permission mode (``yolo`` included) reaches
+#: it, and ``block_remember_always`` keeps it out of the persisted rule store.
+_SECRET_STORE_DENIAL = PermissionResult(
+    Decision.DENY,
+    "jarn's own secret store is never accessible to the agent",
+    dangerous=True,
+    block_remember_always=True,
+)
 
 
 @dataclass(slots=True)
@@ -150,6 +209,9 @@ class PermissionEngine:
                 Decision.DENY, f"blocked by danger-guard: {guard.reason}",
                 dangerous=True, block_remember_always=True,
             )
+
+        if self._touches_secret_store(action):
+            return _SECRET_STORE_DENIAL
 
         if self._matches(action, self._all_deny()):
             return PermissionResult(Decision.DENY, "matched a deny rule")
@@ -207,10 +269,14 @@ class PermissionEngine:
             if self.persist is not None:
                 try:
                     self.persist(rule)
-                except ConfigCorruptError as exc:
-                    # The project config is corrupt; the in-memory allow still
-                    # applies for this session. Persistence is skipped — the
-                    # user sees the repair hint at the next config load.
+                except (ConfigCorruptError, OSError) as exc:
+                    # The in-memory allow still applies for this session; only the
+                    # cross-process persistence is skipped. ConfigCorruptError means
+                    # the project config is unreadable and the user sees the repair
+                    # hint at the next load. OSError is the I/O half — a read-only
+                    # or full disk, or a lost race on the config file — and it must
+                    # be caught HERE: uncaught it escaped `remember` into
+                    # `_stream_turn` → `run_turn` and killed the turn outright.
                     _log.warning("Could not persist allow-rule: %s", exc)
             return rule
         return None
@@ -231,14 +297,15 @@ class PermissionEngine:
     # surface.
 
     def is_read_denied_path(self, path: str) -> bool:
-        """True when a filesystem *path* matches an explicit read *deny* rule
+        """True when a filesystem *path* is hard-denied for reading: it lives in
+        jarn's own secret store, or it matches an explicit read *deny* rule
         (config ``rules.deny`` or a session deny).
 
         Defense-in-depth backstop for ``read_file``: a denied read is already
         blocked pre-exec, but the result-filter re-checks so a denied file's
         contents can never reach the model even if that gate is bypassed."""
         act = self._canonicalized_action(Action(ActionKind.READ, target=path))
-        return self._matches(act, self._all_deny())
+        return self._touches_secret_store(act) or self._matches(act, self._all_deny())
 
     def read_content_blocked(self, path: str) -> bool:
         """True when a file at *path* must not have its CONTENTS surfaced by a
@@ -250,14 +317,126 @@ class PermissionEngine:
         benign scope silently drops hits from ``.env``/keys (the exfiltration the
         gate cannot catch), while an explicitly allow-listed secret path still
         comes through."""
-        # Canonicalize the path ONCE, then run deny → allow → sensitive over that one
-        # canonical action (mirrors evaluate()'s precedence for the result filter).
+        # Canonicalize the path ONCE, then run secret-store → deny → allow → sensitive
+        # over that one canonical action (mirrors evaluate()'s precedence for the
+        # result filter). The secret store leads and ignores allow rules, exactly as
+        # in evaluate(): a broad grep must never surface a stored credential, and no
+        # allow rule may unlock it.
         act = self._canonicalized_action(Action(ActionKind.READ, target=path))
+        if self._touches_secret_store(act):
+            return True
         if self._matches(act, self._all_deny()):
             return True
         if self._matches(act, self._all_allow()):
             return False
         return self._is_sensitive_read(act)
+
+    # -- jarn's own secret store (hard floor) --------------------------------
+    #
+    # ``~/.jarn/secrets/<service>/<account>`` holds the provider API keys behind
+    # every ``file:`` secret reference — the store ``jarn login`` falls back to when
+    # no OS keychain is available. Those files carry no extension and are named after
+    # the account, so none of the ``sensitive_read_globs`` shapes (``*.pem``,
+    # ``**/*.key``, ``**/id_*``) ever described them. Worse, the store is routinely
+    # IN SCOPE: ``find_project_root`` returns ``$HOME`` for any launch directory under
+    # it that is not itself a project, which puts ``~/.jarn/`` inside the agent's
+    # readable tree. Reading a key and shipping it out through an allowed network tool
+    # is the exact exfiltration path ``sensitive_read_globs`` exists to prevent.
+    #
+    # There is no legitimate agent access to this directory, so it is a hard DENY
+    # rather than an ASK: an approval prompt is weak protection when the agent
+    # authored the request. It is enforced above the allow tier and is not
+    # configurable — deliberately not an entry in ``sensitive_read_globs``, which
+    # routes to ASK and can be emptied.
+
+    def _touches_secret_store(self, action: Action) -> bool:
+        """True when *action* reads from or writes into jarn's own secret store.
+
+        READ is judged over EVERY candidate (``target`` plus a grep/glob's extra
+        ``read_targets``), so a benign search scope cannot mask a ``glob`` narrowed
+        onto the store. WRITE is judged on its target — the agent has no business
+        clobbering stored credentials either. SHELL and NETWORK are out of scope
+        here: a shell command is gated by the danger-guard and the coarse mode, and
+        this predicate is about path-addressed tool access.
+
+        Expects an ALREADY-canonical action (:meth:`_canonicalized_action`), so a
+        virtual-namespace read is judged by host identity.
+        """
+        if action.kind is ActionKind.READ:
+            return any(self._is_secret_store_path(c) for c in self._read_candidates(action))
+        if action.kind is ActionKind.WRITE:
+            if self._is_secret_store_path(action.target):
+                return True
+            # A WRITE target is NOT canonicalized by :meth:`_canonicalized_action`
+            # (that is READ-only, by design), so under the local backend's virtual
+            # namespace ``/x`` still denotes ``<project_root>/x`` on the host here.
+            # Judge that host identity too, or a ``JARN_HOME`` nested in the project
+            # root and spelled anything other than ``.jarn`` — which is exactly what
+            # ``action/action.yml`` configures — is covered only by the lexical glob,
+            # and therefore not at all.
+            if self.virtual_reads:
+                return self._is_secret_store_path(self._canonical_read_target(action.target))
+        return False
+
+    def _is_secret_store_path(self, path: str) -> bool:
+        """True when *path* names, or falls under, a jarn secret-store directory.
+
+        Two independent checks, either of which is sufficient:
+
+        1. **Identity** — the path resolved to an absolute location that IS, or sits
+           beneath, one of :func:`~jarn.config.paths.secret_store_dirs`. Because both
+           sides are ``resolve()``d, a symlink pointing into the store is caught by
+           the file it names, not by how it is spelled. This is the primary check and
+           it follows ``$JARN_HOME``.
+        2. **Lexical** — one of :data:`_SECRET_STORE_GLOBS` matches the path's
+           canonical aliases. This covers a GLOB candidate, which has no file to
+           resolve, and a host where no store directory could be located.
+
+        Never raises: any resolution failure falls through to the lexical check.
+        """
+        if not path:
+            return False
+        resolved = self._resolve_absolute(path)
+        if resolved is not None:
+            from jarn.config.paths import secret_store_dirs
+
+            if any(_path_within(resolved, store) for store in secret_store_dirs()):
+                return True
+        aliases, _ = self._read_alias_set(path)
+        if resolved is not None:
+            # Fold the resolved identity into the lexical alias set too. With no
+            # configured root ``_read_alias_set`` derives no identity of its own, so
+            # a SYMLINK into the store would otherwise reach this check under its own
+            # innocent spelling and pass. Adding an alias only ever WIDENS the deny.
+            aliases = {*aliases, resolved.as_posix()}
+        return any(
+            fnmatch.fnmatch(alias.casefold(), pattern)
+            for pattern in _SECRET_STORE_GLOBS
+            for alias in aliases
+        )
+
+    def _resolve_absolute(self, path: str) -> Path | None:
+        """Resolved-absolute identity of a CONCRETE path, for the secret-store check.
+
+        Unlike :meth:`_resolved_read_path` this does not require a configured root —
+        the store must stay off-limits when jarn runs outside a project — and it
+        expands a leading ``~`` before anchoring, so the ``~/.jarn/secrets/...``
+        spelling a model is most likely to produce resolves like any other. A
+        relative path is anchored at the primary root when there is one, else at the
+        process CWD. Returns ``None`` for a glob (resolving would destroy its
+        metacharacters) or when the filesystem cannot answer.
+        """
+        if _is_glob(path):
+            return None
+        try:
+            candidate = Path(path).expanduser()
+            if not candidate.is_absolute():
+                roots = self._scope_roots()
+                if roots:
+                    candidate = roots[0].resolve() / candidate
+            return candidate.resolve()
+        except (OSError, RuntimeError, ValueError):
+            return None
 
     # -- internals ----------------------------------------------------------
 
