@@ -46,6 +46,7 @@ HITL under fan-out (approval interrupts):
 from __future__ import annotations
 
 import asyncio
+import itertools
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -67,6 +68,16 @@ SubagentInvoke = Callable[[str, str], Awaitable[Mapping[str, Any]]]
 #: an unbounded number of concurrent sub-graphs. Excess tasks queue behind a
 #: semaphore (still concurrent up to the cap).
 _DEFAULT_MAX_PARALLEL = 8
+
+#: Monotonic per-process source of fan-out invocation ids.
+#:
+#: A task's cost namespace must be unique per CALL, not merely per task index.
+#: ``record_task_usage`` returns the bucket's CUMULATIVE usage and the soft cap is
+#: checked against that, so reusing a label across invocations makes the second
+#: fan-out inherit the first's spend — identical work under an identical cap
+#: reaching a different verdict (#81). ``next()`` on an ``itertools.count`` is a
+#: single C-level step, so no lock is needed to keep the ids distinct.
+_INVOCATION_SEQ = itertools.count(1)
 
 
 def _safe_exc_summary(exc: BaseException) -> str:
@@ -249,9 +260,18 @@ async def run_parallel_tasks(
     with a ``max_usd`` cap (or ``default_max_usd``) whose measured cost meets/exceeds
     the cap is flagged ``budget_exceeded`` — a SOFT, post-hoc cap (see module
     docstring for why hard pre-emption is deferred).
+
+    Each call stamps its buckets with a fresh invocation id, so ``namespace_prefix``
+    names *what* is fanning out while the id keeps two calls apart. This matters for
+    correctness, not just tidiness: the cap is compared against the bucket's
+    CUMULATIVE cost, so a shared label would charge a later fan-out for an earlier
+    one's spend (#81). It is also the right behaviour after an approval interrupt —
+    LangGraph re-executes the whole tool call, and that re-run really does spend
+    again, so it belongs in its own bucket rather than doubling an existing one.
     """
     available = set(available_subagents)
     sem = asyncio.Semaphore(max(1, max_parallel))
+    namespace_run = f"{namespace_prefix}#{next(_INVOCATION_SEQ)}"
 
     async def _run_one(index: int, task: ParallelTask) -> TaskOutcome:
         sub_type = task.subagent_type or _DEFAULT_SUBAGENT_TYPE
@@ -306,11 +326,12 @@ async def run_parallel_tasks(
         unpriced = cost is None
         cost = cost or 0.0
         if cost_tracker is not None:
-            # Record into the per-namespace budget/observability dimension. Uses the
-            # cumulative bucket cost for the cap check (a namespace is unique per
-            # task here, so cumulative == this task's cost).
+            # Record into the per-namespace budget/observability dimension. The cap
+            # is checked against the bucket's CUMULATIVE cost, which is only equal to
+            # this task's cost while the label is unique — hence the invocation id in
+            # ``namespace_run``. Keying on ``index`` alone repeats every call (#81).
             bucket = cost_tracker.record_task_usage(
-                f"{namespace_prefix}[{index}]:{sub_type}",
+                f"{namespace_run}[{index}]:{sub_type}",
                 model_id, in_tok, out_tok,
                 cache_read_tokens=cache_r, cache_creation_tokens=cache_w,
             )

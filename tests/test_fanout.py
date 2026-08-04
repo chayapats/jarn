@@ -273,6 +273,97 @@ async def test_per_task_budget_records_namespace_and_flags_breach():
 
 
 @pytest.mark.asyncio
+async def test_a_later_fanout_does_not_inherit_an_earlier_ones_spend():
+    """#81: the cost namespace must be unique per INVOCATION, not just per task.
+
+    The namespace was ``fanout[<index>]:<type>``, built from the task's position in
+    its own batch — identical for every call. ``record_task_usage`` returns the
+    bucket's CUMULATIVE usage and the soft cap is checked against that, so a second
+    fan-out inherited the first's spend: same cap, same real cost, different verdict.
+    """
+    tracker = CostTracker()
+
+    async def invoke(subagent_type: str, description: str):
+        return _result("done", in_tok=100_000, out_tok=100_000)  # $0.60 on haiku
+
+    async def one_fanout():
+        result = await run_parallel_tasks(
+            [ParallelTask("t", subagent_type="general-purpose", max_usd=1.0)],
+            invoke=invoke,
+            available_subagents=["general-purpose"],
+            default_model_ref=MODEL,
+            cost_tracker=tracker,
+        )
+        return result.outcomes[0]
+
+    first, second, third = [await one_fanout() for _ in range(3)]
+
+    # Every call did the identical $0.60 of work under the identical $1.00 cap, so
+    # every call must reach the identical verdict.
+    for call, outcome in enumerate((first, second, third), start=1):
+        assert outcome.cost_usd == pytest.approx(0.60), f"call {call} reports cumulative spend"
+        assert outcome.status == "ok", f"call {call} breached on an earlier call's spend"
+        assert not outcome.budget_exceeded
+
+    # Three invocations ⇒ three buckets, not one bucket counted three times.
+    assert len(tracker.per_namespace) == 3
+    assert sum(u.calls for u in tracker.per_namespace.values()) == 3
+    assert sum(u.cost_usd for u in tracker.per_namespace.values()) == pytest.approx(1.80)
+
+
+@pytest.mark.asyncio
+async def test_namespaces_stay_distinct_within_one_fanout_and_readable():
+    """Uniqueness must not come at the cost of attribution.
+
+    Within one invocation the buckets still separate by task index and subagent
+    type, and the label still carries the caller's prefix so a reader can tell what
+    produced it.
+    """
+    tracker = CostTracker()
+
+    async def invoke(subagent_type: str, description: str):
+        return _result(f"done {description}", in_tok=10, out_tok=5)
+
+    await run_parallel_tasks(
+        [
+            ParallelTask("a", subagent_type="general-purpose"),
+            ParallelTask("b", subagent_type="general-purpose"),
+            ParallelTask("c", subagent_type="general-purpose"),
+        ],
+        invoke=invoke,
+        available_subagents=["general-purpose"],
+        default_model_ref=MODEL,
+        cost_tracker=tracker,
+    )
+    keys = sorted(tracker.per_namespace)
+    assert len(keys) == 3, keys
+    assert all(k.startswith("fanout") for k in keys), keys
+    assert all("general-purpose" in k for k in keys), keys
+    # The task index survives, so a bucket is still attributable to a task.
+    assert {"[0]", "[1]", "[2]"} == {k[k.index("[") : k.index("]") + 1] for k in keys}
+
+
+@pytest.mark.asyncio
+async def test_explicit_namespace_prefix_is_still_honoured():
+    """A caller-supplied prefix keeps its place at the head of the label."""
+    tracker = CostTracker()
+
+    async def invoke(subagent_type: str, description: str):
+        return _result("done", in_tok=10, out_tok=5)
+
+    await run_parallel_tasks(
+        [ParallelTask("a", subagent_type="general-purpose")],
+        invoke=invoke,
+        available_subagents=["general-purpose"],
+        default_model_ref=MODEL,
+        cost_tracker=tracker,
+        namespace_prefix="research",
+    )
+    key = next(iter(tracker.per_namespace))
+    assert key.startswith("research"), key
+
+
+@pytest.mark.asyncio
 async def test_default_subagent_type_and_tool_wrapper_returns_string():
     """The built tool parses raw dicts, applies the default subagent_type, and
     returns a formatted string (its ToolMessage payload)."""
