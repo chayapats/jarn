@@ -820,3 +820,84 @@ def test_mcp_resource_rotated_credential_old_value_is_redacted(monkeypatch):
     assert _NEW_CRED not in msg
     assert "credential was [REDACTED]" in msg
     assert excinfo.value.__cause__ is None  # raw cause dropped so it can't leak
+
+
+# ---------------------------------------------------------------------------
+# Pin the PRIVATE MCP SDK helper the egress client factory depends on.
+#
+# `_egress_httpx_client_factory` calls `mcp.shared._httpx_utils.create_mcp_http_client`
+# — a private path — so MCP's own client defaults are preserved verbatim, and rebuilds
+# an equivalent client if that path ever moves. The fallback is fail-CLOSED for the
+# thing that matters (the egress hook is appended either way) but fail-SILENT for the
+# defaults: an SDK bump that moves the helper leaves jarn running on hardcoded values
+# that may no longer be MCP's, and nothing says so.
+#
+# These make that loud. The point is not that the fallback is wrong today — it is
+# byte-for-byte right today, which is exactly the state that decays unnoticed.
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_private_http_helper_is_still_where_the_factory_imports_it():
+    """A red here means the SDK moved it and the fallback has become load-bearing.
+
+    Nothing crashes when that happens, which is why it needs asserting: check the
+    defaults below still hold, then update the import.
+    """
+    from mcp.shared._httpx_utils import create_mcp_http_client
+
+    assert callable(create_mcp_http_client)
+
+
+def test_fallback_client_defaults_still_match_the_sdks():
+    """The fallback hardcodes MCP's defaults, so drift between them is invisible.
+
+    `follow_redirects` is security-relevant (the egress hook is what re-checks the
+    redirect target) and the long read timeout is what keeps a slow tool call from
+    being cut off, so a silent disagreement between the two paths matters.
+    """
+    import httpx
+    from mcp.shared._httpx_utils import create_mcp_http_client
+
+    sdk_client = create_mcp_http_client()
+    fallback_timeout = httpx.Timeout(30.0, read=300.0)
+
+    assert sdk_client.follow_redirects is True
+    assert sdk_client.timeout == fallback_timeout, (
+        f"MCP's default timeout is now {sdk_client.timeout}, but the fallback in "
+        f"_egress_httpx_client_factory still builds {fallback_timeout} — the two "
+        "paths would silently disagree"
+    )
+
+
+def test_egress_hook_survives_the_private_import_disappearing(monkeypatch):
+    """The whole reason the fallback exists is to keep this control.
+
+    Simulate the SDK path being gone and assert the client still carries exactly one
+    request hook. Losing it here would fail OPEN — the worst outcome for a guard whose
+    job is to refuse egress to a host outside the allowlist.
+    """
+    import builtins
+
+    import httpx
+
+    from jarn.extensibility.mcp import _egress_httpx_client_factory
+
+    factory = _egress_httpx_client_factory(NetworkPolicy())
+
+    primary = factory()
+    assert isinstance(primary, httpx.AsyncClient)
+    assert len(primary.event_hooks["request"]) == 1
+
+    real_import = builtins.__import__
+
+    def _private_path_gone(name, *args, **kwargs):
+        if name == "mcp.shared._httpx_utils":
+            raise ImportError("simulated: the SDK moved it")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _private_path_gone)
+    fallback = factory()
+    assert len(fallback.event_hooks["request"]) == 1, (
+        "the fallback dropped the egress hook — this control must fail closed"
+    )
+    assert fallback.follow_redirects is True
