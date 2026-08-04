@@ -41,6 +41,32 @@ def default_global_home() -> Path:
     return Path.home() / ".jarn"
 
 
+def _home_dir() -> Path | None:
+    """The user's home directory, or ``None`` when the host has no answer."""
+    try:
+        return Path.home().resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
+def _global_jarn_dirs() -> set[Path]:
+    """The ``.jarn`` directories that must never be taken for a project marker.
+
+    Resolved best-effort. ``default_global_home()`` goes through ``Path.home()``,
+    which raises ``RuntimeError`` when ``$HOME`` is unset and the uid has no
+    passwd entry — a real configuration (``action/action.yml`` sets ``JARN_HOME``
+    explicitly for exactly that reason), and one where an explicit ``JARN_HOME``
+    must keep working rather than take the whole path layer down with it.
+    """
+    dirs: set[Path] = set()
+    for lookup in (global_home, default_global_home):
+        try:
+            dirs.add(lookup().resolve())
+        except (OSError, RuntimeError):
+            continue
+    return dirs
+
+
 def jarn_home_overridden() -> bool:
     """True when ``JARN_HOME`` redirects away from the default ``~/.jarn``."""
     override = os.environ.get("JARN_HOME")
@@ -48,7 +74,7 @@ def jarn_home_overridden() -> bool:
         return False
     try:
         return global_home().resolve() != default_global_home().resolve()
-    except OSError:
+    except (OSError, RuntimeError):
         return True
 
 
@@ -86,10 +112,8 @@ def find_project_root(start: Path | None = None) -> Path | None:
     before the filesystem root.
     """
     current = (start or Path.cwd()).resolve()
-    global_jarn_dirs = {
-        global_home().resolve(),
-        default_global_home().resolve(),
-    }
+    global_jarn_dirs = _global_jarn_dirs()
+    home = _home_dir()
     for directory in (current, *current.parents):
         marker = directory / PROJECT_DIR_NAME
         if marker.is_dir() and marker.resolve() not in global_jarn_dirs:
@@ -98,6 +122,15 @@ def find_project_root(start: Path | None = None) -> Path | None:
             return directory
         if (directory / ".git").exists():
             return directory
+        if home is not None and directory == home:
+            # Stop here — the home directory is checked (a dotfiles repo at
+            # ~/.git is legitimate) but never crossed. Ignoring the global
+            # ~/.jarn marker above removed what used to terminate this walk;
+            # without a stop the search escapes to /, and the root it returns
+            # becomes an in-scope write root for the permission engine, so a
+            # stray .jarn or .git anywhere above $HOME would put the whole
+            # machine in scope.
+            break
     return None
 
 
@@ -107,10 +140,7 @@ def project_dir(root: Path | None = None) -> Path | None:
     if root is None:
         return None
     directory = root / PROJECT_DIR_NAME
-    if directory.resolve() in {
-        global_home().resolve(),
-        default_global_home().resolve(),
-    }:
+    if directory.resolve() in _global_jarn_dirs():
         return None
     return directory
 
@@ -174,6 +204,10 @@ def project_claude_dir(root: Path | None = None) -> Path | None:
     if root is None:
         return None
     directory = root / CLAUDE_DIR_NAME
-    if directory.resolve() == global_claude_home().resolve():
+    try:
+        global_claude = global_claude_home().resolve()
+    except (OSError, RuntimeError):
+        return directory  # no home directory to collide with
+    if directory.resolve() == global_claude:
         return None
     return directory

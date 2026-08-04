@@ -10,16 +10,33 @@ import time
 
 
 def _pg_alive(pgid: int) -> bool:
+    """Whether any live (non-zombie) process remains in *pgid*.
+
+    The two "gone" errnos are platform-split and both must be handled here.
+    Linux keeps an unreaped zombie in its group and answers ``killpg(pgid, 0)``
+    with success, so liveness only clears once the child is waited on — see the
+    ``reap`` hook in :func:`_wait_dead`. XNU instead drops the zombie from its
+    group and answers ``EPERM`` (``PermissionError``), not ``ESRCH``; letting
+    that escape made macOS take an accidental path through the caller's blanket
+    ``except OSError`` rather than this probe.
+    """
     try:
         os.killpg(pgid, 0)
         return True
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         return False
 
 
-def _wait_dead(alive_fn, grace_secs: float) -> None:
+def _wait_dead(alive_fn, grace_secs: float, reap=None) -> None:
+    """Poll *alive_fn* until it reports death or *grace_secs* elapses.
+
+    *reap* (when given) is called each round to wait on our own child, so a
+    zombie cannot keep ``alive_fn`` true for the whole grace period.
+    """
     deadline = time.monotonic() + grace_secs
     while time.monotonic() < deadline:
+        if reap is not None:
+            reap()
         if not alive_fn():
             return
         time.sleep(0.05)
@@ -53,20 +70,24 @@ def _terminate_windows(pid: int) -> None:
             os.kill(pid, signal.SIGTERM)
 
 
-def terminate_process_group(pid: int, *, grace_secs: float = 0) -> None:
+def terminate_process_group(pid: int, *, grace_secs: float = 0, reap=None) -> None:
     """Best-effort terminate the whole process tree rooted at *pid*.
 
     On POSIX uses ``killpg`` (``SIGTERM`` then ``SIGKILL`` after *grace_secs*
     when it is > 0, else an immediate ``SIGKILL``). On Windows delegates to
-    :func:`_terminate_windows` (``taskkill /T``); *grace_secs* is ignored there
-    because the platform has no graceful terminate.
+    :func:`_terminate_windows` (``taskkill /T``); *grace_secs* and *reap* are
+    ignored there because the platform has no graceful terminate.
+
+    *reap* is an optional zero-arg callable (typically ``Popen.poll``) that waits
+    on the caller's own child while we poll; without it a zombie keeps the group
+    "alive" on Linux and the grace period is always burned in full.
     """
     try:
         if os.name == "posix":
             pgid = os.getpgid(pid)
             if grace_secs > 0:
                 os.killpg(pgid, signal.SIGTERM)
-                _wait_dead(lambda: _pg_alive(pgid), grace_secs)
+                _wait_dead(lambda: _pg_alive(pgid), grace_secs, reap=reap)
                 if _pg_alive(pgid):
                     os.killpg(pgid, signal.SIGKILL)
             else:

@@ -94,10 +94,23 @@ class Controller:
         )
         # Persist ALWAYS-scoped approvals to the project config so they survive
         # across processes (no-op outside a project).
+        #
+        # Resolve the *project* root rather than trusting project_root, which is
+        # the scoping root and falls back to the cwd. Handing that straight to
+        # the store broke the no-op above in both directions: outside a project
+        # the first "always" grant created <cwd>/.jarn/, silently promoting an
+        # ordinary folder to a project root for every later run; and a headless
+        # run started in a subdirectory wrote its grants to <subdir>/.jarn/
+        # instead of the project's own config.
         from jarn.config import paths
         from jarn.permissions.rule_store import PermissionRuleStore
 
-        self.rule_store = PermissionRuleStore(paths.project_config_path(project_root))
+        discovered = (
+            paths.find_project_root(project_root) if project_root is not None else None
+        )
+        self.rule_store = PermissionRuleStore(
+            paths.project_config_path(discovered) if discovered is not None else None
+        )
         self.engine.persist = self.rule_store.add_allow
         self.tracker = CostTracker(budget=config.budget)
         self.thread_id = new_thread_id()
