@@ -95,11 +95,23 @@ def _tracked_markdown() -> list[Path]:
     return [REPO / name for name in proc.stdout.split("\0") if name]
 
 
+#: In RELEASE.md the historical part starts at the first per-release sign-off
+#: heading. Everything before it — "Automated gates", "Manual QA", "Publish",
+#: "Post-release" — is live process that a reader follows today.
+#:
+#: The slice used to start at "## Manual QA", which discarded 135 lines including
+#: three live sections. No count lives there today, so nothing was wrong — but a
+#: count added to "Publish" tomorrow would have been invisible, which is precisely
+#: the blind spot that let JARN.md sit 156 behind.
+_RELEASE_HISTORY_RE = re.compile(r"^## v\d+\.\d+\.\d+ sign-off", re.MULTILINE)
+
+
 def _doc_counts(path: Path) -> list[int]:
     text = path.read_text(encoding="utf-8")
     if path.name == "RELEASE.md":
-        # Only the live "Automated gates" block — sign-off tables are historical.
-        text = text.split("## Manual QA", 1)[0]
+        history = _RELEASE_HISTORY_RE.search(text)
+        if history:
+            text = text[: history.start()]
     return [int(m.group(1).replace(",", "")) for m in _COUNT_RE.finditer(text)]
 
 
@@ -128,6 +140,25 @@ def test_count_regex_matches_every_phrasing_the_docs_use() -> None:
     assert seen("resolved in 500 cases") == []
     # Too short to be a suite size — avoids matching version/section numbers.
     assert seen("12 tests") == []
+
+
+def test_release_slice_keeps_the_live_sections_and_drops_the_sign_offs() -> None:
+    """RELEASE.md is half live process, half frozen sign-off tables.
+
+    The cut has to land between them: too late and a stale sign-off number fails the
+    build forever, too early and a count in a live section is invisible. Asserted
+    against the real file so a reorganisation of it cannot silently move the cut.
+    """
+    text = (REPO / "RELEASE.md").read_text(encoding="utf-8")
+    history = _RELEASE_HISTORY_RE.search(text)
+    assert history, "RELEASE.md must still carry per-release sign-off headings"
+    live = text[: history.start()]
+
+    # Every live section survives the cut…
+    for heading in ("## Automated gates", "## Manual QA", "## Publish", "## Post-release"):
+        assert heading in live, f"{heading} is live process and must stay in scope"
+    # …and the frozen tables do not.
+    assert "sign-off" not in live
 
 
 @pytest.mark.parametrize("doc_path", CURRENT_COUNT_DOCS, ids=lambda p: p.name)
