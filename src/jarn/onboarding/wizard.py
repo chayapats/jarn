@@ -145,6 +145,10 @@ def run_wizard(*, force: bool = False) -> Path | None:
         return paths.global_config_path()
 
     config_path = paths.global_config_path()
+    paths.ensure_global_home()
+    # Best-effort by contract, so it swallows a create failure. The wizard is
+    # about to write config.yaml and must fail BEFORE the first prompt, not after
+    # the operator has answered all of them.
     paths.global_home().mkdir(parents=True, exist_ok=True)
 
     console.print(Panel.fit(f"[b cyan]{WORDMARK}[/b cyan]\n[dim]{TAGLINE}[/dim]",

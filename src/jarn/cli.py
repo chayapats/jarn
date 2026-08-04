@@ -295,6 +295,16 @@ def _main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    # Before anything touches the global tier. Whichever subsystem gets there
+    # first (prompt history, the log file, the session index) would otherwise
+    # create ~/.jarn at the process umask; this also repairs installs that were
+    # created that way before the mode was pinned. Best-effort and never raises.
+    # Imported here, like every other `paths` use in this module, to keep it off
+    # the cold-start path for `jarn --version`.
+    from jarn.config import paths as _paths
+
+    _paths.ensure_global_home()
+
     preset_override = args.preset
 
     # --output-schema is headless-only: error if given without -p.
@@ -776,6 +786,10 @@ def _write_openrouter_key_ref(reference: str) -> bool:
             return False
         data = loaded or {}
     else:
+        paths.ensure_global_home()
+        # ensure_global_home is best-effort by contract, so it swallows a failure
+        # to create. This site is about to WRITE the file, and must fail here —
+        # loudly and at the right place — rather than further down.
         paths.global_home().mkdir(parents=True, exist_ok=True)
         data = {}
 

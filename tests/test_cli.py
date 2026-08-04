@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 
 import pytest
 import yaml
@@ -1092,3 +1094,85 @@ def test_demo_provider_gated(monkeypatch):
     assert DEMO_PROFILE not in DEFAULT_MODELS, (
         f"DEMO_PROFILE {DEMO_PROFILE!r} must not be registered in DEFAULT_MODELS"
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
+def test_doctor_reports_a_world_readable_global_home(tmp_path, monkeypatch, capsys):
+    """jarn tightens the home at every start, so a finding here means the chmod
+    could not be applied — a directory owned by someone else, or a filesystem
+    with no POSIX modes. Reported rather than fixed silently: by the time doctor
+    sees it the history and trust store have already been exposed."""
+    from jarn import cli
+    from jarn.config import paths
+
+    custom = tmp_path / "alt-jarn"
+    custom.mkdir()
+    custom.chmod(0o755)
+    monkeypatch.setenv("JARN_HOME", str(custom))
+    gp = custom / "config.yaml"
+    gp.write_text(
+        yaml.safe_dump(
+            {
+                "default_profile": "openrouter",
+                "providers": {"openrouter": {"type": "openrouter", "api_key": "sk-test"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
+
+    cli._cmd_doctor(as_json=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["jarn_home_mode"] == "0755"
+    assert "other local users" in data["jarn_home_mode_warning"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
+def test_doctor_is_quiet_about_a_correctly_locked_home(tmp_path, monkeypatch, capsys):
+    from jarn import cli
+    from jarn.config import paths
+
+    custom = tmp_path / "alt-jarn"
+    custom.mkdir(mode=0o700)
+    custom.chmod(0o700)
+    monkeypatch.setenv("JARN_HOME", str(custom))
+    gp = custom / "config.yaml"
+    gp.write_text(
+        yaml.safe_dump(
+            {
+                "default_profile": "openrouter",
+                "providers": {"openrouter": {"type": "openrouter", "api_key": "sk-test"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(paths, "global_config_path", lambda: gp)
+    monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
+
+    cli._cmd_doctor(as_json=True)
+    data = json.loads(capsys.readouterr().out)
+    assert data["jarn_home_mode"] == "0700"
+    assert "jarn_home_mode_warning" not in data
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
+def test_main_locks_down_a_freshly_created_global_home(tmp_path, monkeypatch):
+    """`ensure_global_home()` must RUN at the entry point, not merely exist.
+
+    Driven through `main()` with a command that creates the home as a side effect
+    (`trust-hooks` goes through `trust.py`'s plain `mkdir` with no `mode=`), so
+    deleting the call in `_main` fails this rather than passing silently.
+    """
+    home = tmp_path / "jarn-home"
+    monkeypatch.setenv("JARN_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+
+    old_umask = os.umask(0o022)
+    try:
+        main(["trust-hooks"])
+    finally:
+        os.umask(old_umask)
+
+    assert home.is_dir(), "the command should have created the global home"
+    assert stat.S_IMODE(home.stat().st_mode) == 0o700

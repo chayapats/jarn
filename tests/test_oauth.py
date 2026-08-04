@@ -11,9 +11,14 @@ All network is mocked — no live HTTP in CI.
 
 from __future__ import annotations
 
+import contextlib
+import socket
+import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -278,8 +283,8 @@ def test_login_closes_socket_on_success(monkeypatch):
     captured: dict[str, object] = {}
     real_make = oauth._make_callback_server
 
-    def _capturing_make():
-        server, port = real_make()
+    def _capturing_make(nonce=None):
+        server, port = real_make(nonce)
         captured["server"] = server
         return server, port
 
@@ -309,8 +314,8 @@ def test_login_closes_socket_on_timeout(monkeypatch):
     captured: dict[str, object] = {}
     real_make = oauth._make_callback_server
 
-    def _capturing_make():
-        server, port = real_make()
+    def _capturing_make(nonce=None):
+        server, port = real_make(nonce)
         captured["server"] = server
         return server, port
 
@@ -417,3 +422,307 @@ def test_write_openrouter_key_ref_refuses_on_malformed_config(monkeypatch, capsy
     assert cfg.read_text(encoding="utf-8") == malformed, "malformed config must be untouched"
     err = capsys.readouterr().err
     assert "config" in err.lower(), "must warn on stderr about the unparseable config"
+
+
+# ---------------------------------------------------------------------------
+# Loopback race — GHSA-82cv-4xgg-jfqr
+# ---------------------------------------------------------------------------
+#
+# The callback server binds an ephemeral port, and any local process can scan for
+# it and deliver a bogus `?code=` first. PKCE keeps that from being a takeover —
+# an injected code is bound to the attacker's own challenge — but "first request
+# wins" made it a denial of service: the bogus code was returned, redemption
+# failed, and the real browser response hit a socket we had already closed.
+
+
+def _hit(port: int, path: str) -> socket.socket:
+    """Send a callback request and return the STILL-OPEN client socket.
+
+    Deliberately not ``urlopen``: nothing is serving yet, so a urlopen would block
+    on the response until the test finally calls into the server — and after the
+    burst is drained the earlier clients have already given up, leaving the
+    handler writing to a dead socket. Sending on a raw socket puts the request in
+    the listen backlog immediately, which is the precondition these tests need,
+    and returning it keeps the peer alive so the handler's write succeeds.
+    """
+    client = socket.create_connection(("127.0.0.1", port), timeout=5)
+    client.sendall(f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".encode())
+    return client
+
+
+def test_nonce_path_codes_are_handed_out_before_bare_ones():
+    """Ordering is what keeps a flood of bogus codes from spending the login
+    window on 30 s exchange round-trips."""
+    from jarn.onboarding.oauth import _make_callback_server, _wait_for_callback
+
+    server, port = _make_callback_server("s3cret-nonce")
+    # The whole burst sits in the listen backlog before the server accepts any of
+    # it — the shape a flooding process produces, and the only one where the
+    # ordering can do any work at all.
+    clients = [
+        _hit(port, path)
+        for path in (
+            "/callback?code=bogus-1",
+            "/callback?code=bogus-2",
+            "/callback/s3cret-nonce?code=genuine",
+        )
+    ]
+
+    assert _wait_for_callback(server, timeout=5.0) == "genuine"
+    # The bare-path codes are still available as a fallback, never discarded.
+    assert {_wait_for_callback(server, timeout=5.0) for _ in range(2)} == {
+        "bogus-1",
+        "bogus-2",
+    }
+    for client in clients:
+        client.close()
+    server.server_close()
+
+
+def test_a_wrong_nonce_path_is_rejected_outright():
+    from jarn.onboarding.oauth import _make_callback_server, _wait_for_callback
+
+    server, port = _make_callback_server("s3cret-nonce")
+    client = _hit(port, "/callback/guessed?code=x")
+
+    with pytest.raises(TimeoutError):
+        _wait_for_callback(server, timeout=0.3)
+    client.close()
+    server.server_close()
+
+
+def test_bare_callback_still_works_without_a_nonce():
+    """Backwards compatibility: if a provider ever normalises the path away, the
+    flow must still complete rather than reject its own callback."""
+    from jarn.onboarding.oauth import _make_callback_server, _wait_for_callback
+
+    server, port = _make_callback_server("s3cret-nonce")
+    client = _hit(port, "/callback?code=path-was-stripped")
+
+    assert _wait_for_callback(server, timeout=5.0) == "path-was-stripped"
+    client.close()
+    server.server_close()
+
+
+def _code_rejected() -> Exception:
+    """What the token endpoint really raises for a code bound to another
+    challenge: an httpx.HTTPStatusError carrying a 4xx response."""
+    import httpx
+
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/auth/keys")
+    response = httpx.Response(400, request=request, json={"error": "invalid_grant"})
+    return httpx.HTTPStatusError("400 Bad Request", request=request, response=response)
+
+
+def test_login_survives_an_injected_code(monkeypatch):
+    """The regression: an attacker's code is tried, is rejected as bound to a
+    different PKCE challenge, and the flow moves on instead of dying."""
+    from jarn.onboarding import oauth
+
+    exchanged: list[str] = []
+
+    def _fake_exchange(code: str, verifier: str):
+        exchanged.append(code)
+        if code != "genuine":
+            raise _code_rejected()
+        return SimpleNamespace(reference="keychain:jarn/openrouter", backend="keychain")
+
+    monkeypatch.setattr(oauth, "_exchange_and_store", _fake_exchange)
+    monkeypatch.setattr(oauth, "_resolve_existing", lambda ref: None)
+
+    handed_out = iter(["injected-1", "injected-2", "genuine"])
+    monkeypatch.setattr(oauth, "_module_wait_for_callback", lambda s, *, timeout: next(handed_out))
+    monkeypatch.setattr(oauth, "_pop_code", lambda s: None)  # bare-path codes
+
+    result = oauth.login_openrouter(open_browser=lambda url: None, _timeout=10.0)
+
+    assert result.reference == "keychain:jarn/openrouter"
+    assert exchanged == ["injected-1", "injected-2", "genuine"]
+
+
+def test_a_rejected_verified_code_fails_immediately(monkeypatch):
+    """A code that came back on the nonce path provably came from the URL we handed
+    out. If the provider rejects THAT, no later code can be ours either — waiting
+    out the window would only hide the reason."""
+    from jarn.onboarding import oauth
+
+    attempts: list[str] = []
+
+    def _always_rejected(code: str, verifier: str):
+        attempts.append(code)
+        raise _code_rejected()
+
+    monkeypatch.setattr(oauth, "_exchange_and_store", _always_rejected)
+    monkeypatch.setattr(oauth, "_resolve_existing", lambda ref: None)
+
+    def _hand_out_verified(server, *, timeout: float):
+        server._last_pop_verified = True
+        return "ours-but-rejected"
+
+    monkeypatch.setattr(oauth, "_module_wait_for_callback", _hand_out_verified)
+
+    with pytest.raises(Exception, match="400"):
+        oauth.login_openrouter(open_browser=lambda url: None, _timeout=10.0)
+
+    assert attempts == ["ours-but-rejected"], "a verified rejection must be terminal"
+
+
+def test_unverified_codes_are_capped_then_the_flow_waits_for_a_real_one(monkeypatch):
+    """A flood of bare-path codes is bounded — but bounding it must not END the
+    login, or the attacker still wins. After the cap the flow latches to
+    nonce-path-only and keeps waiting."""
+    from jarn.onboarding import oauth
+
+    attempts: list[str] = []
+    states: dict[str, object] = {}
+
+    def _exchange(code: str, verifier: str):
+        attempts.append(code)
+        if code == "genuine":
+            return SimpleNamespace(reference="keychain:jarn/openrouter", backend="keychain")
+        raise _code_rejected()
+
+    monkeypatch.setattr(oauth, "_exchange_and_store", _exchange)
+    monkeypatch.setattr(oauth, "_resolve_existing", lambda ref: None)
+
+    def _hand_out(server, *, timeout: float):
+        states["server"] = server
+        if len(attempts) < oauth._MAX_EXCHANGE_ATTEMPTS:
+            server._last_pop_verified = False
+            return f"injected-{len(attempts)}"
+        server._last_pop_verified = True
+        return "genuine"
+
+    monkeypatch.setattr(oauth, "_module_wait_for_callback", _hand_out)
+
+    result = oauth.login_openrouter(open_browser=lambda url: None, _timeout=10.0)
+
+    assert result.reference == "keychain:jarn/openrouter"
+    assert len(attempts) == oauth._MAX_EXCHANGE_ATTEMPTS + 1
+    assert states["server"]._verified_only is True
+
+
+def test_a_non_code_failure_is_surfaced_at_once(monkeypatch):
+    """A dead network, a provider 5xx or a failed keychain write is not something
+    another code repairs — burying it behind the remaining window would leave the
+    user staring at nothing for five minutes."""
+    from jarn.onboarding import oauth
+
+    attempts: list[str] = []
+
+    def _network_down(code: str, verifier: str):
+        attempts.append(code)
+        raise ConnectionError("Name or service not known")
+
+    monkeypatch.setattr(oauth, "_exchange_and_store", _network_down)
+    monkeypatch.setattr(oauth, "_resolve_existing", lambda ref: None)
+    monkeypatch.setattr(oauth, "_module_wait_for_callback", lambda s, *, timeout: "c")
+
+    with pytest.raises(ConnectionError):
+        oauth.login_openrouter(open_browser=lambda url: None, _timeout=10.0)
+
+    assert attempts == ["c"]
+
+
+def test_authorize_url_callback_carries_the_nonce_path(monkeypatch):
+    from jarn.onboarding import oauth
+
+    opened: list[str] = []
+    monkeypatch.setattr(oauth, "_resolve_existing", lambda ref: None)
+    monkeypatch.setattr(
+        oauth,
+        "_exchange_and_store",
+        lambda code, verifier: SimpleNamespace(reference="r", backend="keychain"),
+    )
+    monkeypatch.setattr(oauth, "_module_wait_for_callback", lambda s, *, timeout: "c")
+
+    oauth.login_openrouter(open_browser=opened.append, _timeout=5.0)
+
+    assert opened, "the browser was never opened"
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(opened[0]).query)
+    callback = urllib.parse.urlparse(query["callback_url"][0])
+    assert callback.path.startswith("/callback/")
+    assert len(callback.path[len("/callback/"):]) >= 32
+    assert query["code_challenge_method"] == ["S256"]
+
+
+def test_an_idle_connection_cannot_strand_an_already_captured_code():
+    """The handler must bound its read on an accepted connection.
+
+    `StreamRequestHandler` defaults to no socket timeout, so a peer that connects
+    and sends nothing blocks the handler forever — and the drain runs BETWEEN
+    accepting the genuine callback and handing it back, so the code was parsed,
+    queued, and then stranded because control never reached `_pop_code`.
+    """
+    from jarn.onboarding.oauth import _CallbackHandler, _make_callback_server, _wait_for_callback
+
+    assert _CallbackHandler.timeout is not None, "an unbounded handler read can hang forever"
+
+    server, port = _make_callback_server("s3cret-nonce")
+    genuine = _hit(port, "/callback/s3cret-nonce?code=genuine")
+    idle = socket.create_connection(("127.0.0.1", port), timeout=5)  # connects, says nothing
+
+    done: list[str] = []
+
+    def _drive() -> None:
+        with contextlib.suppress(Exception):
+            done.append(_wait_for_callback(server, timeout=5.0))
+
+    worker = threading.Thread(target=_drive, daemon=True)
+    worker.start()
+    worker.join(timeout=20.0)
+
+    assert not worker.is_alive(), "an idle connection hung the callback server"
+    assert done == ["genuine"]
+    idle.close()
+    genuine.close()
+    server.server_close()
+
+
+def test_a_code_less_request_does_not_truncate_the_drain():
+    """The drain must stop on "nothing is pending", not on "that request carried
+    no code" — otherwise one health probe or favicon fetch hands the verified-first
+    ordering only whatever it happened to see first."""
+    from jarn.onboarding.oauth import _make_callback_server, _wait_for_callback
+
+    server, port = _make_callback_server("s3cret-nonce")
+    clients = [
+        _hit(port, path)
+        for path in (
+            "/callback?code=bogus",
+            "/healthz",  # no code at all, sitting between the two
+            "/callback/s3cret-nonce?code=genuine",
+        )
+    ]
+
+    assert _wait_for_callback(server, timeout=5.0) == "genuine"
+
+    for client in clients:
+        client.close()
+    server.server_close()
+
+
+def test_a_non_ascii_callback_path_is_rejected_not_crashed():
+    """`compare_digest` raises TypeError on a non-ASCII str, and the path is
+    attacker-controlled — a traceback in the user's terminal is not a rejection."""
+    from jarn.onboarding.oauth import _make_callback_server, _wait_for_callback
+
+    server, port = _make_callback_server("s3cret-nonce")
+    # A rejection and a crash both leave the code unqueued, so the outcome alone
+    # proves nothing — what distinguishes them is the handler blowing up, which
+    # BaseHTTPRequestHandler routes to handle_error (a traceback on the user's
+    # terminal). Record that instead.
+    errors: list[object] = []
+    server.handle_error = lambda request, addr: errors.append(sys.exc_info()[1])  # type: ignore[method-assign]
+
+    client = socket.create_connection(("127.0.0.1", port), timeout=5)
+    client.sendall(
+        "GET /callback/éé?code=x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".encode()
+    )
+
+    with pytest.raises(TimeoutError):
+        _wait_for_callback(server, timeout=0.5)
+
+    assert errors == [], f"the handler raised instead of rejecting: {errors}"
+    client.close()
+    server.server_close()

@@ -25,6 +25,39 @@ All notable changes to J.A.R.N. are documented here. Format follows
   `run_in_background`) is *not* covered and remains gated by the coarse mode and
   the danger-guard, and the result filter stays best-effort — both boundaries are
   documented in `SECURITY.md`. `GHSA-x8cp-rh3m-m2gw`.
+- **`~/.jarn` is no longer created at the process umask.** The global tier holds
+  the prompt history, session transcripts, the wiki and memory the agent writes
+  for itself, and the trust store; created with no `mode=` it landed at `0755` on
+  a stock macOS install and was never tightened, so every other local account
+  could read all of it. It is now created `0700` and re-tightened at every start —
+  both are needed, because `mkdir(mode=…)` is masked by the umask AND is a no-op
+  for a directory that already exists, so only the explicit `chmod` repairs an
+  install already in the field. The check only ever tightens, logs when it does,
+  and never raises. It runs at the CLI entry point in addition to the two call
+  sites that name the home explicitly, since whichever subsystem touches the tier
+  first is what actually creates it. `jarn doctor` now reports the mode when it
+  could not be fixed. `GHSA-hqcx-wg2w-6gv4`.
+- **`jarn login` no longer fails when another local process wins the loopback
+  race.** The OAuth callback server binds an ephemeral port and took the *first*
+  request carrying a `?code=`. PKCE already made an injected code unredeemable, so
+  this was never a takeover — but it was a denial of service: the bogus code was
+  returned, redemption failed, and the real browser response arrived at a socket
+  jarn had already closed, with nothing shown to explain why. Codes are now queued
+  and tried in turn until one redeems (a bounded number of attempts), and the
+  `callback_url` carries an unguessable path segment so a code that came back from
+  the URL jarn handed out is tried first. The nonce is in the PATH rather than a
+  `state` parameter deliberately: OpenRouter's PKCE flow documents only
+  `callback_url`, `code_challenge` and `code_challenge_method` and echoes back only
+  `code`, so requiring a `state` round-trip as RFC 6749 §10.12 describes would
+  reject every legitimate callback. A bare `/callback` is still accepted and ranked
+  second, so the flow keeps working if a provider normalises the path away.
+  Only *unverified* codes count against the attempt cap, so a flood bounds the
+  exchange round-trips without ending the login; a rejected nonce-path code is
+  terminal (no later code can be ours either), and a failure that another code
+  cannot repair — a dead network, a 5xx, a failed keychain write — is surfaced at
+  once rather than retried into the timeout. The callback handler also has a read
+  timeout now, so a peer that connects and sends nothing can no longer wedge it.
+  `GHSA-82cv-4xgg-jfqr`.
 
 ### Fixed
 

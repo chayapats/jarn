@@ -57,7 +57,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-07-17** (v0.9.1 released
 - [x] `jarn` / `setup` / `init` / `doctor` (`--json`) CLI
 - [x] Strict config validation (typed bools, numeric ranges, unknown top-level keys rejected)
 - [x] Local rotating logs, opt-in LangSmith tracing
-- [x] `uv`/PyPI packaging, 2112 tests (+ packaging gate), clean lint + `mypy` CI
+- [x] `uv`/PyPI packaging, 2131 tests (+ packaging gate), clean lint + `mypy` CI
 - [x] `jarn doctor` extension diagnostics — skills, commands, subagents, hooks, MCP
   (shadowing, builtin renames, untrusted skips); `uv.lock` tracked for team installs
 
