@@ -5,6 +5,11 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-08-04
+
+Security patch release: the three findings from the private advisory queue, plus
+the concurrency defects behind #45 and #46.
+
 ### Security
 
 - **The agent's file tools can no longer read or write J.A.R.N.'s own secret
