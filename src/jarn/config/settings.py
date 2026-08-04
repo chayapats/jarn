@@ -22,6 +22,7 @@ from jarn.config.yaml_store import (
     atomic_write_yaml,
     load_yaml_doc,
 )
+from jarn.util.atomic import atomic_write_text, file_lock
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,7 +228,7 @@ class ConfigStore:
         if text is None:
             self.path.unlink(missing_ok=True)
         else:
-            self.path.write_text(text, encoding="utf-8")
+            atomic_write_text(self.path, text)
 
     def set(self, key: str, value: object) -> None:
         """Set ``key`` (dotted) to ``value`` in the file, preserving comments.
@@ -235,17 +236,21 @@ class ConfigStore:
         Raises :class:`ConfigCorruptError` if the file is unreadable; the file is
         left untouched and a ``.bak`` is saved.
         """
-        data = self._load()
-        parts = key.split(".")
-        node = data
-        for part in parts[:-1]:
-            child = node.get(part)
-            if not isinstance(child, dict):
-                child = {}
-                node[part] = child
-            node = child
-        node[parts[-1]] = value
-        self._atomic_write(data)
+        # One lock across load → mutate → publish: the new document is derived
+        # from the old, so two concurrent `jarn config set` calls would otherwise
+        # each publish a complete file and the second would drop the first's key.
+        with file_lock(self.path):
+            data = self._load()
+            parts = key.split(".")
+            node = data
+            for part in parts[:-1]:
+                child = node.get(part)
+                if not isinstance(child, dict):
+                    child = {}
+                    node[part] = child
+                node = child
+            node[parts[-1]] = value
+            self._atomic_write(data)
 
     def _load(self) -> dict:
         return load_yaml_doc(self.path)

@@ -30,6 +30,9 @@ large_tool_results/
 .jarn/state.sqlite-*
 .jarn/checkpoints.sqlite*
 .jarn/logs/
+# Write-lock siblings (jarn.util.atomic): empty, ephemeral, recreated on demand.
+.jarn/**/*.lock
+.jarn/*.lock
 harness_memory/
 audit_logs/
 .audit-jarn-home/

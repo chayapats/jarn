@@ -1040,3 +1040,87 @@ async def test_abort_rollback_waits_for_detached_snapshot(
     assert cp._stack_read(cp._REDO_PREFIX, repo)  # redo point saved
     for sha in undo_stack:
         assert len(sha) >= 40
+
+
+# ---------------------------------------------------------------------------
+# _SNAPSHOT_EXCLUDE pathspecs
+# ---------------------------------------------------------------------------
+#
+# These entries are git PATHSPECS handed to `git reset HEAD -- <spec>`, and git's
+# default wildmatch lets `*` cross `/`. An unanchored `*.lock` therefore matched
+# uv.lock / Cargo.lock / yarn.lock as well as jarn's own write-lock siblings — and
+# because the exclusion pins each match's HEAD blob into the snapshot rather than
+# omitting it, /undo reverted a tracked lockfile past the user's uncommitted edits
+# and DELETED an untracked one. Nothing covered this constant, which is how it
+# shipped; these two tests hold the anchor in place.
+
+
+def test_undo_preserves_uncommitted_dependency_lockfiles(repo: Path) -> None:
+    """A TRACKED lockfile the user edited must survive undo like any other file."""
+    (repo / "uv.lock").write_text("committed = 1\n", encoding="utf-8")
+    _git(["add", "uv.lock"], cwd=repo)
+    _git(["commit", "-m", "add lockfile"], cwd=repo)
+    (repo / "uv.lock").write_text("user-edited = 2\n", encoding="utf-8")
+
+    mgr = _manager(repo)
+    assert mgr.snapshot("before-edit", now=1_000_000.0).ok
+    (repo / "README.txt").write_text("agent changed me\n", encoding="utf-8")
+
+    assert mgr.undo().ok
+    assert (repo / "uv.lock").read_text(encoding="utf-8") == "user-edited = 2\n"
+    assert (repo / "README.txt").read_text(encoding="utf-8") == "init\n"
+
+
+def test_undo_does_not_delete_untracked_dependency_lockfiles(repo: Path) -> None:
+    """An UNTRACKED lockfile is absent from an excluding snapshot's tree, so it
+    lands in `to_remove` and is unlinked — and redo cannot bring it back."""
+    (repo / "sub").mkdir()
+    (repo / "sub" / "Cargo.lock").write_text("[[package]]\n", encoding="utf-8")
+
+    mgr = _manager(repo)
+    assert mgr.snapshot("before-edit", now=1_000_000.0).ok
+    (repo / "README.txt").write_text("agent changed me\n", encoding="utf-8")
+
+    assert mgr.undo().ok
+    assert (repo / "sub" / "Cargo.lock").is_file()
+
+
+def test_jarn_write_locks_are_still_excluded_from_snapshots(repo: Path) -> None:
+    """The anchored pathspec must still reach jarn's own siblings, including nested
+    ones — the same `*`-crosses-`/` property, used deliberately this time.
+
+    Note what the exclusion actually does: `git reset HEAD -- <spec>` pins the path
+    to its HEAD state, so an untracked match is simply absent from the tree. That is
+    the right shape for these files (ephemeral, recreated on demand) and it is also
+    precisely why the unanchored form was destructive for a real lockfile.
+    """
+    from jarn.agent.checkpoint import _SNAPSHOT_EXCLUDE
+
+    assert ".jarn/*.lock" in _SNAPSHOT_EXCLUDE
+    assert "*.lock" not in _SNAPSHOT_EXCLUDE
+
+    for rel in (".jarn", ".jarn/wiki/pages", ".jarn/memory"):
+        (repo / rel).mkdir(parents=True, exist_ok=True)
+    for rel in (
+        ".jarn/config.yaml.lock",
+        ".jarn/wiki/pages/notes.md.lock",
+        ".jarn/memory/MEMORY.md.lock",
+    ):
+        (repo / rel).write_text("", encoding="utf-8")
+    (repo / ".jarn" / "config.yaml").write_text("model: x\n", encoding="utf-8")
+
+    mgr = _manager(repo)
+    snap = mgr.snapshot("with-locks", now=1_000_000.0)
+    assert snap.ok
+
+    listing = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", snap.sha or "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert not [name for name in listing if name.endswith(".lock")], listing
+    # …while the real config beside them IS captured, so the anchor is not a
+    # blanket exclusion of .jarn/.
+    assert ".jarn/config.yaml" in listing

@@ -42,10 +42,7 @@ import time as _time_module
 from dataclasses import dataclass, field
 from pathlib import Path
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - Windows
-    fcntl = None  # type: ignore[assignment]
+from jarn.util.atomic import file_lock
 
 #: Full snapshot ref suffix — avoids prefix collisions on large repos.
 _SNAP_REF_LEN = 40
@@ -228,13 +225,19 @@ def _iter_snapshot_records(root: Path) -> list[tuple[str, str]]:
 
 _UNDO_PREFIX = "refs/jarn/checkpoints/stack/undo/"
 _REDO_PREFIX = "refs/jarn/checkpoints/stack/redo/"
-_LOCK_BASENAME = "jarn-checkpoint.lock"
+_LOCK_BASENAME = "jarn-checkpoint"
 # In-process guard paired with the file lock (same-thread reentrancy).
 _THREAD_LOCK = threading.Lock()
 
 
-def _lock_path(root: Path) -> Path:
-    """Return the lock file path — always under ``.git/`` so snapshots stay clean."""
+def _lock_base(root: Path) -> Path:
+    """The lock BASE path — ``file_lock`` appends ``.lock`` to it.
+
+    Kept under ``.git/`` so snapshots stay clean. The base deliberately omits the
+    suffix so the resulting file keeps its historical name: a jarn from before the
+    shared primitive locks ``.git/jarn-checkpoint.lock``, and a lock on any other
+    path would silently stop the two versions excluding each other.
+    """
     git_dir = root / ".git"
     if git_dir.is_dir():
         return git_dir / _LOCK_BASENAME
@@ -243,19 +246,20 @@ def _lock_path(root: Path) -> Path:
 
 @contextlib.contextmanager
 def _checkpoint_lock(root: Path):
-    """Serialize stack mutations across threads and cooperating processes."""
-    lock_path = _lock_path(root)
+    """Serialize stack mutations across threads and cooperating processes.
+
+    ``_THREAD_LOCK`` covers threads in this process; the file lock covers other
+    processes. The file half used to be ``fcntl``-only, which is ``None`` on
+    Windows — so on the one platform where the module-global thread lock is the
+    only remaining guard, two jarn processes could interleave the undo/redo ref
+    read-modify-write with nothing stopping them. ``file_lock`` is the same
+    primitive on POSIX and its ``msvcrt`` equivalent on Windows.
+    """
+    lock_path = _lock_base(root)
     with _THREAD_LOCK:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            if fcntl is not None:
-                fcntl.flock(fd, fcntl.LOCK_EX)
+        with file_lock(lock_path):
             yield
-        finally:
-            if fcntl is not None:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
 
 
 def _snap_ref(sha: str) -> str:
@@ -336,6 +340,17 @@ _SNAPSHOT_EXCLUDE: tuple[str, ...] = (
     ".jarn/state.sqlite",
     ".jarn/state.sqlite-wal",
     ".jarn/state.sqlite-shm",
+    # Write-lock siblings (jarn.util.atomic). Empty, ephemeral, and recreated on
+    # demand — snapshotting them would put churn in every checkpoint diff.
+    # ANCHORED to .jarn/ on purpose: these entries are git PATHSPECS and git's
+    # default wildmatch lets `*` cross `/`, so a bare "*.lock" would also match
+    # uv.lock, Cargo.lock, yarn.lock… Because the exclusion is a `reset HEAD --`,
+    # that does not merely skip them — it pins each one's HEAD blob into the
+    # snapshot, so /undo would revert a tracked lockfile past the user's
+    # uncommitted edits and DELETE an untracked one. The same `*`-crosses-`/`
+    # property makes the anchored form complete: it still reaches
+    # .jarn/wiki/pages/<page>.md.lock and .jarn/memory/MEMORY.md.lock.
+    ".jarn/*.lock",
 )
 
 

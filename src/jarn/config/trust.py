@@ -41,6 +41,7 @@ from typing import Any
 import yaml
 
 from jarn.config import paths
+from jarn.util.atomic import atomic_write_text, file_lock
 
 #: Project-tier keys an **untrusted** project is allowed to set. Everything else
 #: is dropped until the project is explicitly trusted. Allowlist (not blocklist)
@@ -273,6 +274,9 @@ class TrustStore:
 
     path: Path
     _entries: dict[str, str] = field(default_factory=dict)
+    #: The map as it was READ, so :meth:`save` can tell an entry this instance
+    #: removed from one another process added since. See :meth:`save`.
+    _baseline: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path | None = None) -> TrustStore:
@@ -285,7 +289,7 @@ class TrustStore:
                     entries = {str(k): str(v) for k, v in data.items()}
             except yaml.YAMLError:
                 entries = {}  # a corrupt store fails closed (everything untrusted)
-        return cls(path=p, _entries=entries)
+        return cls(path=p, _entries=entries, _baseline=dict(entries))
 
     def status(self, root: Path, fp: str) -> str:
         """``"trusted"`` (root trusted at this fingerprint), ``"changed"`` (trusted
@@ -307,7 +311,33 @@ class TrustStore:
         return {k: self._entries[k] for k in sorted(self._entries)}
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(yaml.safe_dump(self._entries, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.path)
+        """Merge this instance's changes into the on-disk map and publish it.
+
+        This is the MACHINE-GLOBAL trust store: every jarn process on the host
+        reads and writes the same file, and the load-mutate-save cycle spans a user
+        prompt, so a plain overwrite loses whatever another process recorded in
+        between. Two failure directions, and the second is the dangerous one — a
+        lost ``trust`` merely re-prompts (fail-closed), but a lost ``untrust``
+        brings a revoked root back as trusted (fail-OPEN).
+
+        So the write is a three-way merge under an exclusive lock: re-read the file,
+        then apply only what this instance actually CHANGED against the map it
+        loaded — the keys it removed, and the keys it added or re-fingerprinted.
+        Keys it merely carried along untouched are left at the on-disk value.
+
+        Applying the whole map instead of the delta would be wrong in exactly the
+        dangerous direction: a writer that loaded before a revoke, changed some
+        unrelated root, and saved would carry the revoked entry back in and
+        re-trust it. Concurrent changes to DIFFERENT roots all survive; only a
+        genuine conflict on the SAME root is last-writer-wins.
+        """
+        with file_lock(self.path):
+            disk = type(self).load(self.path)._entries
+            for removed in set(self._baseline) - set(self._entries):
+                disk.pop(removed, None)
+            for key, value in self._entries.items():
+                if self._baseline.get(key) != value:  # added or re-fingerprinted
+                    disk[key] = value
+            atomic_write_text(self.path, yaml.safe_dump(disk, sort_keys=True))
+            self._entries = disk
+            self._baseline = dict(disk)

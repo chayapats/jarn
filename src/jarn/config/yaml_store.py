@@ -24,6 +24,8 @@ from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
+from jarn.util.atomic import atomic_write_text
+
 
 class ConfigCorruptError(ValueError):
     """The persisted YAML file is unreadable (corrupt or I/O error).
@@ -92,11 +94,14 @@ def load_yaml_doc(path: Path) -> dict:
 
 
 def atomic_write_yaml(path: Path, data: dict) -> None:
-    """Back up the current file, then atomically write *data* (comment-preserving)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Back up the current file, then atomically write *data* (comment-preserving).
+
+    Takes no lock: callers that DERIVE *data* from the current file must hold
+    :func:`~jarn.util.atomic.file_lock` across the load and this call, or the last
+    writer silently discards the other's edit. See that module on why the lock
+    cannot live in here.
+    """
     rotate_backup(path)
     buf = io.StringIO()
     _yaml().dump(data, buf)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(buf.getvalue(), encoding="utf-8")
-    os.replace(tmp, path)
+    atomic_write_text(path, buf.getvalue())

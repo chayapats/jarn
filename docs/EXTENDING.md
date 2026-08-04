@@ -328,8 +328,11 @@ launching.
 - Keep skill/command descriptions short and specific — they cost prompt tokens and
   drive auto-trigger quality.
 - Commit project-tier extensions (`.jarn/`) so your whole team shares them.
-- `state.sqlite` and `logs/` under `.jarn/` are gitignored by the provided
-  `.gitignore`.
+- `state.sqlite`, `logs/` and the `*.lock` write-lock siblings under `.jarn/` are
+  gitignored by the provided `.gitignore`. The `.lock` files are empty, are
+  recreated on demand, and are intentionally never deleted — unlinking one on
+  release would break mutual exclusion, since the next process to open the path
+  would get a different inode and lock nothing.
 
 ---
 

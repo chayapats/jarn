@@ -26,6 +26,49 @@ All notable changes to J.A.R.N. are documented here. Format follows
   the danger-guard, and the result filter stays best-effort — both boundaries are
   documented in `SECURITY.md`. `GHSA-x8cp-rh3m-m2gw`.
 
+### Fixed
+
+- **Concurrent writes no longer lose data across two sessions on one project.**
+  Every store that edits a shared file did an unlocked read-modify-write and
+  published through a *fixed* `<path>.tmp`, so two plain `jarn` CLIs on one repo
+  were enough to lose the edit and, when the temp names collided, to raise
+  `FileNotFoundError` out of `os.replace`. Measured on one machine, before → after:
+  concurrent `ALWAYS` permission grants 95% lost + 19 uncaught exceptions → 0% and
+  none; concurrent wiki appends 95% lost → 0%; `index.md` read empty 173 times →
+  never. Both halves now come from one primitive, `jarn.util.atomic`
+  (`atomic_write_text` + `file_lock`), adopted by `PermissionRuleStore`,
+  `ConfigStore`, `TrustStore`, `WikiStore`, `MemoryStore` and the file secret
+  store. (#45, #46)
+- `MemoryStore._rebuild_index` also runs on the READ path — `index_text()` rebuilds
+  on demand and that text goes straight into the system prompt — so a concurrent
+  prompt assembly could read a truncated or empty `MEMORY.md`. (#46)
+- `WikiStore.append` resolves its target inside the lock, closing the create race
+  where two writers both saw "no page yet" and one `create` clobbered the other.
+- A failed rule persist no longer ends the turn: `PermissionEngine.remember` caught
+  only `ConfigCorruptError`, so the `OSError` half — a read-only disk, a lost race —
+  escaped into `_stream_turn` → `run_turn`. The in-memory allow still applies. (#45)
+- The file secret store is created with mode `0600` already set, instead of being
+  written at the process umask and chmod'ed a moment later.
+- The checkpoint undo/redo lock is no longer a no-op on Windows, where `fcntl` is
+  `None` and only the in-process thread lock remained — so two jarn processes could
+  interleave the ref read-modify-write on the one platform CI actually runs. Its
+  lock file keeps its existing name and location (`.git/jarn-checkpoint.lock`), so
+  a jarn from before this release still excludes one from after it.
+- Checkpoint snapshots now exclude `.jarn/*.lock`, so the new write-lock siblings
+  do not add churn to every `/undo` diff. The pathspec is anchored deliberately:
+  these entries are git pathspecs and `*` crosses `/`, so an unanchored form would
+  also match `uv.lock`, `Cargo.lock`, `yarn.lock` and friends — and because the
+  exclusion pins a path to its HEAD blob rather than skipping it, that would revert
+  a tracked lockfile past the user's uncommitted edits and delete an untracked one.
+
+### Note
+
+- Locking creates an empty `<file>.lock` sibling next to each guarded file under
+  `.jarn/`. They are ephemeral, recreated on demand, and intentionally never
+  removed — unlinking one on release would break mutual exclusion, because the next
+  process to open that path would get a different inode. The shipped `.gitignore`
+  covers them; a repo that commits its `.jarn/` should ignore `.jarn/**/*.lock`.
+
 ## [0.9.1] - 2026-07-17
 
 ### Security

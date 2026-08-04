@@ -19,6 +19,7 @@ import yaml
 
 from jarn.config import paths
 from jarn.memory.tokens import truncate_to_token_budget
+from jarn.util.atomic import atomic_write_text, file_lock
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.DOTALL)
@@ -75,7 +76,7 @@ class MemoryStore:
             raise ValueError(f"Unknown memory type {memory.type!r}; expected {MEMORY_TYPES}")
         filename = f"{slugify(memory.name)}.md"
         path = self.root / filename
-        path.write_text(memory.to_markdown(), encoding="utf-8")
+        atomic_write_text(path, memory.to_markdown())
         memory.path = path
         self._rebuild_index()
         self._invalidate_vector_cache()
@@ -147,16 +148,29 @@ class MemoryStore:
         )
 
     def _rebuild_index(self) -> str:
-        memories = self.load_all()
-        lines = ["# Memory index", ""]
-        for mem in memories:
-            lines.append(
-                f"- [{mem.name}]({slugify(mem.name)}.md) — {mem.description}"
-            )
-        text = "\n".join(lines) + "\n"
-        if memories or self.root.is_dir():
-            self.ensure()
-            self.index_path.write_text(text, encoding="utf-8")
+        if not self.root.is_dir():
+            # Nothing to index and no directory yet — materialise NOTHING. This must
+            # precede file_lock, whose mkdir would create ``self.root`` (and a
+            # MEMORY.md.lock inside it) and make the write guard below vacuously
+            # true. index_text() reaches here on the READ path, i.e. on every
+            # system-prompt build, where creating a store in the user's repo from a
+            # pure read is exactly what the original guard existed to prevent.
+            return "# Memory index\n\n"
+        # Locked and published atomically. This runs on the READ path too —
+        # `index_text()` rebuilds on demand, and that text goes straight into the
+        # system prompt — so a bare write_text let a concurrent prompt assembly
+        # read a half-written or empty MEMORY.md.
+        with file_lock(self.index_path):
+            memories = self.load_all()
+            lines = ["# Memory index", ""]
+            for mem in memories:
+                lines.append(
+                    f"- [{mem.name}]({slugify(mem.name)}.md) — {mem.description}"
+                )
+            text = "\n".join(lines) + "\n"
+            if memories or self.root.is_dir():
+                self.ensure()
+                atomic_write_text(self.index_path, text)
         return text
 
     def _invalidate_vector_cache(self) -> None:

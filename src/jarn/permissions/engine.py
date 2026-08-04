@@ -269,10 +269,14 @@ class PermissionEngine:
             if self.persist is not None:
                 try:
                     self.persist(rule)
-                except ConfigCorruptError as exc:
-                    # The project config is corrupt; the in-memory allow still
-                    # applies for this session. Persistence is skipped — the
-                    # user sees the repair hint at the next config load.
+                except (ConfigCorruptError, OSError) as exc:
+                    # The in-memory allow still applies for this session; only the
+                    # cross-process persistence is skipped. ConfigCorruptError means
+                    # the project config is unreadable and the user sees the repair
+                    # hint at the next load. OSError is the I/O half — a read-only
+                    # or full disk, or a lost race on the config file — and it must
+                    # be caught HERE: uncaught it escaped `remember` into
+                    # `_stream_turn` → `run_turn` and killed the turn outright.
                     _log.warning("Could not persist allow-rule: %s", exc)
             return rule
         return None
