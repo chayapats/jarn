@@ -51,10 +51,13 @@ def _shutdown_managers(monkeypatch):
             mgr.shutdown()
 
 
-def _quiesce(mgr):
-    """Park the monitor so only explicit sweeps run — for order-sensitive tests."""
-    mgr._interval = 3600.0
-    return mgr
+def _quiesce():
+    """Parked ProcessManager — monitor interval set before any ``start()``.
+
+    Mutating ``_interval`` after ``ProcessManager()`` is too late: the first
+    ``start()`` may already have spawned the monitor on the default 5s cadence.
+    """
+    return ProcessManager(interval=3600.0)
 
 
 # -- ProcessManager ----------------------------------------------------------
@@ -296,7 +299,7 @@ def test_exited_job_frees_resources_but_keeps_its_record(tmp_path):
     ``check_background`` is normally called a turn or more after the job ends, so
     evicting the record on reap would lose the exit code and the output for good.
     """
-    mgr = _quiesce(ProcessManager())
+    mgr = _quiesce()
     proc = mgr.start("echo prune-me", cwd=str(tmp_path))
     _wait(mgr, proc.id)
 
@@ -314,7 +317,7 @@ def test_exited_job_frees_resources_but_keeps_its_record(tmp_path):
 
 def test_retained_records_are_capped(tmp_path):
     """Retention is bounded — the oldest finished records are retired first."""
-    mgr = _quiesce(ProcessManager())
+    mgr = _quiesce()
     procs = [
         mgr.start(f"echo job-{i}", cwd=str(tmp_path))
         for i in range(background._RETAIN_MAX + 3)
@@ -324,15 +327,27 @@ def test_retained_records_are_capped(tmp_path):
 
     mgr.list()  # one sweep reaps them all, then applies the cap
 
-    assert len(mgr.list()) == background._RETAIN_MAX
-    assert mgr.status(procs[0].id) is None, "oldest must be retired"
-    assert mgr.status(procs[-1].id) is not None, "newest must be retained"
+    remaining = mgr.list()
+    assert len(remaining) == background._RETAIN_MAX
+    retained_ids = {p["id"] for p in remaining}
+    retired = [p for p in procs if p.id not in retained_ids]
+    retained = [p for p in procs if p.id in retained_ids]
+    assert len(retired) == 3
+    # Cap retires by finished_at, not start order. Concurrent ``echo`` jobs (and
+    # mid-start ``_prune_exited`` stamps) can diverge those clocks, so assert the
+    # structural invariant: no retained record is older than a retired one.
+    assert all(p.finished_at is not None for p in procs)
+    latest_retired_at = max(p.finished_at for p in retired if p.finished_at is not None)
+    earliest_retained_at = min(
+        p.finished_at for p in retained if p.finished_at is not None
+    )
+    assert earliest_retained_at >= latest_retired_at
 
 
 def test_retained_records_age_out(tmp_path, monkeypatch):
     """A record past the retention window is retired on the next sweep."""
     monkeypatch.setattr(background, "_RETAIN_SECS", 60.0)
-    mgr = _quiesce(ProcessManager())
+    mgr = _quiesce()
     proc = mgr.start("echo age-me", cwd=str(tmp_path))
     _wait(mgr, proc.id)
 
@@ -442,7 +457,7 @@ def test_tmpdir_removed_on_prune(tmp_path):
     """Pruning a finished process removes its per-process temp log directory."""
     # Parked monitor: the "still present" assertion below states that cleanup has
     # NOT happened yet, so it must not race a background sweep.
-    mgr = _quiesce(ProcessManager())
+    mgr = _quiesce()
     proc = mgr.start("echo prune-tmpdir", cwd=str(tmp_path))
     proc_dir = proc.tmpdir
     assert proc_dir.exists()
