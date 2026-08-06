@@ -133,11 +133,15 @@ class OverlayMixin:
         asyncio.get_running_loop().create_task(_run())
 
     async def _confirm_and_cycle_yolo(self) -> None:
-        """Async helper for Shift+Tab: confirm yolo, then apply it (or skip)."""
-        if not await self._confirm_yolo():
-            self.console.print(f"[{palette.C_DIM}]yolo cancelled — mode unchanged.[/{palette.C_DIM}]")
+        """Async helper for Shift+Tab: confirm yolo via controller-owned gate."""
+        result = await self.controller.set_permission_mode(
+            "yolo",
+            confirm=self._confirm_yolo,
+        )
+        if "cancelled" in result.text.lower() or "requires confirmation" in result.text.lower():
+            self.console.print(f"[{palette.C_DIM}]{result.text}[/{palette.C_DIM}]")
             return
-        new = self.controller.cycle_mode()
+        new = self.controller.config.permission_mode.value
         self._armed = False
         color = palette.MODE_COLOR.get(new, "#22d3ee")
         glyph = palette.MODE_GLYPH.get(new, "◆")

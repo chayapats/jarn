@@ -132,7 +132,9 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self._last_esc_ts: float | None = None    # Esc-Esc chord: timestamp of last idle Esc
         self._hinted: bool = False                # empty-Enter hint shown once per session
         self._last_tool_outputs: list[tuple[str, str]] = []  # for Ctrl+O expand
-        self._turn_task: asyncio.Task | None = None
+        # Turn task lives on the controller (bind_turn_task) so abort() can
+        # cancel+await it. Property below mirrors for existing REPL call sites.
+        self.controller.bind_turn_task(None)
         self._pastes: dict[str, str] = {}          # collapsed token -> full paste
         self._paste_n = 0
         self._input_queue = InputQueue()
@@ -408,8 +410,18 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             text = "jarn"
         set_title(text, settings=self.config.ui, write=self.console.file.write, isatty=self._title_isatty)
 
+    @property
+    def _turn_task(self) -> asyncio.Task | None:
+        """In-flight turn task — stored on the controller so ``abort()`` can
+        serialize cancel against it (T-CTRL-1)."""
+        return self.controller._turn_task
+
+    @_turn_task.setter
+    def _turn_task(self, task: asyncio.Task | None) -> None:
+        self.controller.bind_turn_task(task)
+
     def _busy(self) -> bool:
-        return self._turn_task is not None and not self._turn_task.done()
+        return self.controller.turn_running
 
     def _cancel_turn(self, *, note_edits: bool = False) -> None:
         """Cancel the running turn AND kill any shell process it spawned.
