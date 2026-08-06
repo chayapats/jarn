@@ -32,6 +32,7 @@ from jarn.agent.events import (
     Event,
     EventKind,
     SuggestedMemory,
+    SuggestedSkill,
     ToolProgress,
     _auto_reject,
 )
@@ -72,6 +73,7 @@ __all__ = [
     "EventKind",
     "SessionDriver",
     "SuggestedMemory",
+    "SuggestedSkill",
     "_action_requests",
     "_auto_reject",
     "_first_tool_name",

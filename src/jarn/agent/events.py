@@ -81,6 +81,23 @@ class SuggestedMemory:
 
 
 @dataclass(slots=True)
+class SuggestedSkill:
+    """A skill the agent proposes for the user to approve, edit, or decline.
+
+    Carried on an :class:`ApprovalRequest` when the agent calls ``suggest_skill``.
+    The approver surfaces a "Save this skill?" prompt and, on approval, writes it
+    under ``<active_root>/.jarn/skills/<name>/SKILL.md`` (refused when the project
+    is untrusted or has no root). The tool itself never writes.
+    """
+
+    name: str
+    description: str
+    body: str
+    #: ``auto``, ``manual``, or a keyword/glob string — same as skill frontmatter.
+    trigger: str = "auto"
+
+
+@dataclass(slots=True)
 class ApprovalRequest:
     action: Action
     result: PermissionResult
@@ -94,6 +111,10 @@ class ApprovalRequest:
     #: an ordinary tool approval. The approver shows it and, on approval, writes it
     #: through the memory store.
     suggested_memory: SuggestedMemory | None = None
+    #: Set when this is an agent skill suggestion (``suggest_skill``) rather than
+    #: an ordinary tool approval. The approver shows it and, on approval, writes it
+    #: under the active root's ``.jarn/skills/``.
+    suggested_skill: SuggestedSkill | None = None
 
 
 @dataclass(slots=True)

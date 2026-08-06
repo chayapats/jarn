@@ -90,6 +90,7 @@ _RESERVED_BUILTIN_NAMES = frozenset({
     "repo_map",
     "exit_plan_mode",
     "suggest_memory",
+    "suggest_skill",
     "spawn_parallel_tasks",
 })
 

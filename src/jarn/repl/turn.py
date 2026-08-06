@@ -49,6 +49,10 @@ _EDIT_BEFORE_APPLY = object()
 #: others it is not an :class:`ApprovalReply` — the editor flow produces the reply.
 _EDIT_MEMORY = object()
 
+#: Sentinel for the "edit then save" action on a suggested-skill prompt — same
+#: shape as :data:`_EDIT_MEMORY`, for skill body editing before write.
+_EDIT_SKILL = object()
+
 #: Substrings that mark a provider ERROR as an image/vision/multimodal capability
 #: rejection (T-3-7). Matched case-insensitively against the error text, and only
 #: consulted on a turn that actually inlined images, so a false positive is bounded
@@ -463,6 +467,10 @@ async def _approve(
         return await _approve_suggested_memory(
             console, controller, request, ask=ask, pick=pick, edit=edit
         )
+    if request.suggested_skill is not None:
+        return await _approve_suggested_skill(
+            console, controller, request, ask=ask, pick=pick, edit=edit
+        )
     a = request.action
     what = (f"run: {a.target}" if a.kind is ActionKind.SHELL
             else f"write: {a.target}" if a.kind is ActionKind.WRITE
@@ -658,6 +666,76 @@ async def _approve_suggested_memory(
         return ApprovalReply(False, message="User declined to save the memory.")
 
     saved, message = controller.save_suggested_memory(suggestion)
+    colour = palette.C_NOTICE if saved else palette.C_WARN
+    console.print(f"[{colour}]{_rich_escape(message)}[/{colour}]")
+    return ApprovalReply(saved, message="" if saved else message)
+
+
+async def _approve_suggested_skill(
+    console: Console,
+    controller: Controller,
+    request: ApprovalRequest,
+    *,
+    ask: Ask | None = None,
+    pick: Pick | None = None,
+    edit: Callable[[ApprovalRequest], Awaitable[ApprovalReply | None]] | None = None,
+) -> ApprovalReply:
+    """Skill-suggestion approval: show it, then save / edit-and-save / decline.
+
+    On approval the skill is written through ``controller.save_suggested_skill``
+    (nested ``.jarn/skills/<name>/SKILL.md``, trust-gated); declining writes
+    nothing. ``approved`` is set iff the skill was actually saved.
+    """
+    suggestion = request.suggested_skill
+    assert suggestion is not None
+    console.print(
+        f"\n[{palette.C_NOTICE}]▶ Suggested skill[/{palette.C_NOTICE}] "
+        f"[{palette.C_DIM}](trigger={suggestion.trigger})[/{palette.C_DIM}]"
+    )
+    console.print(
+        f"  [b]{_rich_escape(suggestion.name)}[/b] — "
+        f"{_rich_escape(suggestion.description)}"
+    )
+    if suggestion.body.strip():
+        console.print(Markdown(suggestion.body))
+
+    save = ("Save this skill", True)
+    edit_save = ("Edit, then save", _EDIT_SKILL)
+    decline = ("Don't save", False)
+
+    choice: object
+    if pick is not None:
+        options: list[tuple[str, object]] = [save]
+        if edit is not None:
+            options.append(edit_save)
+        options.append(decline)
+        choice = await pick(options)
+    elif ask is not None:
+        ans = (await ask("  Save this skill? [y/N/edit]: ")).strip().lower()
+        choice = (
+            _EDIT_SKILL if ans in ("e", "edit")
+            else ans in ("y", "yes")
+        )
+    else:
+        return ApprovalReply(False, message="auto-denied (no approver)")
+
+    if choice is _EDIT_SKILL:
+        edited = await asyncio.to_thread(
+            _edit_text_in_editor, suggestion.body, suffix=".md"
+        )
+        if edited is None:
+            console.print(
+                f"[{palette.C_DIM}]edit aborted — skill not saved[/{palette.C_DIM}]"
+            )
+            return ApprovalReply(False, message="User declined to save the skill.")
+        suggestion.body = edited.strip()
+        choice = True
+
+    if choice is not True:
+        console.print(f"[{palette.C_DIM}]skill not saved[/{palette.C_DIM}]")
+        return ApprovalReply(False, message="User declined to save the skill.")
+
+    saved, message = controller.save_suggested_skill(suggestion)
     colour = palette.C_NOTICE if saved else palette.C_WARN
     console.print(f"[{colour}]{_rich_escape(message)}[/{colour}]")
     return ApprovalReply(saved, message="" if saved else message)

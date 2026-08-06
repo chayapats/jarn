@@ -19,6 +19,7 @@ from jarn.agent.builtin_tools import (
     _exit_plan_mode_tool,
     _inject_repo_map,
     _suggest_memory_tool,
+    _suggest_skill_tool,
     _wire_builtin_tools,
 )
 from jarn.agent.runtime import (
@@ -45,5 +46,6 @@ __all__ = [
     "_make_local_backend",
     "_make_sandbox_backend",
     "_suggest_memory_tool",
+    "_suggest_skill_tool",
     "_wire_builtin_tools",
 ]
