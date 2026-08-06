@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from langgraph.types import Overwrite
 
 from jarn.agent.events import Event, EventKind, ToolProgress
+from jarn.agent.tool_arg_redact import sanitize_tool_args
 from jarn.cost.usage import normalize_usage
 
 if TYPE_CHECKING:
@@ -173,7 +174,11 @@ def handle_update_chunk(
                         args.get("file_path") or args.get("path")
                         or args.get("filename") or ""
                     )
-                data: dict[str, Any] = {"args": args}
+                # Fail-closed: TOOL_START is yielded from the updates stream
+                # *before* HITL interrupt resolution. A DENY therefore arrives
+                # only after this event has already left — redact + size-cap
+                # here so the denied path cannot publish raw payloads.
+                data: dict[str, Any] = {"args": sanitize_tool_args(args)}
                 if call_id:
                     data["tool_call_id"] = str(call_id)
                 if agent:
