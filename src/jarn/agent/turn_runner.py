@@ -10,6 +10,17 @@ Owns the turn-level loop that was previously trapped in ``repl/turn.py``:
 Front-ends (REPL, headless, Telegram bridge) supply an :class:`Approver` and an
 ``on_event`` sink. This module must not import TUI widgets — media ingest and
 approvals stay injectable through ``SessionDriver.run_turn`` / the approver.
+
+Turn re-entrancy (T-QA-1)
+-------------------------
+**Policy: refuse.** A second concurrent ``run_agent_turn`` / ``make_driver`` on
+the same :class:`~jarn.controller.Controller` raises
+:class:`~jarn.controller.TurnBusyError` (surfaced here as an ERROR event with
+``data.code == "busy"``). Turns are never silently interleaved and never queued
+at this layer — ``make_driver`` would otherwise overwrite ``_active_driver`` and
+break ``settle_snapshot`` / undo. Gateway chat routing already queues-when-busy
+in :mod:`jarn.gateway.sessions`; the worker/controller still needs this hard
+guard so a buggy double-entry fails loud.
 """
 
 from __future__ import annotations
@@ -122,127 +133,108 @@ async def run_agent_turn(
     terminal ERROR (retries exhausted) is forwarded via ``on_event`` and
     returned on :attr:`TurnResult.error`. Synthetic NOTICE events are emitted
     for image / model / auth fallback attempts.
+    
+    Acquires the controller's exclusive turn slot for the whole retry loop
+    (T-QA-1 refuse policy); see the module docstring.
     """
+    from jarn.controller import TurnBusyError
+
     result = TurnResult()
-    attempt_resume = resume
-    image_fallback_done = False
-
-    while True:
-        driver = controller.make_driver(approver)
-        result.driver = driver
-        produced = False
-        pending_error: Event | None = None
-        payload = "" if attempt_resume else text
-        # Inline images only on a fresh (non-resume) attempt while the session
-        # fallback hasn't disabled them. A model-rotation resume re-runs on the
-        # already-checkpointed state (which still holds the image blocks), so it
-        # must not re-inline; only pass the kwarg when there is something to send,
-        # so drivers with the old signature (tests) are unaffected.
-        turn_images = (
-            images
-            if (images and not attempt_resume and not controller.inline_images_disabled)
-            else None
+    try:
+        acquired = controller.acquire_turn()
+    except TurnBusyError as exc:
+        err = Event(
+            EventKind.ERROR,
+            str(exc),
+            data={"code": "busy", "retryable": False},
         )
-        run_kwargs: dict[str, Any] = {"resume": attempt_resume}
-        if turn_images:
-            run_kwargs["images"] = turn_images
-        # ``media`` is the preferred multimodal seam (#54); only on fresh attempts.
-        if media and not attempt_resume:
-            run_kwargs["media"] = media
-        if pending_only:
-            run_kwargs["pending_only"] = True
+        await _emit(on_event, err)
+        result.error = err
+        return result
 
-        async for event in driver.run_turn(payload, **run_kwargs):
-            result.had_events = True
-            if event.kind is EventKind.ERROR:
-                pending_error = event
-                continue
-            if (
-                event.kind is EventKind.NOTICE
-                and event.data.get("diagnostics_auto_queue")
-                and queue_sink is not None
-            ):
-                # Diagnostics auto-fix (T-3-3): queue ONE internal follow-up
-                # turn. The chain-round counter is bumped BEFORE the round runs
-                # so its driver sees round>=1 and the cap holds even if the auto
-                # round introduces new errors.
-                controller._diag_chain_round += 1
-                queue_sink("", event.data["diagnostics_auto_queue"], internal=True)
-            await _emit(on_event, event)
-            if _counts_as_produced(event):
-                produced = True
+    try:
+        attempt_resume = resume
+        image_fallback_done = False
 
-        if pending_error is None:
-            controller.reset_model_rotation()  # back to primary on success
-            return result
-
-        # T-3-7 image fallback: a provider that rejects the inlined image gets
-        # ONE same-model text-only retry (do NOT rotate). One-shot per turn and
-        # one-way per session — the flag makes `auto` behave like `off` for the
-        # rest of the session, and the guard stops a second image error from
-        # re-triggering (it then surfaces normally / falls to the branches below).
-        if (
-            turn_images
-            and not image_fallback_done
-            and not produced
-            and is_image_capability_error(pending_error)
-        ):
-            controller.inline_images_disabled = True
-            image_fallback_done = True
-            # Strip the rejected image message from state so the text-only
-            # re-send doesn't leave the model re-seeing the image.
-            await controller.drop_pending_image_message()
-            await _emit(
-                on_event,
-                Event(
-                    EventKind.NOTICE,
-                    "image not accepted by this model — "
-                    "retrying without the inline image (text-only)",
-                    data={"turn_policy": "image_fallback"},
-                ),
+        while True:
+            driver = controller.make_driver(approver)
+            result.driver = driver
+            produced = False
+            pending_error: Event | None = None
+            payload = "" if attempt_resume else text
+            # Inline images only on a fresh (non-resume) attempt while the session
+            # fallback hasn't disabled them. A model-rotation resume re-runs on the
+            # already-checkpointed state (which still holds the image blocks), so it
+            # must not re-inline; only pass the kwarg when there is something to send,
+            # so drivers with the old signature (tests) are unaffected.
+            turn_images = (
+                images
+                if (images and not attempt_resume and not controller.inline_images_disabled)
+                else None
             )
-            attempt_resume = False  # re-send the turn text; images are dropped
-            continue
+            run_kwargs: dict[str, Any] = {"resume": attempt_resume}
+            if turn_images:
+                run_kwargs["images"] = turn_images
+            # ``media`` is the preferred multimodal seam (#54); only on fresh attempts.
+            if media and not attempt_resume:
+                run_kwargs["media"] = media
+            if pending_only:
+                run_kwargs["pending_only"] = True
 
-        if pending_error.data.get("retryable") and not produced:
-            new_ref = controller.rotate_to_fallback()
-            if new_ref:
-                try:
-                    await controller.ensure_runtime()
-                except Exception as exc:  # noqa: BLE001
-                    await _emit(
-                        on_event,
-                        Event(
-                            EventKind.NOTICE,
-                            f"fallback unavailable: {exc}",
-                            data={
-                                "turn_policy": "fallback_unavailable",
-                                "severity": "error",
-                            },
-                        ),
-                    )
-                    # Match historical REPL: surface only the unavailable notice
-                    # (not the original provider error) and stop retrying.
-                    result.error = pending_error
-                    return result
+            async for event in driver.run_turn(payload, **run_kwargs):
+                result.had_events = True
+                if event.kind is EventKind.ERROR:
+                    pending_error = event
+                    continue
+                if (
+                    event.kind is EventKind.NOTICE
+                    and event.data.get("diagnostics_auto_queue")
+                    and queue_sink is not None
+                ):
+                    # Diagnostics auto-fix (T-3-3): queue ONE internal follow-up
+                    # turn. The chain-round counter is bumped BEFORE the round runs
+                    # so its driver sees round>=1 and the cap holds even if the auto
+                    # round introduces new errors.
+                    controller._diag_chain_round += 1
+                    queue_sink("", event.data["diagnostics_auto_queue"], internal=True)
+                await _emit(on_event, event)
+                if _counts_as_produced(event):
+                    produced = True
+
+            if pending_error is None:
+                controller.reset_model_rotation()  # back to primary on success
+                return result
+
+            # T-3-7 image fallback: a provider that rejects the inlined image gets
+            # ONE same-model text-only retry (do NOT rotate). One-shot per turn and
+            # one-way per session — the flag makes `auto` behave like `off` for the
+            # rest of the session, and the guard stops a second image error from
+            # re-triggering (it then surfaces normally / falls to the branches below).
+            if (
+                turn_images
+                and not image_fallback_done
+                and not produced
+                and is_image_capability_error(pending_error)
+            ):
+                controller.inline_images_disabled = True
+                image_fallback_done = True
+                # Strip the rejected image message from state so the text-only
+                # re-send doesn't leave the model re-seeing the image.
+                await controller.drop_pending_image_message()
                 await _emit(
                     on_event,
                     Event(
                         EventKind.NOTICE,
-                        f"model error, retrying with {new_ref}…",
-                        data={"turn_policy": "model_fallback", "model": new_ref},
+                        "image not accepted by this model — "
+                        "retrying without the inline image (text-only)",
+                        data={"turn_policy": "image_fallback"},
                     ),
                 )
-                attempt_resume = True  # user message is already in state
+                attempt_resume = False  # re-send the turn text; images are dropped
                 continue
 
-        if pending_error.data.get("auth"):
-            # A 401 is non-retryable on the *same* provider (reusing a
-            # rejected key just 401s again), but a configured fallback on a
-            # different provider with a resolvable key is exactly the case
-            # where switching helps — try that before dead-ending.
-            if not produced:
-                new_ref = controller.rotate_to_keyed_fallback()
+            if pending_error.data.get("retryable") and not produced:
+                new_ref = controller.rotate_to_fallback()
                 if new_ref:
                     try:
                         await controller.ensure_runtime()
@@ -258,19 +250,59 @@ async def run_agent_turn(
                                 },
                             ),
                         )
+                        # Match historical REPL: surface only the unavailable notice
+                        # (not the original provider error) and stop retrying.
                         result.error = pending_error
                         return result
                     await _emit(
                         on_event,
                         Event(
                             EventKind.NOTICE,
-                            f"auth failed, retrying with {new_ref}…",
-                            data={"turn_policy": "auth_fallback", "model": new_ref},
+                            f"model error, retrying with {new_ref}…",
+                            data={"turn_policy": "model_fallback", "model": new_ref},
                         ),
                     )
-                    attempt_resume = True
+                    attempt_resume = True  # user message is already in state
                     continue
 
-        result.error = pending_error
-        await _emit(on_event, pending_error)
-        return result
+            if pending_error.data.get("auth"):
+                # A 401 is non-retryable on the *same* provider (reusing a
+                # rejected key just 401s again), but a configured fallback on a
+                # different provider with a resolvable key is exactly the case
+                # where switching helps — try that before dead-ending.
+                if not produced:
+                    new_ref = controller.rotate_to_keyed_fallback()
+                    if new_ref:
+                        try:
+                            await controller.ensure_runtime()
+                        except Exception as exc:  # noqa: BLE001
+                            await _emit(
+                                on_event,
+                                Event(
+                                    EventKind.NOTICE,
+                                    f"fallback unavailable: {exc}",
+                                    data={
+                                        "turn_policy": "fallback_unavailable",
+                                        "severity": "error",
+                                    },
+                                ),
+                            )
+                            result.error = pending_error
+                            return result
+                        await _emit(
+                            on_event,
+                            Event(
+                                EventKind.NOTICE,
+                                f"auth failed, retrying with {new_ref}…",
+                                data={"turn_policy": "auth_fallback", "model": new_ref},
+                            ),
+                        )
+                        attempt_resume = True
+                        continue
+
+            result.error = pending_error
+            await _emit(on_event, pending_error)
+            return result
+    finally:
+        if acquired:
+            controller.release_turn()

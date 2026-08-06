@@ -304,6 +304,11 @@ class SessionDriver:
     #: outside ``project_root`` under ``virtual_mode`` (#54 / T-MEDIA-2). ``None``
     #: skips the expose (tests / callers that only need image inlining).
     fs_backend: Any = None
+    #: T-QA-1: release callback installed by :meth:`Controller.make_driver` when
+    #: that call newly acquired the controller turn slot. Invoked from
+    #: :meth:`run_turn`'s finally (no-op when ``run_agent_turn`` holds the outer
+    #: exclusive). ``None`` when the slot is owned elsewhere.
+    _turn_release: Callable[[], None] | None = field(default=None, repr=False)
     #: The most-recent active ``execute`` tool call, so drained progress (which the
     #: backend can't tag — deepagents calls ``execute(command)`` with no id) correlates
     #: to its ``TOOL_START`` / ``TOOL_END``. Set on an ``execute`` TOOL_START, cleared
@@ -345,6 +350,19 @@ class SessionDriver:
                     seen.add(key)
                     pending.append(intr)
         return state, pending
+
+    def _release_controller_turn(self) -> None:
+        """Drop a controller turn slot acquired by :meth:`Controller.make_driver`.
+
+        No-op when the driver was minted under an outer ``run_agent_turn`` hold
+        (that path releases itself). Best-effort — never raises.
+        """
+        release = self._turn_release
+        if release is None:
+            return
+        self._turn_release = None
+        with contextlib.suppress(Exception):
+            release()
 
     async def resume_pending_approval(
         self, state: Any | None = None, pending: list[Any] | None = None
@@ -619,6 +637,9 @@ class SessionDriver:
                         self._turn_text + "\n…(turn interrupted)", ts=_time.time()
                     )
                     self._turn_text = ""
+                # T-QA-1: release a turn slot this driver acquired via make_driver
+                # (no-op when run_agent_turn holds the outer exclusive).
+                self._release_controller_turn()
 
     async def _stream_turn(self, payload: Any):
         """Stream one turn's model output and resolve HITL interrupts.
