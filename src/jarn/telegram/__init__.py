@@ -3,13 +3,22 @@
 The package itself always ships with jarn; only the ``aiogram`` dependency is
 gated behind the ``telegram`` extra. Importing this package (or calling
 :func:`require_aiogram`) fails clearly when the extra is missing.
+
+Submodules (``bot``, ``outbox``, ``inbound_media``, …) import aiogram lazily via
+:func:`require_aiogram` / Bot construction so ``import jarn.telegram`` stays
+safe without the extra.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["require_aiogram"]
+__all__ = [
+    "require_aiogram",
+    "GatewayBackend",
+    "InMemoryGatewayBackend",
+]
+
 
 _AIOGRAM_MISSING = (
     "The Telegram gateway requires the 'telegram' extra "
@@ -31,7 +40,15 @@ def require_aiogram() -> Any:
 
 
 def __getattr__(name: str) -> Any:
-    """Lazy-import ``aiogram`` when accessed as ``jarn.telegram.aiogram``."""
+    """Lazy exports — keep ``import jarn.telegram`` free of aiogram/daemon deps."""
     if name == "aiogram":
         return require_aiogram()
+    if name == "GatewayBackend":
+        from jarn.telegram.backend import GatewayBackend
+
+        return GatewayBackend
+    if name == "InMemoryGatewayBackend":
+        from jarn.telegram.backend import InMemoryGatewayBackend
+
+        return InMemoryGatewayBackend
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
