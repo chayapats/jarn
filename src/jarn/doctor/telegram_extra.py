@@ -1,8 +1,9 @@
 """Doctor probe: ``gateway:`` configured but ``telegram`` extra missing.
 
-Works before the ``gateway:`` schema lands (T-CORE-3) by reading the raw YAML
-for ``gateway.enabled``, and also soft-checks a typed ``config.gateway`` when
-present. Fail-soft: missing files / unreadable YAML / absent section → no warn.
+Prefers a typed ``config.gateway.enabled`` when True; otherwise falls back to
+raw global YAML so a default ``Config()`` (enabled=False) cannot mask a
+configured-but-unloaded ``gateway:`` block. Fail-soft on missing/unreadable
+files.
 """
 
 from __future__ import annotations
@@ -23,8 +24,8 @@ def gateway_enabled(
 ) -> bool:
     """Return True when gateway is enabled in typed config or raw YAML."""
     gateway = getattr(config, "gateway", None) if config is not None else None
-    if gateway is not None:
-        return bool(getattr(gateway, "enabled", False))
+    if gateway is not None and bool(getattr(gateway, "enabled", False)):
+        return True
 
     if global_config_path is None or not global_config_path.is_file():
         return False
