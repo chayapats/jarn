@@ -61,3 +61,6 @@ evals/badge.json
 
 # superpowers SDD scratch (ledger, briefs, review packages)
 .superpowers/
+
+# Parallel agent worktrees (local)
+.worktrees/
