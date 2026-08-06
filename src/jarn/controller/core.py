@@ -828,6 +828,18 @@ class Controller:
         self._steer_slot = None
         return text
 
+    def prepare_media(self, text: str, media: Any = None) -> Any:
+        """Gate/stage inbound media via the core ingest API (#54 / T-MEDIA-1).
+
+        Thin controller facade over :func:`jarn.agent.media_ingest.prepare_media`
+        so Telegram/REPL share the same size/type gates and document staging.
+        Pass the result's images/text into :meth:`SessionDriver.run_turn`, or call
+        ``run_turn(..., media=…)`` directly (preferred — handles cleanup).
+        """
+        from jarn.agent.media_ingest import prepare_media
+
+        return prepare_media(text, media, project_root=self.project_root)
+
     def make_driver(self, approver: Approver) -> SessionDriver:
         assert self.runtime is not None, "call ensure_runtime() first"
         transcript = None
@@ -864,6 +876,8 @@ class Controller:
             # ToolProgress from execute's worker thread; the driver drains it and
             # interleaves TOOL_PROGRESS events. None for non-local backends.
             progress_queue=getattr(self.runtime, "progress_queue", None),
+            # Document staging (#54): expose mkdtemp dirs to virtual-mode read_file.
+            fs_backend=getattr(self.runtime, "backend", None),
         )
         # Retain for settle_snapshot: the /undo, /redo, and /abort paths await this
         # driver's pending turn-start snapshot before mutating the checkpoint stack.

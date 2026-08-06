@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from jarn.agent.files import INLINE_IMAGE_MAX_BYTES
 from jarn.agent.repomap import build_symbol_index
 from jarn.config.profiles import PROFILES
 
@@ -620,10 +621,6 @@ def expand_mentions(text: str, project_root: Path | None = None) -> str:
 
     return _MENTION_EXPAND_RE.sub(_replace, text)
 
-
-#: Max size of an image inlined as a native content block (T-3-7). Larger images
-#: stay text-only ``@path`` mentions (the model can still read_file them).
-INLINE_IMAGE_MAX_BYTES: int = 5 * 1024 * 1024
 
 #: Whitespace-delimited ``@path`` token, anchored at line/word start so it does not
 #: match inside e.g. an ``a@b`` email. Reuses the same "``@`` + ``\\S+``" tokenizer
