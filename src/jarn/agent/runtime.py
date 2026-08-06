@@ -91,6 +91,7 @@ _RESERVED_BUILTIN_NAMES = frozenset({
     "exit_plan_mode",
     "suggest_memory",
     "suggest_skill",
+    "schedule_task",
     "spawn_parallel_tasks",
 })
 

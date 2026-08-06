@@ -142,6 +142,58 @@ async def resolve_interrupts(driver: SessionDriver, interrupts: list[Any]):
                     )
                 continue
 
+            # Self-schedule: list is read-only (silent allow). create/remove/enable
+            # go to the approver (park+push on the gateway). The tool body persists
+            # the job only after approve — scheduled *runs* still use the normal
+            # turn+approver path and never auto-approve dangerous tools (#42).
+            if name == "schedule_task":
+                sched_action = str(args.get("action", "create")).strip().lower() or "create"
+                if sched_action == "list":
+                    yield (
+                        Event(
+                            EventKind.APPROVAL,
+                            text="auto-allowed: schedule_task list",
+                            data={"target": "schedule"},
+                        ),
+                        {"type": "approve"},
+                    )
+                    continue
+                target = (
+                    str(args.get("cron") or args.get("at") or args.get("job_id") or "schedule")
+                )
+                reply = await driver.approver(
+                    ApprovalRequest(
+                        action=Action(ActionKind.NETWORK, target=target, tool=name),
+                        result=PermissionResult(Decision.ASK, "schedule proposed"),
+                        description=req.get("description", "")
+                        or f"schedule_task {sched_action}",
+                        args=args,
+                    )
+                )
+                if reply.approved:
+                    yield (
+                        Event(
+                            EventKind.APPROVAL,
+                            text=f"schedule {sched_action} approved",
+                            data={"target": "schedule"},
+                        ),
+                        {"type": "approve"},
+                    )
+                else:
+                    yield (
+                        Event(
+                            EventKind.APPROVAL,
+                            text=f"schedule {sched_action} declined",
+                            data={"target": "schedule"},
+                        ),
+                        {
+                            "type": "reject",
+                            "message": reply.message
+                            or "User declined the schedule change.",
+                        },
+                    )
+                continue
+
             action = tool_to_action(name, args)
 
             # Pre-tool / pre-commit hooks run before the tool: a blocking

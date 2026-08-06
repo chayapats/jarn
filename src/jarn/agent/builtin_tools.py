@@ -117,6 +117,62 @@ def _suggest_skill_tool():
     return suggest_skill
 
 
+def _schedule_task_tool(default_root: Path | None = None):
+    """The ``schedule_task`` tool — agent self-schedule into the gateway job store.
+
+    Mutating actions (create/remove/enable/disable) are gated and surface as an
+    approval ask (park+push on the gateway). ``list`` auto-resumes. When a job
+    later fires, it runs as a normal turn through the same approver — never
+    auto-approved for dangerous tools (#42).
+    """
+    from langchain_core.tools import tool
+
+    from jarn.gateway.scheduler import ScheduleError, schedule_tool_call
+
+    _root = default_root
+
+    @tool
+    def schedule_task(
+        action: str = "create",
+        prompt: str = "",
+        cron: str = "",
+        at: str = "",
+        job_id: str = "",
+        root: str = "personal",
+        chat_id: int = 0,
+    ) -> str:
+        """Create, list, or cancel gateway scheduled tasks (self-schedule).
+
+        Use this to run a prompt later on a cron schedule or at a specific time.
+        Jobs default to the personal root and deliver results to the originating
+        chat. Scheduled runs still require approval for dangerous tools.
+
+        Args:
+            action: One of create (or propose), list, remove, enable, disable.
+            prompt: The user prompt to run when the job fires (create).
+            cron: 5-field cron in UTC, e.g. ``0 9 * * 1`` (create).
+            at: One-shot ISO-8601 UTC timestamp (create); mutually exclusive with cron.
+            job_id: Existing job id (remove / enable / disable).
+            root: Working root — ``personal`` (default) or an absolute path.
+            chat_id: Telegram chat id for delivery; 0 = inherit from gateway turn.
+        """
+        try:
+            return schedule_tool_call(
+                action=action,
+                prompt=prompt,
+                cron=cron,
+                at=at,
+                job_id=job_id,
+                root=root,
+                chat_id=None if not chat_id else int(chat_id),
+                default_root=_root,
+            )
+        except ScheduleError as exc:
+            return f"schedule_task error: {exc}"
+
+    return schedule_task
+
+
 def _add_wiki_tools(
     tools: list[Any],
     system_prompt: str,
@@ -372,5 +428,6 @@ def _wire_builtin_tools(
         _exit_plan_mode_tool(),
         _suggest_memory_tool(),
         _suggest_skill_tool(),
+        _schedule_task_tool(default_root=root),
     ]
     return tools, system_prompt, tuple(ungated)
