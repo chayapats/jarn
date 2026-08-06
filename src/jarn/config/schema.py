@@ -183,7 +183,6 @@ class ExecutionConfig:
     # (BaseSandbox derives glob/edit/read via inline python3 scripts). Non-slim
     # so ``procps``/``pkill`` is present for in-container turn cancellation.
     docker_image: str = "python:3.12"
-    multimodal: bool = True           # read_file auto-detects images/PDF/audio/video
     # Inline @-mentioned images as native multimodal content blocks in the user
     # message (base64), so weak vision models see the image without having to call
     # read_file. ``auto`` (default) inlines images ≤ 5 MB; ``off`` keeps the old
@@ -546,6 +545,40 @@ class UpdatesConfig:
 
 
 @dataclass(slots=True)
+class GatewayTelegramConfig:
+    """Telegram bot credentials for the optional gateway daemon.
+
+    ``token`` is a secret *reference* (``${ENV}`` / ``keychain:…`` / ``file:…``),
+    resolved via :mod:`jarn.config.secrets` — never an inline bot token.
+    ``allowed_user_ids`` is the entire remaining auth boundary for DMs.
+    """
+
+    token: str = ""
+    allowed_user_ids: list[int] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class GatewayRepo:
+    """One allowlisted repo the gateway ``/repo`` command may switch to."""
+
+    path: str
+    name: str | None = None
+
+
+@dataclass(slots=True)
+class GatewayConfig:
+    """Optional Telegram (etc.) gateway — **global tier only**.
+
+    Project-tier ``gateway:`` blocks are stripped with a warning whether the
+    project is trusted or not (see :data:`jarn.config.loader._GLOBAL_ONLY_KEYS`).
+    """
+
+    enabled: bool = False
+    telegram: GatewayTelegramConfig = field(default_factory=GatewayTelegramConfig)
+    repos: list[GatewayRepo] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class Config:
     """The fully-merged configuration handed to the rest of the application."""
 
@@ -588,6 +621,7 @@ class Config:
     pricing: PricingConfig = field(default_factory=PricingConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     updates: UpdatesConfig = field(default_factory=UpdatesConfig)
+    gateway: GatewayConfig = field(default_factory=GatewayConfig)
 
     def resolved_main_model(self) -> str | None:
         """The model used for the top-level agent loop."""

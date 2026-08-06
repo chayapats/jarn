@@ -205,6 +205,33 @@ def global_wiki_dir() -> Path:
     return global_home() / "wiki"
 
 
+def personal_root() -> Path:
+    """Return ``~/.jarn/personal`` — the gateway's default working root (#51)."""
+    return global_home() / "personal"
+
+
+def ensure_personal_root() -> Path:
+    """Create ``~/.jarn/personal`` and ``git init`` it when missing.
+
+    Idempotent. The Telegram gateway uses this as the default ``(chat_id, root)``
+    root when the user has not ``/repo``-switched to an allowlisted project.
+    """
+    import subprocess
+
+    ensure_global_home()
+    root = personal_root()
+    root.mkdir(parents=True, exist_ok=True)
+    if not (root / ".git").exists():
+        subprocess.run(  # noqa: S603 - fixed argv, no user input
+            ["git", "init"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    return root
+
+
 def project_wiki_dir(root: Path | None = None) -> Path | None:
     """Return ``<root>/.jarn/wiki/`` for the discovered (or given) project root."""
     pdir = project_dir(root)

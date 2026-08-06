@@ -21,6 +21,9 @@ from jarn.config.schema import (
     Config,
     ContextConfig,
     ExecutionConfig,
+    GatewayConfig,
+    GatewayRepo,
+    GatewayTelegramConfig,
     GitConfig,
     HookSpec,
     MCPServer,
@@ -43,7 +46,7 @@ from jarn.config.schema import (
     WikiConfig,
 )
 
-CURRENT_CONFIG_VERSION = 2
+CURRENT_CONFIG_VERSION = 3
 
 _TRUE_STRINGS = {"true", "yes", "on", "1"}
 _FALSE_STRINGS = {"false", "no", "off", "0", ""}
@@ -302,7 +305,6 @@ class ExecutionConfigModel(_StrictModel):
     background_max_lifetime_secs: float | None = None
     sandbox_provider: str = "langsmith"
     docker_image: str = "python:3.12"
-    multimodal: bool = True
     inline_images: str = "auto"
     allow_local_fallback: bool = False
     shell_escape_context: bool = True
@@ -350,7 +352,7 @@ class ExecutionConfigModel(_StrictModel):
         return raw
 
     @field_validator(
-        "background", "multimodal", "allow_local_fallback", "shell_escape_context",
+        "background", "allow_local_fallback", "shell_escape_context",
         "sandbox_allow_network",
         mode="before",
     )
@@ -868,6 +870,90 @@ class UpdatesConfigModel(_StrictModel):
         return _normalize_bool(value, "updates.check")
 
 
+class GatewayTelegramConfigModel(_StrictModel):
+    token: str = ""
+    allowed_user_ids: list[int] = Field(default_factory=list)
+
+    @field_validator("token", mode="before")
+    @classmethod
+    def _token(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise ConfigValidationError(
+                f"gateway.telegram.token must be a string (got {value!r})."
+            )
+        return value
+
+    @field_validator("allowed_user_ids", mode="before")
+    @classmethod
+    def _allowed_user_ids(cls, value: Any) -> list[int]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ConfigValidationError(
+                f"gateway.telegram.allowed_user_ids must be a list (got {value!r})."
+            )
+        out: list[int] = []
+        for item in value:
+            if isinstance(item, bool) or not isinstance(item, int):
+                raise ConfigValidationError(
+                    "gateway.telegram.allowed_user_ids entries must be integers "
+                    f"(got {item!r})."
+                )
+            out.append(item)
+        return out
+
+
+class GatewayRepoModel(_StrictModel):
+    path: str
+    name: str | None = None
+
+    @field_validator("path", mode="before")
+    @classmethod
+    def _path(cls, value: Any) -> str:
+        if not isinstance(value, str) or not value:
+            raise ConfigValidationError(
+                f"gateway.repos[].path must be a non-empty string (got {value!r})."
+            )
+        return value
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _name(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ConfigValidationError(
+                f"gateway.repos[].name must be a string (got {value!r})."
+            )
+        return value
+
+
+class GatewayConfigModel(_StrictModel):
+    enabled: bool = False
+    telegram: GatewayTelegramConfigModel = Field(
+        default_factory=GatewayTelegramConfigModel
+    )
+    repos: list[GatewayRepoModel] = Field(default_factory=list)
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _enabled(cls, value: Any) -> bool:
+        return _normalize_bool(value, "gateway.enabled")
+
+    @field_validator("repos", mode="before")
+    @classmethod
+    def _repos(cls, value: Any) -> list[Any]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ConfigValidationError(
+                f"gateway.repos must be a list (got {value!r})."
+            )
+        return value
+
+
 class ConfigModel(_StrictModel):
     config_version: int = CURRENT_CONFIG_VERSION
     default_profile: str = "openrouter"
@@ -896,6 +982,7 @@ class ConfigModel(_StrictModel):
     pricing: PricingConfigModel = Field(default_factory=PricingConfigModel)
     search: SearchConfigModel = Field(default_factory=SearchConfigModel)
     updates: UpdatesConfigModel = Field(default_factory=UpdatesConfigModel)
+    gateway: GatewayConfigModel = Field(default_factory=GatewayConfigModel)
 
     @field_validator("permission_mode", mode="before")
     @classmethod
@@ -972,6 +1059,31 @@ def _migrate_v1_to_v2(raw: dict[str, Any]) -> dict[str, Any]:
             UserWarning,
             stacklevel=2,
         )
+    out["config_version"] = 2
+    return out
+
+
+def _migrate_v2_to_v3(raw: dict[str, Any]) -> dict[str, Any]:
+    """Upgrade version-2 configs to version 3.
+
+    v3 removes ``execution.multimodal`` — media reads are always available
+    (subject to size/type gates); the flag is dead per #54/#70.
+    """
+    import warnings
+
+    out = dict(raw)
+    execution = out.get("execution")
+    if isinstance(execution, dict) and "multimodal" in execution:
+        out["execution"] = {
+            k: v for k, v in execution.items() if k != "multimodal"
+        }
+        warnings.warn(
+            "execution.multimodal was removed and has been ignored; media reads "
+            "are always available (subject to size/type gates). Remove it from "
+            "your config to silence this warning.",
+            UserWarning,
+            stacklevel=2,
+        )
     out["config_version"] = CURRENT_CONFIG_VERSION
     return out
 
@@ -979,6 +1091,7 @@ def _migrate_v1_to_v2(raw: dict[str, Any]) -> dict[str, Any]:
 _MIGRATORS: dict[int, Any] = {
     0: _migrate_v0_to_v1,
     1: _migrate_v1_to_v2,
+    2: _migrate_v2_to_v3,
 }
 
 
@@ -1057,7 +1170,6 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             background_max_lifetime_secs=model.execution.background_max_lifetime_secs,
             sandbox_provider=model.execution.sandbox_provider,
             docker_image=model.execution.docker_image,
-            multimodal=model.execution.multimodal,
             inline_images=model.execution.inline_images,
             allow_local_fallback=model.execution.allow_local_fallback,
             shell_escape_context=model.execution.shell_escape_context,
@@ -1156,4 +1268,14 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             api_key=model.search.api_key,
         ),
         updates=UpdatesConfig(check=model.updates.check),
+        gateway=GatewayConfig(
+            enabled=model.gateway.enabled,
+            telegram=GatewayTelegramConfig(
+                token=model.gateway.telegram.token,
+                allowed_user_ids=list(model.gateway.telegram.allowed_user_ids),
+            ),
+            repos=[
+                GatewayRepo(path=r.path, name=r.name) for r in model.gateway.repos
+            ],
+        ),
     )
