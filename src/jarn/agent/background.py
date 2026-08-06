@@ -111,13 +111,16 @@ def _open_fd_count() -> int | None:
 class ProcessManager:
     """A registry of detached background processes for one J.A.R.N. process."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, interval: float = 5.0) -> None:
         self._procs: dict[str, BackgroundProc] = {}
         self._counter = 0
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._monitor: threading.Thread | None = None
-        self._interval = 5.0
+        # Interval is fixed at construction so tests can park the monitor before
+        # the first ``start()`` (which spawns the thread) — mutating ``_interval``
+        # afterwards still works for subsequent waits, but leaves a race window.
+        self._interval = interval
         self.max_concurrent: int | None = None
         self.max_lifetime_secs: float | None = None
 
