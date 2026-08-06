@@ -1,19 +1,25 @@
 """Narrow daemon/session facade the Telegram bot calls (T-TG-2).
 
-``gateway/daemon.py`` / ``sessions.py`` may not be present yet; the long-poll
-app depends only on this Protocol. Tests ship an in-memory backend.
+The long-poll app depends only on this Protocol. Production wiring uses
+:class:`SessionRouterBackend` (daemon + sessions); tests use
+:class:`InMemoryGatewayBackend`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from jarn.gateway.protocol import MediaRef
+
+if TYPE_CHECKING:
+    from jarn.gateway.daemon import DaemonSupervisor
+    from jarn.gateway.sessions import SessionRouter
 
 __all__ = [
     "GatewayBackend",
     "InMemoryGatewayBackend",
+    "SessionRouterBackend",
     "TurnSubmission",
     "VerdictSubmission",
 ]
@@ -165,3 +171,61 @@ class InMemoryGatewayBackend:
             "threads": len(self.threads),
             "repos": list(self.repos),
         }
+
+
+@dataclass
+class SessionRouterBackend:
+    """Async :class:`GatewayBackend` over :class:`~jarn.gateway.sessions.SessionRouter`.
+
+    The router/supervisor APIs are synchronous (pipe I/O + locks); this adapter
+    exposes the async surface the Telegram transport awaits.
+    """
+
+    router: SessionRouter
+    supervisor: DaemonSupervisor
+
+    async def submit_turn(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        text: str,
+        media: list[MediaRef] | None = None,
+    ) -> None:
+        del user_id  # auth already enforced by the transport allowlist
+        self.router.submit_turn(chat_id, text, media=media)
+
+    async def submit_verdict(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        token: str,
+        approved: bool,
+        scope: str = "once",
+        plan_mode_target: str | None = None,
+        message: str = "",
+        kind: str = "tool",
+    ) -> None:
+        del user_id, kind  # kind is transport metadata; worker frames omit it
+        root = self.router.active_root(chat_id)
+        self.supervisor.send_approval_verdict(
+            root,
+            token=token,
+            approved=approved,
+            scope=scope,
+            message=message,
+            plan_mode_target=plan_mode_target,
+        )
+
+    async def stop(self, *, chat_id: int, user_id: int) -> None:
+        del user_id
+        self.router.cmd_stop(chat_id)
+
+    async def new_thread(self, *, chat_id: int, user_id: int) -> str:
+        del user_id
+        return self.router.cmd_new(chat_id)
+
+    async def set_repo(self, *, chat_id: int, user_id: int, name_or_path: str) -> str:
+        del user_id
+        return str(self.router.cmd_repo(chat_id, name_or_path))

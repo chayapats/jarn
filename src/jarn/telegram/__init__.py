@@ -17,6 +17,7 @@ __all__ = [
     "require_aiogram",
     "GatewayBackend",
     "InMemoryGatewayBackend",
+    "SessionRouterBackend",
 ]
 
 
@@ -51,4 +52,8 @@ def __getattr__(name: str) -> Any:
         from jarn.telegram.backend import InMemoryGatewayBackend
 
         return InMemoryGatewayBackend
+    if name == "SessionRouterBackend":
+        from jarn.telegram.backend import SessionRouterBackend
+
+        return SessionRouterBackend
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
