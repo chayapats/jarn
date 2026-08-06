@@ -85,9 +85,10 @@ class KeysMixin:
                 self._line_future.set_result(text)
                 return
             stripped = text.strip()
-            # /abort must reach the running turn, not wait behind it: dispatch it
-            # immediately instead of queueing so it can cancel the in-flight turn
-            # and roll the working tree back.
+            # /abort must reach the running turn, not wait behind it. Dispatch
+            # via create_task so this sync key handler returns immediately;
+            # controller.abort() serializes cancel→await-turn→settle→rollback
+            # so the fire-and-forget task cannot race the in-flight turn.
             if self._busy() and parse_input(stripped).name == "abort":
                 self.input.append_to_history()
                 self.input.reset()

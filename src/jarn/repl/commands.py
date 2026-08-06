@@ -12,7 +12,7 @@ from rich.markup import escape as _rich_escape
 
 from jarn.agent.local_backend import CancellableLocalShellBackend
 from jarn.repl import turn as repl_turn
-from jarn.repl.turn import _apply_mode_ref, _apply_model_ref
+from jarn.repl.turn import _apply_model_ref
 from jarn.tui import palette
 
 #: Plan-checklist glyphs — the SINGLE source shared by the live in-turn region
@@ -149,28 +149,15 @@ class CommandMixin:
             await self._cmd_queue(args)
             return
         if name == "abort":
-            # Stop the running turn AND revert its edits in one action. When idle
-            # there is no turn to abort — don't silently undo the last one; point
-            # at /undo instead.
-            if not self._busy():
-                c.print(
-                    f"[{palette.C_DIM}]Nothing to abort — no turn is running. "
-                    f"Use /undo to revert the last turn's edits.[/{palette.C_DIM}]"
-                )
-                return
-            self._cancel_turn()
-            # Settle any in-flight turn-start snapshot BEFORE rolling back. The
-            # cancelled turn detaches its snapshot fire-and-forget (session.py
-            # _detach_pending_snapshot), and on a large repo it may still be
-            # building its tree OFF the checkpoint lock. Without this await,
-            # abort_rollback's undo() would take the lock first and pop the PREVIOUS
-            # turn's checkpoint (this turn's isn't pushed yet) — an extra-turn-back
-            # over-revert. Awaiting guarantees this turn's checkpoint is on the
-            # stack, so the rollback reverts exactly this turn.
-            await self.controller.settle_snapshot()
-            # abort_rollback runs a blocking git restore; offload it so the event
-            # loop stays responsive.
-            c.print(await asyncio.to_thread(self.controller.abort_rollback), highlight=False)
+            # Controller.abort() owns cancel → await turn → settle → rollback
+            # (T-CTRL-1). Idle is a no-op that does not undo the previous turn.
+            result = await self.controller.abort()
+            c.print(
+                f"[{palette.C_DIM}]{result.text}[/{palette.C_DIM}]"
+                if result.text.lower().startswith("nothing to abort")
+                else result.text,
+                highlight=False,
+            )
             return
         if name == "key":
             await self._cmd_key(args)
@@ -187,20 +174,26 @@ class CommandMixin:
         if name in ("model", "mode") and not args.strip():
             await self._pick_model_or_mode(name)
             return
-        if (
-            name == "mode"
-            and args.strip() == "yolo"
-            and self.controller.config.permission_mode.value != "yolo"
-            and not await self._confirm_yolo()
-        ):
-            c.print(f"[{palette.C_DIM}]yolo cancelled — mode unchanged.[/{palette.C_DIM}]")
+        if name == "mode" and args.strip():
+            # Permission-mode changes (including yolo escalate) go through the
+            # controller-owned async API so silent yolo escalate is impossible.
+            result = await self.controller.set_permission_mode(
+                args.strip(),
+                confirm=self._confirm_yolo,
+            )
+            if result.rebuilt:
+                self.controller._invalidate_runtime()
+            c.print(result.text)
             return
         if name in ("undo", "redo"):
-            # A snapshot detached by an Esc-cancelled turn may still be building its
-            # tree off the checkpoint lock; settle it so undo()/redo() mutate a
-            # consistent stack and don't revert an extra turn back (same race the
-            # /abort path guards above). Cheap no-op when nothing is pending.
-            await self.controller.settle_snapshot()
+            # Async APIs embed settle_snapshot — one path for REPL and remote.
+            result = (
+                await self.controller.undo()
+                if name == "undo"
+                else await self.controller.redo()
+            )
+            c.print(result.text)
+            return
         result = self.controller.handle_command(name, args)
         if result.seed_turn:
             # A command (e.g. /skill) whose text is instructions the model should
@@ -678,14 +671,23 @@ class CommandMixin:
         if what == "model":
             _apply_model_ref(self.controller, c, str(chosen))
         else:
-            if (
-                chosen == "yolo"
-                and self.controller.config.permission_mode.value != "yolo"
-                and not await self._confirm_yolo()
-            ):
-                c.print(f"[{palette.C_DIM}]yolo cancelled — mode unchanged.[/{palette.C_DIM}]")
+            result = await self.controller.set_permission_mode(
+                str(chosen),
+                confirm=self._confirm_yolo,
+            )
+            if "cancelled" in result.text.lower():
+                c.print(f"[{palette.C_DIM}]{result.text}[/{palette.C_DIM}]")
                 return
-            _apply_mode_ref(self.controller, c, str(chosen))
+            applied = self.controller.config.permission_mode.value
+            if "clamped" in result.text.lower():
+                c.print(
+                    f"[{palette.C_NOTICE}]mode → {applied}[/{palette.C_NOTICE}] "
+                    f"[{palette.C_DIM}](clamped — project untrusted)[/{palette.C_DIM}]"
+                )
+            elif result.text.startswith("Permission mode set"):
+                c.print(f"[{palette.C_NOTICE}]mode → {applied}[/{palette.C_NOTICE}]")
+            else:
+                c.print(result.text)
 
     async def _refresh_models(self) -> None:
         """Re-query local endpoints (Ollama / LM Studio) and pick from the result.

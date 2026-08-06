@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -33,6 +34,9 @@ from jarn.tui import palette
 
 if TYPE_CHECKING:
     from jarn.extensibility.mcp import MCPLoadResult
+
+#: Async confirm callback for yolo escalation (Telegram card, REPL `_ask`, …).
+YoloConfirm = Callable[[], Awaitable[bool]]
 
 _log = logging.getLogger("jarn")
 
@@ -211,6 +215,11 @@ class Controller:
         # SessionDriver (see make_driver) — that is what makes the date system
         # message injected once per local day rather than re-injected every turn.
         self._date_state: dict = {}
+        # Front-end-owned in-flight turn task (REPL / gateway). ``abort()``
+        # cancels and *awaits* it before settle+rollback so cancel never races
+        # the turn's finally / detached snapshot (T-CTRL-1 / #59).
+        self._turn_task: asyncio.Task[Any] | None = None
+        self._abort_lock = asyncio.Lock()
 
     # -- multi-root scope ---------------------------------------------------
 
@@ -894,6 +903,50 @@ class Controller:
         driver = self._active_driver
         if driver is not None:
             await driver.settle_snapshot()
+
+    # -- turn binding + async mutation APIs (T-CTRL-1 / #59) ----------------
+
+    def bind_turn_task(self, task: asyncio.Task[Any] | None) -> None:
+        """Register (or clear) the front end's in-flight turn task."""
+        from jarn.controller import async_ops
+
+        async_ops.bind_turn_task(self, task)
+
+    @property
+    def turn_running(self) -> bool:
+        """True while a front-end-bound turn task is still in flight."""
+        from jarn.controller import async_ops
+
+        return async_ops.turn_running(self)
+
+    async def undo(self) -> CommandResult:
+        """Settle any in-flight snapshot, then revert the last turn's file edits."""
+        from jarn.controller import async_ops
+
+        return await async_ops.undo(self)
+
+    async def redo(self) -> CommandResult:
+        """Settle any in-flight snapshot, then re-apply the most recent undo."""
+        from jarn.controller import async_ops
+
+        return await async_ops.redo(self)
+
+    async def abort(self) -> CommandResult:
+        """Cancel the in-flight turn, settle its snapshot, then roll back edits."""
+        from jarn.controller import async_ops
+
+        return await async_ops.abort(self)
+
+    async def set_permission_mode(
+        self,
+        value: str,
+        *,
+        confirm: YoloConfirm | None = None,
+    ) -> CommandResult:
+        """Set permission mode; yolo escalate requires a successful ``confirm``."""
+        from jarn.controller import async_ops
+
+        return await async_ops.set_permission_mode(self, value, confirm=confirm)
 
     def close(self) -> None:
         import contextlib
