@@ -35,14 +35,21 @@ def parse(path: Path) -> FrontmatterDoc:
     return FrontmatterDoc(meta=meta, body=m.group(2).strip(), path=path)
 
 
-def discover(dirs: list[Path], pattern: str = "*.md") -> list[Path]:
+def discover(
+    dirs: list[Path],
+    pattern: str | tuple[str, ...] = "*.md",
+) -> list[Path]:
     """Return matching files across the given directories (skips missing dirs).
 
-    Later directories take precedence on name conflicts (caller decides); this
-    just returns all paths in directory order, then filename order.
+    ``pattern`` may be a single glob or a tuple of globs (applied in order
+    within each directory). Later directories take precedence on name conflicts
+    (caller decides); this just returns all paths in directory order, then
+    pattern order, then filename order.
     """
+    patterns = (pattern,) if isinstance(pattern, str) else pattern
     found: list[Path] = []
     for d in dirs:
         if d and d.is_dir():
-            found.extend(sorted(d.glob(pattern)))
+            for pat in patterns:
+                found.extend(sorted(p for p in d.glob(pat) if p.is_file()))
     return found
