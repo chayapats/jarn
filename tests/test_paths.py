@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from jarn.config import paths
+from jarn.config.paths import PROJECT_GITIGNORE_CONTENT
 
 
 def _use_home(monkeypatch, home: Path) -> None:
@@ -190,3 +191,58 @@ def test_ensure_global_home_returns_none_when_the_host_has_no_home(monkeypatch):
     monkeypatch.delenv("JARN_HOME", raising=False)
     monkeypatch.setattr("pathlib.Path.home", _no_home)
     assert paths.ensure_global_home() is None
+
+
+# -- Project .jarn/.gitignore (T-OPS-1) -------------------------------------
+
+
+def test_ensure_project_gitignore_writes_runtime_exclusions(tmp_path):
+    """Gateway/worker bind must leave a .jarn/.gitignore so transcripts stay local."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    written = paths.ensure_project_gitignore(root)
+    assert written == root / ".jarn" / ".gitignore"
+    assert written is not None
+    text = written.read_text(encoding="utf-8")
+    assert text == PROJECT_GITIGNORE_CONTENT
+    assert "sessions/" in text
+    assert "state.sqlite" in text
+    assert "*.lock" in text
+
+
+def test_ensure_project_gitignore_is_idempotent(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    first = paths.ensure_project_gitignore(root)
+    assert first is not None
+    mtime = first.stat().st_mtime_ns
+    second = paths.ensure_project_gitignore(root)
+    assert second == first
+    assert first.read_text(encoding="utf-8") == PROJECT_GITIGNORE_CONTENT
+    assert first.stat().st_mtime_ns == mtime
+
+
+def test_ensure_project_gitignore_rewrites_drifted_content(tmp_path):
+    root = tmp_path / "repo"
+    jarn = root / ".jarn"
+    jarn.mkdir(parents=True)
+    drifted = jarn / ".gitignore"
+    drifted.write_text("# stale\n", encoding="utf-8")
+    paths.ensure_project_gitignore(root)
+    assert drifted.read_text(encoding="utf-8") == PROJECT_GITIGNORE_CONTENT
+
+
+def test_ensure_project_gitignore_skips_global_home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("JARN_HOME", str(home))
+    assert paths.ensure_project_gitignore(home) is None
+    assert not (home / ".jarn").exists()
+
+
+def test_ensure_personal_root_writes_project_gitignore(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = paths.ensure_personal_root()
+    gi = root / ".jarn" / ".gitignore"
+    assert gi.is_file()
+    assert gi.read_text(encoding="utf-8") == PROJECT_GITIGNORE_CONTENT

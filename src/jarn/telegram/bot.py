@@ -6,7 +6,9 @@ Binding
 * Restart backlog: fetch once, report verbatim, **do not execute** (#53).
 * Second-poller: host :class:`~jarn.telegram.poller_lock.PollerLock`; on first
   Telegram 409 (``TelegramConflictError``) send one chat notice and exit with
-  :data:`EXIT_CONFLICT` — **never retry 409**, **never call ``logOut``**.
+  :data:`EXIT_CONFLICT` (75) — **never retry 409**, **never call ``logOut``**.
+  Same-host flock contention exits :data:`EXIT_LOCK_HELD` (76). Wire both into
+  systemd ``RestartPreventExitStatus`` (see ``docs/TELEGRAM_GATEWAY.md``).
 * ``getWebhookInfo`` at startup: report, do not repair.
 * Depends on :class:`~jarn.telegram.backend.GatewayBackend` only (not daemon.py).
 """

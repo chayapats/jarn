@@ -195,6 +195,7 @@ class SessionRouter:
         must match an allowlisted repo by ``name`` or ``path``.
         """
         root = self.resolve_repo(target)
+        paths.ensure_project_gitignore(root)
         with self._lock:
             state = self._state(chat_id)
             state.active_root = root
@@ -288,29 +289,36 @@ class SessionRouter:
         text: str,
         *,
         media: Sequence[MediaRef] | None = None,
+        root: Path | str | None = None,
     ) -> str:
         """Route a user message to the active root's worker.
 
         Returns the ``thread_id`` the turn is (or will be) bound to. When the
         root is busy the turn is queued, :data:`QUEUED_NOTICE` is emitted, and
         the same thread id is returned.
+
+        *root* overrides the chat's active root for this turn only (used by the
+        in-gateway scheduler so jobs keep their stored root).
         """
         media_list = list(media or [])
         with self._lock:
             state = self._state(chat_id)
-            root = state.active_root
-            tid = state.threads.get(root)
+            if root is not None:
+                key = Path(root).expanduser().resolve()
+            else:
+                key = state.active_root
+            tid = state.threads.get(key)
             if tid is None:
                 tid = new_thread_id()
-                state.threads[root] = tid
+                state.threads[key] = tid
 
-            busy = root in self._busy_roots
-            handle = self._supervisor.get_worker(root)
+            busy = key in self._busy_roots
+            handle = self._supervisor.get_worker(key)
             if handle is not None and handle.turn_in_flight:
                 busy = True
 
             if busy:
-                self._queues.setdefault(root, deque()).append(
+                self._queues.setdefault(key, deque()).append(
                     QueuedTurn(
                         chat_id=chat_id,
                         thread_id=tid,
@@ -321,16 +329,30 @@ class SessionRouter:
                 self._notice(chat_id, QUEUED_NOTICE)
                 return tid
 
-            self._busy_roots.add(root)
-            self._root_owner[root] = chat_id
+            self._busy_roots.add(key)
+            self._root_owner[key] = chat_id
 
         try:
-            self._dispatch(root, chat_id, tid, text, media_list)
+            self._dispatch(key, chat_id, tid, text, media_list)
         except Exception:
             with self._lock:
-                self._busy_roots.discard(root)
+                self._busy_roots.discard(key)
             raise
         return tid
+
+    def submit_due_work(self, work: DueWork) -> str:
+        """Submit one scheduler firing as a normal turn (park+push approvals)."""
+        return self.submit_turn(work.chat_id, work.prompt, root=work.root)
+
+    def tick_scheduler(
+        self,
+        scheduler: Scheduler | None = None,
+        *,
+        now=None,
+    ) -> list[DueWork]:
+        """Run due jobs once and dispatch each via :meth:`submit_due_work`."""
+        sched = scheduler if scheduler is not None else Scheduler()
+        return sched.dispatch_due(self.submit_due_work, now=now)
 
     def drain_queue(self, root: Path | str) -> bool:
         """Dispatch the next queued turn for *root* if idle. Returns True if sent."""
@@ -383,6 +405,11 @@ class SessionRouter:
         text: str,
         media: list[MediaRef],
     ) -> None:
+        # So schedule_task inside the worker can inherit chat_id (#42).
+        try:
+            set_active_delivery(chat_id=chat_id, root=root, thread_id=thread_id)
+        except Exception:  # noqa: BLE001 — delivery hint must not block turns
+            _log.exception("failed to record active delivery for %s", root)
         try:
             self._supervisor.send(
                 root,
@@ -454,6 +481,12 @@ class SessionRouter:
     def _clear_busy_and_drain(self, root: Path) -> None:
         with self._lock:
             self._busy_roots.discard(root)
+            queued = bool(self._queues.get(root))
+        if not queued:
+            try:
+                clear_active_delivery(root)
+            except Exception:  # noqa: BLE001
+                _log.exception("failed to clear active delivery for %s", root)
         # Dispatch next outside the lock (may block on pipe write).
         try:
             self.drain_queue(root)

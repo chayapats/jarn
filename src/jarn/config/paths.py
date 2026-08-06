@@ -210,11 +210,64 @@ def personal_root() -> Path:
     return global_home() / "personal"
 
 
+#: Managed template for ``<root>/.jarn/.gitignore`` (T-OPS-1 / #53).
+#: Patterns are relative to ``.jarn/`` so project config/skills/wiki stay
+#: trackable while DM transcripts and SQLite state are not pushed.
+PROJECT_GITIGNORE_CONTENT = """\
+# Managed by jarn — runtime state under .jarn/ (do not commit).
+# Project config, skills, and wiki pages remain trackable.
+state.sqlite
+state.sqlite-*
+checkpoints.sqlite*
+sessions/
+logs/
+*.lock
+**/*.lock
+"""
+
+
+def ensure_project_gitignore(root: Path | str) -> Path | None:
+    """Ensure ``<root>/.jarn/.gitignore`` excludes runtime / DM state (T-OPS-1).
+
+    Idempotent: creates ``.jarn/`` when needed; rewrites only when the file is
+    missing or differs from :data:`PROJECT_GITIGNORE_CONTENT`. Best-effort —
+    never raises (a read-only root must not take down the gateway bind path).
+    Returns the gitignore path, or ``None`` when the write could not complete
+    or *root* would collide with the global ``~/.jarn`` tier.
+    """
+    try:
+        root_path = Path(root).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return None
+    # Never nest a project marker inside the global tier itself.
+    try:
+        if root_path in _global_jarn_dirs():
+            return None
+    except (OSError, RuntimeError):
+        return None
+    jarn_dir = root_path / PROJECT_DIR_NAME
+    path = jarn_dir / ".gitignore"
+    try:
+        jarn_dir.mkdir(parents=True, exist_ok=True)
+        if path.is_file() and path.read_text(encoding="utf-8") == PROJECT_GITIGNORE_CONTENT:
+            return path
+        from jarn.util.atomic import atomic_write_text
+
+        atomic_write_text(path, PROJECT_GITIGNORE_CONTENT)
+        return path
+    except OSError as exc:
+        logging.getLogger("jarn").warning(
+            "could not write project .jarn/.gitignore under %s: %s", root_path, exc
+        )
+        return None
+
+
 def ensure_personal_root() -> Path:
     """Create ``~/.jarn/personal`` and ``git init`` it when missing.
 
     Idempotent. The Telegram gateway uses this as the default ``(chat_id, root)``
     root when the user has not ``/repo``-switched to an allowlisted project.
+    Also ensures ``<personal>/.jarn/.gitignore`` so transcripts/state stay local.
     """
     import subprocess
 
@@ -229,6 +282,7 @@ def ensure_personal_root() -> Path:
             capture_output=True,
             text=True,
         )
+    ensure_project_gitignore(root)
     return root
 
 
