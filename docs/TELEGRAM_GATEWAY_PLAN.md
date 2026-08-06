@@ -128,7 +128,9 @@ gateway:
 |---|---|---|---|
 | T-QA-1 | Turn re-entrancy guard per thread_id (no silent interleave) | controller/session | T-TURN-1 |
 | T-QA-2 | End-to-end scripted test: DM→turn→approval park→verdict→resume | tests | W3 |
-| T-QA-3 | Parity table checklist vs #26 deferred/out-of-scope; update #26 if needed | tracker | W4 |
+| T-QA-3 | Parity table checklist vs #26 deferred/out-of-scope; update #26 if needed | tracker | W4 — **done:** [TELEGRAM_GATEWAY_PARITY.md](TELEGRAM_GATEWAY_PARITY.md) (closed-decision rows Implemented; voice/group/embed/ALWAYS/laptop/stream-json Deferred) |
+
+Status (light): W0–W4 tasks are on `feat/telegram-gateway`. Wave 5 remaining: **T-QA-1**, **T-QA-2**. **T-QA-3** is the parity doc above (docs are source of truth; optional tracker comment on #26/#44).
 
 ---
 
@@ -141,3 +143,5 @@ gateway:
 
 ## Out of v1 (do not build)
 Voice STT/TTS; group chat; public embedding API; remote ALWAYS; laptop Telegram takeover; freezing stream-json; full 36-command chat surface.
+
+Tracked with status pointers in [TELEGRAM_GATEWAY_PARITY.md](TELEGRAM_GATEWAY_PARITY.md).

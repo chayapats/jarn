@@ -1,6 +1,6 @@
 # Telegram gateway — ops (VPS long-poll)
 
-v1 is a **VPS-only** long-poll DM appliance ([#53](https://github.com/chayapats/jarn/issues/53)). The laptop TUI is unchanged and is not Telegram-commandable. Full architecture lives in [TELEGRAM_GATEWAY_PLAN.md](TELEGRAM_GATEWAY_PLAN.md).
+v1 is a **VPS-only** long-poll DM appliance ([#53](https://github.com/chayapats/jarn/issues/53)). The laptop TUI is unchanged and is not Telegram-commandable. Full architecture lives in [TELEGRAM_GATEWAY_PLAN.md](TELEGRAM_GATEWAY_PLAN.md). v1 acceptance / deferred rows: [TELEGRAM_GATEWAY_PARITY.md](TELEGRAM_GATEWAY_PARITY.md).
 
 This page covers deploy hardening for **T-OPS-1**: systemd, second-poller / 409 stand-down, and project `.jarn/.gitignore`.
 
