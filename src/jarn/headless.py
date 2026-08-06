@@ -42,6 +42,7 @@ from jarn.agent.session import (
     Event,
     EventKind,
 )
+from jarn.agent.turn_runner import run_agent_turn
 from jarn.config.schema import Config, PermissionMode
 from jarn.cost import BudgetExceeded
 from jarn.tui.controller import Controller
@@ -364,7 +365,6 @@ async def _run_headless(
 
         mode = config.permission_mode
         approver: Approver = _make_fail_closed_approver(mode)
-        driver = controller.make_driver(approver)
 
         # Off the event loop: enrich_turn_input does synchronous memory-file reads
         # + vector-index builds (mirrors the REPL turn path).
@@ -381,15 +381,12 @@ async def _run_headless(
         resume = bool(resume_session and not prompt)
         turn_input = "" if resume else enriched
 
-        # One SessionDriver invocation already runs the complete LangGraph agent/tool
-        # loop through DONE (including bounded verification repairs). Re-invoking a
-        # completed graph because it happened to use a tool duplicated final answers
-        # and cost, so a headless prompt is one complete user turn.
-        driver_started = True
-        async for event in driver.run_turn(turn_input, resume=resume):
+        def _handle_event(event: Event) -> None:
+            nonlocal tool_calls, verification
             if on_event is not None:
-                # Stream every event generically (stream-json). Runs before the
-                # per-kind handling so an ERROR event is emitted before we raise.
+                # Stream every event generically (stream-json). Intermediate
+                # provider ERRORs are absorbed by the shared runner for retry
+                # policy; only a terminal ERROR is forwarded here.
                 on_event(event)
             if event.kind is EventKind.TEXT:
                 text_parts.append(event.text)
@@ -417,6 +414,23 @@ async def _run_headless(
                         event.data.get("target", "tool"),
                         event.text,
                     )
+
+        # Shared turn runner: one complete user turn with the same retry /
+        # fallback / T-3-7 policy as the REPL (bridge-ready; no TUI deps).
+        driver_started = True
+        turn_result = await run_agent_turn(
+            controller,
+            turn_input,
+            approver=approver,
+            resume=resume,
+            on_event=_handle_event,
+        )
+        if turn_result.error is not None:
+            # Terminal failure where the runner surfaced a NOTICE only (e.g.
+            # fallback unavailable) — still fail the headless run.
+            raise _error_from_event(
+                turn_result.error.text, turn_result.error.data
+            )
 
         reply_text = "".join(text_parts)
 
@@ -453,7 +467,7 @@ async def _run_headless(
         # Surface the session locus so a CI caller can resume/inspect this run
         # (the transcript writer, when present, is the single source of truth for
         # the JSONL path; None when observability.transcript is disabled).
-        transcript = getattr(driver, "transcript", None)
+        transcript = getattr(turn_result.driver, "transcript", None)
         transcript_path = str(transcript.path) if transcript is not None else None
 
         return HeadlessResult(
