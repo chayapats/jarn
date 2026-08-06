@@ -18,6 +18,14 @@ from jarn.gateway.approvals import (
     record_pending_approval,
     resume_parked_approval,
 )
+from jarn.gateway.daemon import (
+    DEFAULT_IDLE_TIMEOUT_MS,
+    DEFAULT_WORKER_COMMAND,
+    DaemonSupervisor,
+    WorkerDeadError,
+    WorkerHandle,
+    WorkerProtocolError,
+)
 from jarn.gateway.lease import RootLease, RootLeaseHeldError
 from jarn.gateway.protocol import (
     SCHEMA_VERSION,
@@ -40,6 +48,15 @@ from jarn.gateway.protocol import (
     decode_outbound_line,
     encode_line,
 )
+from jarn.gateway.sessions import (
+    QUEUED_NOTICE,
+    ForbiddenRootError,
+    QueuedTurn,
+    RootBusyLeaseError,
+    SessionRouter,
+    UnknownRepoError,
+    validate_gateway_root,
+)
 from jarn.gateway.worker import (
     DEFAULT_HEARTBEAT_INTERVAL_S,
     GatewayWorker,
@@ -50,13 +67,18 @@ from jarn.gateway.worker import (
 
 __all__ = [
     "DEFAULT_HEARTBEAT_INTERVAL_S",
+    "DEFAULT_IDLE_TIMEOUT_MS",
+    "DEFAULT_WORKER_COMMAND",
     "SCHEMA_VERSION",
+    "QUEUED_NOTICE",
     "ApprovalAskFrame",
     "ApprovalParked",
     "ApprovalVerdictFrame",
     "CancelFrame",
+    "DaemonSupervisor",
     "ErrorFrame",
     "EventFrame",
+    "ForbiddenRootError",
     "GatewayWorker",
     "HandshakeFrame",
     "InboundFrame",
@@ -65,13 +87,20 @@ __all__ = [
     "PendingApproval",
     "PendingApprovalMap",
     "ProtocolError",
+    "QueuedTurn",
+    "RootBusyLeaseError",
     "RootLease",
     "RootLeaseHeldError",
+    "SessionRouter",
     "ShutdownFrame",
     "StatusFrame",
     "SteerFrame",
     "TurnFrame",
+    "UnknownRepoError",
     "UnsupportedSchemaVersion",
+    "WorkerDeadError",
+    "WorkerHandle",
+    "WorkerProtocolError",
     "decode_inbound_line",
     "decode_outbound_line",
     "encode_line",
@@ -84,4 +113,5 @@ __all__ = [
     "redact_outbound_frame",
     "redact_outbound_value",
     "resume_parked_approval",
+    "validate_gateway_root",
 ]
