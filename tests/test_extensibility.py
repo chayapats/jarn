@@ -29,21 +29,100 @@ def _skill(dirpath, name, trigger="auto"):
     )
 
 
+def _nested_skill(skills_dir, name, trigger="auto", *, frontmatter_name=None):
+    """Write skills/<name>/SKILL.md (Agent Skills / Claude nested layout)."""
+    skill_dir = skills_dir / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    meta_name = name if frontmatter_name is None else frontmatter_name
+    name_line = f"name: {meta_name}\n" if meta_name else ""
+    (skill_dir / "SKILL.md").write_text(
+        f"---\n{name_line}description: does {name}\ntrigger: {trigger}\n---\n"
+        f"Instructions for {name}.",
+        encoding="utf-8",
+    )
+    return skill_dir / "SKILL.md"
+
+
 def test_load_skills_and_project_override(monkeypatch, tmp_path, project_dir):
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     _skill(tmp_path / "home" / "skills", "shared")
     _skill(project_dir / ".jarn" / "skills", "shared")  # overrides global
     _skill(project_dir / ".jarn" / "skills", "local")
-    skills = load_skills(project_dir)
+    # Isolate from the developer's real ~/.claude/skills (often nested SKILL.md).
+    skills = load_skills(project_dir, read_claude_dir=False)
     assert set(skills) == {"shared", "local"}
     assert skills["shared"].scope == "project"
+
+
+def test_load_nested_skill_md_layout(monkeypatch, tmp_path, project_dir):
+    """skills/<name>/SKILL.md is discovered alongside flat *.md (#43 bugfix)."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    skills_dir = project_dir / ".jarn" / "skills"
+    nested_path = _nested_skill(skills_dir, "run-migrations")
+    _skill(skills_dir, "flat-skill")
+    # Bundled non-skill markdown under the skill dir must not be loaded as a skill.
+    (nested_path.parent / "NOTES.md").write_text("# notes\n", encoding="utf-8")
+
+    skills = load_skills(project_dir, read_claude_dir=False)
+    assert set(skills) == {"run-migrations", "flat-skill"}
+    assert skills["run-migrations"].path == nested_path
+    assert skills["run-migrations"].body == "Instructions for run-migrations."
+    assert skills["flat-skill"].path == skills_dir / "flat-skill.md"
+
+
+def test_nested_skill_name_defaults_to_directory(monkeypatch, tmp_path, project_dir):
+    """When frontmatter omits name, nested SKILL.md uses the parent directory."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    path = _nested_skill(
+        project_dir / ".jarn" / "skills",
+        "deploy-safe",
+        frontmatter_name="",
+    )
+    skills = load_skills(project_dir, read_claude_dir=False)
+    assert set(skills) == {"deploy-safe"}
+    assert skills["deploy-safe"].path == path
+
+
+def test_nested_skill_does_not_load_deeper_than_one_level(
+    monkeypatch, tmp_path, project_dir
+):
+    """Only skills/<name>/SKILL.md — not skills/a/b/SKILL.md."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    skills_dir = project_dir / ".jarn" / "skills"
+    _nested_skill(skills_dir, "top-level")
+    deep = skills_dir / "too" / "deep"
+    deep.mkdir(parents=True)
+    (deep / "SKILL.md").write_text(
+        "---\nname: buried\ndescription: d\ntrigger: auto\n---\nnope",
+        encoding="utf-8",
+    )
+    skills = load_skills(project_dir, read_claude_dir=False)
+    assert set(skills) == {"top-level"}
+    assert "buried" not in skills
+
+
+def test_nested_claude_skill_is_discovered(monkeypatch, tmp_path, project_dir):
+    """Nested SKILL.md under .claude/skills works for cross-vendor interop."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    from jarn.config import paths as jarn_paths
+
+    monkeypatch.setattr(jarn_paths, "global_claude_home", lambda: tmp_path / "claude-home")
+    monkeypatch.setattr(
+        jarn_paths,
+        "global_claude_subdir",
+        lambda name: tmp_path / "claude-home" / name,
+    )
+    path = _nested_skill(project_dir / ".claude" / "skills", "claude-nested")
+    skills = load_skills(project_dir, read_claude_dir=True)
+    assert "claude-nested" in skills
+    assert skills["claude-nested"].path == path
 
 
 def test_manual_skill_excluded_from_auto_catalog(monkeypatch, tmp_path, project_dir):
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     _skill(project_dir / ".jarn" / "skills", "autoskill", trigger="auto")
     _skill(project_dir / ".jarn" / "skills", "manualskill", trigger="manual")
-    skills = load_skills(project_dir)
+    skills = load_skills(project_dir, read_claude_dir=False)
     catalog = auto_skill_catalog(skills)
     assert "autoskill" in catalog
     assert "manualskill" not in catalog

@@ -9,6 +9,11 @@ A skill is a ``SKILL.md`` (or ``<name>.md``) file with frontmatter::
     ---
     <instructions the agent follows when the skill is active>
 
+Layouts (both are discovered):
+
+* Flat: ``skills/<name>.md``
+* Nested (Agent Skills / Claude): ``skills/<name>/SKILL.md``
+
 Trigger semantics (the "hybrid" model):
 * ``auto``     — description is offered to the model, which decides when to use it
 * ``manual``   — only runs when invoked explicitly via ``/skill <name>``
@@ -34,6 +39,10 @@ from pathlib import Path
 
 from jarn.config import paths
 from jarn.extensibility.frontmatter import discover, parse
+
+# Flat ``*.md`` plus nested ``<name>/SKILL.md`` (Agent Skills layout). Nested
+# is listed after flat so a same-name nested skill wins within one directory.
+_SKILL_GLOBS: tuple[str, ...] = ("*.md", "*/SKILL.md")
 
 
 @dataclass(slots=True)
@@ -84,6 +93,17 @@ def _skill_dirs_ordered(
     return low_dirs + high_dirs
 
 
+def _default_skill_name(path: Path) -> str:
+    """Fallback name when frontmatter omits ``name``.
+
+    Nested ``…/<name>/SKILL.md`` uses the parent directory; flat ``<name>.md``
+    uses the file stem.
+    """
+    if path.name == "SKILL.md":
+        return path.parent.name
+    return path.stem
+
+
 def load_skills(
     project_root: Path | None = None,
     *,
@@ -107,9 +127,12 @@ def load_skills(
             return True
         return bool(claude_pdir and str(path).startswith(str(claude_pdir)))
 
-    for skill_path in discover(_skill_dirs_ordered(project_root, read_claude_dir=read_claude_dir)):
+    for skill_path in discover(
+        _skill_dirs_ordered(project_root, read_claude_dir=read_claude_dir),
+        _SKILL_GLOBS,
+    ):
         doc = parse(skill_path)
-        name = str(doc.meta.get("name") or skill_path.stem)
+        name = str(doc.meta.get("name") or _default_skill_name(skill_path))
         is_proj = _is_project(skill_path)
         if is_proj and not project_trusted:
             continue
