@@ -203,5 +203,23 @@ def collect_doctor(
         "key_resolved": key_resolved,
     }
 
+    # Telegram gateway extra: warn when gateway: is enabled but aiogram missing.
+    # Soft-fails when the gateway schema is not yet on Config (reads raw YAML).
+    from jarn.doctor.telegram_extra import (
+        aiogram_installed,
+        gateway_enabled,
+        telegram_extra_warnings,
+    )
+
+    gw_enabled = gateway_enabled(cfg, global_config_path=gpath)
+    gw_warnings = telegram_extra_warnings(cfg, global_config_path=gpath)
+    diag["gateway"] = {
+        "enabled": gw_enabled,
+        "telegram_extra_installed": aiogram_installed() if gw_enabled else None,
+        "warnings": gw_warnings,
+    }
+    if gw_warnings:
+        diag.setdefault("warnings", []).extend(gw_warnings)
+
     diag["ok"] = ok
     return 0 if ok else 1
