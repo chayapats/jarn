@@ -40,8 +40,16 @@ from jarn.gateway.protocol import (
     decode_outbound_line,
     encode_line,
 )
+from jarn.gateway.worker import (
+    DEFAULT_HEARTBEAT_INTERVAL_S,
+    GatewayWorker,
+    event_to_frame,
+    redact_outbound_frame,
+    redact_outbound_value,
+)
 
 __all__ = [
+    "DEFAULT_HEARTBEAT_INTERVAL_S",
     "SCHEMA_VERSION",
     "ApprovalAskFrame",
     "ApprovalParked",
@@ -49,6 +57,7 @@ __all__ = [
     "CancelFrame",
     "ErrorFrame",
     "EventFrame",
+    "GatewayWorker",
     "HandshakeFrame",
     "InboundFrame",
     "MediaRef",
@@ -66,10 +75,13 @@ __all__ = [
     "decode_inbound_line",
     "decode_outbound_line",
     "encode_line",
+    "event_to_frame",
     "make_park_approver",
     "make_verdict_approver",
     "mint_approval_token",
     "pending_approvals_path",
     "record_pending_approval",
+    "redact_outbound_frame",
+    "redact_outbound_value",
     "resume_parked_approval",
 ]
