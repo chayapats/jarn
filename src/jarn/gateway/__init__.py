@@ -7,6 +7,17 @@ It may change in one commit and is not a public embedding API.
 See docs/TELEGRAM_GATEWAY_PLAN.md and GitHub #60 / #52.
 """
 
+from jarn.gateway.approvals import (
+    ApprovalParked,
+    PendingApproval,
+    PendingApprovalMap,
+    make_park_approver,
+    make_verdict_approver,
+    mint_approval_token,
+    pending_approvals_path,
+    record_pending_approval,
+    resume_parked_approval,
+)
 from jarn.gateway.lease import RootLease, RootLeaseHeldError
 from jarn.gateway.protocol import (
     SCHEMA_VERSION,
@@ -33,6 +44,7 @@ from jarn.gateway.protocol import (
 __all__ = [
     "SCHEMA_VERSION",
     "ApprovalAskFrame",
+    "ApprovalParked",
     "ApprovalVerdictFrame",
     "CancelFrame",
     "ErrorFrame",
@@ -41,6 +53,8 @@ __all__ = [
     "InboundFrame",
     "MediaRef",
     "OutboundFrame",
+    "PendingApproval",
+    "PendingApprovalMap",
     "ProtocolError",
     "RootLease",
     "RootLeaseHeldError",
@@ -52,4 +66,10 @@ __all__ = [
     "decode_inbound_line",
     "decode_outbound_line",
     "encode_line",
+    "make_park_approver",
+    "make_verdict_approver",
+    "mint_approval_token",
+    "pending_approvals_path",
+    "record_pending_approval",
+    "resume_parked_approval",
 ]
