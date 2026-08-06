@@ -14,6 +14,7 @@ from jarn.agent.session import (
     Event,
     EventKind,
     SuggestedMemory,
+    SuggestedSkill,
 )
 from jarn.permissions import Action, ActionKind, Decision, PermissionResult
 
@@ -43,6 +44,12 @@ async def test_web_approver_round_trips_every_contract_field():
             body="Keep notes short",
             type="project",
             scope="global",
+        ),
+        suggested_skill=SuggestedSkill(
+            name="draft-notes",
+            description="How to draft notes",
+            body="Keep drafts short",
+            trigger="auto",
         ),
     )
     captured = {}
@@ -98,6 +105,12 @@ async def test_web_approver_round_trips_every_contract_field():
             "body": "Keep notes short",
             "type": "project",
             "scope": "global",
+        },
+        "suggested_skill": {
+            "name": "draft-notes",
+            "description": "How to draft notes",
+            "body": "Keep drafts short",
+            "trigger": "auto",
         },
     }
     reply = captured["reply"]

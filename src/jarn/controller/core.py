@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from jarn.agent.builder import JarnRuntime, build_runtime
 from jarn.agent.checkpoint import CheckpointManager
-from jarn.agent.session import Approver, SessionDriver, SuggestedMemory
+from jarn.agent.session import Approver, SessionDriver, SuggestedMemory, SuggestedSkill
 from jarn.config.schema import Config, PermissionMode
 from jarn.controller import config_helpers, session_helpers
 from jarn.cost import CostTracker
@@ -1417,6 +1417,9 @@ class Controller:
 
     def save_suggested_memory(self, suggestion: SuggestedMemory) -> tuple[bool, str]:
         return session_helpers.save_suggested_memory(self, suggestion)
+
+    def save_suggested_skill(self, suggestion: SuggestedSkill) -> tuple[bool, str]:
+        return session_helpers.save_suggested_skill(self, suggestion)
 
     def abort_rollback(self) -> str:
         return session_helpers.abort_rollback(self)

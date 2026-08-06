@@ -13,7 +13,12 @@ from jarn.extensibility.commands import (
     readme_command_rows,
 )
 from jarn.extensibility.hooks import HookEvent, HookResult, HookRunner
-from jarn.extensibility.skills import Skill, auto_skill_catalog, load_skills
+from jarn.extensibility.skills import (
+    Skill,
+    auto_skill_catalog,
+    load_skills,
+    write_skill,
+)
 from jarn.extensibility.subagents import CustomSubagent, load_subagents
 
 __all__ = [
@@ -35,4 +40,5 @@ __all__ = [
     "load_skills",
     "load_subagents",
     "parse_input",
+    "write_skill",
 ]

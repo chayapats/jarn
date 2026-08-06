@@ -37,6 +37,9 @@ async def run_turn_over_websocket(ws, controller: Controller, text: str) -> None
             "suggested_memory": (
                 asdict(request.suggested_memory) if request.suggested_memory else None
             ),
+            "suggested_skill": (
+                asdict(request.suggested_skill) if request.suggested_skill else None
+            ),
         })
         reply = await ws.receive_json()
         from jarn.permissions import RememberScope

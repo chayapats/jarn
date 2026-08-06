@@ -14,6 +14,7 @@ from jarn.agent.events import (
     Event,
     EventKind,
     SuggestedMemory,
+    SuggestedSkill,
 )
 from jarn.agent.permissions_bridge import tool_to_action
 from jarn.permissions import (
@@ -104,6 +105,40 @@ async def resolve_interrupts(driver: SessionDriver, interrupts: list[Any]):
                               data={"target": "memory"}),
                         {"type": "reject",
                          "message": reply.message or "User declined to save the memory."},
+                    )
+                continue
+
+            # Skill suggestion: suggest_skill proposes a skill for the user to
+            # approve. Same pattern as suggest_memory — the tool never writes;
+            # the approver writes <active_root>/.jarn/skills/<name>/SKILL.md.
+            if name == "suggest_skill":
+                suggestion = SuggestedSkill(
+                    name=str(args.get("name", "")).strip(),
+                    description=str(args.get("description", "")).strip(),
+                    body=str(args.get("body", "")).strip(),
+                    trigger=str(args.get("trigger", "auto")).strip() or "auto",
+                )
+                reply = await driver.approver(
+                    ApprovalRequest(
+                        action=Action(ActionKind.READ, target="skill", tool=name),
+                        result=PermissionResult(Decision.ASK, "skill suggested"),
+                        description=req.get("description", ""),
+                        args=args,
+                        suggested_skill=suggestion,
+                    )
+                )
+                if reply.approved:
+                    yield (
+                        Event(EventKind.APPROVAL, text="skill saved",
+                              data={"target": "skill"}),
+                        {"type": "approve"},
+                    )
+                else:
+                    yield (
+                        Event(EventKind.APPROVAL, text="skill not saved",
+                              data={"target": "skill"}),
+                        {"type": "reject",
+                         "message": reply.message or "User declined to save the skill."},
                     )
                 continue
 

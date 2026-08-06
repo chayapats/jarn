@@ -79,6 +79,44 @@ def _suggest_memory_tool():
     return suggest_memory
 
 
+def _suggest_skill_tool():
+    """The ``suggest_skill`` tool — propose a reusable skill for the user to keep.
+
+    The tool body runs only *after* the user approves (the session driver gates it
+    behind a skill-approval interrupt and the approver writes
+    ``<active_root>/.jarn/skills/<name>/SKILL.md``). The tool itself never writes.
+    """
+    from langchain_core.tools import tool
+
+    @tool
+    def suggest_skill(
+        name: str,
+        description: str,
+        body: str,
+        trigger: str = "auto",
+    ) -> str:
+        """Suggest a reusable skill for the user to approve, edit, or decline.
+
+        Call this when you have distilled a repeatable workflow worth keeping as a
+        project skill — step-by-step instructions the agent (or user via /skill)
+        should follow later. The user reviews your suggestion and chooses to save
+        it (as is or edited) or decline; nothing is written unless they approve.
+        Do not invent skills autonomously or for one-off tasks.
+
+        Args:
+            name: Short skill id (used as the skills/<name>/ directory slug).
+            description: One-line summary shown in the skill catalog.
+            body: Full skill instructions in concise markdown.
+            trigger: When the skill is offered — "auto", "manual", or a keyword/glob.
+        """
+        return (
+            "Skill saved with the user's approval under .jarn/skills. Continue with "
+            "the task; the skill is available for later turns and /skill invocation."
+        )
+
+    return suggest_skill
+
+
 def _add_wiki_tools(
     tools: list[Any],
     system_prompt: str,
@@ -329,5 +367,10 @@ def _wire_builtin_tools(
         )
         tools = [*tools, *bg_tools]
 
-    tools = [*tools, _exit_plan_mode_tool(), _suggest_memory_tool()]
+    tools = [
+        *tools,
+        _exit_plan_mode_tool(),
+        _suggest_memory_tool(),
+        _suggest_skill_tool(),
+    ]
     return tools, system_prompt, tuple(ungated)

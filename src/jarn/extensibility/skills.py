@@ -34,15 +34,20 @@ never shadowed.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 from jarn.config import paths
 from jarn.extensibility.frontmatter import discover, parse
+from jarn.util.atomic import atomic_write_text
 
 # Flat ``*.md`` plus nested ``<name>/SKILL.md`` (Agent Skills layout). Nested
 # is listed after flat so a same-name nested skill wins within one directory.
 _SKILL_GLOBS: tuple[str, ...] = ("*.md", "*/SKILL.md")
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
 @dataclass(slots=True)
@@ -146,6 +151,67 @@ def load_skills(
             scope=scope,
         )
     return out
+
+
+def slugify_skill_name(text: str) -> str:
+    """Filesystem-safe directory slug for a nested ``skills/<slug>/SKILL.md``."""
+    return _SLUG_RE.sub("-", text.strip().lower()).strip("-")[:60] or "skill"
+
+
+def skill_to_markdown(
+    name: str,
+    description: str,
+    body: str,
+    trigger: str = "auto",
+) -> str:
+    """Render a skill as YAML-frontmatter markdown (Agent Skills shape)."""
+    front = yaml.safe_dump(
+        {
+            "name": name,
+            "description": description,
+            "trigger": trigger,
+        },
+        sort_keys=False,
+        allow_unicode=True,
+    ).strip()
+    return f"---\n{front}\n---\n\n{body.strip()}\n"
+
+
+def write_skill(
+    project_root: Path,
+    *,
+    name: str,
+    description: str,
+    body: str,
+    trigger: str = "auto",
+) -> Path:
+    """Write a nested skill under ``<root>/.jarn/skills/<slug>/SKILL.md``.
+
+    Always uses the nested Agent Skills layout (discovery already supports it).
+    Returns the path written. Raises ``ValueError`` when the project has no
+    ``.jarn`` directory or the name is unsafe.
+    """
+    if "/" in name or "\\" in name or name.strip() in (".", ".."):
+        raise ValueError("Skill name must not contain path separators.")
+    pdir = paths.project_dir(project_root)
+    if pdir is None:
+        raise ValueError("No project .jarn directory; cannot write a skill.")
+    slug = slugify_skill_name(name)
+    if not slug or slug in (".", ".."):
+        raise ValueError(f"Skill name {name!r} produces an empty slug.")
+    skill_dir = pdir / "skills" / slug
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    path = skill_dir / "SKILL.md"
+    atomic_write_text(
+        path,
+        skill_to_markdown(
+            name=name.strip(),
+            description=description.strip() or name.strip(),
+            body=body.strip() or description.strip() or name.strip(),
+            trigger=(trigger.strip() or "auto"),
+        ),
+    )
+    return path
 
 
 def find_skill(skills: dict[str, Skill], name: str) -> Skill | None:

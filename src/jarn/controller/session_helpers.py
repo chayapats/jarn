@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from jarn.agent.session import SuggestedMemory
+from jarn.agent.session import SuggestedMemory, SuggestedSkill
 
 if TYPE_CHECKING:
     from jarn.controller.core import Controller
@@ -16,6 +16,52 @@ def save_suggested_memory(
     from jarn.controller.commands.memory import save_suggested_memory as _save
 
     return _save(ctrl, suggestion)
+
+
+def save_suggested_skill(
+    ctrl: Controller, suggestion: SuggestedSkill
+) -> tuple[bool, str]:
+    """Persist an agent-suggested (and user-approved) skill under the active root.
+
+    Writes ``<project_root>/.jarn/skills/<slug>/SKILL.md``. Refused when there is
+    no project root or the project is untrusted — same trust gate as project
+    skill loading. Returns ``(saved, message)`` for the approver to report.
+    """
+    from jarn.extensibility.skills import load_skills, write_skill
+
+    name = suggestion.name.strip()
+    if not name:
+        return False, "Skill has no name; nothing saved."
+    if "/" in name or "\\" in name:
+        return False, "Skill name must not contain path separators."
+    if ctrl.project_root is None:
+        return False, "No project root found; cannot save a skill."
+    if not ctrl.project_trusted:
+        return False, (
+            "Project skills are disabled until this project is trusted "
+            "(`jarn trust`)."
+        )
+    description = suggestion.description.strip() or name
+    body = suggestion.body.strip() or description
+    trigger = suggestion.trigger.strip() or "auto"
+    try:
+        path = write_skill(
+            ctrl.project_root,
+            name=name,
+            description=description,
+            body=body,
+            trigger=trigger,
+        )
+    except ValueError as exc:
+        return False, str(exc)
+    # Refresh the in-session catalog so /skills and /skill see the new file.
+    if ctrl.runtime is not None:
+        ctrl.runtime.skills = load_skills(
+            ctrl.project_root,
+            project_trusted=ctrl.project_trusted,
+            read_claude_dir=ctrl.config.compat.read_claude_dir,
+        )
+    return True, f"Saved skill: {path.relative_to(ctrl.project_root)}"
 
 
 def abort_rollback(ctrl: Controller) -> str:

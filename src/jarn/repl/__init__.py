@@ -30,6 +30,7 @@ from jarn.repl.completer import _ShellEscapeLexer
 from jarn.repl.turn import (
     _EDIT_BEFORE_APPLY,
     _EDIT_MEMORY,
+    _EDIT_SKILL,
     _VIEW_FULL_DIFF,
     _apply_mode_ref,
     _apply_model_ref,
@@ -100,6 +101,7 @@ __all__ = [
     "turn",
     "_EDIT_BEFORE_APPLY",
     "_EDIT_MEMORY",
+    "_EDIT_SKILL",
     "_ShellEscapeLexer",
     "_VIEW_FULL_DIFF",
     "_apply_mode_ref",
