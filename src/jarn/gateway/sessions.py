@@ -195,6 +195,7 @@ class SessionRouter:
         must match an allowlisted repo by ``name`` or ``path``.
         """
         root = self.resolve_repo(target)
+        paths.ensure_project_gitignore(root)
         with self._lock:
             state = self._state(chat_id)
             state.active_root = root

@@ -65,6 +65,8 @@ def test_spawn_handshake_and_status(supervisor: DaemonSupervisor, tmp_path: Path
     assert handle.lease.held
     assert handle.status is not None
     assert handle.status.turn_in_flight is False
+    # T-OPS-1: binding a root writes <root>/.jarn/.gitignore for runtime state.
+    assert (root / ".jarn" / ".gitignore").is_file()
     # Same root returns the same live worker.
     assert supervisor.ensure_worker(root) is handle
 

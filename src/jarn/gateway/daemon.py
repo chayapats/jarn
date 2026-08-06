@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from jarn.agent.process_util import terminate_process_group
+from jarn.config import paths as config_paths
 from jarn.gateway.lease import RootLease, RootLeaseHeldError
 from jarn.gateway.protocol import (
     SCHEMA_VERSION,
@@ -307,6 +308,9 @@ class DaemonSupervisor:
             lease.acquire()
         except RootLeaseHeldError:
             raise
+
+        # Runtime transcripts/state must not be pushed with the project (T-OPS-1).
+        config_paths.ensure_project_gitignore(root)
 
         env = os.environ.copy()
         if self._env is not None:

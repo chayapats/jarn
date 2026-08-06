@@ -101,9 +101,11 @@ def test_repo_switch_and_personal_return(
     root = router.cmd_repo(7, "app")
     assert root == allowlisted_repo
     assert router.active_root(7) == allowlisted_repo
+    assert (allowlisted_repo / ".jarn" / ".gitignore").is_file()
     tid_repo = router.thread_id_for(7)
     back = router.cmd_repo(7, "personal")
     assert back == personal
+    assert (personal / ".jarn" / ".gitignore").is_file()
     tid_personal = router.thread_id_for(7)
     assert tid_personal != tid_repo
     # Switching back to repo restores the prior thread id for that root.

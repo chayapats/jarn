@@ -20,6 +20,8 @@ MCP), and a `prompt_toolkit`-based terminal UI. Install with `pip install jarn`
 | [ROADMAP.md](ROADMAP.md) | Everyone | what is shipped (v0.9.2), what is planned, and known limitations |
 | [OPEN_CORE.md](OPEN_CORE.md) | Everyone | Licensing (Apache-2.0) and the intended open-core business model — plans only, nothing commercial is shipped |
 | [WEB_UI.md](WEB_UI.md) | Contributors | Design notes for a future Web UI — **not built yet**; included so the core stays Web-UI-ready |
+| [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md) | Operators · Contributors | VPS long-poll deploy: systemd unit, 409 / second-poller stand-down, project `.jarn/.gitignore` |
+| [TELEGRAM_GATEWAY_PLAN.md](TELEGRAM_GATEWAY_PLAN.md) | Contributors | Gateway architecture + task breakdown (#44) |
 
 ## Where to start
 

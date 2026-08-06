@@ -739,6 +739,7 @@ def test_ensure_personal_root_creates_git_repo(tmp_path, monkeypatch):
     assert root == tmp_path / "home" / "personal"
     assert root.is_dir()
     assert (root / ".git").exists()
+    assert (root / ".jarn" / ".gitignore").is_file()
     # Idempotent — second call does not fail.
     assert paths.ensure_personal_root() == root
 

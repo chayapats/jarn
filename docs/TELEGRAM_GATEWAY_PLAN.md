@@ -120,7 +120,7 @@ gateway:
 |---|---|---|---|
 | T-SCHED-1 | In-gateway job store + catch-up-once + personal default root | `gateway/scheduler.py` | T-DMN-2 |
 | T-SCHED-2 | Agent self-schedule tool + park+push for scheduled approvals | tools + T-APPR-1 | T-SCHED-1 |
-| T-OPS-1 | systemd unit docs; second-poller flock+409 behavior; `<root>/.jarn/.gitignore` writer | `telegram/deploy*`, paths | T-TG-2 |
+| T-OPS-1 | systemd unit docs; second-poller flock+409 behavior; `<root>/.jarn/.gitignore` writer — see [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md) | `docs/TELEGRAM_GATEWAY.md`, `config/paths.py`, gateway bind sites | T-TG-2 |
 | T-OPS-2 | CLI `jarn gateway` (or equivalent) entry; integration smoke test (mocked aiogram) | `cli.py`, tests | T-TG-3 |
 
 ### Wave 5 — Harden + close gaps
