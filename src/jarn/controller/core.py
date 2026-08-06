@@ -40,6 +40,19 @@ YoloConfirm = Callable[[], Awaitable[bool]]
 
 _log = logging.getLogger("jarn")
 
+
+class TurnBusyError(RuntimeError):
+    """A second turn tried to start while one is already in flight on this controller.
+
+    **Policy: refuse (do not queue).** Concurrent turns on one ``thread_id`` must
+    never silently interleave — ``make_driver`` would overwrite
+    ``_active_driver`` and break ``settle_snapshot`` / undo. Gateway sessions
+    already queue-at-chat in :mod:`jarn.gateway.sessions`; the controller /
+    shared turn-runner boundary still hard-refuses so REPL, headless, and the
+    gateway worker all inherit the same fail-loud guard.
+    """
+
+
 def _log_hook_warning(message: str) -> None:
     """Log a lifecycle-hook failure at WARNING (never silent, never fatal)."""
     _log.warning("hooks: %s", message)
@@ -220,6 +233,12 @@ class Controller:
         # the turn's finally / detached snapshot (T-CTRL-1 / #59).
         self._turn_task: asyncio.Task[Any] | None = None
         self._abort_lock = asyncio.Lock()
+        # Turn re-entrancy guard (T-QA-1): exclusive owner of the active turn on
+        # this controller / thread_id. Policy is REFUSE — see TurnBusyError.
+        # ``_turn_held`` distinguishes "we own the slot" from a stale done task
+        # still referenced in ``_turn_owner`` (steal-on-done healing).
+        self._turn_owner: asyncio.Task[Any] | None = None
+        self._turn_held: bool = False
 
     # -- multi-root scope ---------------------------------------------------
 
@@ -849,8 +868,43 @@ class Controller:
 
         return prepare_media(text, media, project_root=self.project_root)
 
+    def acquire_turn(self) -> bool:
+        """Claim exclusive turn ownership for the current asyncio task.
+
+        Returns ``True`` when this call newly acquired the slot (caller must
+        :meth:`release_turn`), or ``False`` when the current task already holds
+        it (re-entrant ``make_driver`` during model-fallback retries).
+
+        Raises :class:`TurnBusyError` when another live task holds the slot —
+        **refuse, never queue** (T-QA-1). A finished owner is stolen so a
+        leaked hold (e.g. ``make_driver`` without ``run_turn``) cannot wedge
+        the controller forever.
+        """
+        me = asyncio.current_task()
+        owner = self._turn_owner
+        if owner is not None and not owner.done() and owner is not me:
+            raise TurnBusyError(
+                f"turn already in progress on thread {self.thread_id!r} "
+                "(refusing concurrent run; gateway queues at chat layer)"
+            )
+        if owner is me and self._turn_held:
+            return False
+        self._turn_owner = me
+        self._turn_held = True
+        return True
+
+    def release_turn(self) -> None:
+        """Release exclusive turn ownership if held by the current task."""
+        if self._turn_owner is asyncio.current_task():
+            self._turn_held = False
+            self._turn_owner = None
+
     def make_driver(self, approver: Approver) -> SessionDriver:
         assert self.runtime is not None, "call ensure_runtime() first"
+        # T-QA-1: refuse a second concurrent driver so ``_active_driver`` is never
+        # overwritten mid-turn (breaks settle_snapshot / undo). Same-task retries
+        # inside an already-held turn (run_agent_turn fallback loop) re-enter.
+        newly_acquired = self.acquire_turn()
         transcript = None
         if self.config.observability.transcript:
             from jarn.memory.sessions import make_transcript_writer
@@ -888,6 +942,11 @@ class Controller:
             # Document staging (#54): expose mkdtemp dirs to virtual-mode read_file.
             fs_backend=getattr(self.runtime, "backend", None),
         )
+        # When this make_driver opened the slot (approval-resume and other
+        # make_driver→run_turn callers outside run_agent_turn), release when the
+        # driver's turn finishes so the hold cannot outlive the stream.
+        if newly_acquired:
+            driver._turn_release = self.release_turn
         # Retain for settle_snapshot: the /undo, /redo, and /abort paths await this
         # driver's pending turn-start snapshot before mutating the checkpoint stack.
         self._active_driver = driver
