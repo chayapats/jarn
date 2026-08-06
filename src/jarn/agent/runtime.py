@@ -690,7 +690,7 @@ def build_runtime(
         _attach_read_filter(
             s.to_spec(factory, available_tools=tools),
             read_filter_engine,
-            multimodal=config.execution.multimodal,
+            multimodal=True,  # execution.multimodal removed (#54/#70); always on
             unsupported_media=_unsupported_read_media(config, s.model or main_ref),
         )
         for s in subagents.values()
@@ -744,7 +744,7 @@ def build_runtime(
             _attach_read_filter(
                 _general_purpose_subagent_spec(gp_model),
                 read_filter_engine,
-                multimodal=config.execution.multimodal,
+                multimodal=True,  # execution.multimodal removed (#54/#70); always on
                 unsupported_media=_unsupported_read_media(config, gp_ref),
             )
         )
@@ -898,7 +898,7 @@ def build_runtime(
     # of process → out of scope.
     read_filter_mw = _read_filter_middleware(
         read_filter_engine,
-        multimodal=config.execution.multimodal,
+        multimodal=True,  # execution.multimodal removed (#54/#70); always on
         unsupported_media=_unsupported_read_media(config, main_ref),
     )
 

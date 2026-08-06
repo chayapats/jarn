@@ -282,12 +282,12 @@ def _parse_glob_paths(content: str) -> list[str] | None:
 
 
 def _multimodal_disabled_message(call: dict[str, Any], path: str) -> ToolMessage:
-    """Build the stable error returned when ``execution.multimodal`` is off."""
+    """Build the stable error returned when multimodal reads are disabled."""
     target = path or "this file"
     return ToolMessage(
         content=(
             f"Error: multimodal read disabled for {target}; "
-            "set execution.multimodal to true to read media files"
+            "media file reads are not available in this context"
         ),
         name="read_file",
         tool_call_id=call.get("id"),

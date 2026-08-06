@@ -89,7 +89,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-04** (v0.9.2 released
 - [x] **Async / remote subagents** — `async_subagents` config → DeepAgents
   `AsyncSubAgent` (Agent Protocol)
 - [x] **Multimodal filesystem** — DeepAgents `read_file` auto-detects image/PDF/
-  audio/video; binary-aware approval diff; `execution.multimodal` flag
+  audio/video; binary-aware approval diff (`execution.multimodal` later removed)
 - [x] **Turn-level fallback model-swap** — on a turn that fails before producing
   output, rotate through `routing.fallback` and retry transparently
 

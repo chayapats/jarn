@@ -134,6 +134,9 @@ SETTINGS: tuple[Setting, ...] = (
     # ── Updates ──
     _s("updates.check", "bool", "Updates", "Update check",
        "Check PyPI for a newer jarn release at startup (cached 24 h; skipped when offline)."),
+    # ── Gateway (global-only; token / allowlist / repos stay YAML-only) ──
+    _s("gateway.enabled", "bool", "Gateway", "Telegram gateway",
+       "Run the optional Telegram gateway daemon (global config only)."),
 )
 
 _BY_KEY: dict[str, Setting] = {s.key: s for s in SETTINGS}

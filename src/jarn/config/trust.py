@@ -78,8 +78,18 @@ def project_dangerous(raw: dict[str, Any]) -> dict[str, Any]:
     user is being asked to trust. With allowlist-based sanitization this is
     *everything outside* :data:`SAFE_PROJECT_KEYS`, plus ``permissions.allow``
     (surfaced separately from the safety-increasing ``permissions.deny``).
+
+    Global-only keys (see :data:`jarn.config.loader._GLOBAL_ONLY_KEYS`) are
+    excluded: they are never honoured from the project tier, so they must not
+    re-trigger a trust prompt.
     """
-    danger: dict[str, Any] = {k: raw[k] for k in raw if k not in SAFE_PROJECT_KEYS}
+    from jarn.config.loader import _GLOBAL_ONLY_KEYS
+
+    danger: dict[str, Any] = {
+        k: raw[k]
+        for k in raw
+        if k not in SAFE_PROJECT_KEYS and k not in _GLOBAL_ONLY_KEYS
+    }
     perms = raw.get("permissions")
     if not isinstance(perms, dict):
         # A malformed ``permissions`` block (scalar/list) is untrusted raw input we
