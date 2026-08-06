@@ -9,6 +9,7 @@ from jarn.agent.permissions_bridge import (
 from jarn.agent.session import (
     ApprovalReply,
     ApprovalRequest,
+    Approver,
     Event,
     EventKind,
     SessionDriver,
@@ -19,6 +20,7 @@ __all__ = [
     "MUTATING_TOOLS",
     "ApprovalReply",
     "ApprovalRequest",
+    "Approver",
     "Event",
     "EventKind",
     "JarnRuntime",
