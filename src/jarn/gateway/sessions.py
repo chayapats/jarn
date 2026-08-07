@@ -25,7 +25,13 @@ from jarn.config import paths
 from jarn.config.schema import GatewayRepo
 from jarn.gateway.daemon import DaemonSupervisor, WorkerDeadError, WorkerHandle
 from jarn.gateway.lease import RootLeaseHeldError
-from jarn.gateway.protocol import MediaRef, OutboundFrame, StatusFrame, TurnFrame
+from jarn.gateway.protocol import (
+    ApprovalAskFrame,
+    MediaRef,
+    OutboundFrame,
+    StatusFrame,
+    TurnFrame,
+)
 from jarn.gateway.scheduler import (
     DueWork,
     Scheduler,
@@ -448,9 +454,15 @@ class SessionRouter:
                 _log.exception("on_event hook failed chat=%s", chat_id)
 
         kind = getattr(frame, "kind", "")
-        if (isinstance(frame, StatusFrame) and not frame.turn_in_flight) or (
-            isinstance(kind, str) and kind.lower() in {"done", "cancelled", "error"}
+        if (
+            isinstance(frame, ApprovalAskFrame)
+            or (isinstance(frame, StatusFrame) and not frame.turn_in_flight)
+            or (
+                isinstance(kind, str)
+                and kind.lower() in {"done", "cancelled", "error"}
+            )
         ):
+            # ApprovalAsk = park (#37): turn released; do not keep chat busy.
             self._clear_busy_and_drain(handle.root)
 
     def _handle_death(

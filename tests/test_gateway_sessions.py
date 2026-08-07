@@ -12,7 +12,7 @@ import pytest
 from jarn.config.schema import GatewayRepo
 from jarn.gateway.daemon import DaemonSupervisor
 from jarn.gateway.lease import RootLease
-from jarn.gateway.protocol import EventFrame
+from jarn.gateway.protocol import ApprovalAskFrame, EventFrame
 from jarn.gateway.sessions import (
     QUEUED_NOTICE,
     ForbiddenRootError,
@@ -282,3 +282,37 @@ def test_per_chat_roots_independent(
     t1 = router.thread_id_for(1)
     t2 = router.thread_id_for(2)
     assert t1 != t2
+
+
+def test_approval_ask_clears_busy_so_next_turn_not_queued(
+    personal: Path, allowlisted_repo: Path
+):
+    """Park (#37): ApprovalAsk must release the chat so a follow-up is not queued."""
+    notices: list[tuple[int, str]] = []
+    parked = threading.Event()
+
+    def on_event(chat_id: int, root: Path, frame) -> None:
+        if isinstance(frame, ApprovalAskFrame):
+            parked.set()
+
+    sup = DaemonSupervisor(
+        worker_command=_worker_cmd(),
+        handshake_timeout_secs=5.0,
+        env={"FAKE_WORKER_EMIT_APPROVAL_ASK": "1"},
+    )
+    r = SessionRouter(
+        sup,
+        repos=[GatewayRepo(path=str(allowlisted_repo), name="app")],
+        personal_root=personal,
+        on_notice=lambda c, t: notices.append((c, t)),
+        on_event=on_event,
+    )
+    try:
+        r.submit_turn(11, "need approve")
+        assert parked.wait(timeout=5), "expected ApprovalAsk from fake worker"
+        # Busy cleared on park — second turn dispatches immediately (not queued).
+        r.submit_turn(11, "followup")
+        assert r.queue_depth(personal) == 0
+        assert not any(QUEUED_NOTICE in text for _, text in notices)
+    finally:
+        sup.shutdown()

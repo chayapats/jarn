@@ -9,6 +9,8 @@ Speaks ``jarn.gateway.protocol`` over stdin/stdout. Controlled via env:
 * ``FAKE_WORKER_DIE_ON_TURN`` — if set, exit(1) after reading a turn (mid-turn death)
 * ``FAKE_WORKER_TURN_HOLD_SECS`` — sleep while "in flight" before emitting done
 * ``FAKE_WORKER_PARKED`` — parked_approvals field on status (optional)
+* ``FAKE_WORKER_EMIT_APPROVAL_ASK`` — if set, emit ``approval_ask`` instead of
+  ``done`` (park-and-resume), then clear turn_in_flight
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ if _ROOT not in sys.path:
 
 from jarn.gateway.protocol import (  # noqa: E402
     SCHEMA_VERSION,
+    ApprovalAskFrame,
     CancelFrame,
     ErrorFrame,
     EventFrame,
@@ -55,9 +58,14 @@ def _status(
     *,
     turn_in_flight: bool = False,
     idle_ms: int | None = None,
+    parked_approvals: int | None = None,
 ) -> None:
     parked_raw = os.environ.get("FAKE_WORKER_PARKED")
-    parked = int(parked_raw) if parked_raw is not None else None
+    parked = (
+        parked_approvals
+        if parked_approvals is not None
+        else (int(parked_raw) if parked_raw is not None else None)
+    )
     _emit(
         StatusFrame(
             turn_in_flight=turn_in_flight,
@@ -156,6 +164,21 @@ def main() -> int:
                         if isinstance(nxt, ShutdownFrame):
                             return 0
             if cancelled:
+                continue
+            if os.environ.get("FAKE_WORKER_EMIT_APPROVAL_ASK"):
+                _emit(
+                    ApprovalAskFrame(
+                        token=os.environ.get(
+                            "FAKE_WORKER_APPROVAL_TOKEN", "tok-park"
+                        ),
+                        thread_id=frame.thread_id,
+                        action="shell",
+                        target="echo hi",
+                        description="run a command",
+                        args={"cmd": "echo hi"},
+                    )
+                )
+                _status(turn_in_flight=False, idle_ms=0, parked_approvals=1)
                 continue
             _emit(
                 EventFrame(

@@ -7,13 +7,15 @@
 
 ```bash
 git clone https://github.com/chayapats/jarn && cd jarn
-uv sync --extra dev
+uv sync --extra dev --extra telegram
 uv run jarn doctor      # sanity-check config, providers, and extensions
 ```
 
 Requires Python 3.12+ and uv. macOS / Linux (Windows via WSL). The repo tracks
 `uv.lock` — commit changes to it whenever you change dependencies in
-`pyproject.toml`.
+`pyproject.toml`. The `telegram` extra installs `aiogram` so gateway/bot
+tests match CI (optional at runtime for non-gateway use — omit it if you are
+not touching the Telegram transport).
 
 ### Team onboarding
 
@@ -35,12 +37,13 @@ uv run mypy src/                   # type-check (must report 0 errors)
 ```
 
 Before pushing, run all three gates locally — `ruff check src tests scripts`, `mypy src/`, and
-`pytest` (currently **2162** tests). CI runs exactly these on every push/PR
-(lint → type-check → test) across Linux/macOS/Windows and Python 3.12/3.13, plus a `packaging`
-job and an `npm` job that runs the Node launcher + assembly tests (`node --test
-npm/jarn-cli/test/launcher.test.js` and `npm/test/build.test.mjs`). The live-LLM
-end-to-end suite is intentionally **not** part of that gate (it's slow, costs tokens,
-and is flaky); run those manually or via the optional nightly workflow (see `evals/README.md`).
+`pytest` (currently **2399** tests) after `uv sync --extra dev --extra telegram`. CI runs
+exactly these on every push/PR (lint → type-check → test, with the telegram extra) across
+Linux/macOS/Windows and Python 3.12/3.13, plus a `packaging` job and an `npm` job that runs
+the Node launcher + assembly tests (`node --test npm/jarn-cli/test/launcher.test.js` and
+`npm/test/build.test.mjs`). The live-LLM end-to-end suite is intentionally **not** part of
+that gate (it's slow, costs tokens, and is flaky); run those manually or via the optional
+nightly workflow (see `evals/README.md`).
 
 If you touch anything under `npm/` (the `jarn-cli` launcher or the package-assembly
 script), run those two `node --test` files locally too.

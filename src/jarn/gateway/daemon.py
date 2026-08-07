@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import IO, Any
 
@@ -33,6 +33,7 @@ from jarn.config import paths as config_paths
 from jarn.gateway.lease import RootLease, RootLeaseHeldError
 from jarn.gateway.protocol import (
     SCHEMA_VERSION,
+    ApprovalAskFrame,
     ApprovalVerdictFrame,
     CancelFrame,
     ErrorFrame,
@@ -456,6 +457,27 @@ class DaemonSupervisor:
                 or handle.in_flight_thread_id == frame.thread_id
             ):
                 handle.in_flight_thread_id = None
+        elif isinstance(frame, ApprovalAskFrame):
+            # Park-and-resume (#37): the turn is no longer in flight once the
+            # worker emits approval_ask — clear busy so the next DM is not
+            # queued behind a parked interrupt (sessions queue is chat-layer).
+            if not handle._ready.is_set():
+                handle._ready.set()
+            if frame.thread_id and (
+                handle.in_flight_thread_id is None
+                or handle.in_flight_thread_id == frame.thread_id
+            ):
+                handle.in_flight_thread_id = None
+            # ``turn_in_flight`` also reads the last StatusFrame — patch it so a
+            # mid-turn status(turn_in_flight=True) cannot keep the chat busy
+            # until the post-park heartbeat arrives.
+            if handle.status is not None and handle.status.turn_in_flight:
+                parked = handle.status.parked_approvals
+                handle.status = replace(
+                    handle.status,
+                    turn_in_flight=False,
+                    parked_approvals=(parked + 1) if parked is not None else 1,
+                )
 
         hook = self.on_outbound
         if hook is not None:

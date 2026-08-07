@@ -165,3 +165,15 @@ async def test_acquire_turn_steals_from_finished_owner(tmp_path, monkeypatch):
     assert ctrl.acquire_turn() is True
     ctrl.release_turn()
     ctrl.close()
+
+
+def test_acquire_turn_works_without_running_event_loop(tmp_path, monkeypatch):
+    """Sync ``make_driver`` call sites must not raise RuntimeError (no loop)."""
+    ctrl = _ctrl(tmp_path, monkeypatch)
+    assert ctrl.acquire_turn() is True
+    assert ctrl._turn_held
+    assert ctrl._turn_owner is None
+    assert ctrl.acquire_turn() is False  # sync re-entry
+    ctrl.release_turn()
+    assert not ctrl._turn_held
+    ctrl.close()

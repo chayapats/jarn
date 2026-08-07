@@ -16,6 +16,7 @@ from jarn.gateway.daemon import (
 from jarn.gateway.lease import RootLease, RootLeaseHeldError
 from jarn.gateway.protocol import (
     SCHEMA_VERSION,
+    ApprovalAskFrame,
     EventFrame,
     StatusFrame,
     TurnFrame,
@@ -252,6 +253,37 @@ def test_turn_in_flight_blocks_eviction(tmp_path: Path):
         while time.monotonic() < deadline and handle.turn_in_flight:
             time.sleep(0.05)
         assert not handle.turn_in_flight
+    finally:
+        sup.shutdown()
+
+
+def test_approval_ask_clears_in_flight_immediately(tmp_path: Path):
+    """Park (#37): approval_ask must clear busy so the next DM is not queued."""
+    root = _root(tmp_path)
+    frames: list = []
+    seen_ask = threading.Event()
+    in_flight_at_ask: list[bool] = []
+
+    def on_outbound(handle, frame) -> None:
+        frames.append(frame)
+        if isinstance(frame, ApprovalAskFrame):
+            # Assert *inside* the hook — StatusFrame has not been processed yet.
+            in_flight_at_ask.append(handle.turn_in_flight)
+            seen_ask.set()
+
+    sup = DaemonSupervisor(
+        worker_command=_worker_cmd(),
+        env={"FAKE_WORKER_EMIT_APPROVAL_ASK": "1"},
+        on_outbound=on_outbound,
+        handshake_timeout_secs=5.0,
+    )
+    try:
+        handle = sup.ensure_worker(root)
+        sup.send(root, TurnFrame(thread_id="thr-park", text="need approve"))
+        assert seen_ask.wait(timeout=5), "never saw approval_ask"
+        assert in_flight_at_ask == [False]
+        assert not handle.turn_in_flight
+        assert handle.in_flight_thread_id is None
     finally:
         sup.shutdown()
 

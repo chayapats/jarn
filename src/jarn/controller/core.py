@@ -879,15 +879,27 @@ class Controller:
         **refuse, never queue** (T-QA-1). A finished owner is stolen so a
         leaked hold (e.g. ``make_driver`` without ``run_turn``) cannot wedge
         the controller forever.
+
+        Sync callers (no running event loop — e.g. unit tests calling
+        ``make_driver`` directly) still work: they take the slot with
+        ``owner=None`` and refuse only when a live asyncio task already holds
+        it.
         """
-        me = asyncio.current_task()
+        try:
+            me = asyncio.current_task()
+        except RuntimeError:
+            # No running loop — sync ``make_driver`` / non-async call sites.
+            me = None
         owner = self._turn_owner
         if owner is not None and not owner.done() and owner is not me:
             raise TurnBusyError(
                 f"turn already in progress on thread {self.thread_id!r} "
                 "(refusing concurrent run; gateway queues at chat layer)"
             )
-        if owner is me and self._turn_held:
+        if me is not None and owner is me and self._turn_held:
+            return False
+        if me is None and self._turn_held and owner is None:
+            # Sync re-entry while a previous sync hold is still open.
             return False
         self._turn_owner = me
         self._turn_held = True
@@ -895,7 +907,11 @@ class Controller:
 
     def release_turn(self) -> None:
         """Release exclusive turn ownership if held by the current task."""
-        if self._turn_owner is asyncio.current_task():
+        try:
+            me = asyncio.current_task()
+        except RuntimeError:
+            me = None
+        if self._turn_owner is me:
             self._turn_held = False
             self._turn_owner = None
 
