@@ -447,8 +447,12 @@ class Scheduler:
             self._save_unlocked(data)
         return job
 
-    def list(self, *, chat_id: int | None = None) -> list[ScheduledJob]:
-        """Return jobs, optionally filtered by *chat_id*."""
+    def list_jobs(self, *, chat_id: int | None = None) -> list[ScheduledJob]:
+        """Return jobs, optionally filtered by *chat_id*.
+
+        Named ``list_jobs`` (not ``list``) so annotations in this class can use
+        the builtin ``list`` type without mypy treating the method as a shadow.
+        """
         with file_lock(self.path):
             data = self._load_unlocked()
         out: list[ScheduledJob] = []
@@ -654,7 +658,7 @@ def schedule_tool_call(
             f"prompt={job.prompt!r}"
         )
     if act == "list":
-        jobs = sched.list(chat_id=chat_id)
+        jobs = sched.list_jobs(chat_id=chat_id)
         if not jobs:
             return "No scheduled jobs."
         lines = ["Scheduled jobs:"]
@@ -678,7 +682,7 @@ def schedule_tool_call(
         jid = job_id.strip()
         if not jid:
             raise ScheduleError("job_id is required for enable/disable")
-        want = True if act == "enable" else False
+        want = act == "enable"
         if enabled is not None:
             want = bool(enabled)
         job = sched.enable(jid, want)

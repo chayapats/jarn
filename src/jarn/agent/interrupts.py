@@ -112,7 +112,7 @@ async def resolve_interrupts(driver: SessionDriver, interrupts: list[Any]):
             # approve. Same pattern as suggest_memory — the tool never writes;
             # the approver writes <active_root>/.jarn/skills/<name>/SKILL.md.
             if name == "suggest_skill":
-                suggestion = SuggestedSkill(
+                skill_suggestion = SuggestedSkill(
                     name=str(args.get("name", "")).strip(),
                     description=str(args.get("description", "")).strip(),
                     body=str(args.get("body", "")).strip(),
@@ -124,7 +124,7 @@ async def resolve_interrupts(driver: SessionDriver, interrupts: list[Any]):
                         result=PermissionResult(Decision.ASK, "skill suggested"),
                         description=req.get("description", ""),
                         args=args,
-                        suggested_skill=suggestion,
+                        suggested_skill=skill_suggestion,
                     )
                 )
                 if reply.approved:

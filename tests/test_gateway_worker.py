@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,7 +46,6 @@ from jarn.permissions import (
     Decision,
     PermissionResult,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -158,10 +158,8 @@ def _stub_controller(
         task = ctrl._turn_task
         if task is not None and not task.done():
             task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await task
-            except asyncio.CancelledError:
-                pass
         return SimpleNamespace(message="aborted")
 
     def resume_thread(tid: str) -> None:

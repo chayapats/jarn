@@ -51,7 +51,7 @@ def test_add_list_remove_enable(isolated_home: Path, personal: Path) -> None:
     assert job.enabled is True
     assert job.next_run == "2026-08-08T09:00:00Z"
 
-    listed = sched.list()
+    listed = sched.list_jobs()
     assert len(listed) == 1
     assert listed[0].id == job.id
 
@@ -64,7 +64,7 @@ def test_add_list_remove_enable(isolated_home: Path, personal: Path) -> None:
 
     removed = sched.remove(job.id)
     assert removed is not None
-    assert sched.list() == []
+    assert sched.list_jobs() == []
 
 
 def test_one_shot_at(isolated_home: Path, personal: Path) -> None:
@@ -165,13 +165,13 @@ def test_schedule_tool_create_list_remove(isolated_home: Path, personal: Path) -
     assert "check inbox" in listed
     assert "55" in listed
 
-    jobs = Scheduler().list(chat_id=55)
+    jobs = Scheduler().list_jobs(chat_id=55)
     assert len(jobs) == 1
     jid = jobs[0].id
 
     removed = schedule_tool_call(action="remove", job_id=jid)
     assert "Removed" in removed
-    assert Scheduler().list(chat_id=55) == []
+    assert Scheduler().list_jobs(chat_id=55) == []
 
 
 def test_schedule_tool_inherits_active_delivery(
@@ -185,7 +185,7 @@ def test_schedule_tool_inherits_active_delivery(
         default_root=personal,
     )
     assert "chat_id=1234" in out
-    job = Scheduler().list(chat_id=1234)[0]
+    job = Scheduler().list_jobs(chat_id=1234)[0]
     assert job.prompt == "from context"
 
 

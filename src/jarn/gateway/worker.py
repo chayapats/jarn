@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import dataclasses
 import logging
 import os
@@ -416,7 +417,7 @@ class GatewayWorker:
             raise
         except Exception as exc:  # noqa: BLE001 — fail-loud to daemon
             _log.exception("turn failed thread=%s", thread_id)
-            try:
+            with contextlib.suppress(Exception):
                 await self.aemit(
                     ErrorFrame(
                         message=str(exc) or type(exc).__name__,
@@ -424,8 +425,6 @@ class GatewayWorker:
                         thread_id=thread_id,
                     )
                 )
-            except Exception:  # noqa: BLE001
-                pass
 
     async def _handle_approval_verdict(self, frame: ApprovalVerdictFrame) -> None:
         if self._turn_in_flight():
@@ -488,7 +487,7 @@ class GatewayWorker:
             raise
         except Exception as exc:  # noqa: BLE001
             _log.exception("approval resume failed token=%s", frame.token)
-            try:
+            with contextlib.suppress(Exception):
                 await self.aemit(
                     ErrorFrame(
                         message=str(exc) or type(exc).__name__,
@@ -496,8 +495,6 @@ class GatewayWorker:
                         thread_id=thread_id,
                     )
                 )
-            except Exception:  # noqa: BLE001
-                pass
 
     async def _handle_cancel(self, frame: CancelFrame) -> None:
         if not self._turn_in_flight():
@@ -618,10 +615,8 @@ class GatewayWorker:
         finally:
             self._shutdown = True
             heartbeat.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat
-            except asyncio.CancelledError:
-                pass
             if self._turn_in_flight():
                 await self._fail_loud(
                     "worker exiting with turn in flight",
@@ -631,10 +626,8 @@ class GatewayWorker:
                 task = self._turn_task
                 if task is not None:
                     task.cancel()
-                    try:
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
                         await task
-                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                        pass
             try:
                 await self.controller.aclose()
             except Exception:  # noqa: BLE001

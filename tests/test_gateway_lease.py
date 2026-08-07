@@ -45,10 +45,8 @@ def test_context_manager_releases_on_exit(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     root.mkdir()
 
-    with RootLease(root):
-        with pytest.raises(RootLeaseHeldError):
-            with RootLease(root):
-                pass
+    with RootLease(root), pytest.raises(RootLeaseHeldError), RootLease(root):
+        pass
 
     with RootLease(root):
         pass  # must succeed after the previous block exited

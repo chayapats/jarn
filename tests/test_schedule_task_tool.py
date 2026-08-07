@@ -158,7 +158,7 @@ def test_schedule_task_tool_create_persists(isolated_home, tmp_path):
         }
     )
     assert "Scheduled job" in result
-    jobs = Scheduler().list(chat_id=9)
+    jobs = Scheduler().list_jobs(chat_id=9)
     assert len(jobs) == 1
     assert jobs[0].prompt == "ping"
 

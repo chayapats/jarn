@@ -265,40 +265,39 @@ async def run_agent_turn(
                     attempt_resume = True  # user message is already in state
                     continue
 
-            if pending_error.data.get("auth"):
-                # A 401 is non-retryable on the *same* provider (reusing a
-                # rejected key just 401s again), but a configured fallback on a
-                # different provider with a resolvable key is exactly the case
-                # where switching helps — try that before dead-ending.
-                if not produced:
-                    new_ref = controller.rotate_to_keyed_fallback()
-                    if new_ref:
-                        try:
-                            await controller.ensure_runtime()
-                        except Exception as exc:  # noqa: BLE001
-                            await _emit(
-                                on_event,
-                                Event(
-                                    EventKind.NOTICE,
-                                    f"fallback unavailable: {exc}",
-                                    data={
-                                        "turn_policy": "fallback_unavailable",
-                                        "severity": "error",
-                                    },
-                                ),
-                            )
-                            result.error = pending_error
-                            return result
+            # A 401 is non-retryable on the *same* provider (reusing a
+            # rejected key just 401s again), but a configured fallback on a
+            # different provider with a resolvable key is exactly the case
+            # where switching helps — try that before dead-ending.
+            if pending_error.data.get("auth") and not produced:
+                new_ref = controller.rotate_to_keyed_fallback()
+                if new_ref:
+                    try:
+                        await controller.ensure_runtime()
+                    except Exception as exc:  # noqa: BLE001
                         await _emit(
                             on_event,
                             Event(
                                 EventKind.NOTICE,
-                                f"auth failed, retrying with {new_ref}…",
-                                data={"turn_policy": "auth_fallback", "model": new_ref},
+                                f"fallback unavailable: {exc}",
+                                data={
+                                    "turn_policy": "fallback_unavailable",
+                                    "severity": "error",
+                                },
                             ),
                         )
-                        attempt_resume = True
-                        continue
+                        result.error = pending_error
+                        return result
+                    await _emit(
+                        on_event,
+                        Event(
+                            EventKind.NOTICE,
+                            f"auth failed, retrying with {new_ref}…",
+                            data={"turn_policy": "auth_fallback", "model": new_ref},
+                        ),
+                    )
+                    attempt_resume = True
+                    continue
 
             result.error = pending_error
             await _emit(on_event, pending_error)

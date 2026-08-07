@@ -16,7 +16,6 @@ from jarn.telegram.backend import InMemoryGatewayBackend, SessionRouterBackend
 from jarn.telegram.bot import TelegramBotApp
 from jarn.telegram.outbox import Outbox
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

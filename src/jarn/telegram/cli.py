@@ -16,8 +16,9 @@ import contextlib
 import logging
 import os
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 from jarn.telegram import require_aiogram
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field, fields
-from typing import Any, TypeAlias
+from typing import Any
 
 # Bump only when the private pipe schema is intentionally incompatible.
 SCHEMA_VERSION = 1
@@ -145,7 +145,7 @@ class ErrorFrame:
     thread_id: str | None = None
 
 
-InboundFrame: TypeAlias = (
+type InboundFrame = (
     HandshakeFrame
     | TurnFrame
     | ApprovalVerdictFrame
@@ -154,9 +154,9 @@ InboundFrame: TypeAlias = (
     | ShutdownFrame
 )
 
-OutboundFrame: TypeAlias = EventFrame | StatusFrame | ApprovalAskFrame | ErrorFrame
+type OutboundFrame = EventFrame | StatusFrame | ApprovalAskFrame | ErrorFrame
 
-Frame: TypeAlias = InboundFrame | OutboundFrame
+type Frame = InboundFrame | OutboundFrame
 
 _INBOUND_TYPES: dict[str, type] = {
     "handshake": HandshakeFrame,

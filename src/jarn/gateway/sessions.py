@@ -315,10 +315,7 @@ class SessionRouter:
         media_list = list(media or [])
         with self._lock:
             state = self._state(chat_id)
-            if root is not None:
-                key = Path(root).expanduser().resolve()
-            else:
-                key = state.active_root
+            key = Path(root).expanduser().resolve() if root is not None else state.active_root
             tid = state.threads.get(key)
             if tid is None:
                 tid = new_thread_id()

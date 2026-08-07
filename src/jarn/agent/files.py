@@ -68,13 +68,10 @@ def image_mime_allowed(mime: str) -> bool:
     if normalized in ALLOWED_IMAGE_MIMES:
         return True
     # Permit well-formed image/* except clearly non-renderable odds.
-    if normalized.startswith("image/") and normalized not in {
-        "image/heic",
-        "image/heif",
-        "image/tiff",
-    }:
-        return True
-    return False
+    return bool(
+        normalized.startswith("image/")
+        and normalized not in {"image/heic", "image/heif", "image/tiff"}
+    )
 
 
 def guess_image_mime(path: str | Path) -> str:
