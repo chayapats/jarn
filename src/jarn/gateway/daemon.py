@@ -492,6 +492,13 @@ class DaemonSupervisor:
         if handle.dead:
             return
         code = handle.popen.poll()
+        if code is None:
+            # Pipe EOF can race the OS reaping the child (esp. Windows): wait
+            # briefly so fail-loud hooks see a real exit code when available.
+            with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                code = handle.popen.wait(timeout=1.0)
+            if code is None:
+                code = handle.popen.poll()
         # Drain stderr for diagnostics (bounded).
         stderr_tail = _read_stderr_tail(handle.popen.stderr)
         handle.dead = True
