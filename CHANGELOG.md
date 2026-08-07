@@ -16,6 +16,15 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Fixed
 
+- **/undo and /redo refuse another session's checkpoint (#47).**
+  The auto-checkpoint stack is still one LIFO per repo (restore is whole-tree),
+  but turn-start snapshots already carry ``[jarn:thread=…]`` tags. ``/undo``,
+  ``/redo``, and ``/abort`` rollback now pass the controller's ``thread_id`` and
+  refuse when the top entry is tagged for a different session — so session A
+  can no longer revert or delete session B's files by popping the shared stack.
+  Untagged (legacy) tops keep working. Redo-points are tagged with the caller's
+  thread so a later ``/redo`` cannot cross sessions either.
+
 - **Transcript tool arguments are capped and redacted at any depth.**
   `write_tool` enforced both halves of its contract — the length cap and the
   central redactor — on top-level string arguments only; everything else was

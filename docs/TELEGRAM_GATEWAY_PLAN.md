@@ -22,7 +22,7 @@ Destination of map [#26](https://github.com/chayapats/jarn/issues/26). Binding d
 
 ### Session model ([#38](https://github.com/chayapats/jarn/issues/38), [#51](https://github.com/chayapats/jarn/issues/51))
 - `(chat_id, root) → thread_id`. Default root = `~/.jarn/personal` (git init). `/repo` only to `gateway:` allowlist. Hard-refuse `$HOME` / global-config collision.
-- Busy: queue + notice + `/stop`. `/new` mints thread_id (#47 must scope undo to it).
+- Busy: queue + notice + `/stop`. `/new` mints thread_id (#47: undo/redo refuse foreign-tagged tops).
 - Auth: DM-only; deny-by-default; principal = `from.id` on every update including callbacks ([#34](https://github.com/chayapats/jarn/issues/34)).
 
 ### Approvals ([#37](https://github.com/chayapats/jarn/issues/37), [#39](https://github.com/chayapats/jarn/issues/39))
