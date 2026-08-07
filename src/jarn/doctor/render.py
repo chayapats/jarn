@@ -126,6 +126,9 @@ def doctor_lines(diag: dict) -> list[str]:
 
     append_extension_lines(lines, diag.get("extensions") or {})
 
+    for warning in diag.get("warnings") or []:
+        lines.append(f"[yellow]⚠ {_esc(warning)}[/yellow]")
+
     ok = diag.get("ok", False)
     lines.append(
         f"\n{'[green]All good.[/green]' if ok else '[yellow]Issues found above.[/yellow]'}"

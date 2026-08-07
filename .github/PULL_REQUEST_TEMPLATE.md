@@ -10,7 +10,7 @@
 
 - [ ] `uv run ruff check src tests scripts` clean
 - [ ] `uv run mypy src/` clean
-- [ ] `uv run pytest -q` — all tests pass, no new failures
+- [ ] `uv sync --extra dev --extra telegram && uv run pytest -q` — all tests pass, no new failures
 
 ## Checklist
 

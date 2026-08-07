@@ -20,7 +20,9 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Sync deps
-        run: uv sync --extra dev
+        # telegram extra pulls aiogram so gateway/bot tests exercise the real
+        # optional dependency (not just importorskip skips).
+        run: uv sync --extra dev --extra telegram
       - name: Lint
         run: uv run ruff check src tests scripts
       # POSIX-only APIs (fcntl, killpg, …) are not modeled on win32; type-check on Unix.
@@ -42,7 +44,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-      - run: uv sync --extra dev
+      - run: uv sync --extra dev --extra telegram
       - run: uv build
       - run: uv run pytest tests/test_packaging.py -q
 
@@ -71,7 +73,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Sync deps
-        run: uv sync --extra dev
+        run: uv sync --extra dev --extra telegram
       - name: Dependency audit (pip-audit)
         run: |
           uv pip install pip-audit

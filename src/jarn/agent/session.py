@@ -19,7 +19,7 @@ import contextlib
 import logging
 import queue
 import time as _time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -32,6 +32,7 @@ from jarn.agent.events import (
     Event,
     EventKind,
     SuggestedMemory,
+    SuggestedSkill,
     ToolProgress,
     _auto_reject,
 )
@@ -72,6 +73,7 @@ __all__ = [
     "EventKind",
     "SessionDriver",
     "SuggestedMemory",
+    "SuggestedSkill",
     "_action_requests",
     "_auto_reject",
     "_first_tool_name",
@@ -151,14 +153,17 @@ def _drain_progress(q: Any) -> list[ToolProgress]:
 
 
 def _build_user_content(text: str, images: list[Path] | None) -> Any:
-    """Return the user-message ``content`` for a turn (T-3-7).
+    """Return the user-message ``content`` for a turn (T-3-7 / #54).
 
     With no ``images`` (the common path), returns the plain ``text`` string —
     byte-for-byte the pre-existing behaviour. With images, returns a multimodal
     block list ``[{"type":"text", "text": text}, <image block>, …]`` where the
     text (``@path`` intact) leads and each image is a langchain-core base64 image
-    block. Images that fail to encode are dropped; if none survive, we fall back to
-    the plain string so a turn is never sent empty."""
+    block. Encoding applies the core size/type gate
+    (:data:`jarn.agent.files.INLINE_IMAGE_MAX_BYTES` + image MIME allowlist);
+    images that fail the gate or cannot be read are dropped. If none survive, we
+    fall back to the plain string so a turn is never sent empty.
+    """
     if not images:
         return text
     from jarn.agent.files import image_content_block
@@ -294,6 +299,16 @@ class SessionDriver:
     #: existing test path, and non-local backends) keeps the stream loop byte-identical
     #: — the merge wrapper is never engaged.
     progress_queue: Any = None
+    #: Optional execution backend used to temporarily expose document-staging
+    #: directories via ``_extra_roots`` so ``read_file`` can open absolute host paths
+    #: outside ``project_root`` under ``virtual_mode`` (#54 / T-MEDIA-2). ``None``
+    #: skips the expose (tests / callers that only need image inlining).
+    fs_backend: Any = None
+    #: T-QA-1: release callback installed by :meth:`Controller.make_driver` when
+    #: that call newly acquired the controller turn slot. Invoked from
+    #: :meth:`run_turn`'s finally (no-op when ``run_agent_turn`` holds the outer
+    #: exclusive). ``None`` when the slot is owned elsewhere.
+    _turn_release: Callable[[], None] | None = field(default=None, repr=False)
     #: The most-recent active ``execute`` tool call, so drained progress (which the
     #: backend can't tag — deepagents calls ``execute(command)`` with no id) correlates
     #: to its ``TOOL_START`` / ``TOOL_END``. Set on an ``execute`` TOOL_START, cleared
@@ -335,6 +350,19 @@ class SessionDriver:
                     seen.add(key)
                     pending.append(intr)
         return state, pending
+
+    def _release_controller_turn(self) -> None:
+        """Drop a controller turn slot acquired by :meth:`Controller.make_driver`.
+
+        No-op when the driver was minted under an outer ``run_agent_turn`` hold
+        (that path releases itself). Best-effort — never raises.
+        """
+        release = self._turn_release
+        if release is None:
+            return
+        self._turn_release = None
+        with contextlib.suppress(Exception):
+            release()
 
     async def resume_pending_approval(
         self, state: Any | None = None, pending: list[Any] | None = None
@@ -407,6 +435,7 @@ class SessionDriver:
         *,
         resume: bool = False,
         images: list[Path] | None = None,
+        media: Sequence[Any] | None = None,
         pending_only: bool = False,
     ):
         """Async-generate :class:`Event`s for one user turn.
@@ -431,7 +460,16 @@ class SessionDriver:
         instead of a plain string; the original text (with its ``@path`` intact)
         stays in the text block so the ``read_file`` fallback still works and
         transcripts stay greppable. When absent, ``content`` is the plain string —
-        the pre-existing path, byte-for-byte unchanged.
+        the pre-existing path, byte-for-byte unchanged. Encoding enforces the core
+        inline-image size/type gate (#54).
+
+        ``media`` (#54 / T-MEDIA-1) is the preferred multimodal ingest seam:
+        a sequence of :class:`~jarn.agent.media_ingest.MediaInput` (bytes+MIME
+        and/or path+modality). Core gates run before the turn; accepted images are
+        merged into ``images``, documents are staged outside ``project_root`` with
+        paths injected into the user text, and unsupported/oversize/disallowed
+        items yield ``NOTICE`` events with card-ready ``data`` (caption/text still
+        proceeds). Staging directories are deleted when the turn ends.
         """
         self.tracker.check_or_raise()
         _log.info(
@@ -441,12 +479,36 @@ class SessionDriver:
 
         self._reset_turn_state(resume=resume)
 
+        prepared = None
+        undo_expose = None
+        turn_images = list(images) if images else []
+        turn_text = user_input
+        if media and not resume:
+            from jarn.agent.media_ingest import expose_staging_roots, prepare_media
+
+            prepared = prepare_media(
+                user_input, media, project_root=self.project_root
+            )
+            turn_text = prepared.text
+            turn_images = [*turn_images, *prepared.images]
+            undo_expose = expose_staging_roots(
+                self.fs_backend, prepared.staging_dirs
+            )
+
         # A snapshot failure detected during a PRIOR turn's cleanup (after that
         # turn's last yield) could not be surfaced then — emit its NOTICE now, at
         # the very start of this turn, still exactly once per session.
         notice = self._pending_snapshot_notice()
         if notice is not None:
             yield notice
+
+        if prepared is not None:
+            for refusal in prepared.refusals:
+                yield Event(
+                    EventKind.NOTICE,
+                    text=refusal.message,
+                    data=refusal.as_event_data(),
+                )
 
         with _span("jarn.turn", thread_id=self.thread_id, model=self.main_model_ref):
             try:
@@ -468,7 +530,7 @@ class SessionDriver:
                 if pending:
                     async for ev in self.resume_pending_approval(state, pending):
                         yield ev
-                    if resume or pending_only or not user_input:
+                    if resume or pending_only or not turn_text:
                         return
                     try:
                         _, still_pending = await self._pending_interrupts()
@@ -496,6 +558,16 @@ class SessionDriver:
                 elif pending_only:
                     return
 
+                # Media-only refusals with empty caption: surface cards, skip model.
+                if (
+                    prepared is not None
+                    and not resume
+                    and not turn_text.strip()
+                    and not turn_images
+                ):
+                    yield Event(EventKind.DONE)
+                    return
+
                 messages: list[dict[str, Any]] = []
                 date_block = date_context()
                 # Dedup PER THREAD: a new thread (after /clear, /compact, /rewind,
@@ -511,7 +583,9 @@ class SessionDriver:
                     messages.append(
                         {
                             "role": "user",
-                            "content": _build_user_content(user_input, images),
+                            "content": _build_user_content(
+                                turn_text, turn_images or None
+                            ),
                         }
                     )
                     payload = {"messages": messages}
@@ -519,7 +593,7 @@ class SessionDriver:
                 # Emit the user prompt to the transcript before the model is called
                 # so a crash mid-turn still records what the user asked.
                 if self.transcript is not None and not resume:
-                    self.transcript.write_user(user_input, ts=_time.time())
+                    self.transcript.write_user(turn_text, ts=_time.time())
 
                 # Snapshot the working tree BEFORE the agent can edit files (so
                 # /undo can revert this turn), off the event loop. A pending cold
@@ -528,7 +602,7 @@ class SessionDriver:
                 if self.checkpoint is not None and not resume:
                     turn_index = await self._current_turn_index()
                     self._start_snapshot(
-                        user_input[:80], _time.time(), turn_index=turn_index
+                        turn_text[:80], _time.time(), turn_index=turn_index
                     )
 
                 async for ev in self._stream_turn(payload):
@@ -541,6 +615,12 @@ class SessionDriver:
                 # is deferred to the start of the next turn.
                 await self._ensure_snapshot()
             finally:
+                if undo_expose is not None:
+                    with contextlib.suppress(Exception):
+                        undo_expose()
+                if prepared is not None:
+                    with contextlib.suppress(Exception):
+                        prepared.cleanup()
                 # Never leak the snapshot task: a cancelled/closed turn skips the reap
                 # above (GeneratorExit/CancelledError propagates past it), so settle it
                 # here without blocking — detach it to finish in its worker thread (the
@@ -557,6 +637,9 @@ class SessionDriver:
                         self._turn_text + "\n…(turn interrupted)", ts=_time.time()
                     )
                     self._turn_text = ""
+                # T-QA-1: release a turn slot this driver acquired via make_driver
+                # (no-op when run_agent_turn holds the outer exclusive).
+                self._release_controller_turn()
 
     async def _stream_turn(self, payload: Any):
         """Stream one turn's model output and resolve HITL interrupts.

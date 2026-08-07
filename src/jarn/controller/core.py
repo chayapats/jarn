@@ -11,13 +11,14 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from jarn.agent.builder import JarnRuntime, build_runtime
 from jarn.agent.checkpoint import CheckpointManager
-from jarn.agent.session import Approver, SessionDriver, SuggestedMemory
+from jarn.agent.session import Approver, SessionDriver, SuggestedMemory, SuggestedSkill
 from jarn.config.schema import Config, PermissionMode
 from jarn.controller import config_helpers, session_helpers
 from jarn.cost import CostTracker
@@ -34,7 +35,23 @@ from jarn.tui import palette
 if TYPE_CHECKING:
     from jarn.extensibility.mcp import MCPLoadResult
 
+#: Async confirm callback for yolo escalation (Telegram card, REPL `_ask`, …).
+YoloConfirm = Callable[[], Awaitable[bool]]
+
 _log = logging.getLogger("jarn")
+
+
+class TurnBusyError(RuntimeError):
+    """A second turn tried to start while one is already in flight on this controller.
+
+    **Policy: refuse (do not queue).** Concurrent turns on one ``thread_id`` must
+    never silently interleave — ``make_driver`` would overwrite
+    ``_active_driver`` and break ``settle_snapshot`` / undo. Gateway sessions
+    already queue-at-chat in :mod:`jarn.gateway.sessions`; the controller /
+    shared turn-runner boundary still hard-refuses so REPL, headless, and the
+    gateway worker all inherit the same fail-loud guard.
+    """
+
 
 def _log_hook_warning(message: str) -> None:
     """Log a lifecycle-hook failure at WARNING (never silent, never fatal)."""
@@ -211,6 +228,17 @@ class Controller:
         # SessionDriver (see make_driver) — that is what makes the date system
         # message injected once per local day rather than re-injected every turn.
         self._date_state: dict = {}
+        # Front-end-owned in-flight turn task (REPL / gateway). ``abort()``
+        # cancels and *awaits* it before settle+rollback so cancel never races
+        # the turn's finally / detached snapshot (T-CTRL-1 / #59).
+        self._turn_task: asyncio.Task[Any] | None = None
+        self._abort_lock = asyncio.Lock()
+        # Turn re-entrancy guard (T-QA-1): exclusive owner of the active turn on
+        # this controller / thread_id. Policy is REFUSE — see TurnBusyError.
+        # ``_turn_held`` distinguishes "we own the slot" from a stale done task
+        # still referenced in ``_turn_owner`` (steal-on-done healing).
+        self._turn_owner: asyncio.Task[Any] | None = None
+        self._turn_held: bool = False
 
     # -- multi-root scope ---------------------------------------------------
 
@@ -828,8 +856,71 @@ class Controller:
         self._steer_slot = None
         return text
 
+    def prepare_media(self, text: str, media: Any = None) -> Any:
+        """Gate/stage inbound media via the core ingest API (#54 / T-MEDIA-1).
+
+        Thin controller facade over :func:`jarn.agent.media_ingest.prepare_media`
+        so Telegram/REPL share the same size/type gates and document staging.
+        Pass the result's images/text into :meth:`SessionDriver.run_turn`, or call
+        ``run_turn(..., media=…)`` directly (preferred — handles cleanup).
+        """
+        from jarn.agent.media_ingest import prepare_media
+
+        return prepare_media(text, media, project_root=self.project_root)
+
+    def acquire_turn(self) -> bool:
+        """Claim exclusive turn ownership for the current asyncio task.
+
+        Returns ``True`` when this call newly acquired the slot (caller must
+        :meth:`release_turn`), or ``False`` when the current task already holds
+        it (re-entrant ``make_driver`` during model-fallback retries).
+
+        Raises :class:`TurnBusyError` when another live task holds the slot —
+        **refuse, never queue** (T-QA-1). A finished owner is stolen so a
+        leaked hold (e.g. ``make_driver`` without ``run_turn``) cannot wedge
+        the controller forever.
+
+        Sync callers (no running event loop — e.g. unit tests calling
+        ``make_driver`` directly) still work: they take the slot with
+        ``owner=None`` and refuse only when a live asyncio task already holds
+        it.
+        """
+        try:
+            me = asyncio.current_task()
+        except RuntimeError:
+            # No running loop — sync ``make_driver`` / non-async call sites.
+            me = None
+        owner = self._turn_owner
+        if owner is not None and not owner.done() and owner is not me:
+            raise TurnBusyError(
+                f"turn already in progress on thread {self.thread_id!r} "
+                "(refusing concurrent run; gateway queues at chat layer)"
+            )
+        if me is not None and owner is me and self._turn_held:
+            return False
+        if me is None and self._turn_held and owner is None:
+            # Sync re-entry while a previous sync hold is still open.
+            return False
+        self._turn_owner = me
+        self._turn_held = True
+        return True
+
+    def release_turn(self) -> None:
+        """Release exclusive turn ownership if held by the current task."""
+        try:
+            me = asyncio.current_task()
+        except RuntimeError:
+            me = None
+        if self._turn_owner is me:
+            self._turn_held = False
+            self._turn_owner = None
+
     def make_driver(self, approver: Approver) -> SessionDriver:
         assert self.runtime is not None, "call ensure_runtime() first"
+        # T-QA-1: refuse a second concurrent driver so ``_active_driver`` is never
+        # overwritten mid-turn (breaks settle_snapshot / undo). Same-task retries
+        # inside an already-held turn (run_agent_turn fallback loop) re-enter.
+        newly_acquired = self.acquire_turn()
         transcript = None
         if self.config.observability.transcript:
             from jarn.memory.sessions import make_transcript_writer
@@ -864,7 +955,14 @@ class Controller:
             # ToolProgress from execute's worker thread; the driver drains it and
             # interleaves TOOL_PROGRESS events. None for non-local backends.
             progress_queue=getattr(self.runtime, "progress_queue", None),
+            # Document staging (#54): expose mkdtemp dirs to virtual-mode read_file.
+            fs_backend=getattr(self.runtime, "backend", None),
         )
+        # When this make_driver opened the slot (approval-resume and other
+        # make_driver→run_turn callers outside run_agent_turn), release when the
+        # driver's turn finishes so the hold cannot outlive the stream.
+        if newly_acquired:
+            driver._turn_release = self.release_turn
         # Retain for settle_snapshot: the /undo, /redo, and /abort paths await this
         # driver's pending turn-start snapshot before mutating the checkpoint stack.
         self._active_driver = driver
@@ -880,6 +978,50 @@ class Controller:
         driver = self._active_driver
         if driver is not None:
             await driver.settle_snapshot()
+
+    # -- turn binding + async mutation APIs (T-CTRL-1 / #59) ----------------
+
+    def bind_turn_task(self, task: asyncio.Task[Any] | None) -> None:
+        """Register (or clear) the front end's in-flight turn task."""
+        from jarn.controller import async_ops
+
+        async_ops.bind_turn_task(self, task)
+
+    @property
+    def turn_running(self) -> bool:
+        """True while a front-end-bound turn task is still in flight."""
+        from jarn.controller import async_ops
+
+        return async_ops.turn_running(self)
+
+    async def undo(self) -> CommandResult:
+        """Settle any in-flight snapshot, then revert the last turn's file edits."""
+        from jarn.controller import async_ops
+
+        return await async_ops.undo(self)
+
+    async def redo(self) -> CommandResult:
+        """Settle any in-flight snapshot, then re-apply the most recent undo."""
+        from jarn.controller import async_ops
+
+        return await async_ops.redo(self)
+
+    async def abort(self) -> CommandResult:
+        """Cancel the in-flight turn, settle its snapshot, then roll back edits."""
+        from jarn.controller import async_ops
+
+        return await async_ops.abort(self)
+
+    async def set_permission_mode(
+        self,
+        value: str,
+        *,
+        confirm: YoloConfirm | None = None,
+    ) -> CommandResult:
+        """Set permission mode; yolo escalate requires a successful ``confirm``."""
+        from jarn.controller import async_ops
+
+        return await async_ops.set_permission_mode(self, value, confirm=confirm)
 
     def close(self) -> None:
         import contextlib
@@ -1417,6 +1559,9 @@ class Controller:
 
     def save_suggested_memory(self, suggestion: SuggestedMemory) -> tuple[bool, str]:
         return session_helpers.save_suggested_memory(self, suggestion)
+
+    def save_suggested_skill(self, suggestion: SuggestedSkill) -> tuple[bool, str]:
+        return session_helpers.save_suggested_skill(self, suggestion)
 
     def abort_rollback(self) -> str:
         return session_helpers.abort_rollback(self)

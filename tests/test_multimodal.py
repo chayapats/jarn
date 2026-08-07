@@ -46,7 +46,7 @@ def test_is_multimodal():
 
 
 def test_multimodal_off_rejects_media_before_read():
-    """execution.multimodal=false must keep read_file from loading known media."""
+    """Middleware multimodal=False must keep read_file from loading known media."""
     middleware = ReadResultFilterMiddleware(PermissionEngine(), multimodal=False)
     request = SimpleNamespace(
         tool_call={
@@ -66,7 +66,7 @@ def test_multimodal_off_rejects_media_before_read():
 
     assert called is False
     assert result.status == "error"
-    assert "execution.multimodal" in result.content
+    assert "multimodal read disabled" in result.content
 
 
 def test_multimodal_off_preserves_text_reads():
@@ -168,8 +168,8 @@ def test_unsupported_provider_filters_media_result_backstop():
     assert "YWJj" not in result.content
 
 
-def test_build_runtime_wires_multimodal_off(base_config, tmp_path, monkeypatch):
-    """The config switch reaches both the main and delegated agent stacks."""
+def test_build_runtime_wires_multimodal_on(base_config, tmp_path, monkeypatch):
+    """Media reads stay enabled on main and delegated stacks (config flag removed)."""
     from unittest.mock import MagicMock
 
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -183,7 +183,6 @@ def test_build_runtime_wires_multimodal_off(base_config, tmp_path, monkeypatch):
         "deepagents.create_deep_agent",
         lambda **kwargs: captured.update(kwargs) or MagicMock(),
     )
-    base_config.execution.multimodal = False
 
     builder.build_runtime(base_config, project_root=tmp_path)
 
@@ -192,8 +191,8 @@ def test_build_runtime_wires_multimodal_off(base_config, tmp_path, monkeypatch):
         spec for spec in captured["subagents"] if spec["name"] == "general-purpose"
     )
     delegated_filter = general_purpose["middleware"][0]
-    assert main_filter._multimodal is False
-    assert delegated_filter._multimodal is False
+    assert main_filter._multimodal is True
+    assert delegated_filter._multimodal is True
 
 
 def test_build_runtime_blocks_anthropic_ollama_media(base_config, tmp_path, monkeypatch):

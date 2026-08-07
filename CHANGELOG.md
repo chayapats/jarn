@@ -5,6 +5,15 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Telegram gateway (map #26 / plan #44).** Optional `jarn[telegram]` transport:
+  long-poll bot (`aiogram`), per-root NDJSON workers with `flock` leases, session
+  routing + busy queue, park-and-resume approval cards, inbound media staging,
+  in-gateway scheduler (`schedule_task`), and `jarn gateway` CLI. Ops docs cover
+  systemd, 409 stand-down, and project `.jarn/.gitignore`. CI syncs the
+  `telegram` extra so gateway tests exercise real `aiogram`.
+
 ### Fixed
 
 - **Transcript tool arguments are capped and redacted at any depth.**

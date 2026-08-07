@@ -13,6 +13,8 @@ defaults  <  ~/.jarn/config.yaml (global)  <  <project>/.jarn/config.yaml (proje
 - **Scalars and most lists**: the later tier replaces the earlier one.
 - **`permissions.allow` / `permissions.deny`, `hooks`, `mcp_servers`**: concatenated,
   so a project *extends* global rules rather than replacing them.
+- **Global-only keys** (`gateway`): ignored from the project tier with a warning,
+  whether the project is trusted or not. Set them only in `~/.jarn/config.yaml`.
 
 The project root is the nearest ancestor of your CWD containing `.jarn/`, `JARN.md`,
 or `.git/`. Set `JARN_HOME` to relocate the global directory (handy for testing).
@@ -349,7 +351,6 @@ execution:
                            # the project land owned by root. Set to your host uid:gid
                            # (e.g. "1000:1000") to avoid root-owned files. Not forced
                            # by default because many images need root for apt/pip.
-  multimodal: true         # read_file auto-detects image/PDF/audio/video
   inline_images: auto      # auto | off. auto: an @-mentioned image (≤ 5 MB) is sent
                            # to the model as a native image content block in your
                            # message — so weak vision models see it without having to
@@ -870,6 +871,36 @@ Network failures are silent — the check never blocks or crashes startup.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `updates.check` | bool | `true` | Enable the startup update-available check |
+
+---
+
+## Telegram gateway (`gateway`) — global only
+
+Optional Telegram bot daemon. **Global-tier only** — a project-tier `gateway:`
+block is stripped with a warning whether the project is trusted or not. Prefer a
+secret reference for the bot token (`${ENV}` / `keychain:…` / `file:…`);
+`strict_secrets` does not flag inline bot tokens today.
+
+```yaml
+gateway:
+  enabled: false
+  telegram:
+    token: ${JARN_TELEGRAM_BOT_TOKEN}   # or keychain:/file:
+    allowed_user_ids: [123456789]      # DM auth allowlist
+  repos:                                # /repo allowlist
+    - path: /srv/repos/myapp
+      name: myapp
+```
+
+The gateway's default working root is `~/.jarn/personal` (created + `git init`'d
+on demand via `jarn.config.paths.ensure_personal_root`).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `gateway.enabled` | bool | `false` | Enable the gateway daemon |
+| `gateway.telegram.token` | str | `""` | Bot token secret reference |
+| `gateway.telegram.allowed_user_ids` | list[int] | `[]` | Allowed Telegram user ids |
+| `gateway.repos` | list | `[]` | `{path, name?}` allowlist for `/repo` |
 
 ---
 

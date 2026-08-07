@@ -26,9 +26,32 @@ from jarn.config.schema import Config, ProviderConfig
 
 _LIST_EXTEND_KEYS = {"hooks", "mcp_servers", "async_subagents"}
 
+#: Top-level keys that may only be set in the global tier (``~/.jarn/config.yaml``).
+#: A project-tier value is stripped with a warning whether the project is trusted
+#: or not — these bind machine-local secrets / daemons and must not be influenced
+#: by a repo's config (#36/#34).
+_GLOBAL_ONLY_KEYS: frozenset[str] = frozenset({"gateway"})
+
 
 class ConfigError(ValueError):
     """Raised on malformed configuration."""
+
+
+def _strip_global_only_keys(raw: dict[str, Any]) -> dict[str, Any]:
+    """Drop :data:`_GLOBAL_ONLY_KEYS` from a project-tier dict, warning per key."""
+    present = sorted(k for k in _GLOBAL_ONLY_KEYS if k in raw)
+    if not present:
+        return raw
+    out = {k: v for k, v in raw.items() if k not in _GLOBAL_ONLY_KEYS}
+    for key in present:
+        warnings.warn(
+            f"Ignoring project-tier {key!r} config — this key is global-only "
+            f"(set it in ~/.jarn/config.yaml). Remove it from the project "
+            f"config to silence this warning.",
+            UserWarning,
+            stacklevel=3,
+        )
+    return out
 
 
 def _parse_yaml_text(text: str, source: Path | None) -> dict[str, Any]:
@@ -238,6 +261,8 @@ def load_config(
 
     if project_raw is None:
         project_raw = _read_yaml(ppath)
+    # Global-only keys are stripped from every project tier (trusted == untrusted).
+    project_raw = _strip_global_only_keys(project_raw)
     if not project_trusted:
         from jarn.config.trust import sanitize_project
 

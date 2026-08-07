@@ -79,6 +79,100 @@ def _suggest_memory_tool():
     return suggest_memory
 
 
+def _suggest_skill_tool():
+    """The ``suggest_skill`` tool — propose a reusable skill for the user to keep.
+
+    The tool body runs only *after* the user approves (the session driver gates it
+    behind a skill-approval interrupt and the approver writes
+    ``<active_root>/.jarn/skills/<name>/SKILL.md``). The tool itself never writes.
+    """
+    from langchain_core.tools import tool
+
+    @tool
+    def suggest_skill(
+        name: str,
+        description: str,
+        body: str,
+        trigger: str = "auto",
+    ) -> str:
+        """Suggest a reusable skill for the user to approve, edit, or decline.
+
+        Call this when you have distilled a repeatable workflow worth keeping as a
+        project skill — step-by-step instructions the agent (or user via /skill)
+        should follow later. The user reviews your suggestion and chooses to save
+        it (as is or edited) or decline; nothing is written unless they approve.
+        Do not invent skills autonomously or for one-off tasks.
+
+        Args:
+            name: Short skill id (used as the skills/<name>/ directory slug).
+            description: One-line summary shown in the skill catalog.
+            body: Full skill instructions in concise markdown.
+            trigger: When the skill is offered — "auto", "manual", or a keyword/glob.
+        """
+        return (
+            "Skill saved with the user's approval under .jarn/skills. Continue with "
+            "the task; the skill is available for later turns and /skill invocation."
+        )
+
+    return suggest_skill
+
+
+def _schedule_task_tool(default_root: Path | None = None):
+    """The ``schedule_task`` tool — agent self-schedule into the gateway job store.
+
+    Mutating actions (create/remove/enable/disable) are gated and surface as an
+    approval ask (park+push on the gateway). ``list`` auto-resumes. When a job
+    later fires, it runs as a normal turn through the same approver — never
+    auto-approved for dangerous tools (#42).
+    """
+    from langchain_core.tools import tool
+
+    from jarn.gateway.scheduler import ScheduleError, schedule_tool_call
+
+    _root = default_root
+
+    @tool
+    def schedule_task(
+        action: str = "create",
+        prompt: str = "",
+        cron: str = "",
+        at: str = "",
+        job_id: str = "",
+        root: str = "personal",
+        chat_id: int = 0,
+    ) -> str:
+        """Create, list, or cancel gateway scheduled tasks (self-schedule).
+
+        Use this to run a prompt later on a cron schedule or at a specific time.
+        Jobs default to the personal root and deliver results to the originating
+        chat. Scheduled runs still require approval for dangerous tools.
+
+        Args:
+            action: One of create (or propose), list, remove, enable, disable.
+            prompt: The user prompt to run when the job fires (create).
+            cron: 5-field cron in UTC, e.g. ``0 9 * * 1`` (create).
+            at: One-shot ISO-8601 UTC timestamp (create); mutually exclusive with cron.
+            job_id: Existing job id (remove / enable / disable).
+            root: Working root — ``personal`` (default) or an absolute path.
+            chat_id: Telegram chat id for delivery; 0 = inherit from gateway turn.
+        """
+        try:
+            return schedule_tool_call(
+                action=action,
+                prompt=prompt,
+                cron=cron,
+                at=at,
+                job_id=job_id,
+                root=root,
+                chat_id=None if not chat_id else int(chat_id),
+                default_root=_root,
+            )
+        except ScheduleError as exc:
+            return f"schedule_task error: {exc}"
+
+    return schedule_task
+
+
 def _add_wiki_tools(
     tools: list[Any],
     system_prompt: str,
@@ -329,5 +423,11 @@ def _wire_builtin_tools(
         )
         tools = [*tools, *bg_tools]
 
-    tools = [*tools, _exit_plan_mode_tool(), _suggest_memory_tool()]
+    tools = [
+        *tools,
+        _exit_plan_mode_tool(),
+        _suggest_memory_tool(),
+        _suggest_skill_tool(),
+        _schedule_task_tool(default_root=root),
+    ]
     return tools, system_prompt, tuple(ungated)

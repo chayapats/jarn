@@ -2224,3 +2224,215 @@ async def test_aclose_serializes_after_live_caller_no_post_close_build(
     assert closed["n"] == 1      # committed backend closed once by aclose (no leak)
     with pytest.raises(RuntimeError):
         await ctrl.ensure_runtime()
+
+
+# ---------------------------------------------------------------------------
+# T-CTRL-1 / #59 — async undo/redo/abort + yolo confirm gate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_undo_settles_then_reverts(tmp_path, monkeypatch, base_config):
+    """await controller.undo() settles any pending snapshot before mutating."""
+    base_config.git = GitConfig(autocheckpoint=True)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = _repo_with_commit(tmp_path)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    ctrl = Controller(base_config, root)
+
+    settled: list[bool] = []
+
+    async def _settle() -> None:
+        settled.append(True)
+
+    ctrl.settle_snapshot = _settle  # type: ignore[method-assign]
+    (root / "file.txt").write_text("before\n", encoding="utf-8")
+    ctrl.checkpoint_manager.snapshot("test-turn")
+    (root / "file.txt").write_text("after\n", encoding="utf-8")
+
+    result = await ctrl.undo()
+    assert settled == [True]
+    assert result.text.lower().startswith("undone")
+    assert (root / "file.txt").read_text(encoding="utf-8") == "before\n"
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_async_redo_settles_then_reapplies(tmp_path, monkeypatch, base_config):
+    base_config.git = GitConfig(autocheckpoint=True)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = _repo_with_commit(tmp_path)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    ctrl = Controller(base_config, root)
+
+    settled: list[bool] = []
+
+    async def _settle() -> None:
+        settled.append(True)
+
+    ctrl.settle_snapshot = _settle  # type: ignore[method-assign]
+    (root / "file.txt").write_text("before\n", encoding="utf-8")
+    ctrl.checkpoint_manager.snapshot("test-turn")
+    (root / "file.txt").write_text("after\n", encoding="utf-8")
+    ctrl.checkpoint_manager.undo()
+
+    result = await ctrl.redo()
+    assert settled == [True]
+    assert result.text.lower().startswith("redone")
+    assert (root / "file.txt").read_text(encoding="utf-8") == "after\n"
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_async_abort_idle_does_not_rollback(tmp_path, monkeypatch, base_config):
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    called: list[bool] = []
+    monkeypatch.setattr(
+        ctrl, "abort_rollback", lambda: (called.append(True), "rolled")[1]
+    )
+    result = await ctrl.abort()
+    assert called == []
+    assert "nothing to abort" in result.text.lower()
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_async_abort_cancels_awaits_then_rolls_back(
+    tmp_path, monkeypatch, base_config
+):
+    """abort() must cancel the bound turn, await it, settle, then rollback.
+
+    Regression: fire-and-forget cancel without awaiting let settle/rollback
+    race the turn's finally (T-CTRL-1 binding #6).
+    """
+    base_config.git = GitConfig(autocheckpoint=True)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = _repo_with_commit(tmp_path)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    ctrl = Controller(base_config, root)
+
+    (root / "file.txt").write_text("before\n", encoding="utf-8")
+    ctrl.checkpoint_manager.snapshot("running-turn")
+    (root / "file.txt").write_text("after\n", encoding="utf-8")
+
+    order: list[str] = []
+
+    async def _never() -> None:
+        try:
+            await asyncio.sleep(3600)
+        finally:
+            order.append("turn_finally")
+
+    async def _settle() -> None:
+        order.append("settle")
+
+    ctrl.settle_snapshot = _settle  # type: ignore[method-assign]
+    turn = asyncio.create_task(_never())
+    ctrl.bind_turn_task(turn)
+    await asyncio.sleep(0)  # let the turn enter its sleep so cancel hits the body
+    assert ctrl.turn_running
+
+    result = await ctrl.abort()
+    assert turn.done()
+    assert order == ["turn_finally", "settle"], (
+        f"abort must await turn before settle; got {order!r}"
+    )
+    assert "rolled back" in result.text.lower()
+    assert (root / "file.txt").read_text(encoding="utf-8") == "before\n"
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_async_abort_as_own_turn_task_is_idle(
+    tmp_path, monkeypatch, base_config
+):
+    """When /abort runs as the bound turn task itself, treat as idle (no self-cancel)."""
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    called: list[bool] = []
+    monkeypatch.setattr(
+        ctrl, "abort_rollback", lambda: (called.append(True), "rolled")[1]
+    )
+
+    async def _run_abort_as_turn() -> str:
+        ctrl.bind_turn_task(asyncio.current_task())
+        result = await ctrl.abort()
+        return result.text
+
+    text = await _run_abort_as_turn()
+    assert called == []
+    assert "nothing to abort" in text.lower()
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_set_permission_mode_yolo_requires_confirm(
+    tmp_path, monkeypatch, base_config
+):
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    assert ctrl.project_trusted
+    assert ctrl.config.permission_mode != PermissionMode.YOLO
+
+    refused = await ctrl.set_permission_mode("yolo")  # no confirm
+    assert "requires confirmation" in refused.text.lower()
+    assert ctrl.config.permission_mode != PermissionMode.YOLO
+
+    async def _no() -> bool:
+        return False
+
+    declined = await ctrl.set_permission_mode("yolo", confirm=_no)
+    assert "cancelled" in declined.text.lower()
+    assert ctrl.config.permission_mode != PermissionMode.YOLO
+
+    async def _yes() -> bool:
+        return True
+
+    ok = await ctrl.set_permission_mode("yolo", confirm=_yes)
+    assert "yolo" in ok.text.lower()
+    assert ctrl.config.permission_mode == PermissionMode.YOLO
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_set_permission_mode_yolo_no_reconfirm_when_already(
+    tmp_path, monkeypatch, base_config
+):
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    ctrl.apply_mode("yolo")
+    asks: list[int] = []
+
+    async def _tracking() -> bool:
+        asks.append(1)
+        return False
+
+    result = await ctrl.set_permission_mode("yolo", confirm=_tracking)
+    assert asks == []
+    assert ctrl.config.permission_mode == PermissionMode.YOLO
+    assert "yolo" in result.text.lower()
+    ctrl.close()
+
+
+def test_handle_command_mode_yolo_refuses_trusted_escalate(
+    tmp_path, monkeypatch, base_config
+):
+    """Sync handle_command('mode','yolo') must refuse silent escalate (T-CTRL-1)."""
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    assert ctrl.project_trusted
+    result = ctrl.handle_command("mode", "yolo")
+    assert "requires confirmation" in result.text.lower()
+    assert "set_permission_mode" in result.text
+    assert ctrl.config.permission_mode != PermissionMode.YOLO
+    ctrl.close()
+
+
+def test_handle_command_mode_yolo_untrusted_still_clamps(
+    tmp_path, monkeypatch, base_config
+):
+    """Untrusted yolo via handle_command still clamps to plan (not a real escalate)."""
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    ctrl = Controller(base_config, root, project_trusted=False)
+    result = ctrl.handle_command("mode", "yolo")
+    assert ctrl.config.permission_mode == PermissionMode.PLAN
+    assert "clamped" in result.text.lower() or "plan" in result.text.lower()
+    ctrl.close()

@@ -627,3 +627,127 @@ def test_policy_profile_migrated_v2(tmp_path):
         cfg = load_config(global_path=gp, project_path=None)
     # The profile key is gone — no attribute, no effect
     assert cfg.policy.web_tools is True  # other policy keys untouched
+
+
+def test_execution_multimodal_migrated_v3(tmp_path):
+    """v2→v3 migration drops execution.multimodal and emits a UserWarning."""
+    gp = tmp_path / "g.yaml"
+    _write(
+        gp,
+        {
+            "config_version": 2,
+            "execution": {"multimodal": False, "backend": "local"},
+        },
+    )
+    with pytest.warns(UserWarning, match="execution.multimodal"):
+        cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.execution.backend == "local"
+    assert not hasattr(cfg.execution, "multimodal")
+
+
+def test_gateway_defaults(tmp_path):
+    cfg = load_config(
+        global_path=tmp_path / "missing-global.yaml",
+        project_path=tmp_path / "missing-project.yaml",
+    )
+    assert cfg.gateway.enabled is False
+    assert cfg.gateway.telegram.token == ""
+    assert cfg.gateway.telegram.allowed_user_ids == []
+    assert cfg.gateway.repos == []
+
+
+def test_gateway_global_parsed(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(
+        gp,
+        {
+            "gateway": {
+                "enabled": True,
+                "telegram": {
+                    "token": "${JARN_TELEGRAM_BOT_TOKEN}",
+                    "allowed_user_ids": [123456789, 987654321],
+                },
+                "repos": [
+                    {"path": "/srv/repos/myapp", "name": "myapp"},
+                    {"path": "/srv/repos/other"},
+                ],
+            }
+        },
+    )
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.gateway.enabled is True
+    assert cfg.gateway.telegram.token == "${JARN_TELEGRAM_BOT_TOKEN}"
+    assert cfg.gateway.telegram.allowed_user_ids == [123456789, 987654321]
+    assert len(cfg.gateway.repos) == 2
+    assert cfg.gateway.repos[0].path == "/srv/repos/myapp"
+    assert cfg.gateway.repos[0].name == "myapp"
+    assert cfg.gateway.repos[1].path == "/srv/repos/other"
+    assert cfg.gateway.repos[1].name is None
+
+
+@pytest.mark.parametrize("trusted", [True, False])
+def test_gateway_project_tier_stripped_with_warning(tmp_path, trusted):
+    """Project-tier gateway: is stripped + warned for trusted and untrusted alike."""
+    from jarn.config.loader import _GLOBAL_ONLY_KEYS
+
+    assert "gateway" in _GLOBAL_ONLY_KEYS
+    gp = tmp_path / "g.yaml"
+    pp = tmp_path / "p.yaml"
+    _write(gp, {"gateway": {"enabled": True, "telegram": {"token": "${GLOBAL}"}}})
+    _write(
+        pp,
+        {
+            "gateway": {
+                "enabled": False,
+                "telegram": {"token": "${PROJECT}", "allowed_user_ids": [1]},
+            }
+        },
+    )
+    with pytest.warns(UserWarning, match="project-tier 'gateway'"):
+        cfg = load_config(global_path=gp, project_path=pp, project_trusted=trusted)
+    # Global value wins; project block never merges.
+    assert cfg.gateway.enabled is True
+    assert cfg.gateway.telegram.token == "${GLOBAL}"
+    assert cfg.gateway.telegram.allowed_user_ids == []
+
+
+def test_gateway_unknown_key_rejected(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"gateway": {"enabled": True, "draft_coalesce_ms": 50}})
+    with pytest.raises(ConfigError, match="draft_coalesce_ms"):
+        load_config(global_path=gp, project_path=None)
+
+
+def test_gateway_allowed_user_ids_must_be_ints(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"gateway": {"telegram": {"allowed_user_ids": ["not-an-id"]}}})
+    with pytest.raises(ConfigError, match="allowed_user_ids"):
+        load_config(global_path=gp, project_path=None)
+
+
+def test_gateway_enabled_is_settable():
+    from jarn.config.settings import is_settable
+
+    assert is_settable("gateway.enabled")
+
+
+def test_ensure_personal_root_creates_git_repo(tmp_path, monkeypatch):
+    from jarn.config import paths
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = paths.ensure_personal_root()
+    assert root == tmp_path / "home" / "personal"
+    assert root.is_dir()
+    assert (root / ".git").exists()
+    assert (root / ".jarn" / ".gitignore").is_file()
+    # Idempotent — second call does not fail.
+    assert paths.ensure_personal_root() == root
+
+
+def test_gateway_not_in_project_dangerous():
+    """Global-only gateway must not re-trigger trust prompts."""
+    from jarn.config.trust import project_dangerous
+
+    danger = project_dangerous({"gateway": {"enabled": True}, "hooks": []})
+    assert "gateway" not in danger
+    assert "hooks" in danger

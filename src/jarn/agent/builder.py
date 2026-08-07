@@ -18,7 +18,9 @@ from jarn.agent.builtin_tools import (
     _build_repo_map_tool,
     _exit_plan_mode_tool,
     _inject_repo_map,
+    _schedule_task_tool,
     _suggest_memory_tool,
+    _suggest_skill_tool,
     _wire_builtin_tools,
 )
 from jarn.agent.runtime import (
@@ -44,6 +46,8 @@ __all__ = [
     "_make_docker_backend",
     "_make_local_backend",
     "_make_sandbox_backend",
+    "_schedule_task_tool",
     "_suggest_memory_tool",
+    "_suggest_skill_tool",
     "_wire_builtin_tools",
 ]

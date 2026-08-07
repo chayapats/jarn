@@ -129,6 +129,19 @@ def cmd_mode(ctrl, args: str) -> CommandResult:
     except ValueError:
         valid = ", ".join(m.value for m in PermissionMode)
         return CommandResult(f"Unknown mode. Choose one of: {valid}")
+    # Silent yolo escalate via sync handle_command is impossible (T-CTRL-1 / #59).
+    # Trusted escalate must go through await set_permission_mode(..., confirm=…).
+    # Untrusted still routes through apply_mode (clamps to plan) — not a real
+    # escalate. Already-in-yolo is a no-op transition.
+    if (
+        mode == PermissionMode.YOLO
+        and ctrl.config.permission_mode != PermissionMode.YOLO
+        and ctrl.project_trusted
+    ):
+        return CommandResult(
+            "Escalating to yolo requires confirmation — "
+            "use await controller.set_permission_mode('yolo', confirm=…)."
+        )
     # Route through apply_mode so the untrusted-floor clamp applies here too.
     applied = ctrl.apply_mode(mode.value)
     if applied != mode.value:

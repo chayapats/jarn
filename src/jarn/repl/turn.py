@@ -11,13 +11,15 @@ import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape as _rich_escape
 
 from jarn.agent.session import ApprovalReply, ApprovalRequest, Event, EventKind
+from jarn.agent.turn_runner import run_agent_turn
+from jarn.agent.turn_runner import select_inline_images as select_inline_images
 from jarn.config.schema import PermissionMode
 from jarn.permissions import ActionKind, RememberScope
 from jarn.repl.auth_errors import _friendly_auth_error, _provider_hint
@@ -49,35 +51,9 @@ _EDIT_BEFORE_APPLY = object()
 #: others it is not an :class:`ApprovalReply` — the editor flow produces the reply.
 _EDIT_MEMORY = object()
 
-#: Substrings that mark a provider ERROR as an image/vision/multimodal capability
-#: rejection (T-3-7). Matched case-insensitively against the error text, and only
-#: consulted on a turn that actually inlined images, so a false positive is bounded
-#: to one harmless text-only re-send.
-_IMAGE_ERROR_MARKERS: tuple[str, ...] = ("image", "vision", "multimodal", "modalit")
-
-
-def select_inline_images(controller: Controller, text: str) -> list[Path]:
-    """Return the image paths to inline for this turn's user message (T-3-7).
-
-    Empty when ``execution.inline_images`` is ``off`` or the session-level fallback
-    has already fired (``controller.inline_images_disabled``). Otherwise scans
-    ``text`` for qualifying image ``@``-mentions via the completion scanner
-    (exists + image mimetype + ≤ 5 MB). Called at submit; the result is threaded
-    through :func:`_run_turn` into ``SessionDriver.run_turn``."""
-    if (
-        controller.config.execution.inline_images != "auto"
-        or controller.inline_images_disabled
-    ):
-        return []
-    from jarn.tui.completion import scan_image_mentions
-
-    return scan_image_mentions(text, controller.project_root or Path.cwd())
-
-
-def _is_image_capability_error(event: Event) -> bool:
-    """True when a provider ERROR looks like an image/vision/multimodal rejection."""
-    text = (event.text or "").lower()
-    return any(marker in text for marker in _IMAGE_ERROR_MARKERS)
+#: Sentinel for the "edit then save" action on a suggested-skill prompt — same
+#: shape as :data:`_EDIT_MEMORY`, for skill body editing before write.
+_EDIT_SKILL = object()
 
 
 async def _run_turn(
@@ -101,6 +77,10 @@ async def _run_turn(
 ) -> list[tuple[str, str]]:
     """Stream a turn; return the turn's expandable ``(tool, full output)`` pairs.
 
+    Thin REPL adapter over :func:`jarn.agent.turn_runner.run_agent_turn` — owns
+    Rich rendering, approval prompts, and cancel UX. Retry / fallback / T-3-7
+    policy lives in the shared runner (no settle/abort/yolo wrappers here).
+
     If ``tool_sink`` is given, tool outputs are appended to it live (so a pager
     can read them mid-turn). If ``todos_sink`` is given, it is awaited on every
     ``write_todos`` tool completion so the front-end can refresh the live plan
@@ -119,6 +99,7 @@ async def _run_turn(
     # assumption the renderer already printed the stop message; a cancel that escaped
     # this handler (as one during setup used to, when the try started only at the
     # stream loop) was therefore SILENT — the user got no feedback at all.
+    had_events = False
     try:
         try:
             await controller.ensure_runtime()
@@ -167,197 +148,108 @@ async def _run_turn(
                 title_hook("working")
             return result
 
-        # Turn loop with transparent model fallback: if a turn fails with a
-        # retryable provider error *before* emitting any visible output, rotate
-        # to the next fallback model and retry; otherwise surface the error.
-        # ``produced`` gates on emitted UI events. On retry we resume from the
-        # thread's existing state (LangGraph already checkpointed the user
-        # message before the failed model call) so the user turn isn't duplicated.
-        resume = False
-        image_fallback_done = False
-        had_events = False
-        while True:
-            driver = controller.make_driver(approver)
-            produced = False
-            pending_error: Event | None = None
-            payload = "" if resume else turn_text
-            # Inline images only on a fresh (non-resume) attempt while the session
-            # fallback hasn't disabled them. A model-rotation resume re-runs on the
-            # already-checkpointed state (which still holds the image blocks), so it
-            # must not re-inline; only pass the kwarg when there is something to send,
-            # so drivers with the old signature (tests) are unaffected.
-            turn_images = (
-                images
-                if (images and not resume and not controller.inline_images_disabled)
-                else None
-            )
-            run_kwargs: dict[str, Any] = {"resume": resume}
-            if turn_images:
-                run_kwargs["images"] = turn_images
-            if pending_only:
-                run_kwargs["pending_only"] = True
-            async for event in driver.run_turn(payload, **run_kwargs):
-                had_events = True
-                if event.kind is EventKind.TEXT:
-                    renderer.on_text(event.text, agent=event.data.get("agent"))
-                    if token_sink is not None:
-                        token_sink(event.text)
-                    produced = True
-                elif event.kind is EventKind.REASONING:
-                    renderer.on_reasoning(event.text)
-                    if token_sink is not None:
-                        token_sink(event.text)
-                    produced = True
-                elif event.kind is EventKind.TOOL_START:
-                    renderer.on_tool(
-                        event.text,
-                        event.data.get("args", {}),
-                        tool_call_id=event.data.get("tool_call_id"),
-                        agent=event.data.get("agent"),
-                    )
-                    produced = True
-                elif event.kind is EventKind.TOOL_PROGRESS:
-                    # Live foreground-execute tail: render the running command's
-                    # output tail + heartbeat into the transient live region (never
-                    # scrollback); on_tool_end clears it and commits the final result.
-                    renderer.on_tool_progress(
-                        event.text,
-                        event.data.get("tail", ""),
-                        event.data.get("elapsed", 0.0),
-                        tool_call_id=event.data.get("tool_call_id"),
-                        heartbeat=event.data.get("heartbeat", False),
-                        agent=event.data.get("agent"),
-                    )
-                    produced = True
-                elif event.kind is EventKind.TOOL_END:
-                    renderer.on_tool_end(
-                        event.text,
-                        event.data.get("summary", ""),
-                        event.data.get("full", ""),
-                        tool_call_id=event.data.get("tool_call_id"),
-                        agent=event.data.get("agent"),
-                    )
-                    # Refresh the live plan checklist the moment a todo write lands,
-                    # so it re-renders in place mid-turn (not only after the turn).
-                    if todos_sink is not None and event.text == "write_todos":
-                        await todos_sink()
-                    produced = True
-                elif event.kind is EventKind.NOTICE and event.data.get(
-                    "diagnostics_auto_queue"
-                ):
-                    # Diagnostics auto-fix (T-3-3): queue ONE internal follow-up
-                    # turn. The chain-round counter is bumped BEFORE the round
-                    # runs so its driver sees round>=1 and the cap holds even if
-                    # the auto round introduces new errors. Reset to 0 on real
-                    # user input (keys._submit / app._drain_queue).
-                    if queue_sink is not None:
-                        controller._diag_chain_round += 1
-                        queue_sink(
-                            "", event.data["diagnostics_auto_queue"], internal=True
-                        )
-                        renderer.on_notice(
-                            f"[{palette.C_DIM}]diagnostics: errors in edited files "
-                            f"— auto-fix round queued[/{palette.C_DIM}]"
-                        )
-                    produced = True
-                elif event.kind is EventKind.NOTICE and event.data.get("steer"):
-                    # Mid-turn steering (T-4-6): mark where the steer landed in
-                    # scrollback so the transcript shows it interleaved at its true
-                    # position, distinct from a queued (» queued) or normal (›) line.
-                    renderer.on_notice(
-                        f"[{palette.C_DIM}]{_rich_escape(event.text)}[/{palette.C_DIM}]"
-                    )
-                    produced = True
-                elif event.kind is EventKind.NOTICE and event.data.get("diagnostics"):
-                    # Diagnostics suggest-mode NOTICE: plain notice listing findings.
-                    d = event.data["diagnostics"]
-                    body = _rich_escape(str(d.get("text", "")))
-                    renderer.on_notice(
-                        f"[{palette.C_NOTICE}]diagnostics: {d.get('count', 0)} "
-                        f"issue(s) in edited files[/{palette.C_NOTICE}]\n"
-                        f"[{palette.C_DIM}]{body}[/{palette.C_DIM}]"
-                    )
-                    produced = True
-                elif event.kind is EventKind.NOTICE or (
-                    event.kind is EventKind.APPROVAL
-                    and event.text.startswith(("blocked", "rejected"))
-                ):
-                    if event.kind is EventKind.NOTICE and event.data.get("verify"):
-                        renderer.on_verify_badge(event.data["verify"])
-                    else:
-                        renderer.on_notice(f"[{palette.C_NOTICE}]{event.text}[/{palette.C_NOTICE}]")
-                    produced = True
-                elif event.kind is EventKind.APPROVAL:
-                    produced = True  # a tool was authorized → has a side effect
-                elif event.kind is EventKind.ERROR:
-                    pending_error = event
-
-            if pending_error is None:
-                controller.reset_model_rotation()  # back to primary on success
-                break
-            # T-3-7 image fallback: a provider that rejects the inlined image gets
-            # ONE same-model text-only retry (do NOT rotate). One-shot per turn and
-            # one-way per session — the flag makes `auto` behave like `off` for the
-            # rest of the session, and the guard stops a second image error from
-            # re-triggering (it then surfaces normally / falls to the branches below).
-            if (
-                turn_images
-                and not image_fallback_done
-                and not produced
-                and _is_image_capability_error(pending_error)
+        async def on_event(event: Event) -> None:
+            if event.kind is EventKind.TEXT:
+                renderer.on_text(event.text, agent=event.data.get("agent"))
+                if token_sink is not None:
+                    token_sink(event.text)
+            elif event.kind is EventKind.REASONING:
+                renderer.on_reasoning(event.text)
+                if token_sink is not None:
+                    token_sink(event.text)
+            elif event.kind is EventKind.TOOL_START:
+                renderer.on_tool(
+                    event.text,
+                    event.data.get("args", {}),
+                    tool_call_id=event.data.get("tool_call_id"),
+                    agent=event.data.get("agent"),
+                )
+            elif event.kind is EventKind.TOOL_PROGRESS:
+                # Live foreground-execute tail: render the running command's
+                # output tail + heartbeat into the transient live region (never
+                # scrollback); on_tool_end clears it and commits the final result.
+                renderer.on_tool_progress(
+                    event.text,
+                    event.data.get("tail", ""),
+                    event.data.get("elapsed", 0.0),
+                    tool_call_id=event.data.get("tool_call_id"),
+                    heartbeat=event.data.get("heartbeat", False),
+                    agent=event.data.get("agent"),
+                )
+            elif event.kind is EventKind.TOOL_END:
+                renderer.on_tool_end(
+                    event.text,
+                    event.data.get("summary", ""),
+                    event.data.get("full", ""),
+                    tool_call_id=event.data.get("tool_call_id"),
+                    agent=event.data.get("agent"),
+                )
+                # Refresh the live plan checklist the moment a todo write lands,
+                # so it re-renders in place mid-turn (not only after the turn).
+                if todos_sink is not None and event.text == "write_todos":
+                    await todos_sink()
+            elif event.kind is EventKind.NOTICE and event.data.get(
+                "diagnostics_auto_queue"
             ):
-                controller.inline_images_disabled = True
-                image_fallback_done = True
-                # Strip the rejected image message from state so the text-only
-                # re-send doesn't leave the model re-seeing the image.
-                await controller.drop_pending_image_message()
-                renderer.on_notice(
-                    f"[{palette.C_NOTICE}]image not accepted by this model — "
-                    f"retrying without the inline image (text-only)[/{palette.C_NOTICE}]"
-                )
-                resume = False  # re-send the turn text; images are dropped
-                continue
-            if pending_error.data.get("retryable") and not produced:
-                new_ref = controller.rotate_to_fallback()
-                if new_ref:
-                    try:
-                        await controller.ensure_runtime()
-                    except Exception as exc:  # noqa: BLE001
-                        renderer.on_notice(f"[{palette.C_ERROR}]fallback unavailable: {exc}[/{palette.C_ERROR}]")
-                        break
+                # Runner already bumped the chain counter + queued via queue_sink;
+                # only render the banner when a sink was wired (interactive REPL).
+                if queue_sink is not None:
                     renderer.on_notice(
-                        f"[{palette.C_NOTICE}]model error, retrying with {new_ref}…[/{palette.C_NOTICE}]"
+                        f"[{palette.C_DIM}]diagnostics: errors in edited files "
+                        f"— auto-fix round queued[/{palette.C_DIM}]"
                     )
-                    resume = True  # user message is already in state; don't re-send
-                    continue
-            if pending_error.data.get("auth"):
-                # A 401 is non-retryable on the *same* provider (reusing a
-                # rejected key just 401s again), but a configured fallback on a
-                # different provider with a resolvable key is exactly the case
-                # where switching helps — try that before dead-ending.
-                if not produced:
-                    new_ref = controller.rotate_to_keyed_fallback()
-                    if new_ref:
-                        try:
-                            await controller.ensure_runtime()
-                        except Exception as exc:  # noqa: BLE001
-                            renderer.on_notice(
-                                f"[{palette.C_ERROR}]fallback unavailable: {exc}[/{palette.C_ERROR}]"
-                            )
-                            break
-                        renderer.on_notice(
-                            f"[{palette.C_NOTICE}]auth failed, retrying with {new_ref}…"
-                            f"[/{palette.C_NOTICE}]"
-                        )
-                        resume = True  # user message is already in state; don't re-send
-                        continue
-                provider = pending_error.data.get("provider") or _provider_hint(controller)
-                renderer.on_notice(_friendly_auth_error(pending_error.text, provider))
-            else:
+            elif event.kind is EventKind.NOTICE and event.data.get("steer"):
+                # Mid-turn steering (T-4-6): mark where the steer landed in
+                # scrollback so the transcript shows it interleaved at its true
+                # position, distinct from a queued (» queued) or normal (›) line.
                 renderer.on_notice(
-                    f"[{palette.C_ERROR}]{pending_error.text}[/{palette.C_ERROR}]"
+                    f"[{palette.C_DIM}]{_rich_escape(event.text)}[/{palette.C_DIM}]"
                 )
-            break
+            elif event.kind is EventKind.NOTICE and event.data.get("diagnostics"):
+                # Diagnostics suggest-mode NOTICE: plain notice listing findings.
+                d = event.data["diagnostics"]
+                body = _rich_escape(str(d.get("text", "")))
+                renderer.on_notice(
+                    f"[{palette.C_NOTICE}]diagnostics: {d.get('count', 0)} "
+                    f"issue(s) in edited files[/{palette.C_NOTICE}]\n"
+                    f"[{palette.C_DIM}]{body}[/{palette.C_DIM}]"
+                )
+            elif event.kind is EventKind.NOTICE or (
+                event.kind is EventKind.APPROVAL
+                and event.text.startswith(("blocked", "rejected"))
+            ):
+                if event.kind is EventKind.NOTICE and event.data.get("verify"):
+                    renderer.on_verify_badge(event.data["verify"])
+                elif event.kind is EventKind.NOTICE and event.data.get("severity") == "error":
+                    renderer.on_notice(
+                        f"[{palette.C_ERROR}]{event.text}[/{palette.C_ERROR}]"
+                    )
+                else:
+                    renderer.on_notice(
+                        f"[{palette.C_NOTICE}]{event.text}[/{palette.C_NOTICE}]"
+                    )
+            elif event.kind is EventKind.APPROVAL:
+                pass  # authorized tool — side effect already happened; no UI line
+            elif event.kind is EventKind.ERROR:
+                if event.data.get("auth"):
+                    provider = event.data.get("provider") or _provider_hint(controller)
+                    renderer.on_notice(_friendly_auth_error(event.text, provider))
+                else:
+                    renderer.on_notice(
+                        f"[{palette.C_ERROR}]{event.text}[/{palette.C_ERROR}]"
+                    )
+            # DONE and unknown kinds: no UI
+
+        turn_result = await run_agent_turn(
+            controller,
+            turn_text,
+            approver=approver,
+            images=images,
+            pending_only=pending_only,
+            on_event=on_event,
+            queue_sink=queue_sink,
+        )
+        had_events = turn_result.had_events
     except (KeyboardInterrupt, asyncio.CancelledError) as _exc:
         renderer.cancel()
         # Re-raise asyncio cancellations so the event loop knows the task was
@@ -461,6 +353,10 @@ async def _approve(
         return await _approve_plan(console, controller, request, ask=ask, pick=pick)
     if request.suggested_memory is not None:
         return await _approve_suggested_memory(
+            console, controller, request, ask=ask, pick=pick, edit=edit
+        )
+    if request.suggested_skill is not None:
+        return await _approve_suggested_skill(
             console, controller, request, ask=ask, pick=pick, edit=edit
         )
     a = request.action
@@ -658,6 +554,76 @@ async def _approve_suggested_memory(
         return ApprovalReply(False, message="User declined to save the memory.")
 
     saved, message = controller.save_suggested_memory(suggestion)
+    colour = palette.C_NOTICE if saved else palette.C_WARN
+    console.print(f"[{colour}]{_rich_escape(message)}[/{colour}]")
+    return ApprovalReply(saved, message="" if saved else message)
+
+
+async def _approve_suggested_skill(
+    console: Console,
+    controller: Controller,
+    request: ApprovalRequest,
+    *,
+    ask: Ask | None = None,
+    pick: Pick | None = None,
+    edit: Callable[[ApprovalRequest], Awaitable[ApprovalReply | None]] | None = None,
+) -> ApprovalReply:
+    """Skill-suggestion approval: show it, then save / edit-and-save / decline.
+
+    On approval the skill is written through ``controller.save_suggested_skill``
+    (nested ``.jarn/skills/<name>/SKILL.md``, trust-gated); declining writes
+    nothing. ``approved`` is set iff the skill was actually saved.
+    """
+    suggestion = request.suggested_skill
+    assert suggestion is not None
+    console.print(
+        f"\n[{palette.C_NOTICE}]▶ Suggested skill[/{palette.C_NOTICE}] "
+        f"[{palette.C_DIM}](trigger={suggestion.trigger})[/{palette.C_DIM}]"
+    )
+    console.print(
+        f"  [b]{_rich_escape(suggestion.name)}[/b] — "
+        f"{_rich_escape(suggestion.description)}"
+    )
+    if suggestion.body.strip():
+        console.print(Markdown(suggestion.body))
+
+    save = ("Save this skill", True)
+    edit_save = ("Edit, then save", _EDIT_SKILL)
+    decline = ("Don't save", False)
+
+    choice: object
+    if pick is not None:
+        options: list[tuple[str, object]] = [save]
+        if edit is not None:
+            options.append(edit_save)
+        options.append(decline)
+        choice = await pick(options)
+    elif ask is not None:
+        ans = (await ask("  Save this skill? [y/N/edit]: ")).strip().lower()
+        choice = (
+            _EDIT_SKILL if ans in ("e", "edit")
+            else ans in ("y", "yes")
+        )
+    else:
+        return ApprovalReply(False, message="auto-denied (no approver)")
+
+    if choice is _EDIT_SKILL:
+        edited = await asyncio.to_thread(
+            _edit_text_in_editor, suggestion.body, suffix=".md"
+        )
+        if edited is None:
+            console.print(
+                f"[{palette.C_DIM}]edit aborted — skill not saved[/{palette.C_DIM}]"
+            )
+            return ApprovalReply(False, message="User declined to save the skill.")
+        suggestion.body = edited.strip()
+        choice = True
+
+    if choice is not True:
+        console.print(f"[{palette.C_DIM}]skill not saved[/{palette.C_DIM}]")
+        return ApprovalReply(False, message="User declined to save the skill.")
+
+    saved, message = controller.save_suggested_skill(suggestion)
     colour = palette.C_NOTICE if saved else palette.C_WARN
     console.print(f"[{colour}]{_rich_escape(message)}[/{colour}]")
     return ApprovalReply(saved, message="" if saved else message)

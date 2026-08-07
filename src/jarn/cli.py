@@ -7,6 +7,7 @@ Subcommands:
     jarn init       create a JARN.md project context file
     jarn doctor     diagnose configuration / providers / keys / extensions
     jarn trust      list / trust / untrust project roots
+    jarn gateway    run the Telegram gateway (requires ``jarn[telegram]``)
     jarn --version  print version
 """
 
@@ -248,6 +249,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Target shell",
     )
 
+    p_gateway = sub.add_parser(
+        "gateway",
+        help=(
+            "Run the Telegram gateway long-poll bot "
+            "(requires jarn[telegram], gateway.enabled, token, allowlist)"
+        ),
+    )
+    p_gateway.add_argument(
+        "--fake-backend",
+        action="store_true",
+        help=(
+            "Dry-run with InMemoryGatewayBackend (no daemon workers). "
+            "Also set by JARN_TELEGRAM_FAKE_BACKEND=1."
+        ),
+    )
+
     return parser
 
 
@@ -340,6 +357,10 @@ def _main(argv: list[str] | None = None) -> int:
             add_dirs=args.add_dir,
             ignore_project_config=args.headless_ignore_project_config,
         )
+
+    # Gateway is a long-running daemon — skip TUI key-protocol fixes.
+    if args.command == "gateway":
+        return _cmd_gateway(fake_backend=bool(args.fake_backend))
 
     # Fix the macOS Caps Lock language-switch stray-character bug before any TUI
     # (app / wizard / key inspector) starts its terminal driver.
@@ -860,6 +881,13 @@ def _cmd_completions(*, shell: str, parser: argparse.ArgumentParser) -> int:
 
     print(emit_completions(shell, parser))
     return 0
+
+
+def _cmd_gateway(*, fake_backend: bool = False) -> int:
+    """Run the Telegram gateway (long-poll bot + daemon/session backend)."""
+    from jarn.telegram.cli import run_gateway_cli
+
+    return run_gateway_cli(fake_backend=fake_backend)
 
 
 def _cmd_launch(
