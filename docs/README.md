@@ -4,7 +4,8 @@ J.A.R.N. (v0.10.0, Alpha) is a local-first, permission-gated terminal agent harn
 around [DeepAgents](https://github.com/langchain-ai/deepagents). It wraps the agent
 loop with a configurable permission engine, multi-provider model routing, cost
 tracking, rich extensibility surfaces (skills, custom commands, subagents, hooks,
-MCP), and a `prompt_toolkit`-based terminal UI. Install with `pip install jarn`
+MCP), a `prompt_toolkit`-based terminal UI, and an optional single-operator Telegram
+gateway. Install with `pip install jarn`
 (or `npm install -g jarn-cli` for a standalone binary, no Python), then run
 `jarn setup` to get started.
 
@@ -20,14 +21,15 @@ MCP), and a `prompt_toolkit`-based terminal UI. Install with `pip install jarn`
 | [ROADMAP.md](ROADMAP.md) | Everyone | what is shipped (v0.10.0), what is planned, and known limitations |
 | [OPEN_CORE.md](OPEN_CORE.md) | Everyone | Licensing (Apache-2.0) and the intended open-core business model — plans only, nothing commercial is shipped |
 | [WEB_UI.md](WEB_UI.md) | Contributors | Design notes for a future Web UI — **not built yet**; included so the core stays Web-UI-ready |
-| [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md) | Operators · Contributors | VPS long-poll deploy: systemd unit, 409 / second-poller stand-down, project `.jarn/.gitignore` |
-| [TELEGRAM_GATEWAY_PARITY.md](TELEGRAM_GATEWAY_PARITY.md) | Contributors | v1 acceptance / parity checklist vs map #26 (Implemented · Partial · Deferred) |
-| [TELEGRAM_GATEWAY_PLAN.md](TELEGRAM_GATEWAY_PLAN.md) | Contributors | Gateway architecture + task breakdown (#44) |
+| [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md) | Operators · Contributors | v0.10 setup, global config, security model, systemd deployment, and second-poller stand-down |
+| [TELEGRAM_GATEWAY_PARITY.md](TELEGRAM_GATEWAY_PARITY.md) | Contributors | Shipped v1 acceptance record vs map #26 (Implemented · Deferred) |
+| [TELEGRAM_GATEWAY_PLAN.md](TELEGRAM_GATEWAY_PLAN.md) | Contributors | Historical gateway decisions and completed task breakdown (#44) |
 
 ## Where to start
 
 - **First-time user:** run `jarn setup`, then read [CONFIGURATION.md](CONFIGURATION.md).
 - **Want to add skills or hooks:** [EXTENDING.md](EXTENDING.md) has a copy-paste quick-start.
 - **Adjusting what the agent is allowed to do:** [PERMISSIONS.md](PERMISSIONS.md).
+- **Running the Telegram gateway:** [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md).
 - **Opening a PR:** [CONTRIBUTING.md](CONTRIBUTING.md), then [ARCHITECTURE.md](ARCHITECTURE.md) for context.
 - **Curious what's next:** [ROADMAP.md](ROADMAP.md).

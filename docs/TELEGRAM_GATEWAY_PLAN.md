@@ -2,7 +2,11 @@
 
 Destination of map [#26](https://github.com/chayapats/jarn/issues/26). Binding decisions cited inline. **v1 = VPS long-poll DM appliance**; laptop TUI unchanged and not Telegram-commandable ([#53](https://github.com/chayapats/jarn/issues/53)).
 
-## Architecture (must appear in the shipped spec)
+> **Status:** shipped in **v0.10.0** on 2026-08-08. W0–W5 are complete; this file is
+> retained as the implementation decision record. For current operator instructions,
+> use [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md).
+
+## Architecture (shipped)
 
 ### Process topology ([#35](https://github.com/chayapats/jarn/issues/35) C′, [#53](https://github.com/chayapats/jarn/issues/53) C)
 - **Transport daemon** (systemd on VPS) owns the bot token + long-poll (`aiogram`).
@@ -18,7 +22,9 @@ Destination of map [#26](https://github.com/chayapats/jarn/issues/26). Binding d
 - Peer to `repl/` / `headless.py`; may use privates. Do **not** become a third consumer of `_run_headless` — settle/export proper APIs instead.
 - Export `Approver` at `jarn.agent` + test. Do not add `py.typed`.
 - `jarn doctor` must report: `gateway:` configured but `telegram` extra not installed.
-- v1 delivery: **pip-only** for the gateway path; binary packaging still compiles aiogram when building with extra per #53 corrections.
+- Delivery: Python installs use the optional `telegram` extra; the npm/frozen binary
+  bundles aiogram. Both expose `jarn gateway`; `python -m jarn.telegram` remains a
+  compatibility entry point.
 
 ### Session model ([#38](https://github.com/chayapats/jarn/issues/38), [#51](https://github.com/chayapats/jarn/issues/51))
 - `(chat_id, root) → thread_id`. Default root = `~/.jarn/personal` (git init). `/repo` only to `gateway:` allowlist. Hard-refuse `$HOME` / global-config collision.
@@ -56,11 +62,14 @@ Destination of map [#26](https://github.com/chayapats/jarn/issues/26). Binding d
 
 ---
 
-## Config schema (`gateway:`) — four-edit convention
+## Config schema (`gateway:`) — implemented
 
-Must add `_GLOBAL_ONLY_KEYS` (does not exist today). Project tier: **strip `gateway:` silently + warn** (trusted and untrusted identical). Token via `keychain:` / `${ENV}` / `file:` (reuse `config/secrets.py`); document that `strict_secrets` does not catch inline bot tokens today — prefer non-inline.
+`_GLOBAL_ONLY_KEYS` includes `gateway`. The project tier strips `gateway:` and warns
+(trusted and untrusted are identical). Tokens resolve through `config/secrets.py` via
+`keychain:` / `${ENV}` / `file:`; `strict_secrets` does not catch inline bot tokens
+today, so prefer a non-inline reference.
 
-Suggested shape (exact fields finalized in task T-CFG-1):
+Implemented shape:
 
 ```yaml
 gateway:

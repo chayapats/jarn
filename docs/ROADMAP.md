@@ -59,7 +59,8 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-08** (v0.10.0 release
 - [x] Local rotating logs, opt-in LangSmith tracing
 - [x] `uv`/PyPI packaging, 2403 tests (+ packaging gate), clean lint + `mypy` CI
 - [x] Optional single-operator Telegram gateway — long-poll DM bot, per-root
-  workers, durable approvals, inbound media, scheduler, and systemd deployment
+  workers, durable approvals, inbound media, scheduler, and systemd deployment;
+  operator guide: [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md)
 - [x] `jarn doctor` extension diagnostics — skills, commands, subagents, hooks, MCP
   (shadowing, builtin renames, untrusted skips); `uv.lock` tracked for team installs
 
@@ -138,8 +139,10 @@ multi-agent review. See the design spec under `docs/superpowers/specs/`.
 
 - [x] **Real isolation (M1)** — Docker container execution backend
   (`execution.backend: docker`, hardened) + OS sandbox recommended for untrusted repos
-- [x] **Policy profiles (M2)** — `trusted-repo`/`review-only`/`sandbox-required`/`ci`/`offline`
-  via `--profile`/`policy.profile`/`/profile`; untrusted projects clamped to a `review-only` floor
+- [x] **Policy presets (M2; originally called profiles)** —
+  `trusted-repo`/`review-only`/`sandbox-required`/`ci`/`offline` via current
+  `--preset`/`/preset`; untrusted projects are clamped to a `review-only` floor.
+  The old profile aliases were removed in v0.6.0.
 - [x] **Quality floor (M3)** — `scripts/eval.py` smoke-eval harness + fixtures (CI-safe offline logic)
 - [x] **Release UX (M4)** — `/mcp status`, in-REPL `/trust` + untrusted-launch notice; security
   audit fixes (Docker cancel/reaper, web_fetch SSRF, eval-checker guard, transcript redaction)

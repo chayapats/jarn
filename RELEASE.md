@@ -8,7 +8,7 @@ see CHANGELOG §0.3.0 for the remaining road-to-1.0 work.
 ## Automated gates (must pass)
 
 ```bash
-uv sync --extra dev
+uv sync --extra dev --extra telegram
 uv run ruff check src tests scripts
 uv run mypy src/
 uv run pytest -q                    # 2403 tests
@@ -40,7 +40,7 @@ Run on a **fresh machine or clean venv** with a real API key. Record date + resu
 | 10 | `jarn trust <path>` → project hooks honoured after approval | ☐ |
 | 11 | Untrusted repo → launch shows the untrusted notice; `/trust` lifts the floor | ☐ |
 | 12 | `/mcp status` — lists configured MCP servers (or "no MCP servers configured") | ☐ |
-| 13 | **T-4-8 demo GIF** — `./scripts/record-demo.sh` → `docs/assets/demo.gif` < 3 MB; README preview renders | ☐ |
+| 13 | **Optional demo refresh** — if publishing a new GIF, run `./scripts/record-demo.sh`, keep `docs/assets/demo.gif` < 3 MB, then add the README embeds | ☐ optional |
 
 Optional binary smoke (maintainer):
 
@@ -81,6 +81,24 @@ git push origin v0.10.0
 - Verify `pip install jarn` / `uv tool install jarn` from PyPI
 - Verify `npm install -g jarn-cli` → `jarn --version`
 - Open GitHub Release notes (copy from the latest CHANGELOG section)
+
+## v0.10.0 sign-off (2026-08-08) — RELEASED ✅
+
+Telegram gateway v1 plus release-pipeline repair. The action self-reference was
+updated to `jarn-cli@0.10`, and the refreshed `NPM_TOKEN` published all npm packages.
+
+| Gate | Result |
+|------|--------|
+| pytest (full) | ✅ 2402 passed, 1 skipped (2403 collected) |
+| ruff + mypy | ✅ clean; mypy checked 147 source files |
+| Node tests | ✅ 17 passed |
+| `tests/test_packaging.py` | ✅ 4 passed |
+| `uv build` | ✅ sdist + wheel produced |
+| CI on main | ✅ [run 31248864086](https://github.com/chayapats/jarn/actions/runs/31248864086), attempt 2, all 10 jobs green; attempt 1 had one transient Windows append-stress miss |
+| Release workflow | ✅ [run 31249506719](https://github.com/chayapats/jarn/actions/runs/31249506719), first attempt |
+| PyPI | ✅ `jarn==0.10.0`; fresh temporary install reports `jarn 0.10.0` |
+| npm | ✅ `jarn-cli@0.10.0` + linux-x64/linux-arm64/darwin-arm64 packages; fresh temporary install reports `jarn 0.10.0` |
+| GitHub Release | ✅ [`v0.10.0`](https://github.com/chayapats/jarn/releases/tag/v0.10.0) with linux-x86_64, linux-arm64, and macos-arm64 binaries |
 
 ## v0.1.0 sign-off (2026-06-08)
 

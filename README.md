@@ -15,8 +15,6 @@ A TUI-first coding agent harness built on [DeepAgents](https://github.com/langch
 
 **English** · [ภาษาไทย](README-TH.md)
 
-![jarn demo](docs/assets/demo.gif)
-
 </div>
 
 ---
@@ -114,7 +112,7 @@ pip install jarn            # PyPI (alpha)
 
 ```bash
 git clone https://github.com/chayapats/jarn && cd jarn
-uv sync --extra dev
+uv sync --extra dev --extra telegram
 uv run jarn
 ```
 
@@ -124,7 +122,7 @@ uv run jarn
 
 ```bash
 git clone <repo-url> && cd jarn
-uv sync --extra dev
+uv sync --extra dev --extra telegram
 uv run jarn setup          # once per machine — stores API key in ~/.jarn
 cd your-project
 jarn doctor                # config, providers, and loaded extensions
@@ -190,6 +188,23 @@ jarn completions fish > ~/.config/fish/completions/jarn.fish
 
 On first launch with no config, J.A.R.N. runs the setup wizard automatically.
 The OpenRouter option in the wizard also offers a one-click browser login.
+
+### Telegram gateway (optional)
+
+v0.10 adds a single-operator, DM-only gateway for an always-on VPS. The npm binary
+includes it; Python installs need the optional extra:
+
+```bash
+pip install 'jarn[telegram]'       # omit this line when installed through npm
+export JARN_TELEGRAM_BOT_TOKEN='123456:replace-me'
+jarn gateway
+```
+
+Enable `gateway.enabled`, add your numeric Telegram user id to the deny-by-default
+allowlist, and optionally allow project roots through `gateway.repos` in the
+**global** `~/.jarn/config.yaml`. See the
+[setup and systemd guide](docs/TELEGRAM_GATEWAY.md); never put `gateway:` in a
+project's `.jarn/config.yaml`.
 
 ## Non-interactive / scripting
 
@@ -465,6 +480,7 @@ See [docs/EXTENDING.md](docs/EXTENDING.md) ([quick start](docs/EXTENDING.md#quic
 
 - [Architecture](docs/ARCHITECTURE.md) — how the subsystems fit together
 - [Configuration](docs/CONFIGURATION.md) — every config key explained
+- [Telegram gateway](docs/TELEGRAM_GATEWAY.md) — bot setup, security model, and systemd deployment
 - [Permissions](docs/PERMISSIONS.md) — modes, rules, danger-guard, approvals
 - [Extending](docs/EXTENDING.md) — skills, commands, subagents, hooks, MCP
 - [Contributing](docs/CONTRIBUTING.md) — dev setup, tests, conventions
@@ -511,7 +527,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 ## Development
 
 ```bash
-uv sync --extra dev
+uv sync --extra dev --extra telegram
 uv run pytest                 # 2403 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)

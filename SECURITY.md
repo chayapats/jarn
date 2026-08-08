@@ -4,9 +4,9 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.5.x   | Yes (alpha — security fixes; no SLA) |
-| 0.4.x   | Yes (alpha — security fixes; no SLA) |
-| 0.1.x   | Best-effort only |
+| 0.10.x  | Yes (alpha — security fixes; no SLA) |
+| 0.9.x   | Best-effort only |
+| ≤ 0.8.x | No — upgrade to the current release |
 
 ## Reporting a vulnerability
 
@@ -126,6 +126,43 @@ in your project directory when you approve them (or automatically in permissive 
   is persisted; (e) no secret value appears in the authorize URL (only the PKCE
   challenge is sent); (f) all printed output passes through `redact_secrets`.
 
+### Telegram gateway (VPS)
+
+The optional `jarn gateway` path (shipped in v0.10.0) expands J.A.R.N.'s network
+boundary: an always-on Telegram bot can trigger the same project tools that a local
+operator can. Treat the bot token, numeric user allowlist, VPS account, and every
+allowlisted repository as privileged assets.
+
+- **Single operator, private chats only.** Every message and callback is authorized by
+  Telegram's numeric `from.id`; the allowlist is empty by default and startup refuses
+  to continue without one. Group chats are rejected. A compromised allowlisted
+  Telegram account is therefore equivalent to a remote operator within the gateway's
+  remaining permission limits.
+- **Global-only configuration.** Put `gateway:` only in `~/.jarn/config.yaml`.
+  Project-tier blocks are stripped even for trusted projects, so cloning a repository
+  cannot enable a daemon, replace its token, add an operator, or widen `/repo` roots.
+- **Keep secrets out of Git and service definitions.** Prefer `${ENV}`,
+  `keychain:…`, or `file:…` references. For systemd, use an `EnvironmentFile=` owned
+  by the service user with mode `0600`; protect `~/.jarn` with mode `0700` and audit
+  host ACLs separately. Do not expose the private gateway/worker NDJSON pipe as an API.
+- **Permissions still apply.** Remote approvals are durable, but Telegram cards never
+  offer permanent `ALWAYS`; the verdict path also downgrades it. The hard danger-guard
+  remains active. This is not a sandbox: use Docker or the OS sandbox and avoid `yolo`
+  on an internet-reachable VPS.
+- **One poller and one worker per root.** A host flock rejects a second local poller;
+  Telegram 409 is the cross-host fence. Per-root leases keep a gateway worker and a
+  second gateway process from simultaneously owning the same root. Never call Telegram
+  `logOut` to recover a conflict; stop the competing poller instead.
+- **Backlog is not replayed.** Updates waiting at startup are reported and discarded,
+  preventing stale messages from executing after a maintenance window. Worker death
+  fails loud and does not auto-replay the interrupted turn.
+- **Media is untrusted input.** Images and documents pass through the normal media and
+  permission gates; staged files are deleted after use. Voice and unsupported media
+  are refused. Continue to treat file contents and captions as prompt-injection input.
+
+Deployment commands, stand-down exit codes, and a hardened systemd example are in
+[docs/TELEGRAM_GATEWAY.md](docs/TELEGRAM_GATEWAY.md).
+
 ### GitHub Actions issue-fix bot (actor-allowlist requirement)
 
 The `examples/github/issue-fix.yml` workflow runs J.A.R.N. in `yolo` mode and
@@ -167,7 +204,7 @@ dangerous.
   when it adds a root. Project context (`JARN.md`) is likewise loaded from the primary
   root only.
 
-### What we do not guarantee in v0.4 alpha
+### What we do not guarantee during alpha
 
 - Complete protection against a malicious **trusted** project (you approved its config)
 - Sandbox isolation without an external sandbox provider

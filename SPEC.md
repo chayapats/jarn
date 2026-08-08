@@ -3,12 +3,19 @@
 > A TUI-first coding agent harness built on **DeepAgents**.
 > Spec date: **2026-06-04** · DeepAgents target: **v0.6.7+** · Python **3.12**
 
+> **Document status (2026-08-08):** this is the original v1 design record, not the
+> complete current contract. J.A.R.N. v0.10.0 is released on PyPI and npm and now also
+> ships headless execution plus an optional single-operator Telegram gateway. Use
+> [README.md](README.md), [docs/CONFIGURATION.md](docs/CONFIGURATION.md), and
+> [docs/ROADMAP.md](docs/ROADMAP.md) for current behaviour.
+
 ---
 
 ## 1. Identity & Scope
 
 - **แก่นหลัก:** Coding agent (แข่ง/แทน Claude Code, Codex CLI) — แก้โค้ด, รันเชลล์, จัดการ repo
-- **รูปแบบ:** TUI เท่านั้นใน v1 (Web UI = อนาคต หลัง launch)
+- **รูปแบบ:** TUI เป็น interface หลัก; หลัง v1 มี headless (`jarn -p`) และ Telegram
+  gateway (`jarn gateway`, v0.10.0); Web UI ยังเป็นอนาคตหลัง launch
 - **ปรัชญา:** "reliable" = plan → act → **verify**, โปร่งใส (markdown/diff/approval ที่คนอ่านได้), ไม่พังกลางทาง
 - **ส่วนขยายอนาคต** (general assistant / domain-specific) = ทำผ่านระบบ **skills** ไม่ใช่แก้ core
 
@@ -20,7 +27,7 @@
 |---|---|
 | Agent engine | ใช้ `deepagents` library (`create_deep_agent()`) เป็นแกน — โครงแบบ **(B)** |
 | วิธีพัฒนา | หยิบ prebuilt Textual TUI ของ deepagents มา**อ่านเป็นแม่แบบ (C)** แต่เขียน J.A.R.N. เป็นโปรเจกต์แยก ไม่ fork ตรงๆ |
-| ภาษา/สแตก | **Python 3.12 + uv** — chat UI = `jarn.repl` (prompt_toolkit + Rich) in-process กับ agent; Textual ใช้เฉพาะ onboarding wizard (ไม่มี IPC) |
+| ภาษา/สแตก | **Python 3.12 + uv** — chat UI = `jarn.repl` (prompt_toolkit + Rich); Textual ใช้เฉพาะ onboarding wizard; headless ใช้ shared turn runner; Telegram แยก transport daemon + per-root worker IPC |
 | Upstream | `deepagents` เป็น dependency ปกติ อัพตาม upstream ได้ |
 
 ---
@@ -73,7 +80,7 @@
 - Git awareness (diff/branch/status + HITL commit)
 - Long-term memory (markdown-first)
 
-**Shipped (post-v1, on main):** OS-level execution sandbox (`execution.local_sandbox`) · Repo map (`context.repo_map` / `/map`) · Wiki knowledge base (`wiki.enabled` / `/wiki`) · Auto-checkpoint + `/undo`/`/redo` · AGENTS.md/CLAUDE.md interop · Headless one-shot (`jarn -p`) · JSONL session transcript · `!` shell escape
+**Shipped (post-v1, v0.10.0):** OS-level execution sandbox (`execution.local_sandbox`) · Repo map (`context.repo_map` / `/map`) · Wiki knowledge base (`wiki.enabled` / `/wiki`) · Auto-checkpoint + `/undo`/`/redo` · AGENTS.md/CLAUDE.md interop · Headless one-shot (`jarn -p`) · JSONL session transcript · `!` shell escape · optional single-operator Telegram gateway (`jarn gateway`) with per-root workers, durable approvals, inbound media, and scheduling
 
 **Later (v2+):** Web UI · Open-core hosted sandbox / cloud features
 
@@ -139,7 +146,9 @@
 ## 12. Onboarding & Distribution
 
 - **First-run wizard:** ถาม provider/วาง API key → เลือก default model → เลือก permission mode → สร้าง `~/.jarn/config.yaml` → **ตรวจ key ว่าใช้ได้จริง**
-- **แจกจ่าย v1:** `uv tool install jarn` / publish PyPI (binary มาทีหลังตอนใกล้ launch)
+- **แจกจ่ายปัจจุบัน:** PyPI (`pip install jarn`) และ npm standalone binary
+  (`npm install -g jarn-cli`) สำหรับ linux-x64/linux-arm64/macos-arm64; Python installs
+  ใช้ `pip install 'jarn[telegram]'` เมื่อต้องการ gateway ส่วน binary รวมไว้แล้ว
 - **License/โมเดล:** private ตอนนี้ (เขียนแบบ license-clean, พร้อมเปิด) → มุ่ง **open-core** ตอน launch (core ฟรี + Web UI/cloud พรีเมียม)
 - **แพลตฟอร์ม v1:** macOS + Linux (Windows = WSL)
 
@@ -153,6 +162,8 @@
   skills/  commands/  agents/
   memory/                 # long-term markdown
   logs/                   # structured logs
+  personal/               # default Telegram gateway working root
+  gateway/                # gateway DB, locks, and transport runtime state
 .jarn/                    # per-project (commit ได้)
   config.yaml             # override, MCP servers, hooks, allowlist
   skills/  commands/  agents/
@@ -176,7 +187,8 @@ JARN.md                   # project context (commit ได้)
 | **D6** | Web search/fetch, MCP client, skills/commands/custom-agents loaders, cost/budget + `/cost` |
 | **D7** | Long-term memory (markdown), LangSmith opt-in + local logs, polish/theme, PyPI packaging |
 
-**Deferred → v1.x / v2:** vector recall · telemetry · binary build · async/remote subagents · multimodal · Web UI
+**Originally deferred (historical):** vector recall · telemetry · binary build ·
+async/remote subagents · multimodal — all subsequently shipped. Web UI remains future.
 
 > **Note (2026-06-09):** sandbox backend, async/remote subagents, multimodal filesystem (v1.x), then OS-level execution sandbox, repo map, wiki, auto-checkpoint, AGENTS.md interop, headless mode, and JSONL transcripts all shipped in **v0.2.0**. **v0.3.0 (prepared, Alpha)** adds a Docker container backend + hardening (`jarn.agent.docker_backend`), policy profiles + an untrusted `review-only` floor (`jarn.config.profiles`), a `/config` interactive settings panel (`jarn.config.settings`) with cross-setting consistency validation (`jarn.config.consistency`), a smoke-eval harness (`scripts/eval.py`), and REPL additions `/mcp status` / `/trust`. Write/edit approval diffs are capped (40 lines) so large files don't flood the TUI. **v0.4.0 (released 2026-06-18, Alpha)** adds the competitive-gaps round (prompt caching, plan-mode handoff, `/commit`+`/review`, background processes, macOS image paste) and a UX-polish round (live in-place streaming, conversation `/rewind`, rich `@`-mentions, in-session `/key`, agent-suggested memory, cache-aware `/cost`); OpenAI-compatible streaming now records token usage. **v0.4.4 (2026-06-18)** adds **npm distribution** — `npm install -g jarn-cli` installs the standalone binary (no Python) for linux-x64/linux-arm64/macos-arm64, published from the same git tag as PyPI. See ROADMAP.md.
 
@@ -202,6 +214,6 @@ JARN.md                   # project context (commit ได้)
   - (1) Unit/logic — `pytest`: config loader, **permission engine, allowlist, danger-guard**, model routing, cost calc
   - (2) Agent integration (mocked LLM) — agent loop/tools/HITL/verify loop/subagent routing โดย mock model (ไม่เปลือง token, ไม่ flaky)
   - (3) Front-end — `tests/test_repl.py` (headless REPL) + `tests/test_ux.py` (onboarding wizard pilot) + `tests/test_phase3.py` (registry/queue/toolbar parity); Textual chat snapshot retired
-  - Gate ปัจจุบัน: **2403 tests**, `ruff check src tests`, `mypy src/` = 0 errors
+  - Gate ปัจจุบัน: **2403 tests**, `ruff check src tests scripts`, `mypy src/` = 0 errors
 - **Nightly/manual:** (4) E2E live LLM บน fixture repo (smoke suite เล็ก, ไม่บล็อก CI หลัก)
 - **Coverage สูงสุดที่:** permission engine + danger-guard + verify loop (หัวใจ "reliable")

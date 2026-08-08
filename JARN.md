@@ -6,22 +6,25 @@
 
 J.A.R.N. ("Just A Reliable Nerd") is a terminal-first coding agent harness built on the
 DeepAgents library. The main UI is an inline REPL (`jarn.repl`, prompt_toolkit + Rich);
-the first-run setup wizard uses Textual. The harness emphasizes reliability:
-plan → act → verify, with a strict permission system in front of every mutating action.
+headless one-shot and a single-operator Telegram gateway are peer front-ends, and the
+first-run setup wizard uses Textual. The harness emphasizes reliability: plan → act →
+verify, with a strict permission system in front of every mutating action.
 
 ## Stack & layout
 
 - Language: Python 3.12+ (managed with `uv`)
 - Agent engine: `deepagents` (on LangGraph)
 - Terminal UI: `jarn.repl` (prompt_toolkit + Rich) + `jarn.repl_renderer` (turn streaming)
-- Shared UI: `jarn.tui` — `Controller`, palette/toolbar tokens, `InputQueue`, completion
+- Shared controller/turn API: `jarn.controller` + `jarn.agent.turn_runner`
+- Shared UI: `jarn.tui` — palette/toolbar tokens, `InputQueue`, completion
 - Commands: typed `BUILTINS` registry in `jarn.extensibility.commands` (single source for
   `/help`, Tab completion, README)
 - Onboarding: Textual wizard (`jarn.onboarding`) with Rich fallback
 - Source: `src/jarn/` — subsystems: `config`, `providers`, `permissions`, `cost`,
   `memory`, `extensibility`, `agent`, `repl`, `repl_renderer`, `tui`, `observability`,
   `onboarding`, `cli`, `agent/os_sandbox`, `agent/checkpoint`, `agent/repomap`,
-  `agent/docker_backend`, `config/profiles`, `config/settings`, `memory/wiki`, `headless`
+  `agent/docker_backend`, `config/profiles`, `config/settings`, `memory/wiki`,
+  `headless`, `controller`, `gateway`, `telegram`
 - Tests: `tests/` (**2403** pytest cases) + `npm/` Node tests (launcher + assembly); docs: `docs/` + `README.md`; design: `SPEC.md`
 - Distribution: PyPI (`jarn`) + npm (`jarn-cli`, standalone binary); `npm/` holds the launcher + per-platform packaging, published by the release workflow's `npm` job
 
@@ -35,11 +38,12 @@ plan → act → verify, with a strict permission system in front of every mutat
 ## How to run / test
 
 ```bash
-uv sync --extra dev
+uv sync --extra dev --extra telegram
 uv run pytest                    # full suite (2403 tests)
-uv run ruff check src tests      # lint
+uv run ruff check src tests scripts  # lint
 uv run mypy src/                 # type-check (CI-gated)
 uv run jarn                      # launch the terminal REPL
+uv run jarn gateway              # Telegram daemon (requires global gateway config)
 uv run jarn setup                # first-run wizard (Textual or Rich fallback)
 uv run jarn doctor               # diagnose config/providers
 ```
@@ -47,7 +51,9 @@ uv run jarn doctor               # diagnose config/providers
 ## Things the agent should know
 
 - Chat UI lives in `src/jarn/repl.py` (layout, keys, dispatch); turn rendering in
-  `repl_renderer.py`; adaptive toolbar in `tui/toolbar.py`. No full-screen Textual chat.
+  `repl_renderer.py`; adaptive toolbar in `tui/toolbar.py`. Shared controller operations
+  live under `controller/`, and `agent/turn_runner.py` is the front-end-neutral turn
+  seam. No full-screen Textual chat.
 - Built-in slash commands are declared in `extensibility/commands.py` (`BUILTINS`).
   Add new ones there + `Controller._cmd_*` or REPL-native handler — keep `README.md` in sync
   (`tests/test_phase3.py::test_readme_commands_match_registry`).
@@ -61,11 +67,12 @@ uv run jarn doctor               # diagnose config/providers
   `agent/docker_backend.py` (`CancellableDockerSandbox`) for full container isolation;
   `Controller.isolation_level()` + the status bar + `jarn doctor` report
   `docker`/`os-sandbox`/`host`.
-- Policy profiles live in `config/profiles.py` — named presets (`trusted-repo`,
-  `review-only`, `sandbox-required`, `ci`, `offline`) via `policy.profile`,
-  `jarn --profile`, or `/profile`. An untrusted project is clamped to the `review-only`
-  floor (enforced in `Controller.apply_mode`); `/mode`, Shift+Tab, `/sandbox`, `/profile`
-  cannot loosen it until `jarn trust` / `/trust` is run.
+- Policy presets live in `config/profiles.py` — named presets (`trusted-repo`,
+  `review-only`, `sandbox-required`, `ci`, `offline`) via `jarn --preset` or
+  `/preset` (launch-time shortcuts; there is no `policy.preset` config key). An
+  untrusted project is clamped to the `review-only` floor (enforced in
+  `Controller.apply_mode`); `/mode`, Shift+Tab, `/sandbox`, and `/preset` cannot
+  loosen it until `jarn trust` / `/trust` is run.
 - The `/config` settings panel lives in `config/settings.py` (`SETTINGS` allowlist,
   `ConfigStore`, `ConfigPanel`). `/config` opens an interactive tabbed UI; `/config get|set`
   works for scripting. Settings persist to `~/.jarn/config.yaml` with validation + rollback.
@@ -76,6 +83,11 @@ uv run jarn doctor               # diagnose config/providers
 - Wiki knowledge base is in `memory/wiki.py`; four tools (`wiki_search`, `wiki_read`,
   `wiki_write`, `wiki_append`) + `/wiki` command. Controlled by `wiki.enabled`.
 - Headless one-shot entry point is `headless.py`; invoked by `jarn -p "..."`.
+- Telegram delivery is `telegram/` (auth, long-poll, cards, media) over `gateway/`
+  (daemon/worker, sessions, approvals, scheduler, private protocol). `jarn gateway` is
+  global-only, deny-by-default, and requires the `telegram` extra in Python installs;
+  npm/frozen binaries bundle it. Keep [docs/TELEGRAM_GATEWAY.md](docs/TELEGRAM_GATEWAY.md)
+  and [SECURITY.md](SECURITY.md#telegram-gateway-vps) in sync with gateway changes.
 - AGENTS.md / CLAUDE.md interop lives in `jarn.memory.context` (context-file
   resolution) and `jarn.extensibility` (`.claude/` skill/command discovery);
   controlled by `CompatConfig` (`jarn.config.schema`) via `compat.context_files`

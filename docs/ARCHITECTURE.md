@@ -8,27 +8,37 @@ J.A.R.N. is a thin, opinionated harness around the
 LangGraph) provides the agent loop, the filesystem/shell tools, planning, subagents,
 summarization, and the human-in-the-loop (HITL) interrupt machinery. J.A.R.N. owns
 everything around it: configuration, the permission engine, model routing, cost
-tracking, memory, the extensibility surfaces, and the terminal front-end (`jarn.repl`).
+tracking, memory, extensibility, and three front-ends: the interactive terminal REPL
+(`jarn.repl`), headless one-shot execution (`jarn.headless`), and the optional
+Telegram gateway (`jarn.telegram`, shipped in v0.10.0). They converge on the same
+controller, turn runner, permission engine, and agent runtime.
 
 ```
-┌──────────────────── Terminal front-end (prompt_toolkit) ──────────────┐
-│  repl.py — pinned input, native scrollback, approvals, streaming      │
-│  controller.py — built-in commands, runtime lifecycle, thread state   │
-└───────────────┬─────────────────────────────────────────┬─────────────┘
-                │ events                                    │ approval
-        ┌───────▼────────┐                          ┌───────▼─────────┐
-        │ SessionDriver  │  streams a turn,          │ PermissionEngine │
-        │ (agent/session)│  resolves interrupts ────▶│ + danger-guard   │
-        └───────┬────────┘                          └──────────────────┘
-                │ astream / Command(resume)
-        ┌───────▼─────────────────────── build_runtime (agent/builder) ──┐
-        │  create_deep_agent(model, backend, system_prompt, subagents,    │
-        │                    interrupt_on, checkpointer, tools)           │
-        └───┬─────────┬──────────┬──────────┬───────────┬────────────────┘
-            │         │          │          │           │
-     ModelFactory  Backend   Memory/    Extensibility  CostTracker
-     (providers)  (deepagents) Context  (skills/cmds/   (cost)
-                  Local+Shell  (memory)  agents/hooks/mcp)
+┌────────────────────── Front-ends / transports ────────────────────────┐
+│ Terminal REPL       Headless (`jarn -p`)       Telegram long-poll     │
+│ prompt_toolkit      single process             transport daemon       │
+└─────────┬──────────────────┬──────────────────────────┬───────────────┘
+          │                  │                          │ private NDJSON
+          │                  │                 ┌────────▼─────────────┐
+          │                  │                 │ per-root worker      │
+          └──────────────────┴─────────────────┤ + durable routing    │
+                                              └────────┬─────────────┘
+                                                       │
+                       ┌───────────────────────────────▼──────────────┐
+                       │ Controller + shared turn runner              │
+                       │ runtime lifecycle · commands · thread state  │
+                       └──────────────┬───────────────────┬───────────┘
+                                      │ events            │ approvals
+                              ┌───────▼────────┐  ┌───────▼──────────┐
+                              │ SessionDriver │  │ PermissionEngine │
+                              │ stream/resume │─▶│ + danger-guard   │
+                              └───────┬────────┘  └──────────────────┘
+                                      │ astream / Command(resume)
+        ┌─────────────────────────────▼──── build_runtime ─────────────┐
+        │ create_deep_agent(model, backend, prompt, subagents, tools)  │
+        └───┬─────────┬──────────┬──────────────┬───────────┬─────────┘
+            │         │          │              │           │
+       Providers   Backend    Memory       Extensibility   Cost
 ```
 
 ## Subsystems
@@ -42,9 +52,14 @@ tracking, memory, the extensibility surfaces, and the terminal front-end (`jarn.
 | `jarn.memory` | SQLite checkpointer (resumable sessions), markdown long-term memory, `JARN.md` |
 | `jarn.extensibility` | Loaders for skills, commands, custom subagents, hooks, MCP |
 | `jarn.agent` | `build_runtime` (deepagents assembly), `SessionDriver`, prompts, verify, permission bridge |
-| `jarn.tui` | Shared controller, completion, palette/toolbar tokens, input queue, logo (Textual only for onboarding) |
+| `jarn.agent.turn_runner` | Front-end-neutral turn orchestration used by the REPL, headless path, and gateway worker |
+| `jarn.controller` | Shared runtime lifecycle, built-in command operations, thread state, and root ownership |
+| `jarn.tui` | Completion, palette/toolbar tokens, input queue, and logo (Textual only for onboarding) |
 | `jarn.repl` | Terminal chat UI (prompt_toolkit + Rich) — layout, keys, command dispatch |
 | `jarn.repl_renderer` | Turn streaming renderer (`TurnRenderer`) extracted from `repl.py` |
+| `jarn.headless` | Headless one-shot entry point (`jarn -p`); fail-closed tool gating, JSON/structured output |
+| `jarn.gateway` | Transport-neutral daemon supervision, per-root workers and leases, durable sessions/approvals, private protocol, scheduler |
+| `jarn.telegram` | DM-only auth, aiogram long-poll transport, output/approval cards, media staging, poller exclusion, `jarn gateway` CLI |
 | `jarn.extensibility.commands` | Typed `BUILTINS` registry — single source for `/help`, completion, docs |
 | `jarn.observability` | Local rotating logs, opt-in LangSmith tracing |
 | `jarn.onboarding` | First-run wizard |
@@ -57,7 +72,6 @@ tracking, memory, the extensibility surfaces, and the terminal front-end (`jarn.
 | `jarn.config.profiles` | Named policy presets (`trusted-repo`/`review-only`/`sandbox-required`/`ci`/`offline`) via `jarn --preset` or `/preset`; untrusted projects are clamped to a one-way `review-only` floor enforced in `Controller.apply_mode` |
 | `jarn.config.settings` | Curated scalar settings allowlist (`SETTINGS`), `ConfigStore` with ruamel round-trip persistence to `~/.jarn/config.yaml`, and `ConfigPanel` state model; exposed via `/config` interactive panel and `/config get\|set` scripting |
 | `jarn.memory.wiki` | Markdown wiki knowledge base (`wiki_search`, `wiki_read`, `wiki_write`, `wiki_append` tools + `/wiki` command) |
-| `jarn.headless` | Headless one-shot entry point (`jarn -p`); fail-closed tool gating, `--json` output, stdin support |
 | `jarn.compat` | Cross-agent interop: `AGENTS.md` / `CLAUDE.md` context-file discovery and `.claude/` skill/command dirs |
 
 ## The turn lifecycle
@@ -103,6 +117,26 @@ This design keeps **all** authorization logic in J.A.R.N.'s engine; DeepAgents'
 interrupts are used purely as the pause/resume mechanism. That's why the danger-guard
 can force a confirmation even in YOLO mode.
 
+## Telegram gateway lifecycle
+
+1. `jarn gateway` loads the global config, resolves the bot token, validates the
+   deny-by-default user allowlist, and acquires the single-poller host lock.
+2. `jarn.telegram.bot` owns `getUpdates`, authenticates every message and callback,
+   rejects non-DM traffic, and routes accepted input to `SessionRouter`.
+3. `DaemonSupervisor` acquires a per-root lease and starts one worker subprocess for
+   each active root. The transport and worker exchange versioned frames over a private
+   NDJSON pipe; this protocol is internal, not a public embedding API.
+4. The worker rebuilds the same `Controller`/runtime used by local front-ends and runs
+   turns through `agent.turn_runner`. Interrupts are parked durably in the root's
+   SQLite state while approval cards are routed back to Telegram.
+5. A callback verdict resumes the exact parked interrupt. Worker death is reported and
+   never auto-replays a turn; idle workers are evicted only when no turn or background
+   job is active.
+
+The transport process never owns project execution state. This isolation keeps bot
+I/O responsive and prevents one root's process or failure from silently crossing into
+another root. Operational details are in [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md).
+
 ## Why this split?
 
 - **Upgradeable core.** DeepAgents is a normal dependency; we track upstream without a
@@ -133,6 +167,7 @@ can force a confirmation even in YOLO mode.
 - `agent/builder.py` — the seam between J.A.R.N. and `create_deep_agent`.
 - `agent/local_backend.py` — host shell backend with killable process groups.
 - `agent/session.py` — streaming + interrupt/approval mediation (`tool_call_id` on events).
+- `agent/turn_runner.py` — shared front-end-neutral turn execution and event callbacks.
 - `agent/permissions_bridge.py` — tool-name/args → `Action`, and the `interrupt_on` map.
 - `permissions/engine.py` + `permissions/guard.py` — the reliability core.
 - `config/trust.py` — project trust boundary (capability-key gating).
@@ -150,8 +185,15 @@ can force a confirmation even in YOLO mode.
 - `memory/wiki.py` — wiki page CRUD, slug sanitization, trust-gated project tier.
 - `util/atomic.py` — `atomic_write_text` (unique tmp + `os.replace`) and `file_lock` (cross-process, POSIX `flock` / Windows `msvcrt`). Every store that derives new content from the current file holds the lock across load-mutate-publish; the publisher itself never locks, so a caller's lock cannot deadlock against it.
 - `headless.py` — single-turn agent runner for `jarn -p`; fail-closed tool gate.
+- `controller/` — shared controller state and operations used across front-ends.
+- `gateway/daemon.py` + `gateway/worker.py` — per-root process supervision and worker entry.
+- `gateway/sessions.py` + `gateway/approvals.py` — durable chat/root routing and parked approvals.
+- `gateway/protocol.py` + `gateway/lease.py` — private NDJSON frames and exclusive root ownership.
+- `gateway/scheduler.py` — persistent scheduled jobs with catch-up-once semantics.
+- `telegram/cli.py` + `telegram/bot.py` — `jarn gateway`, config validation, auth, and long-poll transport.
+- `telegram/outbox.py` + `telegram/inbound_media.py` — HTML/draft output, cards, and gated media staging.
 - `compat.py` — context-file resolution order and `.claude/` directory discovery.
 
 ---
 
-**Related docs:** [CONFIGURATION.md](CONFIGURATION.md) · [PERMISSIONS.md](PERMISSIONS.md) · [EXTENDING.md](EXTENDING.md) · [← docs index](README.md)
+**Related docs:** [CONFIGURATION.md](CONFIGURATION.md) · [PERMISSIONS.md](PERMISSIONS.md) · [EXTENDING.md](EXTENDING.md) · [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md) · [← docs index](README.md)

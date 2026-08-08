@@ -4,6 +4,9 @@ Acceptance table for the shipped **VPS long-poll DM appliance** against map
 [#26](https://github.com/chayapats/jarn/issues/26) and the binding plan in
 [TELEGRAM_GATEWAY_PLAN.md](TELEGRAM_GATEWAY_PLAN.md) / [#44](https://github.com/chayapats/jarn/issues/44).
 
+This scope shipped in **v0.10.0** on 2026-08-08. The table remains the acceptance
+record; operators should use [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md).
+
 Statuses: **Implemented** (v1 done), **Partial** (in tree but short of the closed
 decision), **Deferred** (explicitly out of v1). Ops deploy notes:
 [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md).

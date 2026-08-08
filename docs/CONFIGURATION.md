@@ -876,10 +876,14 @@ Network failures are silent — the check never blocks or crashes startup.
 
 ## Telegram gateway (`gateway`) — global only
 
-Optional Telegram bot daemon. **Global-tier only** — a project-tier `gateway:`
-block is stripped with a warning whether the project is trusted or not. Prefer a
-secret reference for the bot token (`${ENV}` / `keychain:…` / `file:…`);
-`strict_secrets` does not flag inline bot tokens today.
+Optional Telegram bot daemon, shipped in v0.10.0. **Global-tier only** — a
+project-tier `gateway:` block is stripped with a warning whether the project is
+trusted or not. Prefer a secret reference for the bot token (`${ENV}` /
+`keychain:…` / `file:…`); `strict_secrets` does not flag inline bot tokens today.
+
+The npm/standalone binary includes Telegram support. Python installations require
+the optional dependency (`pip install 'jarn[telegram]'`). Start it with
+`jarn gateway`; `python -m jarn.telegram` is retained for compatibility.
 
 ```yaml
 gateway:
@@ -893,7 +897,9 @@ gateway:
 ```
 
 The gateway's default working root is `~/.jarn/personal` (created + `git init`'d
-on demand via `jarn.config.paths.ensure_personal_root`).
+on demand via `jarn.config.paths.ensure_personal_root`). Startup is fail-closed: it
+requires `gateway.enabled: true`, a resolved non-empty token, and at least one
+allowed user id. `/repo` can select only entries in `gateway.repos`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -901,6 +907,17 @@ on demand via `jarn.config.paths.ensure_personal_root`).
 | `gateway.telegram.token` | str | `""` | Bot token secret reference |
 | `gateway.telegram.allowed_user_ids` | list[int] | `[]` | Allowed Telegram user ids |
 | `gateway.repos` | list | `[]` | `{path, name?}` allowlist for `/repo` |
+
+Non-empty environment values override the corresponding config fields:
+
+| Environment variable | Description |
+|---|---|
+| `JARN_TELEGRAM_BOT_TOKEN` | Bot token; overrides `gateway.telegram.token` |
+| `JARN_TELEGRAM_ALLOWED_USER_IDS` | Comma-separated numeric IDs; overrides the config allowlist |
+| `JARN_TELEGRAM_FAKE_BACKEND=1` | Use the in-memory dry-run backend; equivalent to `jarn gateway --fake-backend` |
+
+See [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md) for BotFather setup, the process and
+security model, second-poller behaviour, and a production systemd unit.
 
 ---
 

@@ -15,8 +15,6 @@ TUI-first coding agent harness ที่สร้างบน [DeepAgents](https
 
 [English](README.md) · **ภาษาไทย**
 
-![jarn demo](docs/assets/demo.gif)
-
 </div>
 
 ---
@@ -25,7 +23,16 @@ J.A.R.N. คือ terminal coding agent ที่ออกแบบในแน
 
 รันทั้งหมดใน terminal ของคุณ (Web UI อยู่ใน roadmap หลัง launch) ความสามารถเด่นได้แก่: **AGENTS.md / CLAUDE.md interop** (ทำงานร่วมกับ agent อื่นได้ทันที), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcript**, **`!` shell escape** (output ถูกส่งเข้า context ของ agent turn ถัดไปโดยอัตโนมัติ), **OS-level execution sandbox** (macOS `sandbox-exec` / Linux `bwrap`) และ **Docker container backend** (`execution.backend: docker`), **presets** (`/preset`, `jarn --preset`) ที่ตั้ง mode + sandbox พร้อมกันในคำสั่งเดียวพร้อม untrusted floor, **auto-checkpoint + `/undo` / `/redo`**, **repo map** (`/map`), **wiki knowledge base** (`/wiki`), **`/config` settings panel** (UI แบบ tab โต้ตอบได้ เซฟลง `~/.jarn/config.yaml`), และ **MCP health** ราย server (`/mcp status`)
 
-> **สถานะ:** v0.9.1 (Alpha) — อยู่บน PyPI (`pip install jarn`) และ npm (`npm install -g jarn-cli` — binary สำเร็จรูป ไม่ต้องมี Python) v0.9 เป็น **hardening release**: audit ตัวเองรอบใหญ่ + adversarial review ข้ามโมเดล (47 fix ที่พิสูจน์ด้วย repro ครอบคลุม permissions, cost integrity, concurrency, compaction, observability; ชื่อ MCP tool เปลี่ยนเป็น `mcp__<server>__<tool>` — ดู breaking note ใน CHANGELOG) สาม release ก่อนหน้า (v0.6.0–v0.8.0) รวม 4 รอบปรับปรุงใหญ่: **engine reliability**; **UX parity กับ Claude Code** (live in-place streaming, `/theme`, `@git:`/`@url:` mentions, word-level diff, ghost autosuggest, `/rewind` แบบกู้ไฟล์ได้); **differentiators** (`--add-dir` multi-root, inline images, headless `--output-schema`, subagent streaming แบบมีป้ายชื่อ, web search แบบ pluggable, LSP-lite diagnostics loop, verified-completion badge); และ **launch systems** (GitHub Action ที่ reuse ได้ + nightly eval harness) สถาปัตยกรรม, config, permission engine, และ terminal REPL ทำเสร็จและมีเทสต์ครบ; การเรียก model จริงต้องใช้ API key ของคุณเอง ดู [CHANGELOG.md](CHANGELOG.md) และ [SECURITY.md](SECURITY.md)
+> **สถานะ:** v0.10.0 (Alpha) — อยู่บน PyPI (`pip install jarn`) และ npm
+> (`npm install -g jarn-cli` — binary สำเร็จรูป ไม่ต้องมี Python) v0.10 เพิ่ม
+> **Telegram gateway สำหรับ operator คนเดียว**: ควบคุมผ่าน DM แบบ long-poll,
+> แยก worker ตาม project root, approval card ที่คงอยู่หลัง restart, รับไฟล์/รูป,
+> ตั้งงานตามเวลา และ deploy บน VPS ด้วย systemd ได้ Release ก่อนหน้านี้เพิ่ม
+> **engine reliability**, **UX parity กับ Claude Code**, ความสามารถอย่าง `--add-dir`,
+> inline images, structured headless output, diagnostics loop และ launch systems
+> สถาปัตยกรรม, config, permission engine และ terminal REPL มีเทสต์ครบ;
+> การเรียก model จริงต้องใช้ API key ของคุณเอง ดู [CHANGELOG.md](CHANGELOG.md) และ
+> [SECURITY.md](SECURITY.md)
 
 > **ความปลอดภัย:** J.A.R.N. รัน tool บน **host** ของคุณโดยตรงเป็นค่าเริ่มต้น (filesystem + shell จริง) `.jarn/config.yaml` ของโปรเจกต์สามารถประกาศ hook, MCP server, และ provider override ได้ — ควร trust เฉพาะ repository ที่คุณยอมรันโค้ดจากมันเท่านั้น โปรเจกต์ที่ยังไม่ trust จะถูกกั้นไว้จนกว่าคุณจะอนุมัติ (`jarn trust`) โปรดอ่าน [SECURITY.md](SECURITY.md) ก่อนใช้งาน
 
@@ -63,7 +70,7 @@ pip install jarn            # PyPI (alpha)
 
 ```bash
 git clone https://github.com/chayapats/jarn && cd jarn
-uv sync --extra dev
+uv sync --extra dev --extra telegram
 uv run jarn
 ```
 
@@ -73,7 +80,7 @@ uv run jarn
 
 ```bash
 git clone <repo-url> && cd jarn
-uv sync --extra dev
+uv sync --extra dev --extra telegram
 uv run jarn setup          # ทำครั้งเดียวต่อเครื่อง — เก็บ API key ใน ~/.jarn
 cd your-project
 jarn doctor                # ตรวจสอบ config, provider, และ extension ที่โหลดอยู่
@@ -132,6 +139,22 @@ jarn completions fish > ~/.config/fish/completions/jarn.fish
 
 ถ้ายังไม่มี config เลย J.A.R.N. จะรัน setup wizard ให้อัตโนมัติในการเปิดครั้งแรก
 ใน wizard ตัวเลือก OpenRouter จะมีปุ่ม "Log in with browser" ให้ด้วย
+
+### Telegram gateway (ไม่บังคับ)
+
+v0.10 เพิ่ม gateway แบบ DM-only สำหรับ operator คนเดียว เหมาะกับ VPS ที่เปิดตลอด
+binary จาก npm รวมความสามารถนี้แล้ว ส่วนการติดตั้งด้วย Python ต้องเพิ่ม extra:
+
+```bash
+pip install 'jarn[telegram]'       # ข้ามบรรทัดนี้ถ้าติดตั้งผ่าน npm
+export JARN_TELEGRAM_BOT_TOKEN='123456:replace-me'
+jarn gateway
+```
+
+ตั้ง `gateway.enabled: true`, ใส่ Telegram user id แบบตัวเลขใน allowlist และถ้าต้องการ
+ให้สลับ repo ให้เพิ่ม root ใน `gateway.repos` ทั้งหมดต้องอยู่ใน config **global**
+`~/.jarn/config.yaml` เท่านั้น ห้ามใส่ `gateway:` ใน `.jarn/config.yaml` ของโปรเจกต์
+ดูขั้นตอนเต็มและตัวอย่าง systemd ที่ [คู่มือ Telegram gateway](docs/TELEGRAM_GATEWAY.md)
 
 ## Non-interactive / scripting (โหมด headless)
 
@@ -317,6 +340,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 - [Architecture](docs/ARCHITECTURE.md) — subsystem ต่าง ๆ ประกอบกันยังไง
 - [Configuration](docs/CONFIGURATION.md) — อธิบาย config key ทุกตัว
+- [Telegram gateway](docs/TELEGRAM_GATEWAY.md) — ตั้งค่า bot, security model และ deploy ด้วย systemd
 - [Permissions](docs/PERMISSIONS.md) — mode, rule, danger-guard, การขออนุมัติ
 - [Extending](docs/EXTENDING.md) — skill, command, subagent, hook, MCP
 - [Contributing](docs/CONTRIBUTING.md) — dev setup, test, convention
@@ -328,7 +352,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 ## Development
 
 ```bash
-uv sync --extra dev
+uv sync --extra dev --extra telegram
 uv run pytest                 # 2403 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
