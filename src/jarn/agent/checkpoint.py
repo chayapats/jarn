@@ -102,6 +102,25 @@ def _turn_meta_suffix(thread_id: str | None, turn_index: int | None) -> str:
     return f" [jarn:thread={thread_id} turn={turn_index}]"
 
 
+def _thread_id_from_subject(subject: str) -> str | None:
+    """Extract the owning ``thread_id`` from a snapshot subject, if tagged."""
+    match = _TURN_META_RE.search(subject)
+    return match.group("thread") if match else None
+
+
+def _short_thread(tid: str) -> str:
+    return tid if len(tid) <= 12 else f"{tid[:8]}…"
+
+
+def _foreign_checkpoint_message(op: str, *, owner: str, caller: str) -> str:
+    """Human-readable refusal when ``/undo`` or ``/redo`` hits another session (#47)."""
+    return (
+        f"top checkpoint belongs to another session "
+        f"(owner={_short_thread(owner)}, this session={_short_thread(caller)}). "
+        f"Refuse to {op} across sessions — resume that thread or wait for it."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -653,11 +672,16 @@ class CheckpointManager:
 
         return SnapshotResult(ok=True, sha=sha, message=full_label)
 
-    def undo(self) -> RestoreResult:
+    def undo(self, thread_id: str | None = None) -> RestoreResult:
         """Restore the working tree to the most recent undo snapshot.
 
         Before restoring, captures the current state as a redo-point so that
         the operation is always reversible and no uncommitted work is lost.
+
+        When *thread_id* is set, refuse if the top undo entry is tagged for a
+        **different** session (#47). Untagged (legacy) tops still undo — old
+        stacks keep working. Callers that omit *thread_id* keep pre-#47
+        behaviour (used by low-level tests).
 
         Returns a descriptive :class:`RestoreResult` for the UI.
         """
@@ -671,9 +695,16 @@ class CheckpointManager:
             if not undo_stack:
                 return RestoreResult(ok=False, message="nothing to undo")
 
+            foreign = self._foreign_owner_error(
+                undo_stack[0], thread_id, op="undo"
+            )
+            if foreign is not None:
+                return RestoreResult(ok=False, message=foreign)
+
             # Build the redo-point snapshot but defer the stack push until apply
             # succeeds — otherwise a failed restore leaves an orphan on redo.
-            redo_result = self._build_redo_point()
+            # Tag with the caller's thread so a later /redo cannot cross sessions.
+            redo_result = self._build_redo_point(thread_id=thread_id)
             if not redo_result.ok:
                 return RestoreResult(
                     ok=False,
@@ -697,11 +728,14 @@ class CheckpointManager:
         label = _read_ref_message(target_sha, self.repo_root)
         return RestoreResult(ok=True, message=f"undone: {label}")
 
-    def redo(self) -> RestoreResult:
+    def redo(self, thread_id: str | None = None) -> RestoreResult:
         """Re-apply the most recent redo snapshot (inverses /undo).
 
         Before re-applying, captures the current state back onto the undo stack
         so the operation is again reversible.
+
+        When *thread_id* is set, refuse a top redo entry owned by another
+        session (#47) — same policy as :meth:`undo`.
         """
         if not self.enabled:
             return RestoreResult(ok=False, message="autocheckpoint disabled")
@@ -713,10 +747,20 @@ class CheckpointManager:
             if not redo_stack:
                 return RestoreResult(ok=False, message="nothing to redo")
 
-            ts = _time_module.time()
-            pre_sha, err = _build_snapshot(
-                f"jarn-checkpoint: pre-redo @ {int(ts)}", self.repo_root
+            foreign = self._foreign_owner_error(
+                redo_stack[0], thread_id, op="redo"
             )
+            if foreign is not None:
+                return RestoreResult(ok=False, message=foreign)
+
+            ts = _time_module.time()
+            # Synthetic turn index 0 — ownership tag only; /rewind never resolves
+            # pre-redo points by turn.
+            pre_label = (
+                f"jarn-checkpoint: pre-redo @ {int(ts)}"
+                + _turn_meta_suffix(thread_id, 0 if thread_id else None)
+            )
+            pre_sha, err = _build_snapshot(pre_label, self.repo_root)
             if pre_sha is None:
                 return RestoreResult(
                     ok=False, message=f"could not save pre-redo snapshot: {err}"
@@ -892,21 +936,38 @@ class CheckpointManager:
 
     # -- internals ----------------------------------------------------------
 
-    def _build_redo_point(self) -> SnapshotResult:
+    def _foreign_owner_error(
+        self, sha: str, thread_id: str | None, *, op: str
+    ) -> str | None:
+        """Return a refusal message when *sha* is owned by another session.
+
+        Untagged (legacy) snapshots and callers that omit *thread_id* are not
+        blocked — only an explicit cross-session collision refuses (#47).
+        """
+        if not thread_id:
+            return None
+        owner = _thread_id_from_subject(_read_ref_message(sha, self.repo_root))
+        if owner is None or owner == thread_id:
+            return None
+        return _foreign_checkpoint_message(op, owner=owner, caller=thread_id)
+
+    def _build_redo_point(self, *, thread_id: str | None = None) -> SnapshotResult:
         """Build a redo-point snapshot without mutating the redo stack."""
         ts = _time_module.time()
-        sha, err = _build_snapshot(
-            f"jarn-checkpoint: pre-undo @ {int(ts)}", self.repo_root
+        label = (
+            f"jarn-checkpoint: pre-undo @ {int(ts)}"
+            + _turn_meta_suffix(thread_id, 0 if thread_id else None)
         )
+        sha, err = _build_snapshot(label, self.repo_root)
         if sha is None:
             if "no commits" in err or "nothing to" in err:
                 return SnapshotResult(ok=True, sha="", message=err)
             return SnapshotResult(ok=False, message=err)
         return SnapshotResult(ok=True, sha=sha)
 
-    def _capture_redo_point(self) -> SnapshotResult:
+    def _capture_redo_point(self, *, thread_id: str | None = None) -> SnapshotResult:
         """Snapshot the current state onto the redo stack (called inside undo)."""
-        result = self._build_redo_point()
+        result = self._build_redo_point(thread_id=thread_id)
         if not result.ok or not result.sha:
             return result
         _update_ref(_snap_ref(result.sha), result.sha, self.repo_root)

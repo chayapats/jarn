@@ -78,7 +78,7 @@ def abort_rollback(ctrl: Controller) -> str:
             "Turn cancelled. Rollback unavailable — /abort needs autocheckpoint. "
             "Enable it with /config (git.autocheckpoint: true) or 'jarn config'."
         )
-    result = ctrl.checkpoint_manager.undo()
+    result = ctrl.checkpoint_manager.undo(thread_id=ctrl.thread_id)
     if result.ok:
         return f"Turn cancelled and rolled back. {result.message}"
     return f"Turn cancelled. Cannot roll back: {result.message}"

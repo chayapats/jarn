@@ -36,4 +36,8 @@ decision), **Deferred** (explicitly out of v1). Ops deploy notes:
 
 ## Wave 5 note
 
-This checklist is **T-QA-3**. Remaining Wave 5 hardening (turn re-entrancy guard **T-QA-1**, scripted DM→park→resume e2e **T-QA-2**) is orthogonal to the deferred/out-of-scope map rows above.
+This checklist is **T-QA-3**. Wave 5 hardening is complete: the turn
+re-entrancy guard (**T-QA-1**) and scripted DM→park→resume e2e coverage
+(**T-QA-2**) landed with the gateway in
+[#88](https://github.com/chayapats/jarn/pull/88). The deferred/out-of-scope
+rows above remain deliberate exclusions from v1.

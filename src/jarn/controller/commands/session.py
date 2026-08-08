@@ -82,7 +82,7 @@ def cmd_undo(ctrl: Controller, args: str) -> CommandResult:
             "No checkpoints — /undo needs autocheckpoint. "
             "Enable it with /config (git.autocheckpoint: true) or 'jarn config'."
         )
-    result = ctrl.checkpoint_manager.undo()
+    result = ctrl.checkpoint_manager.undo(thread_id=ctrl.thread_id)
     if result.ok:
         return CommandResult(f"Undone. {result.message}")
     return CommandResult(f"Cannot undo: {result.message}")
@@ -95,7 +95,7 @@ def cmd_redo(ctrl: Controller, args: str) -> CommandResult:
             "No checkpoints — /redo needs autocheckpoint. "
             "Enable it with /config (git.autocheckpoint: true) or 'jarn config'."
         )
-    result = ctrl.checkpoint_manager.redo()
+    result = ctrl.checkpoint_manager.redo(thread_id=ctrl.thread_id)
     if result.ok:
         return CommandResult(f"Redone. {result.message}")
     return CommandResult(f"Cannot redo: {result.message}")

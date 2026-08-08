@@ -1030,7 +1030,10 @@ async def test_abort_rollback_waits_for_detached_snapshot(
 
     # The real abort_rollback (what /abort offloads to a thread) now targets turn-1
     # start → README restored to "v1", NOT an extra turn back to "init".
-    msg = session_helpers.abort_rollback(SimpleNamespace(checkpoint_manager=mgr))
+    # Pass the driver's thread_id so #47 ownership matches the tagged turn-start snap.
+    msg = session_helpers.abort_rollback(
+        SimpleNamespace(checkpoint_manager=mgr, thread_id=driver.thread_id)
+    )
     assert "rolled back" in msg.lower(), msg
     assert readme.read_text(encoding="utf-8") == "v1\n"
 
@@ -1321,3 +1324,83 @@ def test_lock_base_from_a_subdirectory_shares_the_repos_lock(repo: Path) -> None
     assert os.path.samefile(nested_base.parent, top_base.parent), (
         f"{nested_base} must be the same file as {top_base}"
     )
+
+
+# ---------------------------------------------------------------------------
+# #47 — undo/redo must not cross sessions on a shared stack
+# ---------------------------------------------------------------------------
+
+
+def test_undo_refuses_foreign_session_top(repo: Path) -> None:
+    """§C3 / #47: session A's /undo must not pop session B's checkpoint.
+
+    Two threads share one repo stack. B snapshots then creates a file; A calls
+    undo with its own thread_id — refuse, leave B's file on disk.
+    """
+    mgr = _manager(repo)
+    thread_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    thread_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+    assert mgr.snapshot(
+        "b-turn", now=1.0, thread_id=thread_b, turn_index=0
+    ).ok
+    victim = repo / "session_b_only.txt"
+    victim.write_text("belongs to B\n", encoding="utf-8")
+
+    refused = mgr.undo(thread_id=thread_a)
+    assert not refused.ok
+    assert "another session" in refused.message
+    assert victim.exists(), "foreign undo must not delete B's file"
+    assert victim.read_text(encoding="utf-8") == "belongs to B\n"
+
+    # Owner can still undo.
+    owned = mgr.undo(thread_id=thread_b)
+    assert owned.ok, owned.message
+    assert not victim.exists()
+
+
+def test_undo_same_session_still_restores(repo: Path) -> None:
+    """Tagged same-session undo keeps the pre-#47 restore behaviour."""
+    mgr = _manager(repo)
+    tid = "cccccccccccccccccccccccccccccccc"
+    original = (repo / "README.txt").read_text(encoding="utf-8")
+    assert mgr.snapshot("a-turn", now=1.0, thread_id=tid, turn_index=0).ok
+    (repo / "README.txt").write_text("session A edit\n", encoding="utf-8")
+
+    result = mgr.undo(thread_id=tid)
+    assert result.ok, result.message
+    assert (repo / "README.txt").read_text(encoding="utf-8") == original
+
+
+def test_redo_refuses_foreign_session_top(repo: Path) -> None:
+    """After A undoes its own turn, B's /redo must not re-apply A's tree."""
+    mgr = _manager(repo)
+    thread_a = "dddddddddddddddddddddddddddddddd"
+    thread_b = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+
+    assert mgr.snapshot(
+        "a-turn", now=1.0, thread_id=thread_a, turn_index=0
+    ).ok
+    (repo / "README.txt").write_text("A changed\n", encoding="utf-8")
+    assert mgr.undo(thread_id=thread_a).ok
+
+    refused = mgr.redo(thread_id=thread_b)
+    assert not refused.ok
+    assert "another session" in refused.message
+    assert (repo / "README.txt").read_text(encoding="utf-8") != "A changed\n"
+
+    owned = mgr.redo(thread_id=thread_a)
+    assert owned.ok, owned.message
+    assert (repo / "README.txt").read_text(encoding="utf-8") == "A changed\n"
+
+
+def test_untagged_top_still_undos_when_thread_id_passed(repo: Path) -> None:
+    """Legacy untagged tops remain undoable (compat) even with a thread_id."""
+    mgr = _manager(repo)
+    original = (repo / "README.txt").read_text(encoding="utf-8")
+    assert mgr.snapshot("legacy", now=1.0).ok  # no thread tag
+    (repo / "README.txt").write_text("edit\n", encoding="utf-8")
+
+    result = mgr.undo(thread_id="ffffffffffffffffffffffffffffffff")
+    assert result.ok, result.message
+    assert (repo / "README.txt").read_text(encoding="utf-8") == original

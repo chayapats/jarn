@@ -22,7 +22,7 @@ Destination of map [#26](https://github.com/chayapats/jarn/issues/26). Binding d
 
 ### Session model ([#38](https://github.com/chayapats/jarn/issues/38), [#51](https://github.com/chayapats/jarn/issues/51))
 - `(chat_id, root) → thread_id`. Default root = `~/.jarn/personal` (git init). `/repo` only to `gateway:` allowlist. Hard-refuse `$HOME` / global-config collision.
-- Busy: queue + notice + `/stop`. `/new` mints thread_id (#47 must scope undo to it).
+- Busy: queue + notice + `/stop`. `/new` mints thread_id (#47: undo/redo refuse foreign-tagged tops).
 - Auth: DM-only; deny-by-default; principal = `from.id` on every update including callbacks ([#34](https://github.com/chayapats/jarn/issues/34)).
 
 ### Approvals ([#37](https://github.com/chayapats/jarn/issues/37), [#39](https://github.com/chayapats/jarn/issues/39))
@@ -130,7 +130,9 @@ gateway:
 | T-QA-2 | End-to-end scripted test: DM→turn→approval park→verdict→resume | tests | W3 |
 | T-QA-3 | Parity table checklist vs #26 deferred/out-of-scope; update #26 if needed | tracker | W4 — **done:** [TELEGRAM_GATEWAY_PARITY.md](TELEGRAM_GATEWAY_PARITY.md) (closed-decision rows Implemented; voice/group/embed/ALWAYS/laptop/stream-json Deferred) |
 
-Status (light): W0–W4 tasks are on `feat/telegram-gateway`. Wave 5 remaining: **T-QA-1**, **T-QA-2**. **T-QA-3** is the parity doc above (docs are source of truth; optional tracker comment on #26/#44).
+Status: W0–W5 are complete and merged via [#88](https://github.com/chayapats/jarn/pull/88),
+including the **T-QA-1** re-entrancy guard and **T-QA-2** scripted e2e path.
+**T-QA-3** is the parity document above; its deferred rows remain out of v1.
 
 ---
 
