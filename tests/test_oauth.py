@@ -406,11 +406,12 @@ def test_cmd_login_skips_config_write_when_kept(monkeypatch):
     assert writes == [], "config must not be rewritten when the key is kept"
 
 
-def test_write_openrouter_key_ref_refuses_on_malformed_config(monkeypatch, capsys):
+def test_write_openrouter_key_ref_refuses_on_malformed_config(monkeypatch, capsys, tmp_path):
     """A malformed existing config must not be silently wiped — refuse and warn."""
     from jarn import cli
     from jarn.config import paths
 
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "jarn-home"))
     cfg = paths.global_config_path()
     cfg.parent.mkdir(parents=True, exist_ok=True)
     malformed = "providers: {openrouter: {api_key: 'unterminated\n"
