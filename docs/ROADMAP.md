@@ -15,7 +15,8 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-08** (v0.10.0 release
 - [x] Plan → act → verify system prompt + project capability detection
 
 **Models & cost**
-- [x] Multi-provider BYO key (OpenRouter default), Anthropic / OpenAI / Ollama / LM Studio
+- [x] 14-provider routing: multi-provider BYO key (OpenRouter default), local models,
+  and managed ChatGPT subscription auth through the official Codex App Server
 - [x] Per-task model routing (main / subagent / summarizer) + fallback list
 - [x] Live token & cost tracking with per-model attribution, per-session budget (warn + hard-stop + mid-turn re-check)
 
@@ -57,7 +58,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-08** (v0.10.0 release
 - [x] `jarn` / `setup` / `init` / `doctor` (`--json`) CLI
 - [x] Strict config validation (typed bools, numeric ranges, unknown top-level keys rejected)
 - [x] Local rotating logs, opt-in LangSmith tracing
-- [x] `uv`/PyPI packaging, 2403 tests (+ packaging gate), clean lint + `mypy` CI
+- [x] `uv`/PyPI packaging, 2432 tests (+ packaging gate), clean lint + `mypy` CI
 - [x] Optional single-operator Telegram gateway — long-poll DM bot, per-root
   workers, durable approvals, inbound media, scheduler, and systemd deployment;
   operator guide: [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md)

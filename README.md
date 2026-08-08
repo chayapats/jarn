@@ -70,9 +70,10 @@ base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists 
 - **Safe by default** — a multi-layer permission system (coarse modes + fine-grained
   rules) sits in front of every file write and shell command, backed by a hard
   *danger-guard* that always confirms catastrophic actions — even in YOLO mode.
-- **Bring your own model** — 13 providers (OpenRouter, Anthropic, OpenAI, Google,
-  Mistral, Groq, DeepSeek, Together, Fireworks, xAI, Ollama, LM Studio, plus a generic
-  OpenAI-compatible endpoint) with per-task routing so subagents can use cheaper models.
+- **Bring your own model** — 14 providers, including **Codex through your ChatGPT
+  subscription**, OpenRouter, Anthropic, OpenAI, Google, Mistral, Groq, DeepSeek,
+  Together, Fireworks, xAI, Ollama, LM Studio, and a generic OpenAI-compatible
+  endpoint, with per-task routing so subagents can use cheaper models.
 - **Labelled subagent streaming** — output from delegated `task` subagents is tagged
   with a dim `┊ <name> ` prefix and collapses to a single `└ <name>: working… (N tool
   calls)` status line (full text in the Ctrl+O pager), so parallel subagents no longer
@@ -151,6 +152,23 @@ project-local `.jarn/` directories. After removal it prints the package-manager
 uninstall line (`npm uninstall -g jarn-cli` or `pip uninstall jarn`).
 
 ## Quick start
+
+**With a ChatGPT/Codex subscription (no OpenAI API key billing):**
+
+```bash
+# Install the official Codex CLI separately and ensure `codex` is on PATH.
+jarn codex login          # managed ChatGPT browser login
+jarn codex status         # verifies auth mode + plan without printing a token
+jarn setup                # choose provider: codex_subscription
+cd your-project && jarn
+```
+
+J.A.R.N. talks to the official local Codex App Server; it never reads or stores
+ChatGPT OAuth tokens. Codex's own execution surfaces are disabled in this provider,
+and requested tools are translated back into ordinary J.A.R.N. tool calls so the
+existing permission, danger-guard, checkpoint, and `/undo` paths remain authoritative.
+Subscription usage is shown as tokens with `$0` API cost and still consumes the
+limits/credits of your ChatGPT plan. For shared CI, use an API-key provider instead.
 
 **With OpenRouter (recommended — one browser click, no manual key handling):**
 
@@ -391,7 +409,7 @@ runs as the next turn (never lost). Disable with `ui.steering: false` (hides the
 | `/mode [plan\|ask\|auto-edit\|yolo]` | Show or switch the permission mode (plan/ask/auto-edit/yolo). |
 | `/theme [dark\|light\|high-contrast\|auto]` | Show or switch the color theme (dark/light/high-contrast/auto). |
 | `/sandbox [on\|off]` | Show or toggle the execution backend (local/sandbox). |
-| `/key [<key>]` | Set or replace the API key for the current provider (stored in the keychain). |
+| `/key [<key>]` | Set or replace the API key for the current provider (stored in the keychain). Codex subscription redirects to `jarn codex login`. |
 | `/preset [<preset-name>]` | Show or apply a preset — a shortcut that sets mode + sandbox at once. |
 | `/cost` | Show session token usage and cost. |
 | `/compact` | Summarize and compact the conversation context. |
@@ -456,6 +474,8 @@ JARN.md                  per-project context, auto-loaded into the system prompt
 ```
 
 API keys are **referenced, never inlined** — `${ENV_VAR}` or `keychain:jarn/<provider>`.
+The `codex_subscription` provider is keyless from J.A.R.N.'s perspective: Codex owns
+the managed ChatGPT session created by `jarn codex login`.
 Project config is gated by a **trust prompt** (see above). See
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full reference.
 
@@ -528,7 +548,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                 # 2403 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 2432 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

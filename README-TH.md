@@ -31,7 +31,7 @@ J.A.R.N. คือ terminal coding agent ที่ออกแบบในแน
 > **engine reliability**, **UX parity กับ Claude Code**, ความสามารถอย่าง `--add-dir`,
 > inline images, structured headless output, diagnostics loop และ launch systems
 > สถาปัตยกรรม, config, permission engine และ terminal REPL มีเทสต์ครบ;
-> การเรียก model จริงต้องใช้ API key ของคุณเอง ดู [CHANGELOG.md](CHANGELOG.md) และ
+> การเรียก model จริงต้องใช้ API key ของคุณเอง หรือ ChatGPT/Codex subscription ดู [CHANGELOG.md](CHANGELOG.md) และ
 > [SECURITY.md](SECURITY.md)
 
 > **ความปลอดภัย:** J.A.R.N. รัน tool บน **host** ของคุณโดยตรงเป็นค่าเริ่มต้น (filesystem + shell จริง) `.jarn/config.yaml` ของโปรเจกต์สามารถประกาศ hook, MCP server, และ provider override ได้ — ควร trust เฉพาะ repository ที่คุณยอมรันโค้ดจากมันเท่านั้น โปรเจกต์ที่ยังไม่ trust จะถูกกั้นไว้จนกว่าคุณจะอนุมัติ (`jarn trust`) โปรดอ่าน [SECURITY.md](SECURITY.md) ก่อนใช้งาน
@@ -40,7 +40,7 @@ J.A.R.N. คือ terminal coding agent ที่ออกแบบในแน
 
 - **Reliable by design** — flow แบบ plan → act → verify ฝังอยู่ใน system prompt ค่าเริ่มต้น `verify.gate: suggest` จะแสดงคำสั่งตรวจสอบที่ตรวจพบ ส่วน `verify.gate: auto` จะรันคำสั่งนั้นก่อนจบงาน หากไม่ผ่าน ระบบจะส่งผลกลับให้ agent แก้แบบจำกัดรอบ และจบ headless run ด้วย error หากยังไม่ผ่าน completion badge `` ⎿ verified: pytest ✓ 214 passed · 3.2s `` จึงยืนยันผลที่รันจริง และมี diagnostics feedback loop (LSP-lite) สำหรับไฟล์ที่แก้ (`verify.diagnostics: auto`)
 - **ปลอดภัยเป็นค่าเริ่มต้น** — ระบบ permission หลายชั้น (coarse mode + fine-grained rules) คั่นกลางทุก file write และ shell command โดยมี *danger-guard* ที่ยืนยันการกระทำร้ายแรงเสมอ — แม้แต่ใน YOLO mode
-- **เลือก model เองได้ (Bring your own model)** — รองรับ 13 provider (OpenRouter, Anthropic, OpenAI, Google, Mistral, Groq, DeepSeek, Together, Fireworks, xAI, Ollama, LM Studio, และ generic OpenAI-compatible endpoint) พร้อม per-task routing ให้ subagent ใช้ model ที่ถูกกว่าได้
+- **เลือก model เองได้ (Bring your own model)** — รองรับ 14 provider รวม **Codex ผ่าน ChatGPT subscription**, OpenRouter, Anthropic, OpenAI, Google, Mistral, Groq, DeepSeek, Together, Fireworks, xAI, Ollama, LM Studio, และ generic OpenAI-compatible endpoint พร้อม per-task routing ให้ subagent ใช้ model ที่เหมาะกับงานได้
 - **สตรีม subagent แบบมีป้ายกำกับ** — output จาก subagent ที่ถูก delegate ผ่าน `task` จะถูกติดป้ายด้วย prefix สีจาง `┊ <name> ` และยุบเป็นบรรทัดสถานะเดียว `└ <name>: working… (N tool calls)` (ข้อความเต็มดูได้ใน pager ด้วย Ctrl+O) ทำให้ subagent ที่รันขนานกันไม่ปนกันแบบไม่มีชื่ออีกต่อไป
 - **รู้ต้นทุนและ context ตลอดเวลา** — ติดตาม token/cost แบบ live (พร้อม breakdown ราย tool) และ budget ต่อ session ที่แจ้งเตือนหรือหยุดอัตโนมัติได้; มี context-% gauge และ throughput การ generate แบบ live (tok/s) ที่ทำงานกับ local model (LM Studio / Ollama) ด้วย ไม่ใช่แค่ cloud model ที่มีราคา
 - **รู้วันเวลา (Date-aware)** — วันที่/เวลาท้องถิ่นปัจจุบันถูกใส่เข้า system prompt ทำให้คำสั่งที่อ้างอิง "วันนี้" ไม่ยึดติดกับ training cutoff ของ model
@@ -102,6 +102,22 @@ jarn uninstall --yes    # ข้ามการถามยืนยัน
 `jarn uninstall` ลบเฉพาะ `~/.jarn` (global state) เท่านั้น — ไม่แตะ `.jarn/` ระดับโปรเจกต์เลย หลังลบเสร็จจะแสดงคำสั่ง package-manager สำหรับถอนตัว jarn เอง (`npm uninstall -g jarn-cli` หรือ `pip uninstall jarn`)
 
 ## เริ่มใช้งาน (Quick Start)
+
+**ด้วย ChatGPT/Codex subscription (ไม่คิดค่า OpenAI API key แยก):**
+
+```bash
+# ติดตั้ง Codex CLI ทางการแยกต่างหาก และให้คำสั่ง `codex` อยู่บน PATH
+jarn codex login          # login ChatGPT โดย Codex เป็นผู้จัดการ credential
+jarn codex status         # ตรวจ auth mode + plan โดยไม่แสดง token
+jarn setup                # เลือก provider: codex_subscription
+cd your-project && jarn
+```
+
+J.A.R.N. เชื่อมผ่าน Codex App Server ทางการและไม่อ่าน/เก็บ ChatGPT OAuth token
+provider นี้ปิด execution tool ภายใน Codex แล้วแปลงคำขอใช้ tool กลับมาเป็น tool call
+ของ J.A.R.N. เพื่อให้ permission, danger-guard, checkpoint และ `/undo` เดิมยังควบคุมงาน
+usage จะแสดง token โดยมี API cost เป็น `$0` แต่ยังใช้ quota/credits ของ ChatGPT plan
+สำหรับ CI ที่ใช้ร่วมกันควรใช้ provider แบบ API key แทน
 
 **ด้วย OpenRouter (แนะนำ — คลิกเดียวในเบราว์เซอร์ ไม่ต้อง paste key เอง):**
 
@@ -266,7 +282,7 @@ Reply ของ assistant render เป็น **Markdown** (heading, list, code 
 | `/mode [plan\|ask\|auto-edit\|yolo]` | ดูหรือเปลี่ยน permission mode (plan/ask/auto-edit/yolo) |
 | `/theme [dark\|light\|high-contrast\|auto]` | ดูหรือเปลี่ยน color theme (dark/light/high-contrast/auto) |
 | `/sandbox [on\|off]` | ดูหรือ toggle execution backend (local/sandbox) |
-| `/key [<key>]` | ตั้งหรือเปลี่ยน API key ของ provider ปัจจุบัน (เก็บใน keychain) |
+| `/key [<key>]` | ตั้ง/เปลี่ยน API key ของ provider ปัจจุบัน (keychain); Codex subscription จะพาไป `jarn codex login` |
 | `/preset [<preset-name>]` | ดูหรือ apply preset — shortcut ที่ตั้ง mode + sandbox พร้อมกัน |
 | `/cost` | ดู token usage และ cost ของ session |
 | `/compact` | สรุปและบีบอัด conversation context |
@@ -353,7 +369,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                 # 2403 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 2432 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)

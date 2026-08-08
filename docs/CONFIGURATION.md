@@ -104,6 +104,10 @@ uses the new key. The reference is persisted to `~/.jarn/config.yaml`, so it als
 survives a restart. (You can pass the key inline as `/key <value>`, but it then lands
 in your scrollback/history — prefer the bare `/key` prompt.)
 
+`codex_subscription` is the exception: it uses Codex-managed ChatGPT login and has
+no J.A.R.N. API key. `/key` will refuse to store one and direct you to
+`jarn codex login`; use `jarn codex status` to verify the active auth mode and plan.
+
 ## Validation
 
 Config is validated strictly when it loads, so a typo fails loud instead of being
@@ -203,10 +207,16 @@ policy:
 # A literal key loads with a warning (or a hard error if strict_secrets: true).
 #
 # Provider `type` is one of:
+#   Managed ChatGPT subscription: codex_subscription
 #   OpenAI-compatible (ChatOpenAI + base_url): openrouter, openai, lmstudio, groq,
 #     deepseek, together, fireworks, xai, openai_compatible
 #   Dedicated integrations: anthropic, ollama, google, mistral
 providers:
+  codex_subscription:
+    type: codex_subscription   # `jarn codex login`; no api_key
+    reasoning_effort: medium   # low | medium | high | xhigh
+    timeout_seconds: 300
+    # codex_command: /custom/path/to/codex
   openrouter:
     type: openrouter
     api_key: ${OPENROUTER_API_KEY}
@@ -560,6 +570,44 @@ shared palette (chat colors, toolbar background/foreground, cost/context colors)
 The bottom toolbar is rendered by `tui/toolbar.py` and shows **model · mode · queue ·
 ctx · cost** (low-priority segments drop on narrow terminals).
 
+## ChatGPT subscription through Codex
+
+The `codex_subscription` provider connects to the official local Codex App Server
+over stdio. Authentication remains owned by Codex, so J.A.R.N. never receives,
+reads, or stores the ChatGPT OAuth credential.
+
+```bash
+jarn codex login            # browser login managed by Codex
+jarn codex login --device   # device-code flow for a headless machine
+jarn codex status           # prints connected/auth mode/plan; never a token
+jarn codex status --json    # script-friendly status
+jarn codex logout
+```
+
+Use a subscription model reference like `codex_subscription/gpt-5.6-terra`.
+The shipped defaults use `gpt-5.6-terra` for the main loop and `gpt-5.6-luna`
+for subagents and summarization. Supported provider options are:
+
+| Option | Default | Purpose |
+|---|---:|---|
+| `reasoning_effort` | `medium` | Codex reasoning effort (`low`, `medium`, `high`, `xhigh`) |
+| `timeout_seconds` | `300` | Per model-call/App Server timeout |
+| `codex_command` | `codex` on `PATH` | Explicit Codex executable path |
+| `service_name` | `jarn` | Client identity sent to App Server |
+
+Codex's shell, unified execution, apps, browser/computer use, image generation,
+and multi-agent features are disabled inside this bridge. The model returns a
+strict structured request which J.A.R.N. translates into its own tool calls; the
+normal permission engine, danger-guard, checkpoints, and `/undo` therefore remain
+the only execution path. The Codex turn itself runs read-only with network disabled
+and approval policy `never`.
+
+Token usage is tracked, while J.A.R.N. reports `$0` API-key cost because usage is
+covered by the connected ChatGPT plan. It still consumes that plan's limits or
+credits. Prefer an API-key provider for shared CI/servers where a personal managed
+login is inappropriate. See the official [Codex App Server documentation](https://learn.chatgpt.com/docs/app-server)
+and [Codex authentication documentation](https://learn.chatgpt.com/docs/auth).
+
 ## Pluggable web search (`search`)
 
 `web_search` supports multiple search backends.  By default (`provider: auto`) it
@@ -714,6 +762,10 @@ Pi over SSH) the OS keychain often has no backend — setup and `/key` then fall
 back automatically to `file:jarn/<provider>` under `~/.jarn/secrets/`.
 Resolution failures surface a clear message (and `jarn doctor` reports them
 per-provider).
+
+The `codex_subscription` provider is deliberately absent from this secret flow:
+its ChatGPT credential is managed exclusively by Codex. Use `jarn codex login`
+instead of adding `api_key` to YAML or using `/key`.
 
 ### Inline plaintext keys (`strict_secrets`)
 

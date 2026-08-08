@@ -11,6 +11,7 @@ session is not a fully interactive TTY (pipes / CI).
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import yaml
@@ -275,8 +276,10 @@ class SetupApp(App):
             ]
         else:
             items = [("env", env_label), _STORAGE[1]]
-        await self._set(f"How should J.A.R.N. read your {prov} API key?",
-                        self._option_list(items, self.answers.get("storage")))
+        await self._set(
+            f"How should J.A.R.N. read your {prov} API key?",
+            self._option_list(items, self.answers.get("storage")),
+        )
 
     async def _step_key(self) -> None:
         prov = self.answers["provider"]
@@ -284,14 +287,10 @@ class SetupApp(App):
         # When the env var is missing we land here to capture a key rather than
         # finishing with an unresolvable ${ENV} reference.
         if self.answers.get("storage") == "env":
-            title = (
-                f"${env} is not set — paste your {prov} API key now"
-                " (stored in the OS keychain)"
-            )
+            title = f"${env} is not set — paste your {prov} API key now (stored in the OS keychain)"
         else:
             title = "Paste your API key (stored in the OS keychain)"
-        await self._set(title,
-                        Input(placeholder="sk-...", password=True, id="step-input"))
+        await self._set(title, Input(placeholder="sk-...", password=True, id="step-input"))
 
     async def _step_base_url(self) -> None:
         prov = self.answers["provider"]
@@ -311,9 +310,10 @@ class SetupApp(App):
         )
 
     def _default_model_id(self, prov: str) -> str:
-        default_full = self.answers.get("model") or DEFAULT_MODELS.get(
-            prov, DEFAULT_MODELS["openrouter"]
-        )["main"]
+        default_full = (
+            self.answers.get("model")
+            or DEFAULT_MODELS.get(prov, DEFAULT_MODELS["openrouter"])["main"]
+        )
         default_id = strip_profile(default_full, prov)
         if prov == CUSTOM_OPENAI_PROFILE and default_id == "your-model":
             default_id = "gpt-4o"
@@ -337,9 +337,7 @@ class SetupApp(App):
                 items.append(("__manual__", "Enter a model id manually…"))
                 await self._set(
                     f"Pick a model served by {prov}  ({len(discovered)} found)",
-                    self._option_list(
-                        items, default_id if default_id in discovered else None
-                    ),
+                    self._option_list(items, default_id if default_id in discovered else None),
                 )
                 return
             # Unreachable / empty endpoint: nudge instead of a silent blind box,
@@ -358,7 +356,8 @@ class SetupApp(App):
             await self._set(
                 f"Pick a model for {prov}  (or enter your own)",
                 self._option_list(
-                    items, default_id if default_id in curated else None,
+                    items,
+                    default_id if default_id in curated else None,
                     highlight=default_id if default_id in curated else None,
                 ),
             )
@@ -372,8 +371,10 @@ class SetupApp(App):
         """Render the free-text model box, optionally with an unreachable-endpoint
         nudge or a dot-vs-dash slug-correction hint."""
         if unreachable:
-            server = "Ollama" if prov == "ollama" else (
-                "LM Studio" if prov == "lmstudio" else "your endpoint"
+            server = (
+                "Ollama"
+                if prov == "ollama"
+                else ("LM Studio" if prov == "lmstudio" else "your endpoint")
             )
             title = (
                 f"couldn't reach {unreachable} — is {server} running?"
@@ -384,9 +385,7 @@ class SetupApp(App):
         elif prov == CUSTOM_OPENAI_PROFILE:
             title = "Model id on your endpoint  (e.g. gpt-4o, qwen3-coder)"
         else:
-            title = (
-                f"Model id for {prov}  (e.g. deepseek/deepseek-v4-flash for OpenRouter)"
-            )
+            title = f"Model id for {prov}  (e.g. deepseek/deepseek-v4-flash for OpenRouter)"
         await self._set(title, Input(value=default_id, id="step-input"))
 
     def _discover_models(self, prov: str) -> list[str]:
@@ -408,7 +407,10 @@ class SetupApp(App):
     async def _step_confirm(self) -> None:
         a = self.answers
         base_line = f"base_url: [b]{a['base_url']}[/b]\n" if a.get("base_url") else ""
-        key_ref = a.get("key_ref", "(none — local)")
+        key_ref = a.get(
+            "key_ref",
+            "(managed by Codex)" if a.get("provider") == "codex_subscription" else "(none — local)",
+        )
         notice = ""
         if key_ref.startswith("file:"):
             from jarn.config.secrets import StoredSecret
@@ -425,9 +427,9 @@ class SetupApp(App):
         summary = (
             f"provider: [b]{a['provider']}[/b]\n"
             f"{base_line}"
-            f"model:    [b]{a.get('model','')}[/b]\n"
+            f"model:    [b]{a.get('model', '')}[/b]\n"
             f"key:      [b]{key_ref}[/b]\n"
-            f"theme:    [b]{a.get('theme','dark')}[/b]\n"
+            f"theme:    [b]{a.get('theme', 'dark')}[/b]\n"
             f"{notice}"
         )
         body = Vertical(
@@ -495,9 +497,7 @@ class SetupApp(App):
                 stored = store_secret("jarn", prov, value)
                 self.answers["key_ref"] = stored.reference
                 env = PROVIDER_ENV_VARS.get(prov, f"{prov.upper()}_API_KEY")
-                self._secret_notice = file_fallback_notice(
-                    stored, provider=prov, env_var=env
-                )
+                self._secret_notice = file_fallback_notice(stored, provider=prov, env_var=env)
             else:
                 self._set_env_key_ref()
             await self._goto(self._next_after_key())
@@ -571,9 +571,7 @@ class SetupApp(App):
             try:
                 result = login_openrouter()
                 self.answers["key_ref"] = result.reference
-                rc.print(
-                    f"  [green]✔[/green] Logged in — key stored as {result.reference}"
-                )
+                rc.print(f"  [green]✔[/green] Logged in — key stored as {result.reference}")
             except Exception as exc:  # noqa: BLE001
                 rc.print(
                     f"  [yellow]![/yellow] Browser login failed: "
@@ -641,5 +639,26 @@ def run_setup_tui(*, force: bool = False) -> Path | None:
             default=True,
         ):
             validate_config(app._saved_provider, app._saved_model, config)
+
+    if app._saved_provider == "codex_subscription":
+        from rich.prompt import Confirm
+
+        from jarn.providers.codex_subscription import (
+            CodexSubscriptionError,
+            codex_subscription_account,
+            run_codex_login,
+        )
+
+        try:
+            account = codex_subscription_account(timeout_seconds=10)
+        except CodexSubscriptionError:
+            account = None
+        if (account or {}).get("type") != "chatgpt" and Confirm.ask(
+            "Sign in to ChatGPT with Codex now?", default=True
+        ):
+            with contextlib.suppress(CodexSubscriptionError):
+                run_codex_login()
+            # Config remains valid if login fails; the model's first auth error
+            # names the exact recovery command (`jarn codex login`).
 
     return app.result_path

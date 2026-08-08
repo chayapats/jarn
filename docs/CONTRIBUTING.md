@@ -37,7 +37,7 @@ uv run mypy src/                   # type-check (must report 0 errors)
 ```
 
 Before pushing, run all three gates locally — `ruff check src tests scripts`, `mypy src/`, and
-`pytest` (currently **2403** tests) after `uv sync --extra dev --extra telegram`. CI runs
+`pytest` (currently **2432** tests) after `uv sync --extra dev --extra telegram`. CI runs
 exactly these on every push/PR (lint → type-check → test, with the telegram extra) across
 Linux/macOS/Windows and Python 3.12/3.13, plus a `packaging` job and an `npm` job that runs
 the Node launcher + assembly tests (`node --test npm/jarn-cli/test/launcher.test.js` and
@@ -89,9 +89,13 @@ uv run pytest --cov=src/jarn --cov-report=term-missing
 
 1. Add a value to `ProviderType` (`config/schema.py`).
 2. Map it in `ModelFactory._construct_inner` (`providers/models.py`) to the right
-   `init_chat_model` `model_provider` and kwargs.
+   `init_chat_model` `model_provider` and kwargs. If it is not a normal LangChain
+   SDK, implement a small `BaseChatModel` adapter (for example
+   `providers/codex_subscription.py`) and keep its transport/auth boundary explicit.
 3. Add defaults to `config/defaults.py` and pricing to `cost/pricing.py`.
-4. Cover it in `tests/test_routing.py`.
+4. Cover factory/config/cost behavior and one full mocked DeepAgents tool round trip.
+   Protocol adapters should use a fake local server in CI; live account tests remain
+   manual so CI never needs personal credentials.
 
 ## Adding a built-in command
 

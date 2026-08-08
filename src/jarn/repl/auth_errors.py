@@ -26,6 +26,18 @@ def _friendly_auth_error(raw: str, provider: str) -> str:
     keep the original text available, but dim. ``provider`` may be empty, in which
     case we fall back to a generic "API key" phrasing.
     """
+    if provider == "codex_subscription":
+        head = (
+            f"[{palette.C_ERROR}]Your ChatGPT subscription is not connected to "
+            f"Codex.[/{palette.C_ERROR}] Run "
+            f"[{palette.C_NOTICE}]jarn codex login[/{palette.C_NOTICE}], then verify "
+            f"it with [{palette.C_NOTICE}]jarn codex status[/{palette.C_NOTICE}]."
+        )
+        detail = raw.strip()
+        if detail:
+            head += f"\n[{palette.C_DIM}]{_rich_escape(detail)}[/{palette.C_DIM}]"
+        return head
+
     who = f"for {provider} " if provider else ""
     head = (
         f"[{palette.C_ERROR}]Your API key {who}was rejected (401).[/{palette.C_ERROR}] "

@@ -77,6 +77,8 @@ class Price:
 # stale entries are intentionally NOT kept here. Keys match as substrings of the
 # model id (longest wins), so "anthropic/claude-opus-4-8" matches "claude-opus-4-8".
 _BUILTIN: dict[str, Price] = {
+    # ChatGPT subscription usage is quota-based, not API-token billing.
+    "codex_subscription": Price(0.0, 0.0),
     # Anthropic prompt-cache multipliers over input: read = 0.1x, write (5m) = 1.25x.
     "claude-opus-4-8": Price(5.0, 25.0, cache_read_rate=0.5, cache_write_rate=6.25),
     "claude-sonnet-4-5": Price(3.0, 15.0, cache_read_rate=0.3, cache_write_rate=3.75),
@@ -255,9 +257,7 @@ def _parse_price_overrides(path: Path) -> dict[str, Price]:
         # and later crash every _match_substr lookup (``k in model_id`` needs a str
         # left operand). Reject it inside the per-entry boundary — skip only it.
         if not isinstance(key, str):
-            logger.warning(
-                "Ignoring non-string price override key %r in pricing.yaml", key
-            )
+            logger.warning("Ignoring non-string price override key %r in pricing.yaml", key)
             continue
         # A dict entry missing (or misspelling) the required input/output keys —
         # or a non-mapping value entirely — must warn + skip, never silently drop
@@ -324,9 +324,7 @@ def _parse_window_overrides(path: Path) -> dict[str, int]:
 
 
 def _load_window_overrides() -> dict[str, int]:
-    return _cached_load(
-        paths.global_home() / "context_windows.yaml", _parse_window_overrides
-    )
+    return _cached_load(paths.global_home() / "context_windows.yaml", _parse_window_overrides)
 
 
 # -- OpenRouter catalog (the long tail) -------------------------------------
@@ -393,9 +391,7 @@ def _fetch_openrouter() -> dict[str, dict]:
     except Exception as exc:  # noqa: BLE001 - network/parse errors must never propagate
         # Never propagate, but do not swallow silently: a failed fetch leaves the
         # long tail unpriced, and the user deserves a breadcrumb for why.
-        logger.warning(
-            "OpenRouter catalog fetch failed (%s); long-tail models stay unpriced", exc
-        )
+        logger.warning("OpenRouter catalog fetch failed (%s); long-tail models stay unpriced", exc)
         return {}
     out: dict[str, dict] = {}
     # A non-list ``data`` (malformed response) has no per-entry iteration to do:

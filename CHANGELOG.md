@@ -5,6 +5,18 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **ChatGPT subscription provider through the official Codex App Server.** The new
+  `codex_subscription` profile uses Codex-managed login (`jarn codex
+  login|status|logout`) without exposing OAuth credentials or requiring an OpenAI
+  API key. Codex execution/browser/apps/network surfaces are disabled; structured
+  tool requests are translated back through J.A.R.N.'s existing DeepAgents
+  permission, danger-guard, checkpoint, and `/undo` path. Token usage is tracked at
+  `$0` API-key cost against the connected plan. Setup, doctor, config validation,
+  auth errors, `/key`, English/Thai docs, and mocked full-agent coverage are wired
+  end to end.
+
 ### Fixed
 
 - **Telegram production replies and approval cards now reach the chat.** The

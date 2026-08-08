@@ -16,6 +16,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from jarn.config.schema import Config, ProviderConfig, ProviderType
@@ -171,7 +172,7 @@ def qualify_model_ref(value: str, profile: str) -> str:
 def strip_profile(ref: str, profile: str) -> str:
     """Inverse of :func:`qualify_model_ref` for display: drop a leading profile."""
     prefix = f"{profile}/"
-    return ref[len(prefix):] if ref.startswith(prefix) else ref
+    return ref[len(prefix) :] if ref.startswith(prefix) else ref
 
 
 #: How long to wait when probing a local endpoint for its model list. Short so an
@@ -299,7 +300,7 @@ _DEMO_TARGET_FILE = "server.py"
 
 #: The validated ``server.py`` the demo "writes" — the content of the money-shot
 #: diff. Deterministic so the recorded GIF is reproducible.
-_DEMO_SERVER_PY = '''\
+_DEMO_SERVER_PY = """\
 from pydantic import BaseModel, field_validator
 
 
@@ -313,7 +314,7 @@ class CreateItem(BaseModel):
         if v <= 0:
             raise ValueError("price must be positive")
         return v
-'''
+"""
 
 #: Prose replies returned by the demo model, in order (see ``_demo_messages``).
 #: Crafted to match the money-shot tape: plan approval → streamed diff (driven by
@@ -442,9 +443,7 @@ def build_demo_model() -> BaseChatModel:
             content = msg.content if isinstance(msg.content, str) else ""
             if content:
                 for token in re.split(r"(\s)", content):
-                    chunk = ChatGenerationChunk(
-                        message=AIMessageChunk(content=token, id=msg.id)
-                    )
+                    chunk = ChatGenerationChunk(message=AIMessageChunk(content=token, id=msg.id))
                     if run_manager:
                         run_manager.on_llm_new_token(token, chunk=chunk)
                     yield chunk
@@ -460,9 +459,7 @@ def build_demo_model() -> BaseChatModel:
                     for idx, tc in enumerate(tool_calls)
                 ]
                 yield ChatGenerationChunk(
-                    message=AIMessageChunk(
-                        content="", id=msg.id, tool_call_chunks=tool_call_chunks
-                    )
+                    message=AIMessageChunk(content="", id=msg.id, tool_call_chunks=tool_call_chunks)
                 )
 
     return _DemoChatModel(messages=iter(_demo_messages()))
@@ -496,6 +493,7 @@ class ModelFactory:
 
     config: Config
     default_max_retries: int = 2
+    working_directory: Path | None = None
     _cache: dict[str, Any] = field(default_factory=dict)
 
     #: Cache key for the canned demo model (JARN_DEMO=1).
@@ -577,6 +575,34 @@ class ModelFactory:
 
     def _construct_inner(self, ref, provider, kwargs, init_chat_model) -> BaseChatModel:
 
+        if provider.type is ProviderType.CODEX_SUBSCRIPTION:
+            from jarn.providers.codex_subscription import (
+                CodexSubscriptionChatModel,
+                ensure_codex_harness_profile,
+            )
+
+            # Managed ChatGPT credentials stay inside Codex's own auth store;
+            # api_key/base_url/default_headers are intentionally irrelevant here.
+            kwargs.pop("max_retries", None)
+            kwargs.pop("default_headers", None)
+            command = kwargs.pop("codex_command", None)
+            effort = kwargs.pop("reasoning_effort", "medium")
+            timeout = kwargs.pop("timeout_seconds", kwargs.pop("timeout", 300.0))
+            service_name = kwargs.pop("service_name", "jarn")
+            if kwargs:
+                unknown = ", ".join(sorted(kwargs))
+                raise ModelResolutionError(
+                    f"Unsupported codex_subscription provider options: {unknown}"
+                )
+            ensure_codex_harness_profile()
+            return CodexSubscriptionChatModel(
+                model_name=ref.model_id,
+                codex_command=command,
+                working_directory=str(self.working_directory or Path.cwd()),
+                reasoning_effort=str(effort),
+                timeout_seconds=float(timeout),
+                service_name=str(service_name),
+            )
         if provider.type in _OPENAI_COMPATIBLE:
             model_provider = "openai"
             api_key = resolve(provider.api_key)

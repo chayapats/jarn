@@ -57,6 +57,7 @@ def _log_hook_warning(message: str) -> None:
     """Log a lifecycle-hook failure at WARNING (never silent, never fatal)."""
     _log.warning("hooks: %s", message)
 
+
 @dataclass(slots=True)
 class CommandResult:
     text: str
@@ -122,9 +123,7 @@ class Controller:
         from jarn.config import paths
         from jarn.permissions.rule_store import PermissionRuleStore
 
-        discovered = (
-            paths.find_project_root(project_root) if project_root is not None else None
-        )
+        discovered = paths.find_project_root(project_root) if project_root is not None else None
         self.rule_store = PermissionRuleStore(
             paths.project_config_path(discovered) if discovered is not None else None
         )
@@ -140,7 +139,7 @@ class Controller:
         from jarn.observability import Telemetry
 
         self.telemetry = Telemetry.from_config(config.observability.telemetry)
-        self.health = "unknown"            # unknown | ok | error | degraded
+        self.health = "unknown"  # unknown | ok | error | degraded
         self.last_error: str | None = None
         # Resolved context-window sizes per model ref (0 = unknown / gave up), so
         # a local-model endpoint (LM Studio / Ollama) is queried at most once.
@@ -381,9 +380,7 @@ class Controller:
             # stale worker re-caching the old (revoked-tool) result.
             mcp = self._mcp_cache
             if mcp is None:
-                mcp = await load_mcp_tools(
-                    self.config.mcp_servers, self.config.permissions.network
-                )
+                mcp = await load_mcp_tools(self.config.mcp_servers, self.config.permissions.network)
                 loaded_mcp = True
             tools = mcp.tools
             try:
@@ -496,9 +493,7 @@ class Controller:
                 failed = ", ".join(sorted(mcp.errors))
                 first = next(iter(sorted(mcp.errors)))
                 self.last_error = f"{_MCP_PREFIX} {failed} ({mcp.errors[first]})"
-        elif self.health == "degraded" and (self.last_error or "").startswith(
-            _MCP_PREFIX
-        ):
+        elif self.health == "degraded" and (self.last_error or "").startswith(_MCP_PREFIX):
             # A prior MCP failure degraded the session; a now-healthy cache
             # (e.g. after `/mcp refresh` recovered the server) clears it on
             # rebuild — symmetric with the degrade above, so recovery sticks
@@ -645,8 +640,7 @@ class Controller:
         prompt = (
             "Summarize the following coding-assistant conversation so work can "
             "continue in a fresh context. Capture: the goal, decisions made, files "
-            "changed, current state, and the next step. Be concise but complete.\n\n"
-            + transcript
+            "changed, current state, and the next step. Be concise but complete.\n\n" + transcript
         )
         resp = await summarizer.ainvoke(prompt)
         summary = _content_text(resp)
@@ -680,9 +674,7 @@ class Controller:
         from langchain_core.messages import HumanMessage
 
         seed: dict[str, Any] = {
-            "messages": [
-                HumanMessage(content=f"[Summary of prior conversation]\n{summary}")
-            ]
+            "messages": [HumanMessage(content=f"[Summary of prior conversation]\n{summary}")]
         }
         # Only carry a non-empty plan across: an empty list has nothing to
         # preserve, so keep the seed messages-only (byte-identical to before)
@@ -727,8 +719,7 @@ class Controller:
             content = getattr(msg, "content", "")
             if isinstance(content, list):
                 content = "".join(
-                    b.get("text", "") if isinstance(b, dict) else str(b)
-                    for b in content
+                    b.get("text", "") if isinstance(b, dict) else str(b) for b in content
                 )
             preview = " ".join(str(content).split())
             if len(preview) > 80:
@@ -736,9 +727,7 @@ class Controller:
             turns.append((idx, preview))
         return turns
 
-    async def fork_to_turn(
-        self, keep_count: int, *, restore_files: bool = False
-    ) -> int | None:
+    async def fork_to_turn(self, keep_count: int, *, restore_files: bool = False) -> int | None:
         """Branch the conversation: keep ``messages[:keep_count]`` on a *new*
         thread and continue from there. The original thread is untouched and
         still resumable (this forks, it does not destroy).
@@ -790,9 +779,7 @@ class Controller:
         # forking. Resolve against the ORIGINAL thread; the turn index is the
         # human-turn count in the kept prefix (matches the driver's recording).
         if restore_files:
-            turn_index = sum(
-                1 for m in kept_prefix if getattr(m, "type", "") == "human"
-            )
+            turn_index = sum(1 for m in kept_prefix if getattr(m, "type", "") == "human")
             ref = await asyncio.to_thread(
                 self.checkpoint_manager.find_for_turn, self.thread_id, turn_index
             )
@@ -806,18 +793,12 @@ class Controller:
         from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
         # Compute kept_turns before minting the new thread_id.
-        _kept_turns = sum(
-            1 for m in kept_prefix if getattr(m, "type", "") == "human"
-        )
+        _kept_turns = sum(1 for m in kept_prefix if getattr(m, "type", "") == "human")
         self.new_thread()  # mint a fresh thread_id; resets tracker.context_tokens
         # Register alias so find_for_turn can walk back to the parent on a stacked
         # rewind within the same session (in-memory, not persisted).
-        self.checkpoint_manager.register_thread_alias(
-            self.thread_id, original_thread, _kept_turns
-        )
-        seed: dict[str, Any] = {
-            "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *kept_prefix]
-        }
+        self.checkpoint_manager.register_thread_alias(self.thread_id, original_thread, _kept_turns)
+        seed: dict[str, Any] = {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *kept_prefix]}
         # Only seed a non-empty plan (an empty channel value is a no-op we skip
         # to keep the payload byte-identical to the pre-fix behavior).
         if todos:
@@ -925,9 +906,7 @@ class Controller:
         if self.config.observability.transcript:
             from jarn.memory.sessions import make_transcript_writer
 
-            transcript = make_transcript_writer(
-                self.thread_id, project_root=self.project_root
-            )
+            transcript = make_transcript_writer(self.thread_id, project_root=self.project_root)
         driver = SessionDriver(
             agent=self.runtime.agent,
             engine=self.engine,
@@ -942,9 +921,7 @@ class Controller:
             verify_gate=self.config.verify.gate,
             verify_max_repair_rounds=self.config.verify.max_repair_rounds,
             project_root=self.project_root,
-            verify_executor=getattr(
-                getattr(self.runtime, "backend", None), "execute", None
-            ),
+            verify_executor=getattr(getattr(self.runtime, "backend", None), "execute", None),
             diagnostics_mode=self.config.verify.diagnostics,
             diagnostics_max_rounds=self.config.verify.diagnostics_max_rounds,
             diagnostics_ts=self.config.verify.diagnostics_ts,
@@ -1148,8 +1125,12 @@ class Controller:
         provider = self.config.providers.get(parsed.profile)
         if provider is None:
             return False
-        if provider.type in (ProviderType.OLLAMA, ProviderType.LMSTUDIO):
-            return True  # local endpoints need no key
+        if provider.type in (
+            ProviderType.OLLAMA,
+            ProviderType.LMSTUDIO,
+            ProviderType.CODEX_SUBSCRIPTION,
+        ):
+            return True  # local endpoints / managed Codex auth need no API key
         try:
             return bool(resolve(provider.api_key))
         except SecretResolutionError:
@@ -1170,9 +1151,7 @@ class Controller:
 
         def _profile(ref: str) -> str:
             try:
-                return parse_model_ref(
-                    ref, default_profile=self.config.default_profile
-                ).profile
+                return parse_model_ref(ref, default_profile=self.config.default_profile).profile
             except Exception:  # noqa: BLE001
                 return ref
 
@@ -1474,9 +1453,7 @@ class Controller:
             return "host"
         # No runtime yet — infer from config.
         ex = self.config.execution
-        if ex.backend == "docker" or (
-            ex.backend == "sandbox" and ex.sandbox_provider == "docker"
-        ):
+        if ex.backend == "docker" or (ex.backend == "sandbox" and ex.sandbox_provider == "docker"):
             return "docker"
         if ex.backend == "sandbox":
             return "remote-sandbox"
@@ -1489,7 +1466,9 @@ class Controller:
 
     @property
     def status_line(self) -> str:
-        model = (self.runtime.main_model_ref if self.runtime else None) or self.config.resolved_main_model()
+        model = (
+            self.runtime.main_model_ref if self.runtime else None
+        ) or self.config.resolved_main_model()
         glyph = {
             "ok": f"[{palette.C_SUCCESS}]●[/{palette.C_SUCCESS}] ",
             "error": (
@@ -1516,9 +1495,7 @@ class Controller:
             backend = f"{sep}[{palette.C_WARN}]host (no sandbox)[/{palette.C_WARN}]"
         else:
             backend = f"{sep}[{palette.C_DIM}]host[/{palette.C_DIM}]"
-        return (
-            f"{glyph}{model or 'unconfigured'}{sep}{mode}{backend}{sep}{self.tracker.summary_line()}"
-        )
+        return f"{glyph}{model or 'unconfigured'}{sep}{mode}{backend}{sep}{self.tracker.summary_line()}"
 
     # -- built-in commands --------------------------------------------------
 
@@ -1574,6 +1551,7 @@ class Controller:
 
     def autocheckpoint_off_hint(self) -> str | None:
         return session_helpers.autocheckpoint_off_hint(self)
+
 
 def _render_transcript(messages: list, *, max_msg_chars: int = 4_000) -> str:
     """Render LangChain messages to a compact text transcript for summarization.
@@ -1636,7 +1614,7 @@ def _trim_to_window(text: str, token_budget: int) -> str:
         used += c
     tail: list[str] = []
     used = 0
-    for line in reversed(lines[len(head):]):
+    for line in reversed(lines[len(head) :]):
         c = count_tokens(line + "\n")
         if used + c > body_budget - head_budget:
             break
@@ -1660,7 +1638,7 @@ def _trim_to_window(text: str, token_budget: int) -> str:
         if tail:
             del tail[:batch]
         else:
-            del head[max(0, len(head) - batch):]
+            del head[max(0, len(head) - batch) :]
         candidate = _assemble()
     if (head or tail) and count_tokens(candidate) <= budget:
         return candidate
@@ -1690,12 +1668,11 @@ def _trim_to_window(text: str, token_budget: int) -> str:
             hi = mid - 1
     return text[-lo:]
 
+
 def _content_text(msg) -> str:
     content = getattr(msg, "content", msg)
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "".join(
-            b.get("text", "") if isinstance(b, dict) else str(b) for b in content
-        )
+        return "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
     return str(content)

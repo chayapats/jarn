@@ -277,6 +277,17 @@ class CommandMixin:
                 f"with /model or run jarn setup.[/{palette.C_ERROR}]"
             )
             return
+        provider_config = self.controller.config.providers.get(provider)
+        if (
+            provider_config is not None
+            and provider_config.type.value == "codex_subscription"
+        ):
+            c.print(
+                f"[{palette.C_NOTICE}]Codex subscription uses managed ChatGPT "
+                "authentication, not an API key. Run `jarn codex login`, then "
+                f"verify it with `jarn codex status`.[/{palette.C_NOTICE}]"
+            )
+            return
         inline = args.strip()
         if inline:
             # Inline keys are convenient but land in shell/REPL history — warn.

@@ -459,6 +459,17 @@ def test_friendly_auth_error_falls_back_to_generic_without_provider():
     assert "invalid x-api-key" in msg  # raw detail preserved
 
 
+def test_friendly_codex_subscription_auth_error_points_to_managed_login():
+    from jarn import repl
+
+    msg = repl._friendly_auth_error(
+        "Codex is not signed in with a ChatGPT subscription", "codex_subscription"
+    )
+    assert "jarn codex login" in msg
+    assert "jarn codex status" in msg
+    assert "/key" not in msg
+
+
 @pytest.mark.asyncio
 async def test_fallback_retry_no_duplicate_human_message(tmp_path, monkeypatch):
     """End-to-end: a real flaky model fails the first call, the turn rotates to a

@@ -151,8 +151,9 @@ def run_wizard(*, force: bool = False) -> Path | None:
     # the operator has answered all of them.
     paths.global_home().mkdir(parents=True, exist_ok=True)
 
-    console.print(Panel.fit(f"[b cyan]{WORDMARK}[/b cyan]\n[dim]{TAGLINE}[/dim]",
-                            border_style="cyan"))
+    console.print(
+        Panel.fit(f"[b cyan]{WORDMARK}[/b cyan]\n[dim]{TAGLINE}[/dim]", border_style="cyan")
+    )
     console.print("Let's get you set up. This writes [b]~/.jarn/config.yaml[/b].\n")
 
     # -- env detection: offer to use an existing key up-front --
@@ -164,8 +165,7 @@ def run_wizard(*, force: bool = False) -> Path | None:
     if env_hit is not None:
         env_provider, env_var = env_hit
         console.print(
-            f"[green]✓[/green] Found [b]{env_var}[/b] in your environment"
-            f" — use it? [Y/n]",
+            f"[green]✓[/green] Found [b]{env_var}[/b] in your environment — use it? [Y/n]",
         )
         use_env = Confirm.ask("", default=True)
         if use_env:
@@ -198,16 +198,15 @@ def run_wizard(*, force: bool = False) -> Path | None:
     api_key_ref = _configure_key(profile, env_hit=key_env_hit)
     base_url = _configure_base_url(profile) if profile_needs_base_url(profile) else None
     default_model = _prompt_model(profile)
-    theme = Prompt.ask(
-        "Theme", choices=["dark", "light", "high-contrast"], default="dark"
-    )
+    theme = Prompt.ask("Theme", choices=["dark", "light", "high-contrast"], default="dark")
 
     config = _build_config_dict(
         profile, api_key_ref, default_model, theme, base_url_override=base_url
     )
-    config_path.write_text(_CONFIG_HEADER + yaml.safe_dump(config, sort_keys=False,
-                                                           allow_unicode=True),
-                           encoding="utf-8")
+    config_path.write_text(
+        _CONFIG_HEADER + yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
     console.print(f"\n[green]✔[/green] Wrote {config_path}")
 
     if profile in _CLOUD and Confirm.ask(
@@ -229,7 +228,8 @@ def _prompt_model(profile: str) -> str:
         default_id = "gpt-4o"
     if profile_needs_base_url(profile) or "/" not in default_full:
         raw = Prompt.ask(
-            "Model id on your endpoint" if profile == CUSTOM_OPENAI_PROFILE
+            "Model id on your endpoint"
+            if profile == CUSTOM_OPENAI_PROFILE
             else f"Model id for {profile}",
             default=default_id,
         )
@@ -248,6 +248,37 @@ def _configure_key(
     using the detected env key), return the ``${ENV_VAR}`` reference immediately
     without prompting — keeping the key out of the config verbatim.
     """
+    if profile == "codex_subscription":
+        from jarn.providers.codex_subscription import (
+            CodexSubscriptionError,
+            codex_subscription_account,
+            run_codex_login,
+        )
+
+        try:
+            account = codex_subscription_account(timeout_seconds=10)
+        except CodexSubscriptionError:
+            account = None
+        if (account or {}).get("type") == "chatgpt":
+            console.print(
+                f"[green]✓[/green] Codex is connected to ChatGPT plan "
+                f"[b]{(account or {}).get('planType') or 'unknown'}[/b]."
+            )
+            return None
+        console.print(
+            "[dim]codex_subscription uses Codex-managed ChatGPT login — no API key.[/dim]"
+        )
+        if Confirm.ask("Sign in to ChatGPT with Codex now?", default=True):
+            try:
+                if run_codex_login() != 0:
+                    console.print(
+                        "[yellow]![/yellow] Login was not completed; run "
+                        "[b]jarn codex login[/b] before the first turn."
+                    )
+            except CodexSubscriptionError as exc:
+                console.print(f"[yellow]![/yellow] {exc}")
+        return None
+
     if profile not in _CLOUD:
         console.print(f"[dim]{profile} is local — no API key needed.[/dim]")
         return None
@@ -256,9 +287,7 @@ def _configure_key(
 
     # If the detected env key belongs to this provider, use it as a reference.
     if env_hit is not None and env_hit[0] == profile:
-        console.print(
-            f"  [dim]J.A.R.N. will read the key from ${{{env_var}}}.[/dim]"
-        )
+        console.print(f"  [dim]J.A.R.N. will read the key from ${{{env_var}}}.[/dim]")
         return f"${{{env_var}}}"
 
     console.print(f"\nHow should J.A.R.N. read your [b]{profile}[/b] API key?")
@@ -273,17 +302,13 @@ def _configure_key(
         choices = ["env", "keychain"]
         default_storage = "env"
 
-    method = Prompt.ask(
-        "  storage", choices=choices, default=default_storage
-    )
+    method = Prompt.ask("  storage", choices=choices, default=default_storage)
 
     if method == "oauth":
         console.print("  Opening your browser for OpenRouter login…")
         try:
             result: LoginResult = login_openrouter()
-            console.print(
-                f"  [green]✔[/green] Logged in — key stored as {result.reference}"
-            )
+            console.print(f"  [green]✔[/green] Logged in — key stored as {result.reference}")
             return result.reference
         except Exception as exc:  # noqa: BLE001
             from jarn.config.secrets import redact_secrets
@@ -338,7 +363,8 @@ def _build_config_dict(
         entry: dict[str, Any] = {"type": name}
         if name in _CLOUD:
             entry["api_key"] = (
-                api_key_ref if name == profile
+                api_key_ref
+                if name == profile
                 else f"${{{PROVIDER_ENV_VARS.get(name, name.upper() + '_API_KEY')}}}"
             )
         if name in PROVIDER_BASE_URLS:

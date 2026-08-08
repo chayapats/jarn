@@ -34,13 +34,16 @@
 
 ## 3. Models & Providers
 
-- กลยุทธ์: **Multi-provider, BYO key**, default profile = **OpenRouter** (เลือกโมเดลได้เยอะ)
+- กลยุทธ์: **Multi-provider** — BYO key โดย default profile = **OpenRouter** และ
+  managed ChatGPT subscription ผ่าน Codex App Server
 - Original v1 provider target: **Anthropic · OpenAI · OpenRouter · Ollama · LM Studio**.
-  The current implementation is broader — **13 providers**: OpenRouter, OpenAI,
+  The current implementation is broader — **14 providers**: Codex subscription,
+  OpenRouter, OpenAI,
   LM Studio, Groq, DeepSeek, Together, Fireworks, xAI, OpenAI-compatible (any
   custom `base_url`), Anthropic, Ollama, Google, Mistral (see `ProviderType`).
 - **Per-task model routing**: มีตั้งแต่ออกแบบ (subagent/งานย่อยใช้โมเดลถูก, งานหลักใช้โมเดลแรง)
-- Key เก็บแบบอ้างอิง **env var / OS keychain** — ไม่ hardcode ลง config
+- Key เก็บแบบอ้างอิง **env var / OS keychain** — ไม่ hardcode ลง config;
+  `codex_subscription` ให้ Codex จัดการ ChatGPT credential และ J.A.R.N. ไม่อ่าน token
 
 ---
 
@@ -214,6 +217,6 @@ async/remote subagents · multimodal — all subsequently shipped. Web UI remain
   - (1) Unit/logic — `pytest`: config loader, **permission engine, allowlist, danger-guard**, model routing, cost calc
   - (2) Agent integration (mocked LLM) — agent loop/tools/HITL/verify loop/subagent routing โดย mock model (ไม่เปลือง token, ไม่ flaky)
   - (3) Front-end — `tests/test_repl.py` (headless REPL) + `tests/test_ux.py` (onboarding wizard pilot) + `tests/test_phase3.py` (registry/queue/toolbar parity); Textual chat snapshot retired
-  - Gate ปัจจุบัน: **2403 tests**, `ruff check src tests scripts`, `mypy src/` = 0 errors
+  - Gate ปัจจุบัน: **2432 tests**, `ruff check src tests scripts`, `mypy src/` = 0 errors
 - **Nightly/manual:** (4) E2E live LLM บน fixture repo (smoke suite เล็ก, ไม่บล็อก CI หลัก)
 - **Coverage สูงสุดที่:** permission engine + danger-guard + verify loop (หัวใจ "reliable")

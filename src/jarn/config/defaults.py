@@ -14,6 +14,11 @@ from __future__ import annotations
 # a dash (``claude-opus-4-8``) — they are different namespaces.
 # Fully-qualified J.A.R.N. model refs are ``<profile>/<model>``.
 DEFAULT_MODELS = {
+    "codex_subscription": {
+        "main": "codex_subscription/gpt-5.6-terra",
+        "subagent": "codex_subscription/gpt-5.6-luna",
+        "summarizer": "codex_subscription/gpt-5.6-luna",
+    },
     "openrouter": {
         "main": "openrouter/anthropic/claude-opus-4.8",
         "subagent": "openrouter/anthropic/claude-haiku-4.5",
@@ -113,8 +118,16 @@ PROVIDER_BASE_URLS = {
 #: ``openai_compatible`` is cloud because arbitrary endpoints usually need a key;
 #: local servers (ollama, lmstudio) stay keyless.
 CLOUD_PROVIDERS = (
-    "openrouter", "anthropic", "openai", "google", "mistral",
-    "groq", "deepseek", "together", "fireworks", "xai",
+    "openrouter",
+    "anthropic",
+    "openai",
+    "google",
+    "mistral",
+    "groq",
+    "deepseek",
+    "together",
+    "fireworks",
+    "xai",
     "openai_compatible",
 )
 
@@ -130,10 +143,20 @@ EDITABLE_BASE_URL_PROFILES = (
 
 #: All selectable providers, in wizard display order (custom before local).
 ALL_PROVIDERS = (
-    "openrouter", "anthropic", "openai", "google", "mistral",
-    "groq", "deepseek", "together", "fireworks", "xai",
+    "codex_subscription",
+    "openrouter",
+    "anthropic",
+    "openai",
+    "google",
+    "mistral",
+    "groq",
+    "deepseek",
+    "together",
+    "fireworks",
+    "xai",
     "openai_compatible",
-    "ollama", "lmstudio",
+    "ollama",
+    "lmstudio",
 )
 
 
@@ -156,6 +179,8 @@ permission_mode: ask
 #   ${{ENV_VAR}}                -> read from environment
 #   keychain:jarn/<provider>    -> read from the OS keychain
 providers:
+  codex_subscription:
+    type: codex_subscription  # `jarn codex login`; no API key
   openrouter:
     type: openrouter
     api_key: ${{{env_var}}}

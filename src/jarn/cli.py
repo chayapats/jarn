@@ -3,6 +3,7 @@
 Subcommands:
     jarn            launch the TUI (runs setup first if unconfigured)
     jarn login      log in to OpenRouter via OAuth PKCE (browser → keychain)
+    jarn codex      manage ChatGPT subscription auth for the Codex provider
     jarn setup      (re)run the onboarding wizard
     jarn init       create a JARN.md project context file
     jarn doctor     diagnose configuration / providers / keys / extensions
@@ -35,7 +36,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="jarn", description="J.A.R.N. — Just A Reliable Nerd (coding agent TUI)"
     )
     parser.add_argument("--version", action="version", version=f"jarn {__version__}")
-    parser.add_argument("--resume", action="store_true", help="Pick a previous session to resume on launch")
+    parser.add_argument(
+        "--resume", action="store_true", help="Pick a previous session to resume on launch"
+    )
     parser.add_argument(
         "--add-dir",
         dest="add_dir",
@@ -50,7 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Headless one-shot flags (top-level, not a subcommand).
     parser.add_argument(
-        "-p", "--print",
+        "-p",
+        "--print",
         dest="headless_prompt",
         metavar="PROMPT",
         help=(
@@ -68,7 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
             "With -p: output format (text|json|stream-json; default text). "
             "'json' emits one buffered final object; 'stream-json' emits NDJSON — "
             "one JSON object per event as the turn runs, then a terminal "
-            "{\"type\":\"result\",...} line (with thread_id) — mirroring "
+            '{"type":"result",...} line (with thread_id) — mirroring '
             "`claude -p --output-format stream-json`."
         ),
     )
@@ -179,9 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_init = sub.add_parser("init", help="Create a JARN.md project context file")
     p_init.add_argument("--force", action="store_true", help="Overwrite existing JARN.md")
     p_doctor = sub.add_parser("doctor", help="Diagnose configuration and providers")
-    p_doctor.add_argument(
-        "--json", action="store_true", help="Emit diagnostics as JSON"
-    )
+    p_doctor.add_argument("--json", action="store_true", help="Emit diagnostics as JSON")
     p_keys = sub.add_parser(
         "keys", help="Key inspector — see what your terminal sends for each key"
     )
@@ -204,9 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Remove PATH from the trust store instead of adding it",
     )
-    p_trust.add_argument(
-        "--json", action="store_true", help="Emit the trust list as JSON"
-    )
+    p_trust.add_argument("--json", action="store_true", help="Emit the trust list as JSON")
     sub.add_parser(
         "trust-hooks",
         help="Record a one-time accept to run global lifecycle hooks "
@@ -217,6 +217,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Log in to OpenRouter via OAuth PKCE — opens your browser, "
         "catches the callback, and stores the API key in the OS keychain",
     )
+
+    p_codex = sub.add_parser(
+        "codex",
+        help="Manage the ChatGPT subscription connection used by codex_subscription",
+    )
+    codex_sub = p_codex.add_subparsers(dest="codex_action", required=True)
+    p_codex_login = codex_sub.add_parser(
+        "login", help="Sign in to Codex with ChatGPT subscription access"
+    )
+    p_codex_login.add_argument(
+        "--device",
+        action="store_true",
+        help="Use device-code login (recommended over a loopback callback on SSH/headless hosts)",
+    )
+    p_codex_status = codex_sub.add_parser(
+        "status", help="Show subscription auth mode and ChatGPT plan"
+    )
+    p_codex_status.add_argument("--json", action="store_true", help="Emit status as JSON")
+    codex_sub.add_parser("logout", help="Remove Codex-managed credentials")
 
     p_uninstall = sub.add_parser(
         "uninstall",
@@ -362,6 +381,15 @@ def _main(argv: list[str] | None = None) -> int:
     if args.command == "gateway":
         return _cmd_gateway(fake_backend=bool(args.fake_backend))
 
+    # Codex auth is a terminal/browser ceremony and does not need TUI key-protocol
+    # setup. Dispatch it early like the gateway daemon.
+    if args.command == "codex":
+        return _cmd_codex(
+            action=args.codex_action,
+            device=bool(getattr(args, "device", False)),
+            as_json=bool(getattr(args, "json", False)),
+        )
+
     # Fix the macOS Caps Lock language-switch stray-character bug before any TUI
     # (app / wizard / key inspector) starts its terminal driver.
     from jarn.tui.keyfix import apply_kitty_keyfix
@@ -442,9 +470,7 @@ def _cmd_headless(
         """
         from jarn.headless import HeadlessFailure, _emit_headless_failure
 
-        return _emit_headless_failure(
-            HeadlessFailure(kind, message), output_format=output_format
-        )
+        return _emit_headless_failure(HeadlessFailure(kind, message), output_format=output_format)
 
     # Resolve working directory (used as the project root).
     root = Path(cwd_override).expanduser().resolve() if cwd_override else Path.cwd()
@@ -492,9 +518,7 @@ def _cmd_headless(
         trusted, project_raw, trust_err = _resolve_project_trust(root)
         if trust_err is not None:
             return _fail("error", str(trust_err))
-        cfg = load_config(
-            project_root=root, project_trusted=trusted, project_raw=project_raw
-        )
+        cfg = load_config(project_root=root, project_trusted=trusted, project_raw=project_raw)
     setup_logging(cfg.observability.log_level)
     configure_tracing(cfg.observability)
 
@@ -737,9 +761,7 @@ def _cmd_login() -> int:
         result: LoginResult = login_openrouter()
     except TimeoutError as exc:
         console.print(f"[red]✗[/red] Timed out: {exc}")
-        console.print(
-            "[dim]Run `jarn setup` to configure a key manually.[/dim]"
-        )
+        console.print("[dim]Run `jarn setup` to configure a key manually.[/dim]")
         return 1
     except KeyboardInterrupt:
         console.print("\n[yellow]Aborted.[/yellow]")
@@ -750,9 +772,7 @@ def _cmd_login() -> int:
 
     if not result.changed:
         # Existing key kept — nothing to persist; don't rewrite the config.
-        console.print(
-            f"[green]✔[/green]  Keeping your existing key ([b]{result.reference}[/b])."
-        )
+        console.print(f"[green]✔[/green]  Keeping your existing key ([b]{result.reference}[/b]).")
         console.print(f"   Key tail: [dim]{result.masked_key}[/dim]")
         return 0
 
@@ -761,16 +781,88 @@ def _cmd_login() -> int:
 
     # Write the reference into the OpenRouter provider in the global config.
     if _write_openrouter_key_ref(result.reference):
-        console.print(
-            "\n[green]✔[/green]  Config updated.  "
-            "Launch [b]jarn[/b] to start coding."
-        )
+        console.print("\n[green]✔[/green]  Config updated.  Launch [b]jarn[/b] to start coding.")
         return 0
     console.print(
         f"\n[yellow]![/yellow]  The key is stored ([b]{result.reference}[/b]) but the "
         "config was left untouched — set `providers.openrouter.api_key` manually."
     )
     return 1
+
+
+def _cmd_codex(*, action: str, device: bool = False, as_json: bool = False) -> int:
+    """Manage Codex-owned ChatGPT subscription authentication."""
+    import json
+
+    from rich.console import Console
+
+    from jarn.config.secrets import redact_secrets
+    from jarn.providers.codex_subscription import (
+        CodexSubscriptionError,
+        codex_subscription_account,
+        run_codex_login,
+        run_codex_logout,
+    )
+
+    console = Console()
+    try:
+        if action == "login":
+            console.print(
+                "\n[b cyan]Codex subscription login[/b cyan]  "
+                "[dim]— credentials remain managed by the Codex CLI.[/dim]\n"
+            )
+            code = run_codex_login(device=device)
+            if code != 0:
+                return code
+            account = codex_subscription_account(refresh=True)
+            mode = str((account or {}).get("type") or "")
+            if mode != "chatgpt":
+                console.print(
+                    "[red]✗[/red] Codex did not report ChatGPT subscription auth. "
+                    "Run [b]jarn codex login[/b] again and choose ChatGPT."
+                )
+                return 1
+            plan = str((account or {}).get("planType") or "unknown")
+            console.print(f"[green]✔[/green] Connected to ChatGPT plan [b]{plan}[/b].")
+            return 0
+
+        if action == "logout":
+            code = run_codex_logout()
+            if code == 0:
+                console.print("[green]✔[/green] Codex credentials removed.")
+            return code
+
+        account = codex_subscription_account(refresh=False)
+        mode = str((account or {}).get("type") or "signed_out")
+        status_plan = (account or {}).get("planType")
+        connected = mode == "chatgpt"
+        payload = {
+            "connected": connected,
+            "auth_mode": mode,
+            "plan_type": status_plan,
+        }
+        if as_json:
+            print(json.dumps(payload, ensure_ascii=False))
+        elif connected:
+            console.print(
+                f"[green]✔[/green] Codex is connected with ChatGPT subscription "
+                f"([b]{status_plan or 'unknown plan'}[/b])."
+            )
+        elif mode == "apiKey":
+            console.print(
+                "[yellow]![/yellow] Codex is using an API key (separate API billing), "
+                "not a ChatGPT subscription."
+            )
+        else:
+            console.print("[yellow]![/yellow] Codex is not connected. Run [b]jarn codex login[/b].")
+        return 0 if connected else 1
+    except CodexSubscriptionError as exc:
+        message = redact_secrets(str(exc))
+        if as_json:
+            print(json.dumps({"connected": False, "error": message}, ensure_ascii=False))
+        else:
+            console.print(f"[red]✗[/red] {message}")
+        return 1
 
 
 def _cmd_uninstall(*, yes: bool = False) -> int:
@@ -836,11 +928,7 @@ def _trust_list(store: Any, *, as_json: bool) -> int:
     if as_json:
         import json
 
-        print(
-            json.dumps(
-                [{"root": root, "fingerprint": fp} for root, fp in entries.items()]
-            )
-        )
+        print(json.dumps([{"root": root, "fingerprint": fp} for root, fp in entries.items()]))
         return 0
 
     if not entries:
@@ -934,9 +1022,7 @@ def _cmd_launch(
             print(f"error: {trust_err}", file=sys.stderr)
             return 1
 
-        cfg = load_config(
-            project_root=root, project_trusted=trusted, project_raw=project_raw
-        )
+        cfg = load_config(project_root=root, project_trusted=trusted, project_raw=project_raw)
     setup_logging(cfg.observability.log_level)
     configure_tracing(cfg.observability)
 

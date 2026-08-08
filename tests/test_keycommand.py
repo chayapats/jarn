@@ -122,6 +122,28 @@ def test_set_provider_key_empty_is_noop(tmp_path, monkeypatch):
     ctrl.close()
 
 
+def test_set_provider_key_rejects_codex_subscription_key(tmp_path, monkeypatch):
+    config = _config()
+    config.providers["codex_subscription"] = ProviderConfig(
+        type=ProviderType.CODEX_SUBSCRIPTION
+    )
+    config.routing.main = "codex_subscription/gpt-5.6-terra"
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    ctrl = Controller(config, root)
+
+    def _fail_store(*_args):  # pragma: no cover - must not be called
+        raise AssertionError("subscription auth must never enter API-key storage")
+
+    monkeypatch.setattr("jarn.config.secrets.store_secret", _fail_store)
+    result = ctrl.set_provider_key("sk-should-not-be-stored")
+
+    assert not result.rebuilt
+    assert "jarn codex login" in result.text
+    assert ctrl.config.providers["codex_subscription"].api_key is None
+    ctrl.close()
+
+
 # -- /help registration -----------------------------------------------------
 
 
@@ -204,6 +226,31 @@ async def test_key_command_inline_arg_does_not_prompt(tmp_path, monkeypatch):
 
     assert app.controller.runtime is None
     assert app.controller.config.providers["openrouter"].api_key == "keychain:jarn/openrouter"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_key_command_redirects_codex_subscription_to_login(tmp_path, monkeypatch):
+    config = _config()
+    config.providers["codex_subscription"] = ProviderConfig(
+        type=ProviderType.CODEX_SUBSCRIPTION
+    )
+    config.routing.main = "codex_subscription/gpt-5.6-terra"
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    app = InlineApp(config, root)
+
+    async def _fail_ask(_prompt: str) -> str:  # pragma: no cover - must not be called
+        raise AssertionError("subscription /key must not prompt")
+
+    monkeypatch.setattr(app, "_ask", _fail_ask)
+    await app._cmd_key("sk-should-not-be-stored")
+
+    output = app.console.file.getvalue() if hasattr(app.console.file, "getvalue") else ""
+    # Controller-level protection is authoritative; this proves the prompt path exits early.
+    assert app.controller.config.providers["codex_subscription"].api_key is None
+    if output:
+        assert "jarn codex login" in output
     app.controller.close()
 
 

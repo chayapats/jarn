@@ -125,6 +125,33 @@ def collect_doctor(
     providers: list[dict] = []
     for name, prov in cfg.providers.items():
         entry: dict[str, Any] = {"name": name, "type": prov.type.value}
+        from jarn.config.schema import ProviderType
+
+        if prov.type is ProviderType.CODEX_SUBSCRIPTION:
+            from jarn.providers.codex_subscription import (
+                CodexSubscriptionError,
+                codex_subscription_account,
+            )
+
+            entry["key_source"] = "codex-managed"
+            try:
+                account = codex_subscription_account(cwd=root, timeout_seconds=10, refresh=False)
+                connected = (account or {}).get("type") == "chatgpt"
+                plan = (account or {}).get("planType")
+                entry["key_state"] = (
+                    f"ChatGPT subscription ({plan or 'unknown plan'})"
+                    if connected
+                    else "not signed in with ChatGPT — run `jarn codex login`"
+                )
+                entry["key_ok"] = connected
+                entry["plan_type"] = plan
+            except CodexSubscriptionError as exc:
+                entry["key_state"] = str(exc)
+                entry["key_ok"] = False
+            if not entry["key_ok"] and name == cfg.default_profile:
+                ok = False
+            providers.append(entry)
+            continue
         # Show the key source (env / keychain / file) — never the raw value.
         from jarn.onboarding.oauth import key_source as _key_source
 
@@ -182,9 +209,7 @@ def collect_doctor(
         "project_context_tokens": cfg.context.project_context_tokens,
     }
 
-    diag["extensions"] = collect_extensions(
-        root, project_trusted=project_trusted, config=cfg
-    )
+    diag["extensions"] = collect_extensions(root, project_trusted=project_trusted, config=cfg)
 
     # Search provider diagnostics
     from jarn.agent.web_tools import _resolve_provider_key

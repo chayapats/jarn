@@ -128,6 +128,7 @@ def set_provider_key(
     with the new key."""
     from jarn.config import paths
     from jarn.config.defaults import PROVIDER_ENV_VARS
+    from jarn.config.schema import ProviderType
     from jarn.config.secrets import file_fallback_notice, store_secret
     from jarn.config.settings import ConfigStore
     from jarn.controller.core import CommandResult
@@ -142,6 +143,11 @@ def set_provider_key(
         return CommandResult(
             f"Provider {prov!r} isn't configured. Run jarn setup to add it, "
             "then use /key to update its API key."
+        )
+    if ctrl.config.providers[prov].type is ProviderType.CODEX_SUBSCRIPTION:
+        return CommandResult(
+            "Codex subscription uses managed ChatGPT authentication, not an API key. "
+            "Run `jarn codex login`, then verify it with `jarn codex status`."
         )
     secret = raw_key.strip()
     if not secret:

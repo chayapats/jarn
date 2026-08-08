@@ -46,7 +46,7 @@ controller, turn runner, permission engine, and agent runtime.
 | Package | Responsibility |
 |---|---|
 | `jarn.config` | Two-tier YAML loading, typed `Config`, secret resolution (`${ENV}` / keychain) |
-| `jarn.providers` | Model-ref parsing, `ModelFactory` (→ `init_chat_model`), per-task routing |
+| `jarn.providers` | Model-ref parsing, `ModelFactory` (→ `init_chat_model` or Codex App Server adapter), per-task routing |
 | `jarn.permissions` | `PermissionEngine` (modes + rules + remembered approvals) and the hard `guard` |
 | `jarn.cost` | Pricing table, `CostTracker`, budget warn / hard-stop |
 | `jarn.memory` | SQLite checkpointer (resumable sessions), markdown long-term memory, `JARN.md` |
@@ -116,6 +116,29 @@ controller, turn runner, permission engine, and agent runtime.
 This design keeps **all** authorization logic in J.A.R.N.'s engine; DeepAgents'
 interrupts are used purely as the pause/resume mechanism. That's why the danger-guard
 can force a confirmation even in YOLO mode.
+
+## Codex subscription provider
+
+`jarn.providers.codex_subscription` adapts the official Codex App Server's stdio
+JSON-RPC agent protocol to LangChain's chat-model interface. Each model invocation
+starts an ephemeral Codex thread from the authoritative LangGraph transcript, asks
+for a strict `{kind, content, calls}` response, then returns either assistant text or
+ordinary LangChain tool calls.
+
+Codex-managed ChatGPT authentication stays outside J.A.R.N.; account status is read
+through App Server and an API-key account is explicitly rejected by this provider.
+The inner Codex thread has execution, browser/apps, image generation, networking,
+and multi-agent capabilities disabled. This prevents an inner agent from bypassing
+the existing path:
+
+```text
+Codex App Server → strict tool request → LangChain tool call
+                 → DeepAgents interrupt → J.A.R.N. PermissionEngine → tool
+```
+
+Token updates from App Server are normalized into the same `CostTracker` pipeline.
+They retain model attribution but use zero API price because billing/limits belong
+to the connected ChatGPT plan.
 
 ## Telegram gateway lifecycle
 

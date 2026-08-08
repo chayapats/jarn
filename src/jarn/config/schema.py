@@ -21,10 +21,10 @@ class PermissionMode(str, Enum):
     Ordering matters: each mode is strictly more permissive than the previous.
     """
 
-    PLAN = "plan"          # read-only: may read/plan, never write or run shell
-    ASK = "ask"            # default: prompt before write / impactful shell / network
+    PLAN = "plan"  # read-only: may read/plan, never write or run shell
+    ASK = "ask"  # default: prompt before write / impactful shell / network
     AUTO_EDIT = "auto-edit"  # edit + web_search/fetch freely; still prompt for shell/MCP
-    YOLO = "yolo"          # full-auto: never prompt (danger-guard still applies)
+    YOLO = "yolo"  # full-auto: never prompt (danger-guard still applies)
 
     @property
     def rank(self) -> int:
@@ -64,10 +64,12 @@ class SearchConfig:
     """
 
     provider: SearchProviderType = SearchProviderType.AUTO
-    api_key: str = ""   # reference-only; resolved via jarn.config.secrets.resolve
+    api_key: str = ""  # reference-only; resolved via jarn.config.secrets.resolve
 
 
 class ProviderType(str, Enum):
+    # Official Codex app-server using managed ChatGPT subscription auth.
+    CODEX_SUBSCRIPTION = "codex_subscription"
     # OpenAI-compatible (served through ChatOpenAI + base_url — no extra deps)
     OPENROUTER = "openrouter"
     OPENAI = "openai"
@@ -131,7 +133,7 @@ class RoutingConfig:
 @dataclass(slots=True)
 class BudgetConfig:
     per_session_usd: float | None = None
-    hard_stop: bool = True       # stop the run when exceeded vs warn only
+    hard_stop: bool = True  # stop the run when exceeded vs warn only
     warn_at_pct: int = 80
 
 
@@ -141,7 +143,7 @@ _VALID_REPO_MAP_MODES: frozenset[str] = frozenset({"off", "tool", "auto"})
 @dataclass(slots=True)
 class ContextConfig:
     auto_compact: bool = True
-    compact_at_pct: int = 85     # summarize when context window this % full
+    compact_at_pct: int = 85  # summarize when context window this % full
     #: How the repo map is exposed to the agent.
     #: ``"off"``  — disabled entirely (no tool, no system-prompt injection).
     #: ``"tool"`` — (default) a ``repo_map`` tool is registered; the model
@@ -168,7 +170,7 @@ class ExecutionConfig:
     """Where tools run. ``local`` is the default; ``sandbox`` isolates execution
     (requires an available sandbox runtime — see docs)."""
 
-    backend: str = "local"            # local | sandbox | docker
+    backend: str = "local"  # local | sandbox | docker
     #: Register the background-process tools (run/check/kill/list_background) so the
     #: agent can run a dev server / watcher / long build without blocking the turn.
     #: Local backend only — under docker/sandbox the tools are not registered (a
@@ -188,7 +190,7 @@ class ExecutionConfig:
     # read_file. ``auto`` (default) inlines images ≤ 5 MB; ``off`` keeps the old
     # text-only @path behaviour. On a provider that rejects images, the front-end
     # falls back to text-only for the rest of the session (auto behaves like off).
-    inline_images: str = "auto"       # auto | off
+    inline_images: str = "auto"  # auto | off
     # When ``backend: sandbox`` but the sandbox can't start, fall back to running
     # on the host. OFF by default: silently downgrading isolation is a footgun, so
     # we fail closed unless the user explicitly opts in.
@@ -204,7 +206,7 @@ class ExecutionConfig:
     #               warning when not; never blocks startup.
     # ``require`` — OS sandbox or fail closed: execute() returns an error if the
     #               sandbox backend is unavailable on this host.
-    local_sandbox: str = "off"        # off | auto | require
+    local_sandbox: str = "off"  # off | auto | require
     sandbox_allow_network: bool = True
     sandbox_writable: list[str] = field(default_factory=list)  # extra writable paths
 
@@ -323,11 +325,11 @@ class PermissionRules:
 class HookSpec:
     """A single hook: a shell command run on a lifecycle event."""
 
-    event: str                   # see jarn.extensibility.hooks.HookEvent
+    event: str  # see jarn.extensibility.hooks.HookEvent
     command: str
     name: str | None = None
-    matcher: str | None = None   # optional glob to scope which tool/file triggers
-    blocking: bool = False       # if True, non-zero exit aborts the action
+    matcher: str | None = None  # optional glob to scope which tool/file triggers
+    blocking: bool = False  # if True, non-zero exit aborts the action
 
 
 @dataclass(slots=True)
@@ -346,14 +348,14 @@ class MCPServer:
     """An MCP server the agent connects to for extra tools."""
 
     name: str
-    transport: str = "stdio"     # stdio | http | sse | streamable_http | websocket
-    command: str | None = None   # stdio
+    transport: str = "stdio"  # stdio | http | sse | streamable_http | websocket
+    command: str | None = None  # stdio
     args: list[str] = field(default_factory=list)
-    url: str | None = None       # http/sse/websocket
+    url: str | None = None  # http/sse/websocket
     headers: dict[str, str] = field(default_factory=dict)  # http/sse auth
     env: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
-    health: str | None = None    # last-known health: "ok" | "error" | None (unknown)
+    health: str | None = None  # last-known health: "ok" | "error" | None (unknown)
     #: Per-server timeout for ``get_tools`` (seconds). Default 30.
     timeout_secs: int = 30
 
@@ -413,16 +415,16 @@ class PricingConfig:
 
 @dataclass(slots=True)
 class TracingConfig:
-    backend: str = "langsmith"    # langsmith | otel
+    backend: str = "langsmith"  # langsmith | otel
 
 
 @dataclass(slots=True)
 class ObservabilityConfig:
-    langsmith: bool = False       # opt-in LangSmith tracing (when backend is langsmith)
+    langsmith: bool = False  # opt-in LangSmith tracing (when backend is langsmith)
     tracing: TracingConfig = field(default_factory=TracingConfig)
-    telemetry: bool = False       # opt-in usage analytics, default OFF
+    telemetry: bool = False  # opt-in usage analytics, default OFF
     log_level: str = "info"
-    transcript: bool = True       # append-only JSONL session transcript under .jarn/sessions/
+    transcript: bool = True  # append-only JSONL session transcript under .jarn/sessions/
 
 
 _VALID_SPLASH_VALUES: frozenset[str] = frozenset({"full", "compact", "off"})
@@ -432,9 +434,9 @@ _VALID_NOTIFY_VALUES: frozenset[str] = frozenset({"off", "bell", "desktop", "bot
 
 @dataclass(slots=True)
 class UIConfig:
-    theme: str = "dark"           # dark | light | high-contrast | auto
-    accent: str = "cyan"          # brand accent
-    splash: str = "compact"       # full | compact | off
+    theme: str = "dark"  # dark | light | high-contrast | auto
+    accent: str = "cyan"  # brand accent
+    splash: str = "compact"  # full | compact | off
     #: Max diff lines shown inline in a write/edit approval prompt before the
     #: rest collapses to a "… (+N more lines)" footer. Over-cap diffs offer a
     #: [v] view-full-diff option that opens the complete diff in the pager.
@@ -475,7 +477,7 @@ class GitConfig:
     """
 
     autocheckpoint: bool = False
-    checkpoint_mode: str = "shadow"   # "shadow" | "commit"
+    checkpoint_mode: str = "shadow"  # "shadow" | "commit"
 
 
 _VALID_EXIT_MODES: frozenset[str] = frozenset({"ask", "auto-edit"})
@@ -491,7 +493,7 @@ class PlanConfig:
     editing mode; this is just the highlighted default.
     """
 
-    exit_mode: str = "auto-edit"   # ask | auto-edit
+    exit_mode: str = "auto-edit"  # ask | auto-edit
 
 
 @dataclass(slots=True)
@@ -522,9 +524,7 @@ class CompatConfig:
     directories. ``.jarn`` always takes precedence on name conflicts.
     """
 
-    context_files: list[str] = field(
-        default_factory=lambda: ["JARN.md", "AGENTS.md", "CLAUDE.md"]
-    )
+    context_files: list[str] = field(default_factory=lambda: ["JARN.md", "AGENTS.md", "CLAUDE.md"])
     read_claude_dir: bool = True
 
 

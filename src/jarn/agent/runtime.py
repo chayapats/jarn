@@ -78,22 +78,24 @@ _PROGRESS_QUEUE_MAXSIZE = 2048
 #: auto-ALLOW it in every mode — including plan. Such tools are dropped at assembly.
 #: ``web_search``/``web_fetch`` are deliberately absent (they are jarn's own web
 #: tools and map to NETWORK, so they are kept and gated).
-_RESERVED_BUILTIN_NAMES = frozenset({
-    *MUTATING_TOOLS,
-    *READONLY_TOOLS,
-    *INTERNAL_TOOLS,
-    *WIKI_MUTATING_TOOLS,
-    *WIKI_READONLY_TOOLS,
-    BACKGROUND_START_TOOL,
-    *BACKGROUND_CONTROL_TOOLS,
-    *ASYNC_SUBAGENT_TOOLS,
-    "repo_map",
-    "exit_plan_mode",
-    "suggest_memory",
-    "suggest_skill",
-    "schedule_task",
-    "spawn_parallel_tasks",
-})
+_RESERVED_BUILTIN_NAMES = frozenset(
+    {
+        *MUTATING_TOOLS,
+        *READONLY_TOOLS,
+        *INTERNAL_TOOLS,
+        *WIKI_MUTATING_TOOLS,
+        *WIKI_READONLY_TOOLS,
+        BACKGROUND_START_TOOL,
+        *BACKGROUND_CONTROL_TOOLS,
+        *ASYNC_SUBAGENT_TOOLS,
+        "repo_map",
+        "exit_plan_mode",
+        "suggest_memory",
+        "suggest_skill",
+        "schedule_task",
+        "spawn_parallel_tasks",
+    }
+)
 
 
 def _parallel_fanout_enabled(config: Config) -> bool:
@@ -108,7 +110,10 @@ def _parallel_fanout_enabled(config: Config) -> bool:
     if flag is not None:
         return bool(flag)
     return os.environ.get("JARN_PARALLEL_SUBAGENTS", "").strip().lower() in (
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     )
 
 
@@ -167,7 +172,7 @@ def _ambient_key_leak_messages(config: Config) -> list[str]:
 class JarnRuntime:
     """Everything a session needs, produced by :func:`build_runtime`."""
 
-    agent: Any                       # compiled LangGraph deep agent
+    agent: Any  # compiled LangGraph deep agent
     config: Config
     factory: ModelFactory
     project_root: Path | None
@@ -181,7 +186,7 @@ class JarnRuntime:
     #: per-model subagents + summarizer). It canonicalizes the model each provider
     #: reports (response_metadata) against this set; see :class:`SessionDriver`.
     known_model_refs: tuple[str, ...] = ()
-    backend: Any = None              # execution backend (for cancel/terminate)
+    backend: Any = None  # execution backend (for cancel/terminate)
     #: Thread-safe queue of backend :class:`~jarn.agent.events.ToolProgress` records
     #: for live foreground-``execute`` tailing. Set only when the backend supports
     #: streaming progress (the local backend); ``None`` for docker/sandbox. The
@@ -235,7 +240,11 @@ def _unsupported_read_media(config: Config, model_ref: str | None) -> frozenset[
     except ModelResolutionError:
         return frozenset()
     provider = config.providers.get(parsed.profile)
-    if provider and provider.type in {ProviderType.ANTHROPIC, ProviderType.OLLAMA}:
+    if provider and provider.type in {
+        ProviderType.ANTHROPIC,
+        ProviderType.OLLAMA,
+        ProviderType.CODEX_SUBSCRIPTION,
+    }:
         return frozenset({"audio", "video"})
     return frozenset()
 
@@ -464,9 +473,7 @@ def _summarization_trigger(model: Any, *, main_window: int, pct: int) -> Any:
     return compute_summarization_defaults(model)["trigger"]
 
 
-def _build_summarization_middleware(
-    model: Any, backend: Any, *, main_window: int, pct: int
-) -> Any:
+def _build_summarization_middleware(model: Any, backend: Any, *, main_window: int, pct: int) -> Any:
     """Mirror deepagents' ``create_summarization_middleware`` (same keep window,
     tool-arg truncation, and backend offload) but on the summarizer ``model`` with
     the trigger resolved by :func:`_summarization_trigger` against the **main**
@@ -573,7 +580,7 @@ def build_runtime(
 
     root = project_root or paths.find_project_root()
 
-    factory = ModelFactory(config)
+    factory = ModelFactory(config, working_directory=root or Path.cwd())
     model = factory.build_main()
 
     # Result-filter engine (BUG A): use the session's AUTHORITATIVE engine when the
@@ -769,13 +776,9 @@ def build_runtime(
     # named or tagged — stays gated behind its required interrupt.
     ungated_ids = {id(t) for t in ungated_tools}
     extra_gated = [
-        name
-        for t in tools
-        if (name := getattr(t, "name", "")) and id(t) not in ungated_ids
+        name for t in tools if (name := getattr(t, "name", "")) and id(t) not in ungated_ids
     ]
-    interrupts = interrupt_map(
-        extra_gated, include_async=bool(config.async_subagents)
-    )
+    interrupts = interrupt_map(extra_gated, include_async=bool(config.async_subagents))
 
     # Live tool-output streaming (foreground execute). Create a bounded, thread-safe
     # queue the backend's progress_sink feeds from its worker thread; the per-turn
@@ -796,9 +799,7 @@ def build_runtime(
         except _queue.Full:
             pass  # best-effort; never block execute's worker thread on a slow drain
 
-    backend = _make_backend(
-        config, root, extra_roots=extra_roots, progress_sink=_progress_sink
-    )
+    backend = _make_backend(config, root, extra_roots=extra_roots, progress_sink=_progress_sink)
     progress_queue = (
         _progress_queue if getattr(backend, "_progress_sink", None) is not None else None
     )
@@ -857,9 +858,7 @@ def build_runtime(
         from jarn.agent.fanout import build_spawn_parallel_tasks_tool
 
         fanout_names = {
-            name
-            for s in subagent_specs
-            if (name := s.get("name")) and "graph_id" not in s
+            name for s in subagent_specs if (name := s.get("name")) and "graph_id" not in s
         }
         fanout_names.add("general-purpose")  # deepagents auto-adds it
 

@@ -66,6 +66,11 @@ _PROVIDER_EXTRA_KEYS = frozenset({
     "n",
     "seed",
     "keep_alive",
+    # codex_subscription app-server adapter
+    "codex_command",
+    "reasoning_effort",
+    "timeout_seconds",
+    "service_name",
 })
 
 _VALID_MCP_TRANSPORTS = frozenset(
