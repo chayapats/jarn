@@ -19,6 +19,7 @@ jobs:
         uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: ${{ matrix.python }}
+          save-cache: false
       - name: Sync deps
         # telegram extra pulls aiogram so gateway/bot tests exercise the real
         # optional dependency (not just importorskip skips).
