@@ -8,9 +8,11 @@ points at the primitive rather than at whichever caller noticed first.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -142,6 +144,38 @@ def test_lock_serializes_concurrent_holders(tmp_path):
     for t in threads:
         t.join()
     assert overlaps[0] == 0
+
+
+def test_windows_lock_retry_rewinds_to_the_same_byte(tmp_path, monkeypatch):
+    """Every Windows retry must target byte zero, not the descriptor's offset
+    after the previous failed ``_locking`` call.
+
+    Locking a later byte succeeds while another writer owns byte zero, so a
+    drifting retry silently admits overlapping read-modify-write sections.  The
+    fake CRT deliberately moves the file pointer on its first failure to make
+    this otherwise timing-dependent Windows race deterministic on every OS.
+    """
+    from jarn.util import atomic
+
+    target = tmp_path / "config.yaml.lock"
+    target.write_bytes(b"\0")
+    starts: list[int] = []
+
+    with target.open("r+b") as handle:
+        def locking(_fd: int, _mode: int, _nbytes: int) -> None:
+            starts.append(handle.tell())
+            if len(starts) == 1:
+                handle.seek(1)
+                raise OSError("byte zero is busy")
+
+        fake_msvcrt = SimpleNamespace(LK_NBLCK=1, locking=locking)
+        monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+        monkeypatch.setattr(atomic.os, "name", "nt")
+        monkeypatch.setattr(atomic, "_WINDOWS_RETRY_SECS", 0)
+
+        atomic._acquire(handle)  # noqa: SLF001 - direct primitive regression
+
+    assert starts == [0, 0]
 
 
 def test_lock_degrades_to_unlocked_when_it_cannot_be_created(tmp_path, monkeypatch):

@@ -132,8 +132,14 @@ def _acquire(lock_file: BinaryIO) -> None:
         if lock_file.tell() == 0:
             lock_file.write(b"\0")
             lock_file.flush()
-        lock_file.seek(0)
         while True:
+            # ``_locking`` keys the range from the descriptor's CURRENT file
+            # position.  Rewind on every attempt: after a failed non-blocking
+            # call the CRT may leave the offset advanced, and retrying from byte
+            # 1 would lock a different, uncontended range while byte 0 is still
+            # owned by another writer.  That turns the lock into a no-op exactly
+            # under contention and loses read-modify-write updates.
+            lock_file.seek(0)
             try:
                 msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
                 return
