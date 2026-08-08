@@ -70,6 +70,11 @@ base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists 
 - **Safe by default** — a multi-layer permission system (coarse modes + fine-grained
   rules) sits in front of every file write and shell command, backed by a hard
   *danger-guard* that always confirms catastrophic actions — even in YOLO mode.
+- **Instruction-aware** — project context and skills guide only the user's stated
+  goal. Source files, web pages, logs, and tool results are treated as data, so
+  embedded instructions cannot override user intent or the harness's permission,
+  trust, and sandbox boundaries. The agent uses only tools exposed by the active
+  policy and backend.
 - **Bring your own model** — 14 providers, including **Codex through your ChatGPT
   subscription**, OpenRouter, Anthropic, OpenAI, Google, Mistral, Groq, DeepSeek,
   Together, Fireworks, xAI, Ollama, LM Studio, and a generic OpenAI-compatible
@@ -82,7 +87,7 @@ base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists 
   and a per-session budget that can warn or hard-stop; a context-% gauge and live
   generation throughput (tok/s) that work for local models (LM Studio / Ollama)
   too, not just priced cloud ones.
-- **Date-aware** — the current local date/time is injected into the system prompt,
+- **Date-aware** — the current local date is injected into the system prompt,
   so "today"-relative requests don't anchor to the model's training cutoff.
 - **Pluggable web search** — `web_search` supports Tavily, Brave Search, and Exa in
   addition to the keyless DuckDuckGo fallback.  Set `search.provider: auto` (default)
@@ -548,7 +553,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                 # 2433 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 2435 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

@@ -17,6 +17,16 @@ All notable changes to J.A.R.N. are documented here. Format follows
   auth errors, `/key`, English/Thai docs, and mocked full-agent coverage are wired
   end to end.
 
+### Changed
+
+- **The reliability prompt is stricter and smaller.** Project context and skills are
+  explicitly scoped to the user's goal; retrieved source/web/log/tool content cannot
+  override user intent or permission/trust/sandbox boundaries; tool availability is
+  runtime-defined; and plan mode now states its local-read-only contract without the
+  previous web-research ambiguity. The base prompt is 7% shorter and regression-gated
+  below 450 words / 2,900 UTF-8 bytes so future guidance cannot silently bloat every
+  turn.
+
 ### Fixed
 
 - **Telegram production replies and approval cards now reach the chat.** The

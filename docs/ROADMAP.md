@@ -25,6 +25,8 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-08** (v0.10.0 release
 - [x] Fine-grained allow/deny rules + remember once/session/always
 - [x] Hard danger-guard (BLOCKED / DANGEROUS), overrides modes incl. YOLO
 - [x] Interrupt → engine → approval flow wired through DeepAgents HITL
+- [x] Compact instruction boundary: retrieved content is data, project guidance stays
+  scoped to the user's goal, and only runtime-provided tools may be used
 
 **Memory & sessions**
 - [x] SQLite checkpointer for resumable sessions + session index
@@ -58,7 +60,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-08** (v0.10.0 release
 - [x] `jarn` / `setup` / `init` / `doctor` (`--json`) CLI
 - [x] Strict config validation (typed bools, numeric ranges, unknown top-level keys rejected)
 - [x] Local rotating logs, opt-in LangSmith tracing
-- [x] `uv`/PyPI packaging, 2433 tests (+ packaging gate), clean lint + `mypy` CI
+- [x] `uv`/PyPI packaging, 2435 tests (+ packaging gate), clean lint + `mypy` CI
 - [x] Optional single-operator Telegram gateway — long-poll DM bot, per-root
   workers, durable approvals, inbound media, scheduler, and systemd deployment;
   operator guide: [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md)

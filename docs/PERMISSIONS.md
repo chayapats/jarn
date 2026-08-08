@@ -60,6 +60,11 @@ via `--preset ci`, not via `/mode`, and not via Shift+Tab (the clamp lives in th
 single `apply_mode` choke point; `/sandbox` is locked too). Opening an untrusted repo
 lets the agent read and plan, but it cannot write, run shell, or escalate.
 
+Here “network on, web on” describes the sandbox posture and which tools are registered;
+it does not bypass the coarse permission mode. The `plan` engine still denies every
+write, shell, and network action, so an untrusted agent can inspect only through local
+read tools until trust is granted.
+
 ---
 
 ## 2. Mode — the approval axis

@@ -117,6 +117,21 @@ This design keeps **all** authorization logic in J.A.R.N.'s engine; DeepAgents'
 interrupts are used purely as the pause/resume mechanism. That's why the danger-guard
 can force a confirmation even in YOLO mode.
 
+## System prompt assembly
+
+`build_runtime` keeps a stable, compact reliability prefix and appends context in this
+order: local date; the first trusted project context file (`JARN.md`, `AGENTS.md`, or
+`CLAUDE.md`); global/project memory indices; auto-skill names and descriptions; and
+detected verification commands. Optional wiki and automatic repo-map indices are
+volatile suffixes, preserving the stable prefix for provider-side prompt caching.
+
+The base prompt scopes project context and skills to the user's goal and treats source,
+web, log, quoted, and tool-result text as data rather than fresh instructions. It also
+requires the model to use only tools actually supplied by the active policy/backend.
+Plan mode permits local read tools only: write, shell, and network actions remain denied.
+Regression tests cap the base at 450 words and 2,900 UTF-8 bytes, below the previous
+prompt, while separately pinning its plan/act/verify and instruction-boundary contracts.
+
 ## Codex subscription provider
 
 `jarn.providers.codex_subscription` adapts the official Codex App Server's stdio

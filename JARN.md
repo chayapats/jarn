@@ -28,7 +28,7 @@ verify, with a strict permission system in front of every mutating action.
 - Codex subscription bridge: `providers/codex_subscription.py` uses the official
   local App Server; it must keep Codex execution disabled and route requested tools
   back through J.A.R.N.'s permission engine.
-- Tests: `tests/` (**2433** pytest cases) + `npm/` Node tests (launcher + assembly); docs: `docs/` + `README.md`; design: `SPEC.md`
+- Tests: `tests/` (**2435** pytest cases) + `npm/` Node tests (launcher + assembly); docs: `docs/` + `README.md`; design: `SPEC.md`
 - Distribution: PyPI (`jarn`) + npm (`jarn-cli`, standalone binary); `npm/` holds the launcher + per-platform packaging, published by the release workflow's `npm` job
 
 ## Conventions
@@ -42,7 +42,7 @@ verify, with a strict permission system in front of every mutating action.
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                    # full suite (2433 tests)
+uv run pytest                    # full suite (2435 tests)
 uv run ruff check src tests scripts  # lint
 uv run mypy src/                 # type-check (CI-gated)
 uv run jarn                      # launch the terminal REPL
