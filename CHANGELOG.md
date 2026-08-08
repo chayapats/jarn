@@ -5,6 +5,11 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-08
+
+Telegram gateway release: J.A.R.N. can now run as a long-lived,
+single-operator personal agent over Telegram while preserving its existing TUI.
+
 ### Added
 
 - **Telegram gateway (map #26 / plan #44).** Optional `jarn[telegram]` transport:

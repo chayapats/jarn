@@ -4,7 +4,7 @@
 > choosing where to contribute. Items marked `[x]` are implemented and in the
 > current release; `[ ]` items are scaffolded or documented but not yet shipped.
 
-Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-04** (v0.9.2 released on PyPI + npm, Alpha).
+Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-08** (v0.10.0 released on PyPI + npm, Alpha).
 
 ## v1 — implemented
 
@@ -58,6 +58,8 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-04** (v0.9.2 released
 - [x] Strict config validation (typed bools, numeric ranges, unknown top-level keys rejected)
 - [x] Local rotating logs, opt-in LangSmith tracing
 - [x] `uv`/PyPI packaging, 2403 tests (+ packaging gate), clean lint + `mypy` CI
+- [x] Optional single-operator Telegram gateway — long-poll DM bot, per-root
+  workers, durable approvals, inbound media, scheduler, and systemd deployment
 - [x] `jarn doctor` extension diagnostics — skills, commands, subagents, hooks, MCP
   (shadowing, builtin renames, untrusted skips); `uv.lock` tracked for team installs
 
