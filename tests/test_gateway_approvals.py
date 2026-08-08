@@ -128,14 +128,15 @@ def test_map_card_metadata_is_backward_compatible_and_atomically_updated(
     assert store.get("legacy") == original
     assert store.get("legacy").card is None
 
+    new_root = isolated_home / "new-root"
     updated = store.attach_card(
         "legacy",
-        root="/new/root",
+        root=new_root,
         chat_id=42,
         card={"action": "execute", "description": "run command"},
     )
     assert updated is not None
-    assert updated.root == "/new/root"
+    assert updated.root == str(new_root.resolve())
     assert updated.chat_id == 42
     assert updated.card == {"action": "execute", "description": "run command"}
 
