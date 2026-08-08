@@ -16,6 +16,7 @@ jobs:
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: "3.12"
+          save-cache: false
       - run: uv sync --extra dev --extra telegram
       - run: uv run ruff check src tests scripts
       - run: uv run mypy src/
@@ -37,6 +38,7 @@ jobs:
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: "3.12"
+          save-cache: false
       - run: uv build
       - name: Publish to PyPI (Trusted Publishing)
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -71,6 +73,7 @@ jobs:
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: "3.12"
+          save-cache: false
       - run: uv sync --extra dev --extra build
       - run: ./scripts/build-binary.sh
       - name: Smoke-test binary

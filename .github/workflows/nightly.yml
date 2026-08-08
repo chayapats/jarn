@@ -42,6 +42,7 @@ jobs:
         if: steps.gate.outputs.enabled == 'true'
         with:
           python-version: "3.12"
+          save-cache: false
 
       - name: Sync deps
         if: steps.gate.outputs.enabled == 'true'

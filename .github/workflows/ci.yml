@@ -44,6 +44,7 @@ jobs:
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: "3.12"
+          save-cache: false
       - run: uv sync --extra dev --extra telegram
       - run: uv build
       - run: uv run pytest tests/test_packaging.py -q
@@ -72,6 +73,7 @@ jobs:
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: "3.12"
+          save-cache: false
       - name: Sync deps
         run: uv sync --extra dev --extra telegram
       - name: Dependency audit (pip-audit)
