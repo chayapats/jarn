@@ -180,6 +180,14 @@ def main() -> int:
                 )
                 _status(turn_in_flight=False, idle_ms=0, parked_approvals=1)
                 continue
+            if os.environ.get("FAKE_WORKER_EMIT_TEXT"):
+                _emit(
+                    EventFrame(
+                        thread_id=frame.thread_id,
+                        kind="text",
+                        text=f"echo:{frame.text}",
+                    )
+                )
             _emit(
                 EventFrame(
                     thread_id=frame.thread_id,

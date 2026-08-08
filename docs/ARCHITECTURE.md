@@ -187,10 +187,14 @@ another root. Operational details are in [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.
 - `headless.py` — single-turn agent runner for `jarn -p`; fail-closed tool gate.
 - `controller/` — shared controller state and operations used across front-ends.
 - `gateway/daemon.py` + `gateway/worker.py` — per-root process supervision and worker entry.
-- `gateway/sessions.py` + `gateway/approvals.py` — durable chat/root routing and parked approvals.
+- `gateway/sessions.py` + `gateway/approvals.py` — durable chat/root/thread routing,
+  redacted approval-card persistence, restart re-card, and fail-closed callback ownership.
 - `gateway/protocol.py` + `gateway/lease.py` — private NDJSON frames and exclusive root ownership.
 - `gateway/scheduler.py` — persistent scheduled jobs with catch-up-once semantics.
-- `telegram/cli.py` + `telegram/bot.py` — `jarn gateway`, config validation, auth, and long-poll transport.
+- `telegram/cli.py` + `telegram/bot.py` — `jarn gateway`, config validation, auth,
+  permanent-401 stand-down, backend/outbox lifecycle, and long-poll transport.
+- `telegram/backend.py` — thread-safe worker-event bridge onto the Telegram asyncio
+  outbox plus durable approval callback routing.
 - `telegram/outbox.py` + `telegram/inbound_media.py` — HTML/draft output, cards, and gated media staging.
 - `compat.py` — context-file resolution order and `.claude/` directory discovery.
 

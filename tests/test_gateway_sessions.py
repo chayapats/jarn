@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from jarn.config.schema import GatewayRepo
+from jarn.gateway.approvals import PendingApproval, PendingApprovalMap
 from jarn.gateway.daemon import DaemonSupervisor
 from jarn.gateway.lease import RootLease
 from jarn.gateway.protocol import ApprovalAskFrame, EventFrame
@@ -128,9 +129,7 @@ def test_repo_home_hard_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         validate_gateway_root(home)
 
 
-def test_repo_global_home_hard_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_repo_global_home_hard_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from jarn.config import paths
 
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
@@ -273,9 +272,7 @@ def test_worker_death_notifies_no_auto_replay(personal: Path, allowlisted_repo: 
         sup.shutdown()
 
 
-def test_per_chat_roots_independent(
-    router: SessionRouter, personal: Path, allowlisted_repo: Path
-):
+def test_per_chat_roots_independent(router: SessionRouter, personal: Path, allowlisted_repo: Path):
     router.cmd_repo(1, "app")
     assert router.active_root(1) == allowlisted_repo
     assert router.active_root(2) == personal
@@ -284,9 +281,7 @@ def test_per_chat_roots_independent(
     assert t1 != t2
 
 
-def test_approval_ask_clears_busy_so_next_turn_not_queued(
-    personal: Path, allowlisted_repo: Path
-):
+def test_approval_ask_clears_busy_so_next_turn_not_queued(personal: Path, allowlisted_repo: Path):
     """Park (#37): ApprovalAsk must release the chat so a follow-up is not queued."""
     notices: list[tuple[int, str]] = []
     parked = threading.Event()
@@ -314,5 +309,48 @@ def test_approval_ask_clears_busy_so_next_turn_not_queued(
         r.submit_turn(11, "followup")
         assert r.queue_depth(personal) == 0
         assert not any(QUEUED_NOTICE in text for _, text in notices)
+    finally:
+        sup.shutdown()
+
+
+def test_approval_ask_persists_real_chat_and_redacted_card(
+    personal: Path,
+) -> None:
+    store = PendingApprovalMap()
+    store.put(
+        PendingApproval(
+            token="tok-card",
+            root=str(personal),
+            thread_id="thread-card",
+            interrupt_id="parked",
+            chat_id=0,
+        )
+    )
+    sup = DaemonSupervisor(worker_command=_worker_cmd())
+    router = SessionRouter(
+        sup,
+        personal_root=personal,
+        approval_store=store,
+    )
+    try:
+        router._root_owner[personal] = 42
+        router._handle_outbound(
+            type("Handle", (), {"root": personal})(),
+            ApprovalAskFrame(
+                token="tok-card",
+                thread_id="thread-card",
+                action="execute",
+                target="server.py",
+                description="write a file",
+                args={"path": "server.py"},
+            ),
+        )
+        record = store.get("tok-card")
+        assert record is not None
+        assert record.chat_id == 42
+        assert record.root == str(personal)
+        assert record.card is not None
+        assert record.card["action"] == "execute"
+        assert record.card["target"] == "server.py"
     finally:
         sup.shutdown()

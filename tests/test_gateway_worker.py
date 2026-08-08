@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,6 +53,24 @@ from jarn.permissions import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def test_worker_module_entry_does_not_trigger_runpy_preload_warning(
+    tmp_path: Path,
+) -> None:
+    env = os.environ.copy()
+    env.pop("JARN_GATEWAY_ROOT", None)
+    proc = subprocess.run(
+        [sys.executable, "-m", "jarn.gateway.worker"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 2
+    assert "pass --root" in proc.stderr
+    assert "RuntimeWarning" not in proc.stderr
 
 
 class _Stdin:
@@ -197,9 +218,7 @@ def _frames_of(stdout: _Stdout, cls: type) -> list[Any]:
 
 
 def test_redact_outbound_value_scrubs_secrets():
-    out = redact_outbound_value(
-        {"cmd": "export OPENAI_API_KEY=sk-proj-ABCDEFGH1234567890WXYZ"}
-    )
+    out = redact_outbound_value({"cmd": "export OPENAI_API_KEY=sk-proj-ABCDEFGH1234567890WXYZ"})
     assert "sk-proj-ABCDEFGH1234567890WXYZ" not in str(out)
     assert "OPENAI_API_KEY" in str(out) or "REDACTED" in str(out).upper() or "sk-" in str(out)
 
@@ -242,9 +261,7 @@ def test_event_to_frame_maps_kind():
 
 
 @pytest.mark.asyncio
-async def test_handshake_emits_status_with_eviction_fields(
-    isolated_home: Path, tmp_path: Path
-):
+async def test_handshake_emits_status_with_eviction_fields(isolated_home: Path, tmp_path: Path):
     root = tmp_path / "proj"
     root.mkdir()
     stdin, stdout = _Stdin(), _Stdout()
@@ -273,9 +290,7 @@ async def test_handshake_emits_status_with_eviction_fields(
 
 
 @pytest.mark.asyncio
-async def test_schema_mismatch_emits_error_and_exits(
-    isolated_home: Path, tmp_path: Path
-):
+async def test_schema_mismatch_emits_error_and_exits(isolated_home: Path, tmp_path: Path):
     root = tmp_path / "proj"
     root.mkdir()
     stdin, stdout = _Stdin(), _Stdout()
@@ -345,9 +360,7 @@ async def test_turn_emits_events(isolated_home: Path, tmp_path: Path):
     # Wait for done
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
-        if any(
-            isinstance(f, EventFrame) and f.kind == "done" for f in stdout.frames()
-        ):
+        if any(isinstance(f, EventFrame) and f.kind == "done" for f in stdout.frames()):
             break
         await asyncio.sleep(0.02)
     else:
@@ -397,6 +410,12 @@ async def test_park_emits_approval_ask(isolated_home: Path, tmp_path: Path):
     assert ask.dangerous is True
     assert "sk-proj-ABCDEFGH1234567890WXYZ" not in str(ask.args)
     assert store.get(ask.token) is not None
+    persisted = store.get(ask.token)
+    assert persisted is not None
+    assert persisted.chat_id == 42
+    assert persisted.card is not None
+    assert persisted.card["action"] == "execute"
+    assert "sk-proj-ABCDEFGH1234567890WXYZ" not in str(persisted.card)
     # Parked must NOT keep turn_in_flight true after release.
     await asyncio.sleep(0.1)
     assert worker._turn_in_flight() is False
@@ -430,16 +449,10 @@ async def test_approval_verdict_resumes(isolated_home: Path, tmp_path: Path):
     task = asyncio.create_task(worker.run())
     stdin.push(encode_line(HandshakeFrame(schema_version=SCHEMA_VERSION)))
     await asyncio.sleep(0.05)
-    stdin.push(
-        encode_line(
-            ApprovalVerdictFrame(token="tok-resume", approved=True, scope="once")
-        )
-    )
+    stdin.push(encode_line(ApprovalVerdictFrame(token="tok-resume", approved=True, scope="once")))
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
-        if any(
-            isinstance(f, EventFrame) and f.kind == "done" for f in stdout.frames()
-        ):
+        if any(isinstance(f, EventFrame) and f.kind == "done" for f in stdout.frames()):
             break
         await asyncio.sleep(0.02)
     else:
@@ -518,9 +531,7 @@ async def test_cancel_aborts_in_flight_turn(isolated_home: Path, tmp_path: Path)
     stdin.push(encode_line(CancelFrame(thread_id="thr-c")))
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
-        if any(
-            isinstance(f, ErrorFrame) and f.code == "cancelled" for f in stdout.frames()
-        ):
+        if any(isinstance(f, ErrorFrame) and f.code == "cancelled" for f in stdout.frames()):
             break
         await asyncio.sleep(0.02)
     else:
@@ -530,9 +541,7 @@ async def test_cancel_aborts_in_flight_turn(isolated_home: Path, tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_status_parked_does_not_imply_busy(
-    isolated_home: Path, tmp_path: Path
-):
+async def test_status_parked_does_not_imply_busy(isolated_home: Path, tmp_path: Path):
     """Eviction fields: parked_approvals > 0 with turn_in_flight False (#37)."""
     root = tmp_path / "proj"
     root.mkdir()

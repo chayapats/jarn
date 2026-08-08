@@ -14,6 +14,7 @@ callback verdict → ``resume_parked_approval``.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import threading
 from dataclasses import dataclass, field
@@ -293,9 +294,7 @@ async def test_e2e_transport_rejects_unauthorized_dm():
     backend = InMemoryGatewayBackend()
     app = TelegramBotApp(token="fake", allowed_user_ids=[42], backend=backend)
     app._outbox = Outbox(sender=FakeBot())
-    await app.handle_update(
-        _update_message(uid=1, user_id=99, chat_id=99, text="nope")
-    )
+    await app.handle_update(_update_message(uid=1, user_id=99, chat_id=99, text="nope"))
     assert backend.turns == []
 
 
@@ -305,9 +304,7 @@ async def test_e2e_transport_rejects_unauthorized_dm():
 
 
 @pytest.mark.asyncio
-async def test_e2e_dm_turn_park_verdict_resume(
-    isolated_home: Path, tmp_path: Path
-) -> None:
+async def test_e2e_dm_turn_park_verdict_resume(isolated_home: Path, tmp_path: Path) -> None:
     root = tmp_path / "proj"
     root.mkdir()
     bot = FakeBot()
@@ -325,9 +322,7 @@ async def test_e2e_dm_turn_park_verdict_resume(
     app._outbox = outbox
 
     # 1) Unauthorized update never reaches the backend.
-    await app.handle_update(
-        _update_message(uid=1, user_id=999, chat_id=999, text="intruder")
-    )
+    await app.handle_update(_update_message(uid=1, user_id=999, chat_id=999, text="intruder"))
     assert backend.turns == []
     assert store.list() == []
 
@@ -364,9 +359,7 @@ async def test_e2e_dm_turn_park_verdict_resume(
     assert parse_callback(once_payload).token == "e2e-park-token"
 
     # 3) Verdict callback → resume_parked_approval deletes map row + streams events.
-    await app.handle_update(
-        _update_callback(uid=3, user_id=7, chat_id=7, data=once_payload)
-    )
+    await app.handle_update(_update_callback(uid=3, user_id=7, chat_id=7, data=once_payload))
     assert store.get("e2e-park-token") is None
     kinds = [e.kind for e in backend.resume_events]
     assert EventKind.APPROVAL in kinds
@@ -427,9 +420,7 @@ async def test_e2e_media_refusal_card_voice_dm(tmp_path: Path):
     assert any("Media not accepted" in m["text"] for m in bot.sent)
 
 
-def test_e2e_session_router_dm_turn_and_busy_queue(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_e2e_session_router_dm_turn_and_busy_queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     personal = _personal_root(tmp_path, monkeypatch)
     allowlisted = tmp_path / "app"
     allowlisted.mkdir()
@@ -499,7 +490,10 @@ async def test_e2e_session_router_backend_accepts_dm_turn(
     sup = DaemonSupervisor(
         worker_command=_worker_cmd(),
         handshake_timeout_secs=5.0,
-        env={"FAKE_WORKER_TURN_HOLD_SECS": "0.05"},
+        env={
+            "FAKE_WORKER_TURN_HOLD_SECS": "0.05",
+            "FAKE_WORKER_EMIT_TEXT": "1",
+        },
     )
     router = SessionRouter(
         sup,
@@ -509,17 +503,22 @@ async def test_e2e_session_router_backend_accepts_dm_turn(
     )
     backend = SessionRouterBackend(router=router, supervisor=sup)
     app = TelegramBotApp(token="fake", allowed_user_ids=[5], backend=backend)
+    bot = FakeBot()
     app._bot = None
-    app._outbox = Outbox(sender=FakeBot())
+    app._outbox = Outbox(sender=bot)
+    backend.bind_outbox(app._outbox)
     try:
-        await app.handle_update(
-            _update_message(uid=1, user_id=5, chat_id=5, text="hello worker")
-        )
+        await app.handle_update(_update_message(uid=1, user_id=5, chat_id=5, text="hello worker"))
         assert done.wait(timeout=5)
-        assert any(
-            isinstance(f, EventFrame) and f.kind == "done" for f in events
-        )
+        assert any(isinstance(f, EventFrame) and f.kind == "done" for f in events)
+        for _ in range(50):
+            if bot.sent:
+                break
+            await asyncio.sleep(0.01)
+        assert bot.sent
+        assert any("echo:hello worker" in row["text"] for row in bot.sent)
     finally:
+        backend.unbind_outbox()
         sup.shutdown()
 
 

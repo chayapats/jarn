@@ -23,6 +23,7 @@ from pathlib import Path
 
 from jarn.config import paths
 from jarn.config.schema import GatewayRepo
+from jarn.gateway.approvals import PendingApprovalMap
 from jarn.gateway.daemon import DaemonSupervisor, WorkerDeadError, WorkerHandle
 from jarn.gateway.lease import RootLeaseHeldError
 from jarn.gateway.protocol import (
@@ -43,10 +44,7 @@ from jarn.memory.sessions import new_thread_id
 _log = logging.getLogger("jarn.gateway.sessions")
 
 #: Notice delivered when a message is enqueued behind an in-flight turn.
-QUEUED_NOTICE = (
-    "Queued — a turn is already running on this root. "
-    "Send /stop to cancel, or wait."
-)
+QUEUED_NOTICE = "Queued — a turn is already running on this root. Send /stop to cancel, or wait."
 
 #: Notice when /stop finds nothing to cancel.
 STOP_IDLE_NOTICE = "Nothing to stop — no turn in flight."
@@ -83,6 +81,10 @@ class RootBusyLeaseError(RuntimeError):
         )
 
 
+class ApprovalResumeBusyError(ValueError):
+    """A parked approval cannot pre-empt another active turn on its root."""
+
+
 @dataclass(slots=True)
 class QueuedTurn:
     """One user message waiting behind an in-flight turn on a root."""
@@ -113,6 +115,7 @@ class SessionRouter:
         on_notice: NoticeHook | None = None,
         on_event: EventHook | None = None,
         on_worker_death: DeathHook | None = None,
+        approval_store: PendingApprovalMap | None = None,
     ) -> None:
         self._supervisor = supervisor
         self._personal_root = (
@@ -125,6 +128,7 @@ class SessionRouter:
         self.on_notice = on_notice
         self.on_event = on_event
         self.on_worker_death = on_worker_death
+        self.approval_store = approval_store or PendingApprovalMap()
 
         self._chats: dict[int, ChatSessionState] = {}
         # Per-root FIFO of queued turns (busy policy).
@@ -196,6 +200,37 @@ class SessionRouter:
             handle = self._supervisor.get_worker(key)
             return bool(handle is not None and handle.turn_in_flight)
 
+    def claim_approval_resume(
+        self,
+        chat_id: int,
+        *,
+        root: Path | str,
+        thread_id: str,
+    ) -> Path:
+        """Restore routing state before resuming a durable approval.
+
+        A fresh gateway has no in-memory ``root_owner`` or active repository.
+        The pending map supplies both the original root and thread so resumed
+        worker events can be delivered to the correct Telegram chat.
+        """
+        resolved = self.resolve_repo(str(root))
+        with self._lock:
+            if resolved in self._busy_roots:
+                raise ApprovalResumeBusyError(
+                    "the project root is busy with another turn; try this card "
+                    "again after that turn finishes"
+                )
+            state = self._state(chat_id)
+            state.active_root = resolved
+            state.threads[resolved] = thread_id
+            self._root_owner[resolved] = chat_id
+            self._busy_roots.add(resolved)
+        return resolved
+
+    def release_approval_claim(self, root: Path | str) -> None:
+        """Release a failed approval-resume claim and continue queued work."""
+        self._clear_busy_and_drain(Path(root).expanduser().resolve())
+
     # ------------------------------------------------------------------
     # Commands
     # ------------------------------------------------------------------
@@ -216,11 +251,16 @@ class SessionRouter:
 
     def resolve_repo(self, target: str | None) -> Path:
         """Resolve a ``/repo`` argument to an absolute allowed root."""
-        if target is None or not str(target).strip() or str(target).strip().lower() in {
-            "personal",
-            "~",
-            "default",
-        }:
+        if (
+            target is None
+            or not str(target).strip()
+            or str(target).strip().lower()
+            in {
+                "personal",
+                "~",
+                "default",
+            }
+        ):
             return self._personal_root
 
         raw = str(target).strip()
@@ -425,7 +465,12 @@ class SessionRouter:
         try:
             self._supervisor.send(
                 root,
-                TurnFrame(thread_id=thread_id, text=text, media=media),
+                TurnFrame(
+                    thread_id=thread_id,
+                    text=text,
+                    media=media,
+                    chat_id=chat_id,
+                ),
             )
         except RootLeaseHeldError as exc:
             err = RootBusyLeaseError(root)
@@ -444,6 +489,26 @@ class SessionRouter:
     def _handle_outbound(self, handle: WorkerHandle, frame: OutboundFrame) -> None:
         with self._lock:
             chat_id = self._root_owner.get(handle.root)
+        if chat_id is not None and isinstance(frame, ApprovalAskFrame):
+            # The worker records the token before emitting this frame, but only
+            # the daemon knows the real Telegram chat for the active root.  Add
+            # that authoritative route plus already-redacted card data before
+            # delivery so a crash can re-card it safely on restart.
+            self.approval_store.attach_card(
+                frame.token,
+                root=handle.root,
+                chat_id=chat_id,
+                card={
+                    "action": frame.action,
+                    "target": frame.target,
+                    "description": frame.description,
+                    "args": dict(frame.args),
+                    "plan": frame.plan,
+                    "suggested_memory": frame.suggested_memory,
+                    "suggested_skill": frame.suggested_skill,
+                    "dangerous": frame.dangerous,
+                },
+            )
         if chat_id is not None and self.on_event is not None:
             try:
                 self.on_event(chat_id, handle.root, frame)
@@ -454,10 +519,7 @@ class SessionRouter:
         if (
             isinstance(frame, ApprovalAskFrame)
             or (isinstance(frame, StatusFrame) and not frame.turn_in_flight)
-            or (
-                isinstance(kind, str)
-                and kind.lower() in {"done", "cancelled", "error"}
-            )
+            or (isinstance(kind, str) and kind.lower() in {"done", "cancelled", "error"})
         ):
             # ApprovalAsk = park (#37): turn released; do not keep chat busy.
             self._clear_busy_and_drain(handle.root)
@@ -474,9 +536,7 @@ class SessionRouter:
             # Drop the dead handle so a later drain/ensure can respawn.
             # Do **not** replay the in-flight turn — only continue the queue.
         if chat_id is not None:
-            err = WorkerDeadError(
-                handle.root, exit_code=exit_code, thread_id=thread_id
-            )
+            err = WorkerDeadError(handle.root, exit_code=exit_code, thread_id=thread_id)
             self._notice(
                 chat_id,
                 f"Worker for {handle.root} died (exit={exit_code!r}). "
@@ -486,15 +546,11 @@ class SessionRouter:
                 try:
                     self.on_worker_death(chat_id, handle.root, err)
                 except Exception:  # noqa: BLE001
-                    _log.exception(
-                        "on_worker_death hook failed chat=%s", chat_id
-                    )
+                    _log.exception("on_worker_death hook failed chat=%s", chat_id)
         try:
             self.drain_queue(handle.root)
         except Exception:  # noqa: BLE001
-            _log.exception(
-                "failed to drain queue after worker death for %s", handle.root
-            )
+            _log.exception("failed to drain queue after worker death for %s", handle.root)
 
     def _clear_busy_and_drain(self, root: Path) -> None:
         with self._lock:
@@ -535,22 +591,17 @@ def validate_gateway_root(root: Path | str, *, personal_ok: bool = False) -> Pat
     except (OSError, RuntimeError):
         home = None
     if home is not None and resolved == home:
-        raise ForbiddenRootError(
-            f"refusing to bind gateway root to $HOME ({resolved})"
-        )
+        raise ForbiddenRootError(f"refusing to bind gateway root to $HOME ({resolved})")
 
     global_home = paths.global_home().resolve()
     if resolved == global_home:
-        raise ForbiddenRootError(
-            f"refusing to bind gateway root to global home ({resolved})"
-        )
+        raise ForbiddenRootError(f"refusing to bind gateway root to global home ({resolved})")
 
     pcfg = paths.project_config_path(resolved)
     gcfg = paths.global_config_path().resolve()
     if pcfg is not None and pcfg.resolve() == gcfg:
         raise ForbiddenRootError(
-            f"refusing root whose project config collides with global config: "
-            f"{resolved}"
+            f"refusing root whose project config collides with global config: {resolved}"
         )
 
     if not personal_ok and resolved != personal:

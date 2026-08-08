@@ -32,8 +32,10 @@ Destination of map [#26](https://github.com/chayapats/jarn/issues/26). Binding d
 - Auth: DM-only; deny-by-default; principal = `from.id` on every update including callbacks ([#34](https://github.com/chayapats/jarn/issues/34)).
 
 ### Approvals ([#37](https://github.com/chayapats/jarn/issues/37), [#39](https://github.com/chayapats/jarn/issues/39))
-- Durable park-and-resume; interrupt in `<root>/.jarn/state.sqlite` is SoT; gateway DB maps tokens for routing only.
-- No TTL. Restart re-cards. Tool-only cards (redacted args).
+- Durable park-and-resume; interrupt in `<root>/.jarn/state.sqlite` is SoT; the
+  gateway store maps tokens to root/thread/chat and retains redacted card metadata.
+- No TTL. Restart re-cards allowlisted chats. Callbacks are chat-bound and resume
+  the stored root/thread. Tool-only cards use redacted args.
 - Floor `auto-edit`; Once/Session/Deny only — no remote ALWAYS. Plan-mode three-way. Memory Save/Decline. No edit-before-apply on chat.
 
 ### Output ([#40](https://github.com/chayapats/jarn/issues/40))
@@ -45,7 +47,8 @@ Destination of map [#26](https://github.com/chayapats/jarn/issues/26). Binding d
 
 ### Pipe ([#60](https://github.com/chayapats/jarn/issues/60))
 - Bidirectional NDJSON; distinct private schema; version on handshake only.
-- Inbound v1: `handshake` | `turn` | `approval_verdict` | `cancel` | `steer` | `shutdown`.
+- Inbound v1: `handshake` | `turn` (including delivery `chat_id`) |
+  `approval_verdict` | `cancel` | `steer` | `shutdown`.
 - Worker death: fail-loud, no auto-replay. Periodic `status` heartbeats. OS-pipe backpressure.
 
 ### Media ([#54](https://github.com/chayapats/jarn/issues/54))

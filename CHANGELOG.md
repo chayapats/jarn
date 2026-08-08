@@ -5,6 +5,22 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Telegram production replies and approval cards now reach the chat.** The
+  production `SessionRouter` worker callbacks are bridged thread-safely onto the
+  Telegram asyncio outbox; the previous assembly created both halves but never
+  connected outbound worker events to the bot sender.
+- **Parked Telegram approvals survive a gateway restart with their security
+  context intact.** Redacted card metadata, chat ownership, root, and thread are
+  persisted before the worker emits the card. Restart re-card filters against the
+  current allowlist, callbacks fail closed for stale/cross-chat tokens, and resume
+  uses the stored root/thread even when the fresh session defaults to the personal
+  root. Skill suggestions also retain their card type across the worker protocol.
+- **Invalid and unauthorized Telegram bot tokens fail fast.** Local token
+  validation and Telegram HTTP 401 now exit with `EXIT_UNAUTHORIZED` (77) instead
+  of entering the generic one-second network retry loop.
+
 ## [0.10.0] - 2026-08-08
 
 Telegram gateway release: J.A.R.N. can now run as a long-lived,

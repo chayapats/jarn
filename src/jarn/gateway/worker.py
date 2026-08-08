@@ -125,6 +125,10 @@ def redact_outbound_frame(frame: OutboundFrame) -> OutboundFrame:
         if frame.suggested_memory is not None:
             redacted = redact_outbound_value(frame.suggested_memory)
             mem = redacted if isinstance(redacted, dict) else {"value": redacted}
+        skill: dict[str, Any] | None = None
+        if frame.suggested_skill is not None:
+            redacted = redact_outbound_value(frame.suggested_skill)
+            skill = redacted if isinstance(redacted, dict) else {"value": redacted}
         return ApprovalAskFrame(
             token=frame.token,
             thread_id=frame.thread_id,
@@ -136,6 +140,7 @@ def redact_outbound_frame(frame: OutboundFrame) -> OutboundFrame:
             args=sanitize_tool_args(frame.args),
             plan=redact_secrets(frame.plan) if frame.plan is not None else None,
             suggested_memory=mem,
+            suggested_skill=skill,
         )
     if isinstance(frame, ErrorFrame):
         return ErrorFrame(
@@ -159,10 +164,7 @@ def event_to_frame(event: Event, *, thread_id: str) -> EventFrame:
 
 
 def _media_inputs(frame: TurnFrame) -> list[MediaInput]:
-    return [
-        MediaInput(path=ref.path, mime=ref.mime, modality=ref.modality)
-        for ref in frame.media
-    ]
+    return [MediaInput(path=ref.path, mime=ref.mime, modality=ref.modality) for ref in frame.media]
 
 
 def _live_bg_job_count() -> int:
@@ -174,22 +176,18 @@ def _live_bg_job_count() -> int:
         return 0
 
 
-def _approval_ask_from_park(
-    record: PendingApproval, request: ApprovalRequest
-) -> ApprovalAskFrame:
+def _approval_ask_from_park(record: PendingApproval, request: ApprovalRequest) -> ApprovalAskFrame:
     action = request.action
     tool = getattr(action, "tool", None) or ""
     kind = getattr(getattr(action, "kind", None), "value", None) or ""
     action_name = tool or kind or "tool"
     mem: dict[str, Any] | None = None
+    skill: dict[str, Any] | None = None
     if request.suggested_memory is not None:
         mem = asdict(request.suggested_memory)
-    elif request.suggested_skill is not None:
-        # Protocol v1 has no suggested_skill field; fold into args via caller.
-        mem = None
+    if request.suggested_skill is not None:
+        skill = asdict(request.suggested_skill)
     args = dict(request.args or {})
-    if request.suggested_skill is not None and "name" not in args:
-        args = {**asdict(request.suggested_skill), **args}
     result = request.result
     return ApprovalAskFrame(
         token=record.token,
@@ -202,6 +200,7 @@ def _approval_ask_from_park(
         args=args,
         plan=request.plan,
         suggested_memory=mem,
+        suggested_skill=skill,
     )
 
 
@@ -380,10 +379,11 @@ class GatewayWorker:
         try:
             self.controller.resume_thread(thread_id)
             await self.controller.ensure_runtime()
-            enriched = await asyncio.to_thread(
-                self.controller.enrich_turn_input, frame.text
+            enriched = await asyncio.to_thread(self.controller.enrich_turn_input, frame.text)
+            approver = self._make_park_approver(
+                thread_id,
+                chat_id=frame.chat_id,
             )
-            approver = self._make_park_approver(thread_id)
 
             async def on_event(event: Event) -> None:
                 await self.aemit(event_to_frame(event, thread_id=thread_id))
@@ -462,7 +462,10 @@ class GatewayWorker:
             await self.controller.ensure_runtime()
             # Park approver is the restored default after the fixed verdict lands,
             # so a later ASK in the same resume stream parks again.
-            park = self._make_park_approver(thread_id)
+            park = self._make_park_approver(
+                thread_id,
+                chat_id=record.chat_id,
+            )
             driver = self.controller.make_driver(park)
             async for event in resume_parked_approval(
                 driver,
@@ -546,18 +549,41 @@ class GatewayWorker:
                 _log.exception("abort during shutdown")
         # Heartbeat / read loops observe _shutdown and exit.
 
-    def _make_park_approver(self, thread_id: str):
+    def _make_park_approver(
+        self,
+        thread_id: str,
+        *,
+        chat_id: int | None = None,
+    ):
         async def on_park(record: PendingApproval, request: ApprovalRequest) -> None:
             ask = _approval_ask_from_park(record, request)
             await self.aemit(ask)
+
+        def card_factory(
+            record: PendingApproval,
+            request: ApprovalRequest,
+        ) -> dict[str, Any]:
+            ask = redact_outbound_frame(_approval_ask_from_park(record, request))
+            assert isinstance(ask, ApprovalAskFrame)
+            return {
+                "action": ask.action,
+                "target": ask.target,
+                "description": ask.description,
+                "args": dict(ask.args),
+                "plan": ask.plan,
+                "suggested_memory": ask.suggested_memory,
+                "suggested_skill": ask.suggested_skill,
+                "dangerous": ask.dangerous,
+            }
 
         return make_park_approver(
             root=self.root,
             thread_id=thread_id,
             # Routing bookkeeping only; LangGraph interrupt in state.sqlite is SoT.
             interrupt_id="parked",
-            chat_id=self.chat_id,
+            chat_id=self.chat_id if chat_id is None else chat_id,
             store=self.approval_store,
+            card_factory=card_factory,
             on_park=on_park,
         )
 
@@ -565,9 +591,7 @@ class GatewayWorker:
 
     async def run(self) -> int:
         """Run until ``shutdown``, EOF, or a fatal protocol error. Returns exit code."""
-        heartbeat = asyncio.create_task(
-            self._heartbeat_loop(), name="gateway-worker-heartbeat"
-        )
+        heartbeat = asyncio.create_task(self._heartbeat_loop(), name="gateway-worker-heartbeat")
         exit_code = 0
         try:
             async for line in self._stdin_lines():
@@ -586,9 +610,7 @@ class GatewayWorker:
                     self._shutdown = True
                     break
                 except ProtocolError as exc:
-                    await self.aemit(
-                        ErrorFrame(message=str(exc), code="protocol_error")
-                    )
+                    await self.aemit(ErrorFrame(message=str(exc), code="protocol_error"))
                     continue
                 try:
                     await self.handle_frame(frame)
@@ -643,9 +665,7 @@ class GatewayWorker:
     ) -> None:
         """Best-effort error emit on worker death mid-turn (no auto-replay)."""
         try:
-            await self.aemit(
-                ErrorFrame(message=message, code=code, thread_id=thread_id)
-            )
+            await self.aemit(ErrorFrame(message=message, code=code, thread_id=thread_id))
         except Exception:  # noqa: BLE001
             _log.exception("failed to emit death error")
 

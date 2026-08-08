@@ -57,6 +57,7 @@ def test_turn_round_trip_with_media():
         thread_id="thr-1",
         text="look at this",
         media=[MediaRef(path="/tmp/a.png", mime="image/png", modality="image")],
+        chat_id=42,
     )
     out = _round_trip_inbound(frame)
     assert out.thread_id == "thr-1"
@@ -65,11 +66,13 @@ def test_turn_round_trip_with_media():
     assert out.media[0].path == "/tmp/a.png"
     assert out.media[0].mime == "image/png"
     assert out.media[0].modality == "image"
+    assert out.chat_id == 42
 
 
 def test_turn_round_trip_empty_media_default():
     out = _round_trip_inbound(TurnFrame(thread_id="t", text="hi"))
     assert out.media == []
+    assert out.chat_id is None
 
 
 def test_approval_verdict_round_trip():
@@ -128,9 +131,7 @@ def test_status_heartbeat_fields_round_trip():
 
 
 def test_status_omits_optional_parked_approvals_when_unset():
-    line = encode_line(
-        StatusFrame(turn_in_flight=False, live_bg_jobs=0, idle_ms=500)
-    )
+    line = encode_line(StatusFrame(turn_in_flight=False, live_bg_jobs=0, idle_ms=500))
     obj = json.loads(line)
     assert "parked_approvals" not in obj
     out = decode_outbound_line(line)
@@ -148,14 +149,14 @@ def test_approval_ask_and_error_round_trip():
             dangerous=True,
             reason="destructive",
             args={"command": "rm -rf /"},
+            suggested_skill={"name": "deploy", "body": "safe"},
         )
     )
     assert ask.dangerous is True
     assert ask.args["command"] == "rm -rf /"
+    assert ask.suggested_skill == {"name": "deploy", "body": "safe"}
 
-    err = _round_trip_outbound(
-        ErrorFrame(message="boom", code="worker_crash", thread_id="t1")
-    )
+    err = _round_trip_outbound(ErrorFrame(message="boom", code="worker_crash", thread_id="t1"))
     assert err.code == "worker_crash"
     assert err.thread_id == "t1"
 

@@ -26,7 +26,7 @@ import json
 import logging
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -63,7 +63,12 @@ class ApprovalParked(Exception):
 
 @dataclass(slots=True, frozen=True)
 class PendingApproval:
-    """One gateway routing row for a parked approval (#37)."""
+    """One gateway routing/UI row for a parked approval (#37).
+
+    ``card`` was added compatibly to the version-1 store so a gateway restart
+    can render the same redacted approval card without reopening a worker or
+    scanning a project checkpointer.  Older rows deserialize with ``card=None``.
+    """
 
     token: str
     root: str
@@ -71,6 +76,7 @@ class PendingApproval:
     interrupt_id: str
     chat_id: int
     message_id: int | None = None
+    card: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -83,6 +89,9 @@ class PendingApproval:
         chat_id = data["chat_id"]
         if not isinstance(chat_id, int) or isinstance(chat_id, bool):
             raise ValueError("chat_id must be an int")
+        card = data.get("card")
+        if card is not None and not isinstance(card, dict):
+            raise ValueError("card must be an object or null")
         return cls(
             token=str(data["token"]),
             root=str(data["root"]),
@@ -90,6 +99,7 @@ class PendingApproval:
             interrupt_id=str(data["interrupt_id"]),
             chat_id=chat_id,
             message_id=mid,
+            card=dict(card) if card is not None else None,
         )
 
 
@@ -105,7 +115,7 @@ def mint_approval_token() -> str:
 
 
 class PendingApprovalMap:
-    """CRUD store for ``token → {root, thread_id, interrupt_id, chat_id, message_id}``.
+    """CRUD store for durable approval routing and redacted card metadata.
 
     Cross-process safe via :func:`~jarn.util.atomic.file_lock` + atomic publish.
     """
@@ -158,6 +168,50 @@ class PendingApprovalMap:
             n = len(data)
             self._save_unlocked({})
         return n
+
+    def attach_card(
+        self,
+        token: str,
+        *,
+        root: Path | str,
+        chat_id: int,
+        card: Mapping[str, Any],
+    ) -> PendingApproval | None:
+        """Atomically add delivery/card data to an existing parked approval.
+
+        Workers persist the routing row before emitting ``ApprovalAskFrame``.
+        The daemon owns the authoritative Telegram ``chat_id`` and calls this
+        method before sending the card.  Missing tokens are left untouched so
+        protocol test workers that only emit synthetic frames remain harmless.
+        """
+        with file_lock(self.path):
+            data = self._load_unlocked()
+            raw = data.get(token)
+            if raw is None:
+                return None
+            record = PendingApproval.from_dict(raw)
+            updated = replace(
+                record,
+                root=str(Path(root).expanduser().resolve()),
+                chat_id=chat_id,
+                card=dict(card),
+            )
+            data[token] = updated.to_dict()
+            self._save_unlocked(data)
+        return updated
+
+    def set_message_id(self, token: str, message_id: int) -> PendingApproval | None:
+        """Atomically remember the most recently rendered Telegram card id."""
+        with file_lock(self.path):
+            data = self._load_unlocked()
+            raw = data.get(token)
+            if raw is None:
+                return None
+            record = PendingApproval.from_dict(raw)
+            updated = replace(record, message_id=message_id)
+            data[token] = updated.to_dict()
+            self._save_unlocked(data)
+        return updated
 
     def _load_unlocked(self) -> dict[str, dict[str, Any]]:
         if not self.path.is_file():
@@ -216,8 +270,8 @@ def make_park_approver(
     message_id: int | None = None,
     store: PendingApprovalMap | None = None,
     token_factory: Callable[[], str] | None = None,
-    on_park: Callable[[PendingApproval, ApprovalRequest], Awaitable[None] | None]
-    | None = None,
+    card_factory: Callable[[PendingApproval, ApprovalRequest], Mapping[str, Any]] | None = None,
+    on_park: Callable[[PendingApproval, ApprovalRequest], Awaitable[None] | None] | None = None,
 ) -> Approver:
     """Build an :class:`~jarn.agent.events.Approver` that parks then releases.
 
@@ -239,6 +293,8 @@ def make_park_approver(
             chat_id=chat_id,
             message_id=message_id,
         )
+        if card_factory is not None:
+            record = replace(record, card=dict(card_factory(record, request)))
         map_.put(record)
         if on_park is not None:
             maybe = on_park(record, request)
@@ -262,9 +318,7 @@ def make_verdict_approver(
     Remote ALWAYS is out of v1 (#39); ``scope`` should be ``once`` or ``session``.
     Extra :class:`ApprovalReply` fields are accepted for schema foresight.
     """
-    remember = (
-        scope if isinstance(scope, RememberScope) else RememberScope(str(scope).lower())
-    )
+    remember = scope if isinstance(scope, RememberScope) else RememberScope(str(scope).lower())
     if remember is RememberScope.ALWAYS:
         # Floor: remote ALWAYS is forbidden in v1 — downgrade to SESSION.
         remember = RememberScope.SESSION

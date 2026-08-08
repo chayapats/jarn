@@ -3,13 +3,15 @@
 Binding
 -------
 * DM-only; deny-by-default allowlist on ``from.id`` (messages **and** callbacks).
-* Restart backlog: fetch once, report verbatim, **do not execute** (#53).
+* Restart backlog: fetch once, report verbatim, **do not execute** (#53), then
+  re-display durable parked approval cards.
 * Second-poller: host :class:`~jarn.telegram.poller_lock.PollerLock`; on first
   Telegram 409 (``TelegramConflictError``) send one chat notice and exit with
   :data:`EXIT_CONFLICT` (75) — **never retry 409**, **never call ``logOut``**.
   Same-host flock contention exits :data:`EXIT_LOCK_HELD` (76). Wire both into
   systemd ``RestartPreventExitStatus`` (see ``docs/TELEGRAM_GATEWAY.md``).
 * ``getWebhookInfo`` at startup: report, do not repair.
+* Invalid/unauthorized tokens fail fast with :data:`EXIT_UNAUTHORIZED` (77).
 * Depends on :class:`~jarn.telegram.backend.GatewayBackend` only (not daemon.py).
 """
 
@@ -37,6 +39,7 @@ _log = logging.getLogger("jarn.telegram.bot")
 __all__ = [
     "EXIT_CONFLICT",
     "EXIT_LOCK_HELD",
+    "EXIT_UNAUTHORIZED",
     "TelegramBotApp",
     "BacklogReport",
     "describe_update_verbatim",
@@ -51,10 +54,22 @@ EXIT_CONFLICT = 75
 #: Distinct exit when the host flock is already held (same-box second poller).
 EXIT_LOCK_HELD = 76
 
+#: Permanent authentication/configuration failure; never retry in the poll loop.
+EXIT_UNAUTHORIZED = 77
+
 _CONFLICT_NOTICE = (
     "jarn gateway: another getUpdates client took this bot token "
     "(Telegram 409). Standing down — not retrying, not calling logOut."
 )
+
+
+def _is_telegram_unauthorized(exc: BaseException) -> bool:
+    """Classify Telegram's permanent 401 without coupling module import-time."""
+    try:
+        from aiogram.exceptions import TelegramUnauthorizedError
+    except ImportError:  # pragma: no cover - telegram extra validated at startup
+        return False
+    return isinstance(exc, TelegramUnauthorizedError)
 
 
 @dataclass(slots=True)
@@ -109,9 +124,7 @@ def describe_update_verbatim(update: Any) -> str:
         preview = (text or "").replace("\n", "\\n")
         if len(preview) > 200:
             preview = preview[:200] + "…"
-        return (
-            f"update_id={uid} message chat={chat_id} from={from_id} text={preview!r}"
-        )
+        return f"update_id={uid} message chat={chat_id} from={from_id} text={preview!r}"
     return f"update_id={uid} (unrecognized update kind)"
 
 
@@ -140,6 +153,8 @@ async def drain_backlog(bot: Any) -> BacklogReport:
                 pending_update_count,
             )
     except Exception as exc:  # noqa: BLE001
+        if _is_telegram_unauthorized(exc):
+            raise
         _log.warning("getWebhookInfo failed (continuing): %s", exc)
 
     lines: list[str] = []
@@ -150,6 +165,8 @@ async def drain_backlog(bot: Any) -> BacklogReport:
         try:
             updates = await bot.get_updates(offset=offset, timeout=0, limit=100)
         except Exception as exc:  # noqa: BLE001
+            if _is_telegram_unauthorized(exc):
+                raise
             _log.error("backlog getUpdates failed: %s", exc)
             break
         if not updates:
@@ -198,8 +215,8 @@ class TelegramBotApp:
     async def start(self) -> int:
         """Acquire host flock, drain backlog, long-poll until stop/409.
 
-        Returns a process exit code (0 = clean stop, :data:`EXIT_CONFLICT` /
-        :data:`EXIT_LOCK_HELD` on stand-down).
+        Returns a process exit code (0 = clean stop, :data:`EXIT_CONFLICT`,
+        :data:`EXIT_LOCK_HELD`, or :data:`EXIT_UNAUTHORIZED` on stand-down).
         """
         from jarn.telegram import require_aiogram
 
@@ -207,6 +224,8 @@ class TelegramBotApp:
         from aiogram import Bot
         from aiogram.client.default import DefaultBotProperties
         from aiogram.enums import ParseMode
+        from aiogram.exceptions import TelegramUnauthorizedError
+        from aiogram.utils.token import TokenValidationError
 
         try:
             lock = PollerLock()
@@ -216,16 +235,37 @@ class TelegramBotApp:
             return EXIT_LOCK_HELD
 
         try:
-            self._bot = Bot(
-                token=self.token,
-                default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-            )
+            try:
+                self._bot = Bot(
+                    token=self.token,
+                    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+                )
+            except TokenValidationError as exc:
+                _log.error("invalid Telegram bot token: %s", exc)
+                return EXIT_UNAUTHORIZED
             self._outbox = Outbox(sender=self._bot)
-            report = await drain_backlog(self._bot)
+            binder = getattr(self.backend, "bind_outbox", None)
+            if callable(binder):
+                binder(self._outbox, loop=asyncio.get_running_loop())
+            try:
+                report = await drain_backlog(self._bot)
+            except TelegramUnauthorizedError as exc:
+                _log.error("Telegram bot token unauthorized — standing down: %s", exc)
+                return EXIT_UNAUTHORIZED
             self._offset = report.offset
             await self._report_backlog(report)
+            restorer = getattr(self.backend, "restore_pending_approvals", None)
+            if callable(restorer):
+                restored = await restorer(
+                    allowed_chat_ids=self.allowed_user_ids,
+                )
+                if restored:
+                    _log.info("re-displayed %s parked approval card(s)", restored)
             return await self._poll_loop()
         finally:
+            unbinder = getattr(self.backend, "unbind_outbox", None)
+            if callable(unbinder):
+                unbinder()
             lock.release()
             if self._bot is not None:
                 await self._bot.session.close()
@@ -260,7 +300,10 @@ class TelegramBotApp:
     async def _poll_loop(self) -> int:
         assert self._bot is not None
         self._running = True
-        from aiogram.exceptions import TelegramConflictError
+        from aiogram.exceptions import (
+            TelegramConflictError,
+            TelegramUnauthorizedError,
+        )
 
         while self._running:
             try:
@@ -277,6 +320,9 @@ class TelegramBotApp:
                 _log.error("Telegram 409 conflict — standing down: %s", exc)
                 await self._stand_down_conflict()
                 return EXIT_CONFLICT
+            except TelegramUnauthorizedError as exc:
+                _log.error("Telegram bot token unauthorized — standing down: %s", exc)
+                return EXIT_UNAUTHORIZED
             except Exception as exc:  # noqa: BLE001
                 # Transient network errors: brief pause then continue.
                 # Never treat non-409 as conflict, never call logOut.
@@ -326,21 +372,35 @@ class TelegramBotApp:
         if cb is None and isinstance(update, dict):
             cb = update.get("callback_query")
         if cb is not None:
-            await self._handle_callback(cb, chat_id=chat_id, user_id=user_id)
+            try:
+                await self._handle_callback(
+                    cb,
+                    chat_id=chat_id,
+                    user_id=user_id,
+                )
+            except (LookupError, PermissionError, ValueError) as exc:
+                _log.info(
+                    "approval callback rejected chat=%s user=%s: %s",
+                    chat_id,
+                    user_id,
+                    exc,
+                )
+                if self._outbox is not None:
+                    await self._outbox.send_notice(
+                        chat_id,
+                        f"Approval could not be resumed: {exc}. If the card is "
+                        "stale, re-run the request to create a new one.",
+                    )
             return
 
-        msg = getattr(update, "message", None) or getattr(
-            update, "edited_message", None
-        )
+        msg = getattr(update, "message", None) or getattr(update, "edited_message", None)
         if msg is None and isinstance(update, dict):
             msg = update.get("message") or update.get("edited_message")
         if msg is None:
             return
         await self._handle_message(msg, chat_id=chat_id, user_id=user_id)
 
-    async def _handle_callback(
-        self, cb: Any, *, chat_id: int, user_id: int
-    ) -> None:
+    async def _handle_callback(self, cb: Any, *, chat_id: int, user_id: int) -> None:
         data = getattr(cb, "data", None)
         if data is None and isinstance(cb, dict):
             data = cb.get("data")
@@ -412,9 +472,7 @@ class TelegramBotApp:
                 plan_mode_target=target,
             )
 
-    async def _handle_message(
-        self, msg: Any, *, chat_id: int, user_id: int
-    ) -> None:
+    async def _handle_message(self, msg: Any, *, chat_id: int, user_id: int) -> None:
         text = getattr(msg, "text", None) or getattr(msg, "caption", None) or ""
         if text is None:
             text = ""
@@ -426,9 +484,7 @@ class TelegramBotApp:
                 await self._outbox.send_notice(chat_id, "Stopped.")
             return
         if text.startswith("/new"):
-            thread_id = await self.backend.new_thread(
-                chat_id=chat_id, user_id=user_id
-            )
+            thread_id = await self.backend.new_thread(chat_id=chat_id, user_id=user_id)
             if self._outbox:
                 await self._outbox.send_notice(chat_id, f"New thread: {thread_id}")
             return
@@ -437,9 +493,7 @@ class TelegramBotApp:
             name = parts[1].strip() if len(parts) > 1 else ""
             if not name:
                 if self._outbox:
-                    await self._outbox.send_notice(
-                        chat_id, "Usage: /repo <name-or-path>"
-                    )
+                    await self._outbox.send_notice(chat_id, "Usage: /repo <name-or-path>")
                 return
             try:
                 root = await self.backend.set_repo(

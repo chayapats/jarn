@@ -67,8 +67,11 @@ repository on demand. `/repo` can switch only to roots in `gateway.repos`.
   a private, versioned NDJSON pipe.
 - DMs and callback queries are authenticated by the sender's numeric user id. Group
   chats and users outside the allowlist are rejected.
-- Approvals are durable. A restart re-displays parked approval cards; silence is not a
-  denial. Remote approvals never grant `ALWAYS`.
+- Approvals are durable. The worker persists the redacted card, original root,
+  thread, and Telegram chat before emitting it. A restart re-displays cards only
+  for chats that remain allowlisted, and callbacks resume the stored root/thread
+  rather than whichever repository happens to be active after boot. Silence is
+  not a denial. Remote approvals never grant `ALWAYS`.
 - Photos and documents are gated and staged for the active worker. Voice messages are
   explicitly refused; STT/TTS is not included in v1.
 - Updates already waiting when the process starts are counted, reported, and discarded
@@ -107,9 +110,9 @@ EnvironmentFile=/home/jarn/.config/jarn/telegram.env
 
 Restart=on-failure
 RestartSec=5
-# 75 = Telegram 409 conflict; 76 = same-host poller lock already held.
-# Both are intentional stand-downs, not crash loops.
-RestartPreventExitStatus=75 76
+# 75 = Telegram 409 conflict; 76 = same-host poller lock already held;
+# 77 = invalid or unauthorized bot token. All require operator action.
+RestartPreventExitStatus=75 76 77
 
 # Let the main process terminate workers cleanly, then stop the whole cgroup.
 KillMode=mixed
@@ -148,7 +151,7 @@ JARN_TELEGRAM_BOT_TOKEN=123456:replace-me
 JARN_TELEGRAM_ALLOWED_USER_IDS=123456789
 ```
 
-## Second poller and Telegram 409
+## Terminal stand-down conditions
 
 Telegram allows only one active `getUpdates` consumer per bot token. Jarn enforces
 this in two layers (`src/jarn/telegram/poller_lock.py` and `bot.py`):
@@ -157,10 +160,11 @@ this in two layers (`src/jarn/telegram/poller_lock.py` and `bot.py`):
 |---|---|---|
 | Host flock | `~/.jarn/gateway/telegram.poll.lock` is acquired non-blocking. A second process on the same host exits immediately. | `EXIT_LOCK_HELD` (**76**) |
 | Telegram 409 | The first conflict produces one operator notice and exits. It is never retried. | `EXIT_CONFLICT` (**75**) |
+| Invalid/unauthorized token | Local token validation or Telegram HTTP 401 stops startup/polling immediately; permanent authentication errors are never retried as network failures. | `EXIT_UNAUTHORIZED` (**77**) |
 
 Cross-host exclusion is impossible with `flock` alone; the Telegram 409 response is
-the remote fence. `RestartPreventExitStatus=75 76` prevents systemd from restarting
-either intentional stand-down into a conflict loop.
+the remote fence. `RestartPreventExitStatus=75 76 77` prevents systemd from
+restarting any operator-action condition into a tight failure loop.
 
 ## Project `.jarn/.gitignore`
 

@@ -112,6 +112,39 @@ def test_map_put_replaces_same_token(isolated_home: Path) -> None:
     assert len(store.list()) == 1
 
 
+def test_map_card_metadata_is_backward_compatible_and_atomically_updated(
+    isolated_home: Path,
+) -> None:
+    store = PendingApprovalMap()
+    # Version-1 rows created before card persistence remain readable.
+    original = PendingApproval(
+        token="legacy",
+        root="/old/root",
+        thread_id="thread",
+        interrupt_id="interrupt",
+        chat_id=0,
+    )
+    store.put(original)
+    assert store.get("legacy") == original
+    assert store.get("legacy").card is None
+
+    updated = store.attach_card(
+        "legacy",
+        root="/new/root",
+        chat_id=42,
+        card={"action": "execute", "description": "run command"},
+    )
+    assert updated is not None
+    assert updated.root == "/new/root"
+    assert updated.chat_id == 42
+    assert updated.card == {"action": "execute", "description": "run command"}
+
+    with_message = store.set_message_id("legacy", 99)
+    assert with_message is not None
+    assert with_message.message_id == 99
+    assert store.attach_card("missing", root="/x", chat_id=1, card={}) is None
+
+
 def test_record_pending_approval_mints_token(isolated_home: Path, tmp_path: Path) -> None:
     root = tmp_path / "proj"
     root.mkdir()
@@ -224,9 +257,7 @@ async def test_resume_parked_approval_wires_verdict_and_deletes_token(
 
     assert driver.thread_id == "th-resume"
     assert [e.kind for e in events] == [EventKind.APPROVAL, EventKind.DONE]
-    assert calls == [
-        ApprovalReply(approved=True, scope=RememberScope.ONCE, message="")
-    ]
+    assert calls == [ApprovalReply(approved=True, scope=RememberScope.ONCE, message="")]
     assert PendingApprovalMap().get("resume-tok") is None
 
 

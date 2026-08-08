@@ -7,6 +7,10 @@ It may change in one commit and is not a public embedding API.
 See docs/TELEGRAM_GATEWAY_PLAN.md and GitHub #60 / #52.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
 from jarn.gateway.approvals import (
     ApprovalParked,
     PendingApproval,
@@ -66,6 +70,7 @@ from jarn.gateway.scheduler import (
 )
 from jarn.gateway.sessions import (
     QUEUED_NOTICE,
+    ApprovalResumeBusyError,
     ForbiddenRootError,
     QueuedTurn,
     RootBusyLeaseError,
@@ -73,13 +78,36 @@ from jarn.gateway.sessions import (
     UnknownRepoError,
     validate_gateway_root,
 )
-from jarn.gateway.worker import (
-    DEFAULT_HEARTBEAT_INTERVAL_S,
-    GatewayWorker,
-    event_to_frame,
-    redact_outbound_frame,
-    redact_outbound_value,
+
+if TYPE_CHECKING:
+    from jarn.gateway.worker import GatewayWorker
+
+_WORKER_EXPORTS = frozenset(
+    {
+        "DEFAULT_HEARTBEAT_INTERVAL_S",
+        "GatewayWorker",
+        "event_to_frame",
+        "redact_outbound_frame",
+        "redact_outbound_value",
+    }
 )
+
+
+def __getattr__(name: str) -> Any:
+    """Load worker exports lazily so ``python -m jarn.gateway.worker`` is clean.
+
+    Importing a package happens before executing one of its modules with
+    ``python -m``. Eagerly importing ``worker`` here preloaded the target module
+    and caused runpy to warn that execution could be unpredictable.
+    """
+    if name not in _WORKER_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from jarn.gateway import worker
+
+    value = getattr(worker, name)
+    globals()[name] = value
+    return value
+
 
 __all__ = [
     "ACTIVE_DELIVERY_FILENAME",
@@ -92,6 +120,7 @@ __all__ = [
     "ActiveDelivery",
     "ApprovalAskFrame",
     "ApprovalParked",
+    "ApprovalResumeBusyError",
     "ApprovalVerdictFrame",
     "CancelFrame",
     "CronExpr",

@@ -29,9 +29,7 @@ class UnsupportedSchemaVersion(ProtocolError):
     def __init__(self, got: int, *, expected: int = SCHEMA_VERSION) -> None:
         self.got = got
         self.expected = expected
-        super().__init__(
-            f"unsupported gateway schema_version {got} (expected {expected})"
-        )
+        super().__init__(f"unsupported gateway schema_version {got} (expected {expected})")
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +60,7 @@ class TurnFrame:
     thread_id: str
     text: str
     media: list[MediaRef] = field(default_factory=list)
+    chat_id: int | None = None
 
 
 @dataclass(slots=True)
@@ -134,6 +133,7 @@ class ApprovalAskFrame:
     args: dict[str, Any] = field(default_factory=dict)
     plan: str | None = None
     suggested_memory: dict[str, Any] | None = None
+    suggested_skill: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -146,12 +146,7 @@ class ErrorFrame:
 
 
 type InboundFrame = (
-    HandshakeFrame
-    | TurnFrame
-    | ApprovalVerdictFrame
-    | CancelFrame
-    | SteerFrame
-    | ShutdownFrame
+    HandshakeFrame | TurnFrame | ApprovalVerdictFrame | CancelFrame | SteerFrame | ShutdownFrame
 )
 
 type OutboundFrame = EventFrame | StatusFrame | ApprovalAskFrame | ErrorFrame
@@ -234,11 +229,14 @@ def _check_handshake_version(frame: HandshakeFrame) -> None:
 
 def _to_wire_dict(frame: Frame) -> dict[str, Any]:
     if isinstance(frame, TurnFrame):
-        return {
+        turn_out: dict[str, Any] = {
             "thread_id": frame.thread_id,
             "text": frame.text,
             "media": [asdict(m) for m in frame.media],
         }
+        if frame.chat_id is not None:
+            turn_out["chat_id"] = frame.chat_id
+        return turn_out
     if isinstance(frame, StatusFrame):
         out: dict[str, Any] = {
             "turn_in_flight": frame.turn_in_flight,
@@ -274,10 +272,14 @@ def _from_wire_dict(cls: type, body: dict[str, Any]) -> Frame:
             )
             for item in media_raw
         ]
+        chat_id = body.get("chat_id")
+        if chat_id is not None and (not isinstance(chat_id, int) or isinstance(chat_id, bool)):
+            raise ProtocolError("turn.chat_id must be an int when set")
         return TurnFrame(
             thread_id=str(body["thread_id"]),
             text=str(body["text"]),
             media=media,
+            chat_id=chat_id,
         )
 
     if cls is ShutdownFrame:

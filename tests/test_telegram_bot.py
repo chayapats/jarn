@@ -11,6 +11,7 @@ import pytest
 from jarn.telegram.backend import InMemoryGatewayBackend
 from jarn.telegram.bot import (
     EXIT_CONFLICT,
+    EXIT_UNAUTHORIZED,
     TelegramBotApp,
     describe_update_verbatim,
     drain_backlog,
@@ -25,6 +26,7 @@ class FakeBot:
 
     updates_pages: list[list[Any]] = field(default_factory=list)
     conflict_on_poll: bool = False
+    unauthorized_on_poll: bool = False
     sent: list[tuple[Any, ...]] = field(default_factory=list)
     answered: list[Any] = field(default_factory=list)
     webhook_url: str = ""
@@ -32,11 +34,17 @@ class FakeBot:
     _page: int = 0
 
     async def get_webhook_info(self):
-        return SimpleNamespace(
-            url=self.webhook_url, pending_update_count=self.pending_update_count
-        )
+        return SimpleNamespace(url=self.webhook_url, pending_update_count=self.pending_update_count)
 
     async def get_updates(self, offset=None, timeout=0, limit=100, allowed_updates=None):
+        if self.unauthorized_on_poll and timeout and timeout > 0:
+            from aiogram.exceptions import TelegramUnauthorizedError
+            from aiogram.methods import GetUpdates
+
+            raise TelegramUnauthorizedError(
+                method=GetUpdates(),
+                message="Unauthorized",
+            )
         if self.conflict_on_poll and timeout and timeout > 0:
             from aiogram.exceptions import TelegramConflictError
             from aiogram.methods import GetUpdates
@@ -170,9 +178,7 @@ async def test_handle_group_rejected():
     backend = InMemoryGatewayBackend()
     app = TelegramBotApp(token="fake", allowed_user_ids=[42], backend=backend)
     app._outbox = Outbox(sender=FakeBot())
-    upd = _update_message(
-        uid=1, user_id=42, chat_id=-100, text="hi", chat_type="supergroup"
-    )
+    upd = _update_message(uid=1, user_id=42, chat_id=-100, text="hi", chat_type="supergroup")
     await app.handle_update(upd)
     assert backend.turns == []
 
@@ -184,9 +190,7 @@ async def test_commands_stop_new_repo():
     app._outbox = Outbox(sender=FakeBot())
     await app.handle_update(_update_message(uid=1, user_id=1, chat_id=1, text="/stop"))
     await app.handle_update(_update_message(uid=2, user_id=1, chat_id=1, text="/new"))
-    await app.handle_update(
-        _update_message(uid=3, user_id=1, chat_id=1, text="/repo myapp")
-    )
+    await app.handle_update(_update_message(uid=3, user_id=1, chat_id=1, text="/repo myapp"))
     assert backend.stops == [(1, 1)]
     assert backend.threads == [(1, 1)]
     assert backend.repos == [(1, 1, "myapp")]
@@ -201,14 +205,10 @@ async def test_callback_verdicts_tool_memory_plan_yolo():
     app._outbox = Outbox(sender=fake)
 
     await app.handle_update(
-        _update_callback(
-            uid=1, user_id=5, chat_id=5, data=encode_callback("t", "tokA", "session")
-        )
+        _update_callback(uid=1, user_id=5, chat_id=5, data=encode_callback("t", "tokA", "session"))
     )
     await app.handle_update(
-        _update_callback(
-            uid=2, user_id=5, chat_id=5, data=encode_callback("m", "tokB", "save")
-        )
+        _update_callback(uid=2, user_id=5, chat_id=5, data=encode_callback("m", "tokB", "save"))
     )
     await app.handle_update(
         _update_callback(
@@ -216,15 +216,11 @@ async def test_callback_verdicts_tool_memory_plan_yolo():
         )
     )
     await app.handle_update(
-        _update_callback(
-            uid=4, user_id=5, chat_id=5, data=encode_callback("y", "yolo", "ok")
-        )
+        _update_callback(uid=4, user_id=5, chat_id=5, data=encode_callback("y", "yolo", "ok"))
     )
     # Unauthorized callback must fail closed.
     await app.handle_update(
-        _update_callback(
-            uid=5, user_id=999, chat_id=5, data=encode_callback("t", "tokD", "once")
-        )
+        _update_callback(uid=5, user_id=999, chat_id=5, data=encode_callback("t", "tokD", "once"))
     )
 
     assert len(backend.verdicts) == 4
@@ -237,6 +233,34 @@ async def test_callback_verdicts_tool_memory_plan_yolo():
     yolo = backend.verdicts[3]
     assert yolo.approved and yolo.kind == "yolo"
     assert fake.answered  # spinner cleared
+
+
+@pytest.mark.asyncio
+async def test_stale_callback_gets_visible_notice_instead_of_poll_error():
+    class StaleBackend(InMemoryGatewayBackend):
+        async def submit_verdict(self, **kwargs):
+            raise KeyError("expired")
+
+    app = TelegramBotApp(
+        token="fake",
+        allowed_user_ids=[5],
+        backend=StaleBackend(),
+    )
+    fake = FakeBot()
+    app._bot = fake
+    app._outbox = Outbox(sender=fake)
+    await app.handle_update(
+        _update_callback(
+            uid=1,
+            user_id=5,
+            chat_id=5,
+            data=encode_callback("t", "stale", "once"),
+        )
+    )
+    assert fake.answered == ["cb-1"]
+    assert fake.sent
+    assert "could not be resumed" in fake.sent[-1][1]
+    assert "stale" in fake.sent[-1][1]
 
 
 @pytest.mark.asyncio
@@ -260,6 +284,101 @@ async def test_poll_loop_stands_down_on_409_never_retries():
     assert "409" in fake.sent[0][1] or "Standing down" in fake.sent[0][1]
     # Only one conflict path — loop exited (no retry storm).
     assert app._running is True  # flag uncleared; exit via return
+
+
+@pytest.mark.asyncio
+async def test_poll_loop_stands_down_on_unauthorized_never_retries():
+    pytest.importorskip("aiogram")
+    app = TelegramBotApp(
+        token="fake",
+        allowed_user_ids=[7],
+        backend=InMemoryGatewayBackend(),
+        poll_timeout=25,
+    )
+    fake = FakeBot(unauthorized_on_poll=True)
+    app._bot = fake
+    app._outbox = Outbox(sender=fake)
+    code = await app._poll_loop()
+    assert code == EXIT_UNAUTHORIZED
+    assert fake._page == 0
+
+
+@pytest.mark.asyncio
+async def test_drain_backlog_does_not_swallow_unauthorized():
+    pytest.importorskip("aiogram")
+    from aiogram.exceptions import TelegramUnauthorizedError
+    from aiogram.methods import GetWebhookInfo
+
+    class UnauthorizedBot(FakeBot):
+        async def get_webhook_info(self):
+            raise TelegramUnauthorizedError(
+                method=GetWebhookInfo(),
+                message="Unauthorized",
+            )
+
+    with pytest.raises(TelegramUnauthorizedError):
+        await drain_backlog(UnauthorizedBot())
+
+
+@pytest.mark.asyncio
+async def test_start_binds_restores_and_unbinds_production_backend_lifecycle(
+    isolated_home, monkeypatch: pytest.MonkeyPatch
+):
+    pytest.importorskip("aiogram")
+    import aiogram
+
+    calls: list[object] = []
+
+    class LifecycleBackend(InMemoryGatewayBackend):
+        def bind_outbox(self, outbox, *, loop=None):
+            calls.append(("bind", outbox, loop))
+
+        async def restore_pending_approvals(self, *, allowed_chat_ids):
+            calls.append(("restore", tuple(allowed_chat_ids)))
+            return 0
+
+        def unbind_outbox(self):
+            calls.append("unbind")
+
+    holder: dict[str, TelegramBotApp] = {}
+
+    class StartupBot(FakeBot):
+        async def get_updates(
+            self,
+            offset=None,
+            timeout=0,
+            limit=100,
+            allowed_updates=None,
+        ):
+            if timeout and timeout > 0:
+                holder["app"].stop()
+            return []
+
+    fake = StartupBot()
+    monkeypatch.setattr(aiogram, "Bot", lambda *args, **kwargs: fake)
+    app = TelegramBotApp(
+        token="123:ABC",
+        allowed_user_ids=[42],
+        backend=LifecycleBackend(),
+        poll_timeout=1,
+    )
+    holder["app"] = app
+
+    assert await app.start() == 0
+    assert calls[0][0] == "bind"
+    assert calls[1] == ("restore", (42,))
+    assert calls[-1] == "unbind"
+
+
+@pytest.mark.asyncio
+async def test_start_invalid_token_fails_fast_without_network(isolated_home):
+    pytest.importorskip("aiogram")
+    app = TelegramBotApp(
+        token="not-a-valid-token",
+        allowed_user_ids=[42],
+        backend=InMemoryGatewayBackend(),
+    )
+    assert await app.start() == EXIT_UNAUTHORIZED
 
 
 def test_poller_lock_second_holder_fails(tmp_path):
