@@ -41,7 +41,7 @@ jobs:
 
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # Use a deploy key or PAT if the default GITHUB_TOKEN cannot push
           # to protected branches — swap token: ${{ secrets.BOT_PAT }} here.

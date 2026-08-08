@@ -12,8 +12,8 @@ jobs:
   preflight:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9
         with:
           python-version: "3.12"
       - run: uv sync --extra dev --extra telegram
@@ -33,8 +33,8 @@ jobs:
       id-token: write   # OIDC token for PyPI Trusted Publishing (no API token needed)
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9
         with:
           python-version: "3.12"
       - run: uv build
@@ -42,7 +42,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true   # re-runs for an already-published version are no-ops, not failures
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-pypi
           path: dist/*
@@ -67,8 +67,8 @@ jobs:
             gh_asset: jarn-macos-arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9
         with:
           python-version: "3.12"
       - run: uv sync --extra dev --extra build
@@ -81,7 +81,7 @@ jobs:
           json=$(./dist/jarn doctor --json || true)
           echo "$json" | python -c "import json,sys; d=json.load(sys.stdin); assert 'ok' in d"
       - name: Upload binary artifact (for the npm job)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: binary-${{ matrix.target }}
           path: dist/jarn
@@ -89,7 +89,7 @@ jobs:
       - name: Rename asset
         run: mv dist/jarn "dist/${{ matrix.gh_asset }}"
       - name: Attach to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/${{ matrix.gh_asset }}
 
@@ -103,13 +103,13 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
       - name: Download all platform binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: binary-*
           path: binaries

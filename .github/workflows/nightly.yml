@@ -35,10 +35,10 @@ jobs:
             echo "Nightly eval disabled — set NIGHTLY_EVAL_ENABLED repo secret to 'true' to enable."
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.gate.outputs.enabled == 'true'
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v9
         if: steps.gate.outputs.enabled == 'true'
         with:
           python-version: "3.12"
