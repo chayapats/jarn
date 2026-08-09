@@ -58,10 +58,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             target: linux-x64
             gh_asset: jarn-linux-x86_64
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-22.04-arm
             target: linux-arm64
             gh_asset: jarn-linux-arm64
           - os: macos-latest
@@ -95,6 +95,29 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: dist/${{ matrix.gh_asset }}
+
+  # Publish a checksum manifest consumed by install.sh. The installer refuses
+  # unverified binaries and falls back to the PyPI distribution when needed.
+  checksums:
+    needs: [preflight, binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: binary-*
+          path: binaries
+      - name: Build SHA-256 manifest
+        run: |
+          mkdir release-assets
+          cp binaries/binary-linux-x64/jarn release-assets/jarn-linux-x86_64
+          cp binaries/binary-linux-arm64/jarn release-assets/jarn-linux-arm64
+          cp binaries/binary-darwin-arm64/jarn release-assets/jarn-macos-arm64
+          cd release-assets
+          sha256sum jarn-* > checksums.txt
+      - name: Attach checksums to release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: release-assets/checksums.txt
 
   # Assemble and publish the npm packages: one `jarn-cli-<target>` per platform
   # (each carrying its prebuilt binary) plus the `jarn-cli` launcher package whose

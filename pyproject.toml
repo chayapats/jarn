@@ -81,6 +81,7 @@ packages = ["src/jarn"]
 
 [tool.hatch.build.targets.sdist]
 include = [
+    "/install.sh",
     "/src/jarn",
     "/packaging",
     "/scripts",

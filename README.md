@@ -106,6 +106,18 @@ base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists 
 
 macOS (Apple Silicon) and Linux (x64 / arm64) are supported; on Windows use WSL.
 
+**Recommended — one-command installer:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chayapats/jarn/main/install.sh | sh
+```
+
+The installer detects the OS, CPU architecture, and Linux libc; downloads the
+matching GitHub Release binary; verifies its SHA-256 checksum; installs to
+`~/.local/bin`; and starts first-time setup. If the binary cannot run on the
+host (for example, an older GLIBC) it automatically installs a managed Python
+3.12 and the same J.A.R.N. version through `uv`. Re-run the command to update.
+
 **Via npm** — a self-contained binary, **no Python required**:
 
 ```bash
@@ -562,7 +574,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                 # 2460 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 2466 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

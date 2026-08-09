@@ -187,8 +187,8 @@ def test_network_failure_is_silent(exc: Exception, tmp_path: Path) -> None:
 # Test case 5 — install command depends on frozen flag
 # ---------------------------------------------------------------------------
 
-def test_frozen_binary_uses_npm_command(tmp_path: Path) -> None:
-    """TC5: sys.frozen set → notice says 'npm i -g jarn-cli'."""
+def test_frozen_binary_uses_one_command_installer(tmp_path: Path) -> None:
+    """TC5: a frozen binary points updates at the one-command installer."""
     from jarn.update_check import _do_update_check
 
     notice = _do_update_check(
@@ -199,7 +199,8 @@ def test_frozen_binary_uses_npm_command(tmp_path: Path) -> None:
     )
 
     assert notice is not None
-    assert "npm i -g jarn-cli" in notice, f"expected npm command in: {notice!r}"
+    assert "raw.githubusercontent.com/chayapats/jarn/main/install.sh" in notice
+    assert "curl -fsSL" in notice
     assert "pip install" not in notice
 
 

@@ -48,6 +48,7 @@ def test_sdist_excludes_runtime_artifacts(built_artifacts):
     with tarfile.open(sdist, "r:gz") as tar:
         names = tar.getnames()
     assert any(n.endswith("src/jarn/cli.py") for n in names)
+    assert any(n.endswith("install.sh") for n in names)
     for name in names:
         for frag in FORBIDDEN_SDIST_FRAGMENTS:
             assert frag not in name, f"sdist must not ship {frag!r}; found {name!r}"

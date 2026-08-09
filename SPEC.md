@@ -217,6 +217,6 @@ async/remote subagents · multimodal — all subsequently shipped. Web UI remain
   - (1) Unit/logic — `pytest`: config loader, **permission engine, allowlist, danger-guard**, model routing, cost calc
   - (2) Agent integration (mocked LLM) — agent loop/tools/HITL/verify loop/subagent routing โดย mock model (ไม่เปลือง token, ไม่ flaky)
   - (3) Front-end — `tests/test_repl.py` (headless REPL) + `tests/test_ux.py` (onboarding wizard pilot) + `tests/test_phase3.py` (registry/queue/toolbar parity); Textual chat snapshot retired
-  - Gate ปัจจุบัน: **2460 tests**, `ruff check src tests scripts`, `mypy src/` = 0 errors
+  - Gate ปัจจุบัน: **2466 tests**, `ruff check src tests scripts`, `mypy src/` = 0 errors
 - **Nightly/manual:** (4) E2E live LLM บน fixture repo (smoke suite เล็ก, ไม่บล็อก CI หลัก)
 - **Coverage สูงสุดที่:** permission engine + danger-guard + verify loop (หัวใจ "reliable")

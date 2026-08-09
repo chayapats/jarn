@@ -11,7 +11,7 @@ see CHANGELOG §0.3.0 for the remaining road-to-1.0 work.
 uv sync --extra dev --extra telegram
 uv run ruff check src tests scripts
 uv run mypy src/
-uv run pytest -q                    # 2460 tests
+uv run pytest -q                    # 2466 tests
 uv run pytest tests/test_packaging.py -q
 uv build
 ```
@@ -69,6 +69,7 @@ git push origin v0.11.0
    - publishes the PyPI sdist + wheel (`skip-existing`, so re-runs are no-ops);
    - builds the three standalone binaries (linux-x64, linux-arm64, macos-arm64)
      and attaches them to the GitHub Release;
+   - publishes `checksums.txt` for the one-command installer;
    - assembles and publishes the npm packages — `jarn-cli` + the three
      `jarn-cli-<platform>` binary packages — via the `npm` job.
 

@@ -31,6 +31,7 @@ _PYPI_URL = "https://pypi.org/pypi/jarn/json"
 _CACHE_SECS: float = 24.0 * 3600.0
 _TIMEOUT: float = 2.0
 _CHANGELOG_URL = "https://github.com/chayapats/jarn/releases"
+_INSTALL_URL = "https://raw.githubusercontent.com/chayapats/jarn/main/install.sh"
 
 
 def _get_install_cmd(frozen: bool | None = None) -> str:
@@ -39,7 +40,9 @@ def _get_install_cmd(frozen: bool | None = None) -> str:
 
     if frozen is None:
         frozen = bool(getattr(sys, "frozen", False))
-    return "npm i -g jarn-cli" if frozen else "pip install -U jarn"
+    if frozen:
+        return f"curl -fsSL {_INSTALL_URL} | sh"
+    return "pip install -U jarn"
 
 
 def _default_fetch() -> dict:  # type: ignore[type-arg]

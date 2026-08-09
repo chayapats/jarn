@@ -53,6 +53,18 @@ J.A.R.N. คือ terminal coding agent ที่ออกแบบในแน
 
 รองรับ macOS (Apple Silicon) และ Linux (x64 / arm64); บน Windows ใช้ผ่าน WSL
 
+**แนะนำ — ติดตั้งครบด้วยคำสั่งเดียว:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chayapats/jarn/main/install.sh | sh
+```
+
+ตัวติดตั้งจะตรวจ OS, สถาปัตยกรรม CPU และ libc บน Linux แล้วดาวน์โหลด binary จาก
+GitHub Release ให้ตรงกับเครื่อง ตรวจสอบ SHA-256 ติดตั้งไว้ที่ `~/.local/bin`
+และเปิดขั้นตอน setup ครั้งแรกให้อัตโนมัติ หาก binary ใช้กับเครื่องไม่ได้ เช่น
+GLIBC เก่าเกินไป ตัวติดตั้งจะลง Python 3.12 แบบ managed และ J.A.R.N. เวอร์ชัน
+เดียวกันผ่าน `uv` ให้เอง รันคำสั่งเดิมซ้ำเมื่อต้องการอัปเดต
+
 **ผ่าน npm** — เป็น binary สำเร็จรูป **ไม่ต้องมี Python**:
 
 ```bash
@@ -374,7 +386,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                 # 2460 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 2466 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)

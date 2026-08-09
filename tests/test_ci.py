@@ -120,6 +120,17 @@ def test_release_binaries_smoke_after_build() -> None:
     assert "./dist/jarn doctor --json" in joined
 
 
+def test_release_publishes_binary_checksums() -> None:
+    workflow = yaml.safe_load(RELEASE_YML.read_text())
+    checksums = workflow["jobs"]["checksums"]
+    needs = checksums["needs"]
+    assert "binaries" in needs
+    joined = "\n".join(_run_lines(RELEASE_YML, "checksums"))
+    assert "sha256sum jarn-* > checksums.txt" in joined
+    uses = _uses_names(RELEASE_YML, "checksums")
+    assert any("action-gh-release" in name for name in uses)
+
+
 def test_release_npm_smoke_before_publish() -> None:
     run_lines = _run_lines(RELEASE_YML, "npm")
     joined = "\n".join(run_lines)
