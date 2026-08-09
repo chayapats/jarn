@@ -61,7 +61,7 @@ runs:
 
     - name: Install jarn-cli
       shell: bash
-      run: npm i -g jarn-cli@0.10
+      run: npm i -g jarn-cli@0.11
 
     - name: Configure JARN for OpenRouter
       shell: bash

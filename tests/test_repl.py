@@ -2113,8 +2113,9 @@ async def test_modules_without_args_opens_interactive_panel(
     assert app._module_panel is not None
     rendered = "".join(text for _style, text in app._modules_render())
     assert "Prompt modules" in rendered
-    assert "OPTIONAL SKILLS" in rendered
-    assert "Space/Enter next turn" in rendered
+    assert "AUTOMATIC" in rendered
+    assert "↑/↓ move" in rendered
+    assert "Esc/q close" in rendered
     app._close_modules()
     app.controller.close()
 
