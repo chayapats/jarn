@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from jarn.memory.context import assemble_system_context, init_template, write_jarn_md
+from jarn.memory.context import (
+    assemble_system_context,
+    init_template,
+    memory_index_context,
+    write_jarn_md,
+)
 from jarn.memory.sessions import SessionIndex, default_db_path, new_thread_id
 from jarn.memory.store import Memory, MemoryStore, slugify  # noqa: F401 (slugify used indirectly)
 
@@ -107,6 +112,76 @@ def test_write_jarn_md_no_overwrite(tmp_path):
     write_jarn_md(root)
     with pytest.raises(FileExistsError):
         write_jarn_md(root)
+
+
+def test_memory_indices_share_one_prompt_budget(tmp_path, monkeypatch):
+    from jarn.memory.tokens import count_tokens
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+
+    global_store = MemoryStore.global_store()
+    project_store = MemoryStore.project_store(root)
+    assert project_store is not None
+    for i in range(12):
+        description = (f"entry {i} detailed context " * 10).strip()
+        global_store.save(Memory(f"Global {i}", description, "body"))
+        project_store.save(Memory(f"Project {i}", description, "body"))
+
+    block = memory_index_context(root, token_budget=240)
+
+    assert count_tokens(block) <= 240
+    assert "Long-term memory (global)" in block
+    assert "Long-term memory (project)" in block
+    assert "truncated" in block
+
+
+def test_memory_budget_redistributes_unused_tier_capacity(tmp_path, monkeypatch):
+    from jarn.memory.tokens import count_tokens
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / ".jarn").mkdir(parents=True)
+    global_store = MemoryStore.global_store()
+    project_store = MemoryStore.project_store(root)
+    assert project_store is not None
+    global_store.save(Memory("Short", "tiny", "body"))
+    for i in range(20):
+        project_store.save(
+            Memory(
+                f"Project {i}",
+                ("detailed project context " * 12).strip(),
+                "body",
+            )
+        )
+
+    block = memory_index_context(root, token_budget=220)
+    sections = block.split("\n\n---\n\n")
+
+    assert count_tokens(block) <= 220
+    assert len(sections) == 2
+    assert count_tokens(sections[1]) > 110  # reclaimed the short global tier's slack
+
+
+def test_truncated_project_context_routes_to_full_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    (root / "docs").mkdir(parents=True)
+    (root / "docs" / "AGENTS.md").write_text(
+        "guidance\n" * 500,
+        encoding="utf-8",
+    )
+
+    block = assemble_system_context(
+        root,
+        context_files=["docs/AGENTS.md"],
+        project_context_tokens=40,
+    )
+
+    assert "Project context (docs/AGENTS.md)" in block
+    assert "More guidance exists in `docs/AGENTS.md`" in block
+    assert "Read that file" in block
 
 
 def test_init_template_uses_project_name(tmp_path):

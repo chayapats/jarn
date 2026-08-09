@@ -17,7 +17,7 @@ import platformdirs
 
 #: Name of the per-project config directory committed alongside a repo.
 PROJECT_DIR_NAME = ".jarn"
-#: Name of the per-project context file auto-loaded into the system prompt.
+#: Name of the per-project context file whose bounded excerpt enters the prompt.
 PROJECT_CONTEXT_FILE = "JARN.md"
 #: Config filename used in both tiers.
 CONFIG_FILENAME = "config.yaml"

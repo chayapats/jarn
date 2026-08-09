@@ -21,7 +21,6 @@ if TYPE_CHECKING:
     from jarn.cost.tracker import CostTracker
     from jarn.permissions import PermissionEngine
 
-from jarn.agent import prompts
 from jarn.agent.backends_factory import _make_backend
 from jarn.agent.builtin_tools import _wire_builtin_tools
 from jarn.agent.permissions_bridge import (
@@ -35,13 +34,21 @@ from jarn.agent.permissions_bridge import (
     WIKI_READONLY_TOOLS,
     interrupt_map,
 )
+from jarn.agent.prompt_modules import (
+    PromptAssembly,
+    PromptModuleContext,
+    PromptModuleRegistry,
+    PromptModuleScope,
+    create_prompt_module_registry,
+    with_context_budgets,
+)
 from jarn.agent.verify import ProjectCapabilities, detect_capabilities
 from jarn.config import paths
 from jarn.config.schema import Config, ProviderType
 from jarn.extensibility.commands import CustomCommand, load_commands
-from jarn.extensibility.skills import Skill, auto_skill_catalog, load_skills
+from jarn.extensibility.skills import Skill, load_skills
 from jarn.extensibility.subagents import CustomSubagent, load_subagents
-from jarn.memory.context import assemble_system_context
+from jarn.memory.tokens import count_tokens
 from jarn.providers import ModelFactory, ModelResolutionError, parse_model_ref
 
 logger = logging.getLogger("jarn.agent")
@@ -178,6 +185,10 @@ class JarnRuntime:
     project_root: Path | None
     system_prompt: str
     capabilities: ProjectCapabilities
+    prompt_registry: PromptModuleRegistry | None = None
+    prompt_context: PromptModuleContext | None = None
+    prompt_assembly: PromptAssembly | None = None
+    prompt_modules_enabled: bool = True
     skills: dict[str, Skill] = field(default_factory=dict)
     commands: dict[str, CustomCommand] = field(default_factory=dict)
     subagents: dict[str, CustomSubagent] = field(default_factory=dict)
@@ -538,6 +549,7 @@ def build_runtime(
     extra_roots: list[Path] | None = None,
     cost_tracker: CostTracker | None = None,
     engine: PermissionEngine | None = None,
+    prompt_module_activations: dict[str, PromptModuleScope] | None = None,
 ) -> JarnRuntime:
     """Build a ready-to-run :class:`JarnRuntime` from config.
 
@@ -605,7 +617,7 @@ def build_runtime(
     # (controller.core), so this config read reflects the ACTUAL backend.
     read_filter_engine.virtual_reads = config.execution.backend not in ("docker", "sandbox")
 
-    # Context: project JARN.md + memory + skill catalog + detected verify cmds.
+    # Context: deterministic, observable prompt modules plus detected capabilities.
     # Forward compat settings so that read_claude_dir and context_files are
     # honoured here — without these, compat config would be silently ignored.
     skills = load_skills(
@@ -621,25 +633,29 @@ def build_runtime(
     subagents = load_subagents(root, project_trusted=project_trusted)
     capabilities = detect_capabilities(root or Path.cwd())
 
+    prompt_context = PromptModuleContext(
+        config=config,
+        project_root=root,
+        project_trusted=project_trusted,
+        skills=skills,
+        explicit_scopes=dict(prompt_module_activations or {}),
+        prompt_override=system_prompt_override is not None,
+    )
+    prompt_registry = with_context_budgets(
+        create_prompt_module_registry(skills), prompt_context
+    )
     if system_prompt_override is not None:
-        # A/B baseline: skip the JARN persona + project/skill/capability context
-        # entirely. Config-gated injections below (wiki, repo map) still apply so
-        # the *only* controlled difference is the base prompt — keep them off in
-        # the config to isolate the prompt cleanly.
+        # Wholesale means wholesale: no hidden project/wiki/repo/date/module text
+        # is appended to the controlled eval prompt.
         system_prompt = system_prompt_override
-    else:
-        system_prompt = prompts.build_system_prompt(
-            prompts.date_context(),
-            assemble_system_context(
-                root,
-                project_trusted=project_trusted,
-                context_files=config.compat.context_files,
-                memory_tokens=config.context.memory_tokens,
-                project_context_tokens=config.context.project_context_tokens,
-            ),
-            auto_skill_catalog(skills),
-            capabilities.as_prompt_block(),
+        prompt_assembly = PromptAssembly(
+            text=system_prompt,
+            modules=(),
+            token_count=count_tokens(system_prompt),
         )
+    else:
+        prompt_assembly = prompt_registry.assemble(prompt_context)
+        system_prompt = prompt_assembly.text
 
     # Built-in web tools + any MCP-loaded tools. Web tools run in-process and
     # bypass the OS sandbox, so the policy layer can disable them (e.g. the
@@ -940,6 +956,10 @@ def build_runtime(
         project_root=root,
         system_prompt=system_prompt,
         capabilities=capabilities,
+        prompt_registry=prompt_registry,
+        prompt_context=prompt_context,
+        prompt_assembly=prompt_assembly,
+        prompt_modules_enabled=system_prompt_override is None,
         skills=skills,
         commands=commands,
         subagents=subagents,

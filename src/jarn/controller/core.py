@@ -12,12 +12,26 @@ import asyncio
 import functools
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from jarn.agent.builder import JarnRuntime, build_runtime
 from jarn.agent.checkpoint import CheckpointManager
+from jarn.agent.prompt_modules import (
+    PromptAssembly,
+    PromptModuleContext,
+    PromptModuleRegistry,
+    PromptModuleScope,
+    PromptModuleStatus,
+    RenderedPromptModule,
+    create_prompt_module_registry,
+    render_prompt_module,
+    with_context_budgets,
+)
+from jarn.agent.prompt_modules import (
+    prompt_module_diagnostics as build_prompt_module_diagnostics,
+)
 from jarn.agent.session import Approver, SessionDriver, SuggestedMemory, SuggestedSkill
 from jarn.config.schema import Config, PermissionMode
 from jarn.controller import config_helpers, session_helpers
@@ -67,6 +81,10 @@ class CommandResult:
     # When True, `text` is instructions the model should act on (e.g. /skill):
     # the REPL seeds an agent turn with it instead of just printing it.
     seed_turn: bool = False
+    # Optional model-facing seed distinct from the user-visible command result.
+    # /skill uses this to preserve its inspectable full-body result while the
+    # bounded registry body is attached once as a system module.
+    seed_input: str | None = None
 
 
 @dataclass(slots=True)
@@ -227,6 +245,11 @@ class Controller:
         # SessionDriver (see make_driver) — that is what makes the date system
         # message injected once per local day rather than re-injected every turn.
         self._date_state: dict = {}
+        # Explicit prompt-body activation is thread-scoped. Session modules are
+        # compiled into the runtime prompt; turn modules are consumed by the next
+        # driver. Replacing the thread clears both so prompt text cannot leak into
+        # /clear, /compact, /rewind, or /resume targets.
+        self._prompt_module_activations: dict[str, PromptModuleScope] = {}
         # Front-end-owned in-flight turn task (REPL / gateway). ``abort()``
         # cancels and *awaits* it before settle+rollback so cancel never races
         # the turn's finally / detached snapshot (T-CTRL-1 / #59).
@@ -371,6 +394,11 @@ class Controller:
         mcp = None
         loaded_mcp = False
         retained_mcp = False
+        module_kwargs = (
+            {"prompt_module_activations": self._prompt_module_activations}
+            if self._prompt_module_activations
+            else {}
+        )
         try:
             # Load MCP servers once per session and reuse across rebuilds: a
             # rebuild triggered only by a main-model / mode / backend change must
@@ -410,6 +438,7 @@ class Controller:
                         extra_roots=self.extra_roots,
                         cost_tracker=self.tracker,
                         engine=self.engine,
+                        **module_kwargs,
                     )
                 )
             except AmbientKeyLeakError as exc:
@@ -446,6 +475,7 @@ class Controller:
                         extra_roots=self.extra_roots,
                         cost_tracker=self.tracker,
                         engine=self.engine,
+                        **module_kwargs,
                     )
                 )
             # Commit-or-dispose exactly once, gated on the generation. The commit
@@ -587,6 +617,147 @@ class Controller:
 
     def _config(self) -> dict:
         return config_helpers._config(self)
+
+    # -- prompt modules -----------------------------------------------------
+
+    def _prompt_module_snapshot(
+        self,
+    ) -> tuple[PromptModuleRegistry, PromptModuleContext, PromptAssembly]:
+        """Return registry, live activation context, and actual static assembly."""
+        runtime = self.runtime
+        runtime_registry = getattr(runtime, "prompt_registry", None)
+        if isinstance(runtime_registry, PromptModuleRegistry):
+            registry = runtime_registry
+            base_context = getattr(runtime, "prompt_context", None)
+            assert isinstance(base_context, PromptModuleContext)
+            context = replace(
+                base_context,
+                config=self.config,
+                project_trusted=self.project_trusted,
+                explicit_scopes=dict(self._prompt_module_activations),
+                prompt_override=self.system_prompt_override is not None,
+            )
+        else:
+            from jarn.extensibility.skills import load_skills
+
+            skills = (
+                runtime.skills
+                if runtime is not None
+                else load_skills(
+                    self.project_root,
+                    project_trusted=self.project_trusted,
+                    read_claude_dir=self.config.compat.read_claude_dir,
+                )
+            )
+            context = PromptModuleContext(
+                config=self.config,
+                project_root=self.project_root,
+                project_trusted=self.project_trusted,
+                skills=skills,
+                explicit_scopes=dict(self._prompt_module_activations),
+                prompt_override=self.system_prompt_override is not None,
+            )
+            registry = with_context_budgets(
+                create_prompt_module_registry(skills), context
+            )
+
+        runtime_assembly = getattr(runtime, "prompt_assembly", None)
+        if isinstance(runtime_assembly, PromptAssembly):
+            assembly = runtime_assembly
+        elif self.system_prompt_override is not None:
+            from jarn.memory.tokens import count_tokens
+
+            assembly = PromptAssembly(
+                text=self.system_prompt_override,
+                modules=(),
+                token_count=count_tokens(self.system_prompt_override),
+            )
+        else:
+            assembly = registry.assemble(context)
+        return registry, context, assembly
+
+    def prompt_module_statuses(
+        self,
+    ) -> tuple[tuple[PromptModuleStatus, ...], PromptAssembly]:
+        """Observable module state used by /modules, /cost, and doctor."""
+        registry, context, assembly = self._prompt_module_snapshot()
+        return registry.statuses(context, assembly=assembly), assembly
+
+    def prompt_module_diagnostics(self) -> dict[str, Any]:
+        registry, context, assembly = self._prompt_module_snapshot()
+        return build_prompt_module_diagnostics(registry, context, assembly)
+
+    def activate_prompt_module(
+        self, name: str, scope: PromptModuleScope
+    ) -> CommandResult:
+        """Queue a user-activatable body for one turn or this thread session."""
+        if scope not in ("turn", "session"):
+            return CommandResult("Module scope must be 'turn' or 'session'.")
+        if self.system_prompt_override is not None:
+            return CommandResult(
+                "Prompt modules are disabled by the wholesale system-prompt override."
+            )
+        registry, _context, _assembly = self._prompt_module_snapshot()
+        module = registry.resolve(name)
+        if module is None:
+            return CommandResult(
+                f"Unknown module: {name!r}. Run /modules or /skills to list choices."
+            )
+        if not module.user_activatable:
+            return CommandResult(
+                f"{module.name} is controlled by runtime state/config and cannot "
+                "be manually activated or suppressed."
+            )
+
+        previous = self._prompt_module_activations.get(module.name)
+        self._prompt_module_activations[module.name] = scope
+        if previous == "session" or scope == "session":
+            self._invalidate_runtime()
+        return CommandResult(
+            f"Activated {module.name} for the next turn."
+            if scope == "turn"
+            else f"Activated {module.name} for thread {self.thread_id[:8]}."
+        )
+
+    def deactivate_prompt_module(self, name: str) -> CommandResult:
+        """Remove an explicit activation without disabling deterministic modules."""
+        registry, _context, _assembly = self._prompt_module_snapshot()
+        module = registry.resolve(name)
+        if module is None:
+            return CommandResult(
+                f"Unknown module: {name!r}. Run /modules or /skills to list choices."
+            )
+        previous = self._prompt_module_activations.pop(module.name, None)
+        if previous is None:
+            if module.user_activatable:
+                return CommandResult(f"{module.name} is not explicitly active.")
+            return CommandResult(
+                f"{module.name} is controlled by runtime state/config and cannot "
+                "be manually suppressed."
+            )
+        if previous == "session":
+            self._invalidate_runtime()
+        return CommandResult(f"Deactivated {module.name}.")
+
+    def _consume_turn_prompt_modules(self) -> tuple[RenderedPromptModule, ...]:
+        """Render and consume queued one-turn bodies for the next fresh driver."""
+        names = sorted(
+            name
+            for name, scope in self._prompt_module_activations.items()
+            if scope == "turn"
+        )
+        if not names:
+            return ()
+        registry, context, _assembly = self._prompt_module_snapshot()
+        rendered = []
+        for name in names:
+            module = registry.resolve(name)
+            if module is not None and module.user_activatable:
+                item = render_prompt_module(module, context)
+                if item.content:
+                    rendered.append(item)
+            self._prompt_module_activations.pop(name, None)
+        return tuple(sorted(rendered, key=lambda item: (item.priority, item.name)))
 
     async def todos(self) -> list[dict]:
         """Current plan checklist from graph state (empty if none / no runtime)."""
@@ -928,6 +1099,10 @@ class Controller:
             _diag_round=self._diag_chain_round,
             steer_source=self._pop_steer_slot,
             date_state=self._date_state,
+            turn_prompt_module_source=self._consume_turn_prompt_modules,
+            inject_prompt_modules=getattr(
+                self.runtime, "prompt_modules_enabled", True
+            ),
             # Live tool-output streaming: the runtime's backend feeds this queue with
             # ToolProgress from execute's worker thread; the driver drains it and
             # interleaves TOOL_PROGRESS events. None for non-local backends.
@@ -1076,11 +1251,25 @@ class Controller:
     # -- thread management --------------------------------------------------
 
     def new_thread(self) -> None:
+        had_session_module = any(
+            scope == "session"
+            for scope in self._prompt_module_activations.values()
+        )
+        self._prompt_module_activations.clear()
         self.thread_id = new_thread_id()
         self.tracker.context_tokens = 0  # reset the context gauge on /clear /compact
+        if had_session_module:
+            self._invalidate_runtime()
 
     def resume_thread(self, thread_id: str) -> None:
+        had_session_module = any(
+            scope == "session"
+            for scope in self._prompt_module_activations.values()
+        )
+        self._prompt_module_activations.clear()
         self.thread_id = thread_id
+        if had_session_module:
+            self._invalidate_runtime()
 
     def rotate_to_fallback(self) -> str | None:
         """Switch to the next model in the fallback chain and force a rebuild.

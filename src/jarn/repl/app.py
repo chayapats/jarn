@@ -64,6 +64,7 @@ from jarn.version import __version__
 
 if TYPE_CHECKING:
     from jarn.config.settings import ConfigPanel
+    from jarn.repl.module_panel import ModulePanel
 
 #: Max body lines of the LIVE plan checklist above the input, so a long plan can't
 #: push the input/toolbar off-screen (the committed end-of-turn render is uncapped).
@@ -197,6 +198,9 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self._config_open = False                  # interactive /config panel open?
         self._config_panel: ConfigPanel | None = None
         self._config_window: Window | None = None
+        self._modules_open = False                 # interactive /modules panel open?
+        self._module_panel: ModulePanel | None = None
+        self._module_window: Window | None = None
         self._resume_on_start = resume               # show the /resume picker on launch
         self.app: Application | None = None
 
@@ -227,7 +231,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 f"[{palette.C_ERROR}]Provider not ready: {_rich_escape(message)}"
                 f"[/{palette.C_ERROR}]  [{palette.C_DIM}]run `jarn setup`[/{palette.C_DIM}]"
             )
-        # Startup notice: name the context file loaded into the system prompt.
+        # Startup notice: name the context file whose bounded excerpt was loaded.
         if self.controller.project_trusted and self.controller.project_root is not None:
             from jarn.memory.context import resolve_context_file
             _ctx_path = resolve_context_file(
@@ -351,15 +355,22 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         pager_header = Window(
             FormattedTextControl(self._pager_header), height=1, style="class:bottom-toolbar",
         )
-        # Interactive settings panel overlay (/config). FormattedTextControl is
-        # non-focusable; the global key bindings (gated on _config_open) drive it.
+        # Interactive settings/module panels. FormattedTextControl is
+        # non-focusable; global key bindings drive the active panel.
         self._config_window = Window(
             FormattedTextControl(self._config_render), wrap_lines=True,
+        )
+        self._module_window = Window(
+            FormattedTextControl(self._modules_render), wrap_lines=True,
         )
         top = HSplit([
             ConditionalContainer(
                 stream,
-                filter=Condition(lambda: not self._expanded and not self._config_open),
+                filter=Condition(
+                    lambda: not self._expanded
+                    and not self._config_open
+                    and not self._modules_open
+                ),
             ),
             ConditionalContainer(
                 HSplit([pager_header, self._pager_window]),
@@ -367,6 +378,9 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             ),
             ConditionalContainer(
                 self._config_window, filter=Condition(lambda: self._config_open)
+            ),
+            ConditionalContainer(
+                self._module_window, filter=Condition(lambda: self._modules_open)
             ),
         ])
         root = FloatContainer(

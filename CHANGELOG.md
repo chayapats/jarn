@@ -5,8 +5,21 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-09
+
 ### Added
 
+- **Observable prompt-module registry.** Every non-kernel prompt contributor now
+  reports deterministic activation, scope, trust tier, source, configured budget,
+  actual token usage, and truncation state. `/modules [active]` shows the live
+  assembly; `/module on <skill> [turn|session]` loads a bounded skill body for one
+  turn or the current thread. Session bodies clear on `/clear`, `/compact`,
+  `/rewind`, and `/resume`; one-turn bodies are consumed exactly once.
+- **Interactive prompt-module picker.** `/modules` and bare `/module` now open an
+  inline, keyboard-driven panel with short explanations and live state. Up/Down
+  navigates, Space/Enter toggles a skill for the next turn, `s` keeps it for the
+  current thread, and `x` turns it off. Runtime-controlled context modules remain
+  visible and clearly read-only.
 - **ChatGPT subscription provider through the official Codex App Server.** The new
   `codex_subscription` profile uses Codex-managed login (`jarn codex
   login|status|logout`) without exposing OAuth credentials or requiring an OpenAI
@@ -19,13 +32,17 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Changed
 
-- **The reliability prompt is stricter and smaller.** Project context and skills are
-  explicitly scoped to the user's goal; retrieved source/web/log/tool content cannot
-  override user intent or permission/trust/sandbox boundaries; tool availability is
-  runtime-defined; and plan mode now states its local-read-only contract without the
-  previous web-research ambiguity. The base prompt is 7% shorter and regression-gated
-  below 450 words / 2,900 UTF-8 bytes so future guidance cannot silently bloat every
-  turn.
+- **The agent prompt now uses progressive disclosure instead of workflow
+  micromanagement.** The always-on kernel is 146 words (67% smaller) and keeps only
+  outcome honesty, instruction boundaries, available-capability truth, permissions,
+  roots, and secret handling. Plan guidance loads only in plan mode; the date is no
+  longer duplicated in the static prefix; detected verification commands no longer
+  consume every turn because the harness verify gate enforces them. Default project,
+  combined-memory, skill-catalog, and wiki-index ceilings are 1,024 / 1,024 / 512 /
+  512 tokens respectively, and long skill/context bodies remain readable on demand.
+  Prompt overrides remain wholesale and receive no hidden wiki, repo-map, date, or
+  explicit-module additions. Tiny positive budgets are now strict hard caps, and
+  skill catalogs truncate by whole entry with an omitted-count `/skills` hint.
 
 ### Fixed
 
@@ -1305,6 +1322,7 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Windows: use WSL; native Windows terminal is unsupported
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
+[0.11.0]: https://github.com/chayapats/jarn/releases/tag/v0.11.0
 [0.5.0]: https://github.com/chayapats/jarn/releases/tag/v0.5.0
 [0.4.4]: https://github.com/chayapats/jarn/releases/tag/v0.4.4
 [0.4.3]: https://github.com/chayapats/jarn/releases/tag/v0.4.3

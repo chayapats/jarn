@@ -3,8 +3,8 @@
 > A TUI-first coding agent harness built on **DeepAgents**.
 > Spec date: **2026-06-04** · DeepAgents target: **v0.6.7+** · Python **3.12**
 
-> **Document status (2026-08-08):** this is the original v1 design record, not the
-> complete current contract. J.A.R.N. v0.10.0 is released on PyPI and npm and now also
+> **Document status (2026-08-09):** this is the original v1 design record, not the
+> complete current contract. J.A.R.N. v0.11.0 is released on PyPI and npm and now also
 > ships headless execution plus an optional single-operator Telegram gateway. Use
 > [README.md](README.md), [docs/CONFIGURATION.md](docs/CONFIGURATION.md), and
 > [docs/ROADMAP.md](docs/ROADMAP.md) for current behaviour.
@@ -83,7 +83,7 @@
 - Git awareness (diff/branch/status + HITL commit)
 - Long-term memory (markdown-first)
 
-**Shipped (post-v1, v0.10.0):** OS-level execution sandbox (`execution.local_sandbox`) · Repo map (`context.repo_map` / `/map`) · Wiki knowledge base (`wiki.enabled` / `/wiki`) · Auto-checkpoint + `/undo`/`/redo` · AGENTS.md/CLAUDE.md interop · Headless one-shot (`jarn -p`) · JSONL session transcript · `!` shell escape · optional single-operator Telegram gateway (`jarn gateway`) with per-root workers, durable approvals, inbound media, and scheduling
+**Shipped (post-v1, v0.10.0+):** OS-level execution sandbox (`execution.local_sandbox`) · Repo map (`context.repo_map` / `/map`) · Wiki knowledge base (`wiki.enabled` / `/wiki`) · observable budgeted prompt-module registry (`/modules`, turn/session skill bodies) · Auto-checkpoint + `/undo`/`/redo` · AGENTS.md/CLAUDE.md interop · Headless one-shot (`jarn -p`) · JSONL session transcript · `!` shell escape · optional single-operator Telegram gateway (`jarn gateway`) with per-root workers, durable approvals, inbound media, and scheduling
 
 **Later (v2+):** Web UI · Open-core hosted sandbox / cloud features
 
@@ -93,7 +93,7 @@
 
 1. **Thread/conversation state** → **SQLite local** checkpointer (resume session, ดูประวัติ)
 2. **Long-term memory** → **markdown-first** (โปร่งใส คนแก้ได้) เก็บ preference/ข้อเท็จจริงโปรเจกต์/feedback/decisions → เสริม vector recall ใน v1.x
-3. **Project context** → **`JARN.md`** auto-load เข้า system prompt + `/init` สร้างให้
+3. **Project context** → **`JARN.md`** โหลด excerpt แบบมีเพดาน และอ่านไฟล์เต็มเมื่อจำเป็น + `/init` สร้างให้
 
 ---
 
@@ -131,7 +131,7 @@
 - **Model fallback & retry:** fallback chain (ผ่าน OpenRouter), จัดการ rate-limit/timeout graceful, ไม่ crash ทั้ง session
 - **Cost & token:** นับสด + `/cost` + **budget limit ต่อ session (เตือน + hard stop ตั้งค่าได้)**
 - **Cancellation safety:** graceful cancel, ไม่ทิ้ง shell ค้าง/ไฟล์เขียนครึ่ง
-- **Self-verification loop:** หลังแก้โค้ด → build/test/lint (ถ้ามี) ก่อนสรุปว่าเสร็จ (ผูก hooks + system prompt "plan→act→verify")
+- **Self-verification loop:** หลังแก้โค้ด → build/test/lint (ถ้ามี) ก่อนสรุปว่าเสร็จ (บังคับด้วย verify gate/hooks แทนการ micromanage workflow ผ่าน prompt)
 - **Observability:** LangSmith tracing (opt-in) + local structured logs (`~/.jarn/logs/`)
 - **Telemetry:** opt-in, **default ปิด**, เปิดจริงตอนใกล้ launch
 
@@ -217,6 +217,6 @@ async/remote subagents · multimodal — all subsequently shipped. Web UI remain
   - (1) Unit/logic — `pytest`: config loader, **permission engine, allowlist, danger-guard**, model routing, cost calc
   - (2) Agent integration (mocked LLM) — agent loop/tools/HITL/verify loop/subagent routing โดย mock model (ไม่เปลือง token, ไม่ flaky)
   - (3) Front-end — `tests/test_repl.py` (headless REPL) + `tests/test_ux.py` (onboarding wizard pilot) + `tests/test_phase3.py` (registry/queue/toolbar parity); Textual chat snapshot retired
-  - Gate ปัจจุบัน: **2435 tests**, `ruff check src tests scripts`, `mypy src/` = 0 errors
+  - Gate ปัจจุบัน: **2460 tests**, `ruff check src tests scripts`, `mypy src/` = 0 errors
 - **Nightly/manual:** (4) E2E live LLM บน fixture repo (smoke suite เล็ก, ไม่บล็อก CI หลัก)
 - **Coverage สูงสุดที่:** permission engine + danger-guard + verify loop (หัวใจ "reliable")

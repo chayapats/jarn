@@ -217,7 +217,12 @@ budget:
 context:
   auto_compact: true
   compact_at_pct: 85
-  # Repo map: compact ranked overview of the codebase injected into the agent.
+  # Lean prompt defaults: long bodies stay on disk and are read on demand.
+  # project_context_tokens: 1024  # always-loaded JARN.md/AGENTS.md excerpt
+  # memory_tokens: 1024           # shared across global + project indices
+  # skill_catalog_tokens: 512     # names/descriptions only; bodies stay lazy
+  # wiki_index_tokens: 512        # page names/descriptions only
+  # Repo map: compact ranked overview of the codebase exposed as a tool by default.
   # repo_map: tool        # off | tool (on-demand via repo_map tool) | auto (also in system prompt)
   # repo_map_tokens: 1024  # token budget for map output (must be > 0)
 

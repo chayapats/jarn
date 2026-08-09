@@ -105,6 +105,20 @@ def doctor_lines(diag: dict) -> list[str]:
     repo_map_tokens = ctx_diag.get("repo_map_tokens", 1024)
     lines.append(f"context.repo_map: {repo_map_mode} · token_budget {repo_map_tokens}")
 
+    module_diag = diag.get("prompt_modules") or {}
+    module_rows = module_diag.get("modules") or []
+    active_modules = [row for row in module_rows if row.get("active")]
+    prompt_tokens = module_diag.get("prompt_tokens")
+    if prompt_tokens is not None:
+        lines.append(
+            f"prompt modules: {len(active_modules)} active · {prompt_tokens:,} tok assembled"
+        )
+    if module_diag.get("error"):
+        lines.append(
+            f"[yellow]prompt module diagnostics unavailable: "
+            f"{_esc(module_diag['error'])}[/yellow]"
+        )
+
     lines.append("\n[b]Providers[/b]")
     for entry in diag.get("providers") or []:
         if entry.get("key_ok"):

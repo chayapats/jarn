@@ -91,6 +91,12 @@ class CommandMixin:
         if name == "config" and not args.strip():
             self._open_config()
             return
+        # `/modules` (and the singular `/module`) with no arguments opens the
+        # interactive picker. Text/status and scripted on/off forms keep routing
+        # through the framework-agnostic controller below.
+        if name in ("modules", "module") and not args.strip():
+            self._open_modules()
+            return
         await self._ensure_extensions()
         rt = self.controller.runtime
         if rt and name in rt.commands:
@@ -201,7 +207,7 @@ class CommandMixin:
             # and /commit,/review — rather than just printing it.
             self._last_tool_outputs = []
             await repl_turn._run_turn(
-                c, self.controller, result.text, self._ask,
+                c, self.controller, result.seed_input or result.text, self._ask,
                 pick=self._pick_approval, view=self._view_full_diff,
                 edit=self._edit_before_apply,
                 live_sink=self._set_stream, spinner=False,

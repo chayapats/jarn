@@ -42,6 +42,7 @@ import yaml
 
 from jarn.config import paths
 from jarn.extensibility.frontmatter import discover, parse
+from jarn.memory.tokens import truncate_to_token_budget
 from jarn.util.atomic import atomic_write_text
 
 # Flat ``*.md`` plus nested ``<name>/SKILL.md`` (Agent Skills layout). Nested
@@ -249,21 +250,68 @@ def render_skill_invocation(skill: Skill) -> str:
     return "\n".join(lines)
 
 
-def auto_skill_catalog(skills: dict[str, Skill]) -> str:
+def auto_skill_catalog(
+    skills: dict[str, Skill],
+    *,
+    token_budget: int | None = 512,
+) -> str:
     """Render the auto-eligible skills as a prompt-injectable catalog.
 
     Only names + descriptions are injected (cheap); the model reads the full
-    skill file on demand. Manual-only skills are excluded.
+    skill file on demand. Manual-only skills are excluded. The whole catalog is
+    budget-capped so adding extensions cannot silently make every turn expensive.
     """
     eligible = [s for s in skills.values() if s.auto_eligible and s.description]
     if not eligible:
         return ""
-    lines = ["# Available skills", ""]
+    header = [
+        "# Available skills",
+        "",
+        "Read a matching skill file for its full instructions before using it.",
+        "",
+    ]
+    entries: list[str] = []
     for s in sorted(eligible, key=lambda s: s.name):
         loc = f" (`{s.path}`)" if s.path else ""
-        lines.append(f"- **{s.name}** — {s.description}{loc}")
-    lines.append(
-        "\nWhen a task matches a skill, read its file for the full instructions "
-        "before acting."
+        entries.append(f"- **{s.name}** — {s.description}{loc}")
+    catalog = "\n".join([*header, *entries])
+    if token_budget is not None:
+        return truncate_skill_catalog_to_budget(catalog, token_budget)
+    return catalog
+
+
+def truncate_skill_catalog_to_budget(catalog: str, budget: int) -> str:
+    """Fit a rendered skill catalog by whole entries with an omitted count.
+
+    An alphabetical character cut can hide every skill after the first long
+    entry and can leave a half-readable path.  This keeps only complete bullet
+    entries and points to ``/skills`` for the complete lazy listing.  Tiny
+    budgets still obey the strict ceiling through the generic fallback.
+    """
+    from jarn.memory.tokens import count_tokens
+
+    if budget <= 0 or not catalog:
+        return ""
+    if count_tokens(catalog) <= budget:
+        return catalog
+
+    lines = catalog.splitlines()
+    first_entry = next(
+        (index for index, line in enumerate(lines) if line.startswith("- **")),
+        len(lines),
     )
-    return "\n".join(lines)
+    header = lines[:first_entry]
+    entries = lines[first_entry:]
+    total = len(entries)
+    for kept in range(total - 1, -1, -1):
+        omitted = total - kept
+        notice = (
+            f"- … truncated: {omitted} more "
+            f"skill{'s' if omitted != 1 else ''} omitted; run /skills."
+        )
+        candidate = "\n".join([*header, *entries[:kept], notice])
+        if count_tokens(candidate) <= budget:
+            return candidate
+
+    fallback = "# Available skills\n\nRun /skills to list all skills."
+    return truncate_to_token_budget(fallback, budget)

@@ -303,6 +303,31 @@ class OverlayMixin:
         if self.app is not None:
             self.app.invalidate()
 
+    def _modules_render(self):
+        """FormattedTextControl source for the prompt-module panel."""
+        if self._module_panel is None:
+            return []
+        return self._module_panel.render_lines()
+
+    def _open_modules(self) -> None:
+        """Open the module picker with live registry state."""
+        from jarn.repl.module_panel import ModulePanel
+
+        self._module_panel = ModulePanel(
+            get_statuses=lambda: self.controller.prompt_module_statuses()[0],
+            activate=self.controller.activate_prompt_module,
+            deactivate=self.controller.deactivate_prompt_module,
+        )
+        self._modules_open = True
+        if self.app is not None:
+            self.app.invalidate()
+
+    def _close_modules(self) -> None:
+        self._modules_open = False
+        self._module_panel = None
+        if self.app is not None:
+            self.app.invalidate()
+
     # -- Ctrl+R history picker (T-2-4) ----------------------------------------
 
     @staticmethod

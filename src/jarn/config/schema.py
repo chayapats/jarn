@@ -154,12 +154,16 @@ class ContextConfig:
     #: Token budget for the repo map (both system-prompt injection and tool
     #: responses).  Must be > 0.
     repo_map_tokens: int = 1024
-    #: Token budget for MEMORY.md index injection (global + project tiers).
-    memory_tokens: int = 4096
+    #: Shared token budget for both MEMORY.md indices (global + project tiers).
+    memory_tokens: int = 1024
     #: Token budget for the wiki index block injected into the system prompt.
-    wiki_index_tokens: int = 1024
-    #: Token budget for the project context file (JARN.md / AGENTS.md / …).
-    project_context_tokens: int = 8192
+    wiki_index_tokens: int = 512
+    #: Token budget for the always-loaded excerpt of project guidance. The full
+    #: JARN.md / AGENTS.md / CLAUDE.md remains available through read_file.
+    project_context_tokens: int = 1024
+    #: Token budget for names/descriptions of auto-eligible skills. Skill bodies
+    #: remain on disk and are read only when the task matches.
+    skill_catalog_tokens: int = 512
 
 
 _VALID_INLINE_IMAGES: frozenset[str] = frozenset({"auto", "off"})

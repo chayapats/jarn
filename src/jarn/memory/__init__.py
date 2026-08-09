@@ -3,6 +3,7 @@
 from jarn.memory.context import (
     assemble_system_context,
     init_template,
+    memory_index_context,
     project_context_text,
     resolve_context_file,
     write_jarn_md,
@@ -38,6 +39,7 @@ __all__ = [
     "default_db_path",
     "recall_block",
     "init_template",
+    "memory_index_context",
     "new_thread_id",
     "open_checkpointer",
     "project_context_text",

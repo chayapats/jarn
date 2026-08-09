@@ -124,9 +124,15 @@ def count_tokens(text: str) -> int:
 
 
 def truncate_to_token_budget(text: str, budget: int) -> str:
-    """Truncate *text* to fit *budget* tokens, appending a visible notice."""
+    """Truncate *text* to fit *budget* tokens, appending a visible notice.
+
+    The returned text is a strict hard cap, including the notice.  Older
+    versions reserved space for the notice but still emitted it when the entire
+    notice was larger than a tiny budget, so a configured ceiling of one or two
+    tokens could be exceeded by the truncation marker itself.
+    """
     if budget <= 0 or not text:
-        return text
+        return ""
     total = count_tokens(text)
     if total <= budget:
         return text
@@ -134,7 +140,19 @@ def truncate_to_token_budget(text: str, budget: int) -> str:
     notice_template = "\n\n(truncated {n} tokens)\n"
     # Reserve space for the notice (worst case: large n).
     notice_reserve = count_tokens(notice_template.format(n=total))
-    target = max(1, budget - notice_reserve)
+    if notice_reserve > budget:
+        # There is no room for even the marker.  A hard cap is more important
+        # than a notice that contradicts the configured budget.
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if count_tokens(text[:mid]) <= budget:
+                lo = mid
+            else:
+                hi = mid - 1
+        return text[:lo].rstrip()
+
+    target = max(0, budget - notice_reserve)
 
     lines = text.splitlines(keepends=True)
     if not lines:
@@ -164,4 +182,22 @@ def truncate_to_token_budget(text: str, budget: int) -> str:
         removed = total - count_tokens(body)
 
     notice = notice_template.format(n=removed)
-    return body + notice
+    result = body + notice
+    if count_tokens(result) <= budget:
+        return result
+
+    # Tokenization is not additive: counting ``body`` and ``notice`` separately
+    # can differ by a token at their boundary.  Shrink the body until the joined
+    # result itself fits, then fall back to a notice-only marker if necessary.
+    lo, hi = 0, len(body)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        candidate = body[:mid].rstrip() + notice
+        if count_tokens(candidate) <= budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    result = body[:lo].rstrip() + notice
+    if count_tokens(result) <= budget:
+        return result
+    return notice.strip() if count_tokens(notice.strip()) <= budget else ""

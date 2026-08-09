@@ -45,6 +45,7 @@ from jarn.agent.interrupts import (
     run_post_hooks,
     run_pre_hooks,
 )
+from jarn.agent.prompt_modules import RenderedPromptModule, render_date_prompt_module
 from jarn.agent.prompts import date_context
 from jarn.agent.stream_handlers import (
     _first_tool_name,
@@ -220,6 +221,18 @@ class SessionDriver:
     #: (and, past midnight, carrying a stale launch-day date). The ``default_factory``
     #: is the fallback for drivers built without an explicit ``date_state``.
     date_state: dict = field(default_factory=dict, repr=False)
+    #: Explicit one-turn prompt modules, already registry-rendered and bounded by
+    #: the controller. They are submitted as system messages immediately before
+    #: the user message, then disappear because the controller consumes the turn
+    #: activation when it creates this driver.
+    turn_prompt_modules: tuple[RenderedPromptModule, ...] = ()
+    #: Lazy controller source for turn modules. It is called only once a fresh
+    #: user turn is actually about to be submitted, so merely inspecting/resuming
+    #: a parked approval cannot consume a queued module body.
+    turn_prompt_module_source: Callable[[], tuple[RenderedPromptModule, ...]] | None = None
+    #: False only for the eval harness's wholesale system-prompt override.  That
+    #: arm must receive no hidden date or explicit module messages.
+    inject_prompt_modules: bool = True
     #: Accumulates assistant TEXT chunks for the current turn so a single
     #: ``assistant`` event is written per turn rather than one per streaming token.
     _turn_text: str = ""
@@ -569,13 +582,28 @@ class SessionDriver:
                     return
 
                 messages: list[dict[str, Any]] = []
-                date_block = date_context()
-                # Dedup PER THREAD: a new thread (after /clear, /compact, /rewind,
-                # /resume) must get its own date message even if another thread
-                # already stamped today.
-                if self.date_state.get(self.thread_id) != date_block:
-                    messages.append({"role": "system", "content": date_block})
-                    self.date_state[self.thread_id] = date_block
+                if self.inject_prompt_modules:
+                    date_module = render_date_prompt_module(date_context())
+                    date_block = date_module.content
+                    # Dedup PER THREAD: a new thread (after /clear, /compact,
+                    # /rewind, /resume) must get its own date message even if
+                    # another thread already stamped today.
+                    if self.date_state.get(self.thread_id) != date_block:
+                        messages.append({"role": "system", "content": date_block})
+                        self.date_state[self.thread_id] = date_block
+
+                    # Turn modules are submitted only with a fresh user turn.
+                    # A provider fallback resumes checkpointed input and must not
+                    # append the body a second time.
+                    if not resume:
+                        turn_modules = self.turn_prompt_modules
+                        if self.turn_prompt_module_source is not None:
+                            turn_modules = self.turn_prompt_module_source()
+                        messages.extend(
+                            {"role": "system", "content": module.content}
+                            for module in turn_modules
+                            if module.content
+                        )
 
                 if resume:
                     payload: Any = {"messages": messages}

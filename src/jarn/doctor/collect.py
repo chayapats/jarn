@@ -14,6 +14,7 @@ def collect_doctor(
     project_root: Any = None,
     project_trusted: bool | None = None,
     extra_roots: Any = None,
+    prompt_modules: dict[str, Any] | None = None,
 ) -> int:
     """Populate ``diag`` with doctor diagnostics and return the exit code.
 
@@ -207,7 +208,40 @@ def collect_doctor(
         "memory_tokens": cfg.context.memory_tokens,
         "wiki_index_tokens": cfg.context.wiki_index_tokens,
         "project_context_tokens": cfg.context.project_context_tokens,
+        "skill_catalog_tokens": cfg.context.skill_catalog_tokens,
     }
+
+    if prompt_modules is None:
+        try:
+            from jarn.agent.prompt_modules import (
+                PromptModuleContext,
+                create_prompt_module_registry,
+                prompt_module_diagnostics,
+                with_context_budgets,
+            )
+            from jarn.extensibility.skills import load_skills
+
+            skills = load_skills(
+                root,
+                project_trusted=bool(project_trusted),
+                read_claude_dir=cfg.compat.read_claude_dir,
+            )
+            module_context = PromptModuleContext(
+                config=cfg,
+                project_root=root,
+                project_trusted=bool(project_trusted),
+                skills=skills,
+            )
+            module_registry = with_context_budgets(
+                create_prompt_module_registry(skills), module_context
+            )
+            module_assembly = module_registry.assemble(module_context)
+            prompt_modules = prompt_module_diagnostics(
+                module_registry, module_context, module_assembly
+            )
+        except Exception as exc:  # noqa: BLE001 - diagnostics must remain usable
+            prompt_modules = {"prompt_tokens": None, "modules": [], "error": str(exc)}
+    diag["prompt_modules"] = prompt_modules
 
     diag["extensions"] = collect_extensions(root, project_trusted=project_trusted, config=cfg)
 

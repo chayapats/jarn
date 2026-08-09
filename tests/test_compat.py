@@ -392,12 +392,7 @@ def test_build_runtime_forwards_read_claude_dir_false(
 def test_build_runtime_forwards_context_files(
     tmp_path: Path,
 ) -> None:
-    """build_runtime must forward compat.context_files to assemble_system_context.
-
-    This test fails without FIX 1: without the fix, assemble_system_context is
-    called without context_files, so it always uses the default list rather
-    than the configured one.
-    """
+    """The registry must honor compat.context_files in actual assembled content."""
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
     from jarn.agent.builder import build_runtime
@@ -437,28 +432,22 @@ def test_build_runtime_forwards_context_files(
     # JARN.md also present but should NOT be chosen because it's not in context_files.
     (root / "JARN.md").write_text("JARN_MARKER_MUST_NOT_APPEAR", encoding="utf-8")
 
-    captured_context: dict[str, object] = {}
-
-    import jarn.memory.context as _ctx_mod
-
-    original_assemble = _ctx_mod.assemble_system_context
-
-    def _spy_assemble(*args: object, **kwargs: object) -> str:
-        captured_context["kwargs"] = kwargs
-        return original_assemble(*args, **kwargs)
-
     fake = GenericFakeChatModel(messages=iter([]))
     with (
         patch.object(ModelFactory, "build", return_value=fake),
-        patch("jarn.agent.runtime.assemble_system_context", side_effect=_spy_assemble),
         patch("deepagents.create_deep_agent", return_value=object()),
     ):
-        build_runtime(cfg, project_root=root, project_trusted=True)
+        runtime = build_runtime(cfg, project_root=root, project_trusted=True)
 
-    # FIX 1 assertion: context_files must have been forwarded.
-    assert captured_context.get("kwargs", {}).get("context_files") == ["AGENTS.md"], (
-        "build_runtime did not forward compat.context_files to assemble_system_context"
+    assert "AGENTS_CONTEXT_MARKER" in runtime.system_prompt
+    assert "JARN_MARKER_MUST_NOT_APPEAR" not in runtime.system_prompt
+    assert runtime.prompt_assembly is not None
+    project = next(
+        module
+        for module in runtime.prompt_assembly.modules
+        if module.name == "context.project"
     )
+    assert project.source == "AGENTS.md"
 
 
 # ── resolve_context_file + startup echo (P5.D) ───────────────────────────────

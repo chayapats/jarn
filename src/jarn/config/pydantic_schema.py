@@ -261,9 +261,10 @@ class ContextConfigModel(_StrictModel):
     compact_at_pct: int = 85
     repo_map: str = "tool"
     repo_map_tokens: int = 1024
-    memory_tokens: int = 4096
-    wiki_index_tokens: int = 1024
-    project_context_tokens: int = 8192
+    memory_tokens: int = 1024
+    wiki_index_tokens: int = 512
+    project_context_tokens: int = 1024
+    skill_catalog_tokens: int = 512
 
     @field_validator("auto_compact", mode="before")
     @classmethod
@@ -292,6 +293,7 @@ class ContextConfigModel(_StrictModel):
 
     @field_validator(
         "repo_map_tokens", "memory_tokens", "wiki_index_tokens", "project_context_tokens",
+        "skill_catalog_tokens",
         mode="before",
     )
     @classmethod
@@ -1167,6 +1169,7 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             memory_tokens=model.context.memory_tokens,
             wiki_index_tokens=model.context.wiki_index_tokens,
             project_context_tokens=model.context.project_context_tokens,
+            skill_catalog_tokens=model.context.skill_catalog_tokens,
         ),
         execution=ExecutionConfig(
             backend=model.execution.backend,

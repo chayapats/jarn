@@ -44,6 +44,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         group="Daily",
     ),
     CommandSpec("cost", "Show session token usage and cost.", "core", group="Daily"),
+    CommandSpec(
+        "modules",
+        "Open the prompt-module picker; 'active' prints active module details.",
+        "both",
+        usage="[active]",
+        group="Daily",
+    ),
+    CommandSpec(
+        "module",
+        "Open the prompt-module picker, or activate/deactivate a module directly.",
+        "both",
+        usage="[on <name> [turn|session] | off <name>]",
+        group="Daily",
+    ),
     CommandSpec("undo", "Revert the last agent turn's file changes.", "core", group="Daily"),
     CommandSpec(
         "redo",

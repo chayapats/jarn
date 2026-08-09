@@ -2101,6 +2101,25 @@ async def test_pick_menu_esc_cancel(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["modules", "module"])
+async def test_modules_without_args_opens_interactive_panel(
+    tmp_path, monkeypatch, command
+):
+    app = _make_inline_app(tmp_path, monkeypatch)
+
+    await app._command(command, "")
+
+    assert app._modules_open is True
+    assert app._module_panel is not None
+    rendered = "".join(text for _style, text in app._modules_render())
+    assert "Prompt modules" in rendered
+    assert "OPTIONAL SKILLS" in rendered
+    assert "Space/Enter next turn" in rendered
+    app._close_modules()
+    app.controller.close()
+
+
+@pytest.mark.asyncio
 async def test_rewind_blank_continuation_indexes_branch(tmp_path, monkeypatch):
     """A rewind with no continuation prompt still records a session title for the
     forked branch, so it appears in /resume instead of being an orphan checkpoint

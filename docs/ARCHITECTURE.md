@@ -51,11 +51,12 @@ controller, turn runner, permission engine, and agent runtime.
 | `jarn.cost` | Pricing table, `CostTracker`, budget warn / hard-stop |
 | `jarn.memory` | SQLite checkpointer (resumable sessions), markdown long-term memory, `JARN.md` |
 | `jarn.extensibility` | Loaders for skills, commands, custom subagents, hooks, MCP |
-| `jarn.agent` | `build_runtime` (deepagents assembly), `SessionDriver`, prompts, verify, permission bridge |
+| `jarn.agent` | `build_runtime` (deepagents assembly), `SessionDriver`, prompt-module registry, verify, permission bridge |
+| `jarn.agent.prompt_modules` | Pure deterministic prompt activation/ordering/budgeting plus per-module provenance and token metadata |
 | `jarn.agent.turn_runner` | Front-end-neutral turn orchestration used by the REPL, headless path, and gateway worker |
 | `jarn.controller` | Shared runtime lifecycle, built-in command operations, thread state, and root ownership |
 | `jarn.tui` | Completion, palette/toolbar tokens, input queue, and logo (Textual only for onboarding) |
-| `jarn.repl` | Terminal chat UI (prompt_toolkit + Rich) — layout, keys, command dispatch |
+| `jarn.repl` | Terminal chat UI (prompt_toolkit + Rich) — layout, keys, command dispatch, and interactive config/module panels |
 | `jarn.repl_renderer` | Turn streaming renderer (`TurnRenderer`) extracted from `repl.py` |
 | `jarn.headless` | Headless one-shot entry point (`jarn -p`); fail-closed tool gating, JSON/structured output |
 | `jarn.gateway` | Transport-neutral daemon supervision, per-root workers and leases, durable sessions/approvals, private protocol, scheduler |
@@ -79,8 +80,14 @@ controller, turn runner, permission engine, and agent runtime.
 1. The user submits text in `jarn.repl`. `Controller` routes built-in `/commands`
    locally; otherwise a cancellable asyncio task drives a turn.
 2. `Controller.ensure_runtime()` lazily builds the deep agent via `build_runtime`,
-   loading MCP tools, skills, subagents, context, and the checkpointer.
+   loading MCP tools, skills, subagents, context, and the checkpointer. The runtime
+   creates one `PromptModuleRegistry` and stores its `PromptAssembly`; only the thin
+   kernel is unconditional. Active runtime/session modules are ordered after the
+   stable prefix, while volatile wiki/repo-map modules remain suffixes.
 3. `SessionDriver.run_turn` calls `agent.astream(...)` with `stream_mode=["messages","updates"]`:
+   before a fresh user message it injects the registry-compatible date module once
+   per thread/day plus any consumed one-turn skill modules. A wholesale prompt
+   override disables these messages too.
    - **messages** chunks → streamed assistant text + usage recorded to `CostTracker`.
    - **updates** chunks → tool-call notices and, crucially, `__interrupt__` events.
 
@@ -119,18 +126,21 @@ can force a confirmation even in YOLO mode.
 
 ## System prompt assembly
 
-`build_runtime` keeps a stable, compact reliability prefix and appends context in this
-order: local date; the first trusted project context file (`JARN.md`, `AGENTS.md`, or
-`CLAUDE.md`); global/project memory indices; auto-skill names and descriptions; and
-detected verification commands. Optional wiki and automatic repo-map indices are
-volatile suffixes, preserving the stable prefix for provider-side prompt caching.
+`build_runtime` starts with a stable 146-word kernel containing only outcome honesty,
+instruction boundaries, tool reality, permissions, roots, and secret handling. It then
+appends only relevant bounded blocks: plan-mode guidance when plan mode is active; an
+excerpt of the first trusted project context file (`JARN.md`, `AGENTS.md`, or
+`CLAUDE.md`); a shared global/project memory catalog; and auto-skill names and
+descriptions. The date is injected once per thread/day by `SessionDriver`, avoiding a
+duplicate in the static prefix. Optional wiki and automatic repo-map indices remain
+volatile suffixes, preserving provider-side prompt caching.
 
-The base prompt scopes project context and skills to the user's goal and treats source,
-web, log, quoted, and tool-result text as data rather than fresh instructions. It also
-requires the model to use only tools actually supplied by the active policy/backend.
-Plan mode permits local read tools only: write, shell, and network actions remain denied.
-Regression tests cap the base at 450 words and 2,900 UTF-8 bytes, below the previous
-prompt, while separately pinning its plan/act/verify and instruction-boundary contracts.
+Long bodies remain on disk and are read through tools when needed. Default ceilings are
+1,024 tokens for project guidance, 1,024 shared across both memory tiers, 512 for the
+skill catalog, and 512 for the wiki index. Repo maps default to an on-demand tool.
+Verification and permissions are enforced by the harness rather than repeated as
+workflow micromanagement in the prompt. Regression tests cap the kernel at 180 words
+and 1,300 UTF-8 bytes.
 
 ## Codex subscription provider
 

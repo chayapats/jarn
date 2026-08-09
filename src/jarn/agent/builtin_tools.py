@@ -180,6 +180,7 @@ def _add_wiki_tools(
     *,
     project_trusted: bool,
     wiki_index_tokens: int | None = None,
+    inject_index: bool = True,
 ) -> tuple[list[Any], str, list[Any]]:
     """Register the four wiki tools and optionally inject the wiki index.
 
@@ -296,7 +297,7 @@ def _add_wiki_tools(
     if index_text.strip():
         index_parts.append(index_text.strip())
 
-    if index_parts:
+    if inject_index and index_parts:
         # Append after the stable persona (never prepend): the wiki index is
         # volatile, so keeping it as a suffix preserves the server-side
         # cross-session prefix cache when repo content shifts.
@@ -390,6 +391,11 @@ def _wire_builtin_tools(
             root,
             project_trusted=project_trusted,
             wiki_index_tokens=config.context.wiki_index_tokens,
+            # Prompt text is assembled centrally by prompt_modules.py.  This
+            # helper still supports direct index injection for backward-compatible
+            # callers/tests, but runtime wiring must not create an unobservable
+            # second contributor (or contaminate a wholesale prompt override).
+            inject_index=False,
         )
         ungated.extend(ungated_wiki)
 
@@ -400,11 +406,6 @@ def _wire_builtin_tools(
         )
         tools = [*tools, repo_map_tool]
         ungated.append(repo_map_tool)
-
-    if repo_map_mode == "auto" and root is not None:
-        system_prompt = _inject_repo_map(
-            system_prompt, root, token_budget=config.context.repo_map_tokens
-        )
 
     if config.execution.backend == "local" and config.execution.background:
         from jarn.agent.background import build_background_tools

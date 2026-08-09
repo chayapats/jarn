@@ -55,7 +55,17 @@ def cmd_skill(ctrl: Controller, args: str) -> CommandResult:
             f"Unknown skill: {name!r}. Available: {available or 'none'}. "
             "Run /skills to list them."
         )
-    return CommandResult(render_skill_invocation(skill), seed_turn=True)
+    activated = ctrl.activate_prompt_module(skill.name, "turn")
+    if not activated.text.startswith("Activated "):
+        return activated
+    return CommandResult(
+        render_skill_invocation(skill),
+        seed_turn=True,
+        seed_input=(
+            f"Apply the activated `{skill.name}` skill to this turn. "
+            f"Goal: {skill.description}"
+        ),
+    )
 
 
 def cmd_skills(ctrl: Controller, args: str) -> CommandResult:

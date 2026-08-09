@@ -149,6 +149,7 @@ def test_doctor_json_includes_context_repo_map(tmp_path, monkeypatch, capsys):
     assert "context" in data, "doctor --json must include 'context' key"
     assert data["context"]["repo_map"] == "auto"
     assert data["context"]["repo_map_tokens"] == 2048
+    assert data["context"]["skill_catalog_tokens"] == 512
 
 
 # ---------------------------------------------------------------------------

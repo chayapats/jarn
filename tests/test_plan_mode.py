@@ -137,6 +137,25 @@ def test_exit_plan_mode_tool_registered_and_gated(base_config, tmp_path):
     assert "exit_plan_mode" in (captured.get("interrupt_on") or {})
 
 
+def test_plan_prompt_module_is_loaded_only_in_plan_mode(base_config, tmp_path):
+    captured: dict = {}
+
+    def fake_cda(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    base_config.permission_mode = PermissionMode.PLAN
+    fake = GenericFakeChatModel(messages=iter([]))
+    from jarn.agent import builder
+
+    with patch("jarn.providers.models.ModelFactory.build", return_value=fake), patch(
+        "deepagents.create_deep_agent", side_effect=fake_cda
+    ):
+        builder.build_runtime(base_config, project_root=tmp_path)
+
+    assert "# Active mode: plan" in captured["system_prompt"]
+
+
 # -- config ------------------------------------------------------------------
 
 def test_plan_config_default():

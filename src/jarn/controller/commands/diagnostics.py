@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from rich.markup import escape as _escape_markup
 
@@ -11,6 +11,7 @@ from jarn.extensibility.mcp import load_mcp_tools, run_blocking
 from jarn.tui import palette
 
 if TYPE_CHECKING:
+    from jarn.agent.prompt_modules import PromptModuleScope
     from jarn.controller.core import Controller
 
 
@@ -26,6 +27,7 @@ def cmd_doctor(ctrl: Controller, args: str) -> CommandResult:
         project_root=ctrl.project_root,
         project_trusted=ctrl.project_trusted,
         extra_roots=ctrl.extra_roots,
+        prompt_modules=ctrl.prompt_module_diagnostics(),
     )
     return CommandResult("\n".join(doctor_lines(diag)))
 
@@ -52,6 +54,73 @@ def cmd_cost(ctrl, args: str) -> CommandResult:
             )
     lines.extend(_context_injection_lines(ctrl))
     return CommandResult("\n".join(lines))
+
+
+def cmd_modules(ctrl: Controller, args: str) -> CommandResult:
+    """Show registry state backed by the same assembly metadata the model sees."""
+    sub = args.strip().lower()
+    if sub not in ("", "active"):
+        return CommandResult("Usage: /modules [active]")
+    statuses, assembly = ctrl.prompt_module_statuses()
+    lines = [
+        f"[b]Prompt modules[/b] — assembled prompt {assembly.token_count:,} tok"
+    ]
+    for status in statuses:
+        if sub == "active" and not status.active:
+            continue
+        # Keep inactive lazy skill bodies out of the general registry listing;
+        # /skills is their discoverable, unbounded catalog. Any active body is
+        # still shown here, satisfying actual-content observability.
+        if status.kind == "skill" and not status.active:
+            continue
+        mark = (
+            f"[{palette.C_SUCCESS}]●[/{palette.C_SUCCESS}]"
+            if status.active
+            else f"[{palette.C_DIM}]○[/{palette.C_DIM}]"
+        )
+        if status.configured_budget is None:
+            token_text = f"{status.token_count:,} tok"
+        else:
+            token_text = (
+                f"{status.token_count:,}/{status.configured_budget:,} tok"
+            )
+        truncated = " · truncated" if status.truncated else ""
+        lines.append(
+            f"  {mark} [cyan]{_escape_markup(status.name)}[/cyan] · "
+            f"{status.scope} · {token_text}{truncated}"
+        )
+        lines.append(
+            f"      [{palette.C_DIM}]{_escape_markup(status.activation_reason)} · "
+            f"source: {_escape_markup(status.source)}[/{palette.C_DIM}]"
+        )
+    if sub != "active":
+        lines.append(
+            f"[{palette.C_DIM}]Lazy skill bodies: /skills, then "
+            f"/module on skill.NAME [turn|session].[/{palette.C_DIM}]"
+        )
+    return CommandResult("\n".join(lines))
+
+
+def cmd_module(ctrl: Controller, args: str) -> CommandResult:
+    """Activate/deactivate user-loadable module bodies."""
+    parts = args.split()
+    if not parts:
+        return CommandResult(
+            "Usage: /module on <name> [turn|session] | /module off <name>"
+        )
+    action = parts[0].lower()
+    if action == "on" and len(parts) in (2, 3):
+        scope = parts[2].lower() if len(parts) == 3 else "turn"
+        if scope not in ("turn", "session"):
+            return CommandResult("Module scope must be 'turn' or 'session'.")
+        return ctrl.activate_prompt_module(
+            parts[1], cast("PromptModuleScope", scope)
+        )
+    if action == "off" and len(parts) == 2:
+        return ctrl.deactivate_prompt_module(parts[1])
+    return CommandResult(
+        "Usage: /module on <name> [turn|session] | /module off <name>"
+    )
 
 def cmd_permissions(ctrl, args: str) -> CommandResult:
     r = ctrl.config.permissions
@@ -366,54 +435,23 @@ def cmd_checkpoints(ctrl, args: str) -> CommandResult:
     return CommandResult("\n".join(lines))
 
 def _context_injection_lines(ctrl) -> list[str]:
-    """Token sizes for blocks injected into the system prompt."""
-    from jarn.memory.context import DEFAULT_CONTEXT_FILES, project_context_text
-    from jarn.memory.store import MemoryStore
-    from jarn.memory.tokens import count_tokens
-    from jarn.memory.wiki import WikiStore
-
-    ctx = ctrl.config.context
+    """Exact active-module token sizes from the assembly source of truth."""
+    statuses, assembly = ctrl.prompt_module_statuses()
     lines = [
         "",
-        "[b]Context injection[/b] [dim](/memory dump for full text)[/dim]",
+        f"[b]Prompt modules[/b] [dim]({assembly.token_count:,} tok assembled)[/dim]",
     ]
-
-    names = ctrl.config.compat.context_files or DEFAULT_CONTEXT_FILES
-    proj_text = (
-        project_context_text(
-            ctrl.project_root,
-            context_files=names,
-            token_budget=ctx.project_context_tokens,
+    for status in statuses:
+        if not status.active:
+            continue
+        budget = (
+            f"/{status.configured_budget:,}"
+            if status.configured_budget is not None
+            else ""
         )
-        if ctrl.project_trusted
-        else None
-    )
-    proj_tok = count_tokens(proj_text) if proj_text else 0
-    lines.append(
-        f"  project context: {proj_tok:,} / {ctx.project_context_tokens:,} tok"
-    )
-
-    global_index = MemoryStore.global_store().index_text(token_budget=ctx.memory_tokens)
-    global_tok = count_tokens(global_index) if global_index.strip() else 0
-    lines.append(f"  memory (global): {global_tok:,} / {ctx.memory_tokens:,} tok")
-
-    project_tok = 0
-    if ctrl.project_trusted:
-        project_store = MemoryStore.project_store(ctrl.project_root)
-        if project_store:
-            project_index = project_store.index_text(token_budget=ctx.memory_tokens)
-            project_tok = count_tokens(project_index) if project_index.strip() else 0
-    lines.append(f"  memory (project): {project_tok:,} / {ctx.memory_tokens:,} tok")
-
-    wiki_store = WikiStore.build(ctrl.project_root)
-    if ctrl.project_trusted:
-        wiki_index = wiki_store.index_text(token_budget=ctx.wiki_index_tokens)
-    else:
-        from jarn.memory.wiki import WikiStore as _WS
-
-        wiki_index = _WS(global_wiki_dir=wiki_store.global_wiki_dir).index_text(
-            token_budget=ctx.wiki_index_tokens
+        truncated = " truncated" if status.truncated else ""
+        lines.append(
+            f"  {status.name}: {status.token_count:,}{budget} tok · "
+            f"{status.scope}{truncated}"
         )
-    wiki_tok = count_tokens(wiki_index) if wiki_index.strip() else 0
-    lines.append(f"  wiki index: {wiki_tok:,} / {ctx.wiki_index_tokens:,} tok")
     return lines

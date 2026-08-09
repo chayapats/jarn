@@ -4,7 +4,7 @@
 > choosing where to contribute. Items marked `[x]` are implemented and in the
 > current release; `[ ]` items are scaffolded or documented but not yet shipped.
 
-Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-08** (v0.10.0 released on PyPI + npm, Alpha).
+Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-09** (v0.11.0 released on PyPI + npm, Alpha).
 
 ## v1 — implemented
 
@@ -12,7 +12,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-08** (v0.10.0 release
 - [x] Local-first backend (real filesystem + shell), scoped to the project root
 - [x] Multi-file read / write / edit, shell execution, planning (`write_todos`)
 - [x] Inline subagents via the `task` tool; parallel subagents supported by the engine
-- [x] Plan → act → verify system prompt + project capability detection
+- [x] Thin safety/outcome kernel + conditional plan module + harness verification gate
 
 **Models & cost**
 - [x] 14-provider routing: multi-provider BYO key (OpenRouter default), local models,
@@ -46,6 +46,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-08** (v0.10.0 release
 - [x] Native scrollback stream (Claude Code-style); inline todos + `/resume` picker
 - [x] Streaming output, tool-call log, colored diff view, inline approval modal
 - [x] Arrow-key pickers for approval, `/model`, `/mode`, `/resume` (↑/↓ + Enter, Esc cancel)
+- [x] Interactive `/modules` picker with plain-language descriptions and turn/session toggles
 - [x] Extensions load at launch (`/skills`, custom commands before first turn)
 - [x] Session title from first prompt (sticky across turns)
 - [x] Multiline input (Enter submit, history, `/` commands, Esc cancel)
@@ -60,7 +61,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-08** (v0.10.0 release
 - [x] `jarn` / `setup` / `init` / `doctor` (`--json`) CLI
 - [x] Strict config validation (typed bools, numeric ranges, unknown top-level keys rejected)
 - [x] Local rotating logs, opt-in LangSmith tracing
-- [x] `uv`/PyPI packaging, 2435 tests (+ packaging gate), clean lint + `mypy` CI
+- [x] `uv`/PyPI packaging, 2460 tests (+ packaging gate), clean lint + `mypy` CI
 - [x] Optional single-operator Telegram gateway — long-poll DM bot, per-root
   workers, durable approvals, inbound media, scheduler, and systemd deployment;
   operator guide: [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md)

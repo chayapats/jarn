@@ -1,6 +1,6 @@
 # J.A.R.N. Documentation
 
-J.A.R.N. (v0.10.0, Alpha) is a local-first, permission-gated terminal agent harness built
+J.A.R.N. (v0.11.0, Alpha) is a local-first, permission-gated terminal agent harness built
 around [DeepAgents](https://github.com/langchain-ai/deepagents). It wraps the agent
 loop with a configurable permission engine, 14-provider model routing (including
 managed ChatGPT subscription auth through Codex), cost
@@ -18,8 +18,8 @@ gateway. Install with `pip install jarn`
 | [PERMISSIONS.md](PERMISSIONS.md) | Users · Contributors | How every file write and shell command is authorized — modes, rules, danger-guard, OS sandbox, project trust boundary |
 | [EXTENDING.md](EXTENDING.md) | Users · Contributors | Five extension surfaces (skills, slash commands, subagents, hooks, MCP) with a working quick-start |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Contributors | System diagram, subsystem table, turn lifecycle, design rationale, and key source files |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Contributors | Dev setup, CI gates (ruff · mypy · 2435 tests), testing layers, and how-to guides for common changes |
-| [ROADMAP.md](ROADMAP.md) | Everyone | what is shipped (v0.10.0), what is planned, and known limitations |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contributors | Dev setup, CI gates (ruff · mypy · 2460 tests), testing layers, and how-to guides for common changes |
+| [ROADMAP.md](ROADMAP.md) | Everyone | what is shipped (v0.11.0), what is planned, and known limitations |
 | [OPEN_CORE.md](OPEN_CORE.md) | Everyone | Licensing (Apache-2.0) and the intended open-core business model — plans only, nothing commercial is shipped |
 | [WEB_UI.md](WEB_UI.md) | Contributors | Design notes for a future Web UI — **not built yet**; included so the core stays Web-UI-ready |
 | [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md) | Operators · Contributors | v0.10 setup, global config, security model, systemd deployment, and second-poller stand-down |

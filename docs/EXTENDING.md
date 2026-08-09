@@ -20,7 +20,7 @@ conflicts). Working examples live in [`examples/`](../examples).
 
 | Surface | Use when… |
 |---|---|
-| **Skills** | You want the agent to *automatically* apply a reusable workflow or constraint (e.g. "always back up before running migrations"). The skill file is injected into the system prompt so the model applies it without being told every time. |
+| **Skills** | You want a reusable workflow or constraint (e.g. "back up before migrations"). Only its name, description, and path enter the bounded catalog; the body is read when matched or explicitly invoked. |
 | **Custom commands** | You want a user-invoked slash command (`/explain`, `/deploy`) that sends a fixed prompt template with substituted arguments. The agent only uses it when you call it explicitly — it is never auto-triggered. |
 | **Subagents** | You need the main agent to delegate a self-contained task to a specialist (e.g. a test-writer that runs independently). Subagents have their own system prompt, optional model, and optional tool restrictions. |
 | **Hooks** | You want shell commands to run automatically on lifecycle events (`post_edit`, `pre_commit`, `session_end`, …) without the agent deciding to run them — e.g. auto-lint after every file edit. |
@@ -137,7 +137,10 @@ When asked to run migrations:
 - a keyword/glob string — auto-eligible and explicitly invokable.
 
 List loaded skills with `/skills`. Use `trigger: manual` for skills with side effects
-so they never fire on their own.
+so they never fire on their own. `/skill <name>` loads the bounded body for the
+immediate turn; `/module on skill.<name> session` keeps it active for the current
+thread. In the terminal, `/modules` opens the interactive picker; `/modules active`
+reports the exact body tokens, scope, source, and truncation state as plain text.
 
 ## 2. Slash commands
 
@@ -151,9 +154,9 @@ a built-in, update `BUILTINS` and keep `README.md` in sync
 (`tests/test_phase3.py::test_readme_commands_match_registry`).
 
 Current built-ins: `/help`, `/init`, `/config`, `/model`, `/mode`, `/sandbox`,
-`/preset`, `/cost`, `/compact`, `/expand`, `/clear`, `/sessions`, `/resume`,
-`/skills`, `/memory`, `/permissions`, `/mcp`, `/trust`, `/queue`, `/undo`, `/redo`,
-`/checkpoints`, `/map`, `/wiki`, `/quit`. The README command table is the
+`/preset`, `/cost`, `/modules`, `/module`, `/compact`, `/expand`, `/clear`,
+`/sessions`, `/resume`, `/skill`, `/skills`, `/memory`, `/permissions`, `/mcp`,
+`/trust`, `/queue`, `/undo`, `/redo`, `/checkpoints`, `/map`, `/wiki`, `/quit`. The README command table is the
 authoritative list (kept in sync by the parity test). See
 [README.md § Built-in commands](../README.md#built-in-commands).
 
@@ -325,8 +328,8 @@ launching.
 
 ## Tips
 
-- Keep skill/command descriptions short and specific — they cost prompt tokens and
-  drive auto-trigger quality.
+- Keep skill/command descriptions short and specific — the skill catalog has a shared
+  token ceiling, and precise descriptions improve on-demand routing.
 - Commit project-tier extensions (`.jarn/`) so your whole team shares them.
 - `state.sqlite`, `logs/` and the `*.lock` write-lock siblings under `.jarn/` are
   gitignored by the provided `.gitignore`. The `.lock` files are empty, are

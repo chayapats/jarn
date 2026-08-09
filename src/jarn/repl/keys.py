@@ -43,9 +43,13 @@ class KeysMixin:
 
     def _build_keys(self) -> KeyBindings:
         kb = KeyBindings()
-        # Input/editing keys only apply when neither overlay (pager / config
-        # panel) is open; while one is open keys drive that overlay instead.
-        live = Condition(lambda: not self._expanded and not self._config_open)
+        # Input/editing keys only apply when no overlay is open; while a panel
+        # is visible its own bindings own the keyboard.
+        live = Condition(
+            lambda: not self._expanded
+            and not self._config_open
+            and not self._modules_open
+        )
         cfg_open = Condition(lambda: self._config_open)
         cfg_edit = Condition(
             lambda: self._config_open
@@ -56,6 +60,7 @@ class KeysMixin:
             lambda: self._config_open
             and (self._config_panel is None or not self._config_panel.editing)
         )
+        modules_open = Condition(lambda: self._modules_open)
 
         @kb.add("enter", filter=live)
         def _submit(event) -> None:
@@ -406,6 +411,42 @@ class KeysMixin:
                 self._config_panel.type_text(data)
                 event.app.invalidate()
 
+        # -- interactive /modules panel ---------------------------------------
+        @kb.add("up", filter=modules_open)
+        def _modules_up(event) -> None:
+            if self._module_panel is not None:
+                self._module_panel.move(-1)
+                event.app.invalidate()
+
+        @kb.add("down", filter=modules_open)
+        def _modules_down(event) -> None:
+            if self._module_panel is not None:
+                self._module_panel.move(1)
+                event.app.invalidate()
+
+        @kb.add("enter", filter=modules_open)
+        @kb.add("space", filter=modules_open)
+        def _modules_toggle(event) -> None:
+            if self._module_panel is not None:
+                self._module_panel.toggle_turn()
+                event.app.invalidate()
+
+        @kb.add("s", filter=modules_open)
+        def _modules_session(event) -> None:
+            if self._module_panel is not None:
+                self._module_panel.enable_session()
+                event.app.invalidate()
+
+        @kb.add("x", filter=modules_open)
+        def _modules_off(event) -> None:
+            if self._module_panel is not None:
+                self._module_panel.disable()
+                event.app.invalidate()
+
+        @kb.add("q", filter=modules_open)
+        def _modules_close(event) -> None:
+            self._close_modules()
+
         @kb.add("c-v", filter=live)
         def _paste_image_key(event) -> None:
             self._paste_clipboard_image()
@@ -413,7 +454,7 @@ class KeysMixin:
         @kb.add("c-o")
         def _expand_key(event) -> None:
             self._armed = False
-            if self._config_open:
+            if self._config_open or self._modules_open:
                 return
             self._collapse() if self._expanded else self._open_pager()
 
@@ -431,6 +472,11 @@ class KeysMixin:
                     self._close_config()
                 event.app.invalidate()
                 self._last_esc_ts = None  # not an idle Esc; reset chord
+                return
+            if self._modules_open:
+                self._close_modules()
+                event.app.invalidate()
+                self._last_esc_ts = None
                 return
             if self._menu_future is not None and not self._menu_future.done():
                 self._menu_future.set_result(self._menu_cancel)
@@ -474,6 +520,10 @@ class KeysMixin:
                     p.cancel_edit()
                 else:
                     self._close_config()
+                event.app.invalidate()
+                return
+            if self._modules_open:
+                self._close_modules()
                 event.app.invalidate()
                 return
             if self._expanded:

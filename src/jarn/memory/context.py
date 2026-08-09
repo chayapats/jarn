@@ -22,8 +22,9 @@ DEFAULT_CONTEXT_FILES: list[str] = ["JARN.md", "AGENTS.md", "CLAUDE.md"]
 JARN_MD_TEMPLATE = """\
 # {project_name}
 
-> Project context for J.A.R.N. This file is auto-loaded into the agent's system
-> prompt. Keep it short and high-signal — it costs tokens on every turn.
+> The beginning of this file is auto-loaded into J.A.R.N.'s prompt. Put universal,
+> high-signal rules first. Move long or task-specific workflows into `.jarn/skills/`
+> so the agent reads them only when needed.
 
 ## What this project is
 
@@ -122,6 +123,142 @@ def write_jarn_md(project_root: Path | None = None, *, overwrite: bool = False) 
     return path
 
 
+def memory_index_context(
+    project_root: Path | None = None,
+    *,
+    project_trusted: bool = True,
+    token_budget: int | None = None,
+) -> str:
+    """Build the lazy memory catalog under one shared token ceiling."""
+    memory_sections: list[str] = []
+    global_index = MemoryStore.global_store().index_text().strip()
+    if global_index and "—" in global_index:  # has at least one entry
+        memory_sections.append("# Long-term memory (global)\n\n" + global_index)
+
+    if project_trusted:
+        project_store = MemoryStore.project_store(project_root)
+        if project_store:
+            project_index = project_store.index_text().strip()
+            if project_index and "—" in project_index:
+                memory_sections.append("# Long-term memory (project)\n\n" + project_index)
+
+    if not memory_sections:
+        return ""
+    if token_budget is None:
+        return "\n\n---\n\n".join(memory_sections)
+
+    return truncate_memory_catalog_to_budget(
+        "\n\n---\n\n".join(memory_sections), token_budget
+    )
+
+
+def truncate_memory_catalog_to_budget(catalog: str, budget: int) -> str:
+    """Fit global/project memory sections under one redistributable ceiling."""
+    from jarn.memory.tokens import count_tokens
+
+    if budget <= 0 or not catalog:
+        return ""
+    if count_tokens(catalog) <= budget:
+        return catalog
+
+    separator = "\n\n---\n\n"
+    sections = catalog.split(separator)
+    if len(sections) == 1:
+        return truncate_to_token_budget(catalog, budget)
+
+    # Start with a fair share, but immediately hand unused capacity from a short
+    # tier to tiers that still have content.  Reserve the joined separator, then
+    # enforce the exact final count because tokenizer boundaries are non-additive.
+    separator_cost = count_tokens(separator) * (len(sections) - 1)
+    available = max(0, budget - separator_cost)
+    raw_costs = [count_tokens(section) for section in sections]
+    allocations = [min(cost, available // len(sections)) for cost in raw_costs]
+    remaining = max(0, available - sum(allocations))
+    while remaining:
+        needy = [i for i, cost in enumerate(raw_costs) if allocations[i] < cost]
+        if not needy:
+            break
+        share = max(1, remaining // len(needy))
+        progressed = False
+        for index in needy:
+            grant = min(share, remaining, raw_costs[index] - allocations[index])
+            if grant:
+                allocations[index] += grant
+                remaining -= grant
+                progressed = True
+            if remaining == 0:
+                break
+        if not progressed:
+            break
+
+    bounded = [
+        truncate_to_token_budget(section, allocation)
+        for section, allocation in zip(sections, allocations, strict=True)
+    ]
+    result = separator.join(section for section in bounded if section)
+    return truncate_to_token_budget(result, budget)
+
+
+def project_context_block(
+    project_root: Path | None = None,
+    *,
+    context_files: list[str] | None = None,
+    token_budget: int | None = None,
+) -> str:
+    """Render the trusted project-guidance module with read-more routing."""
+    context_path = resolve_context_file(
+        project_root,
+        context_files=context_files,
+    )
+    ctx = project_context_text(
+        project_root,
+        context_files=context_files,
+        token_budget=None,
+    )
+    if not ctx:
+        return ""
+
+    display_path = "project file"
+    if context_path is not None:
+        root = project_root or paths.find_project_root(project_root)
+        if root is not None:
+            try:
+                display_path = context_path.relative_to(root).as_posix()
+            except ValueError:
+                display_path = context_path.name
+        else:
+            display_path = context_path.name
+    heading = f"# Project context ({display_path})"
+    full = f"{heading}\n\n{ctx.strip()}"
+    if token_budget is None:
+        return full
+
+    from jarn.memory.tokens import count_tokens
+
+    if count_tokens(full) <= token_budget:
+        return full
+
+    hint = (
+        f"More guidance exists in `{display_path}`. Read that file when "
+        "the task needs details beyond this excerpt."
+    )
+    fixed = f"{heading}\n\n{hint}"
+    if count_tokens(fixed) > token_budget:
+        return truncate_to_token_budget(full, token_budget)
+
+    # Reserve the discoverable read-more route first, then fit as much complete
+    # guidance as possible between the heading and hint.  Count the final joined
+    # text because tokenizer boundaries are not additive.
+    body_budget = max(0, token_budget - count_tokens(fixed))
+    while body_budget >= 0:
+        excerpt = truncate_to_token_budget(ctx.strip(), body_budget).strip()
+        block = f"{heading}\n\n{excerpt}\n\n{hint}" if excerpt else fixed
+        if count_tokens(block) <= token_budget:
+            return block
+        body_budget -= 1
+    return fixed
+
+
 def assemble_system_context(
     project_root: Path | None = None,
     *,
@@ -132,9 +269,9 @@ def assemble_system_context(
 ) -> str:
     """Build the context block appended to the agent's base system prompt.
 
-    Combines (in order): project context file, global memory index, project
-    memory index. Empty sections are omitted. Returns ``""`` when nothing is
-    available so the caller can skip appending.
+    Combines (in order): a bounded project-context excerpt, then bounded global
+    and project memory indices. Empty sections are omitted. ``memory_tokens`` is
+    one shared budget across both memory tiers, not a per-tier allowance.
 
     ``context_files`` is forwarded to :func:`project_context_text` to control
     the ordered candidate list (defaults to :data:`DEFAULT_CONTEXT_FILES`).
@@ -146,25 +283,20 @@ def assemble_system_context(
     sections: list[str] = []
 
     if project_trusted:
-        ctx = project_context_text(
+        block = project_context_block(
             project_root,
             context_files=context_files,
             token_budget=project_context_tokens,
         )
-        if ctx:
-            sections.append("# Project context (JARN.md)\n\n" + ctx.strip())
+        if block:
+            sections.append(block)
 
-    global_index = MemoryStore.global_store().index_text(
-        token_budget=memory_tokens
-    ).strip()
-    if global_index and "—" in global_index:  # has at least one entry
-        sections.append("# Long-term memory (global)\n\n" + global_index)
-
-    if project_trusted:
-        project_store = MemoryStore.project_store(project_root)
-        if project_store:
-            project_index = project_store.index_text(token_budget=memory_tokens).strip()
-            if project_index and "—" in project_index:
-                sections.append("# Long-term memory (project)\n\n" + project_index)
+    memory_block = memory_index_context(
+        project_root,
+        project_trusted=project_trusted,
+        token_budget=memory_tokens,
+    )
+    if memory_block:
+        sections.append(memory_block)
 
     return "\n\n---\n\n".join(sections)

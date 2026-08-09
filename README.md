@@ -36,7 +36,7 @@ agents), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcrip
 base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists to
 `~/.jarn/config.yaml`), and per-server **MCP health** (`/mcp status`).
 
-> **Status:** v0.10.0 (Alpha) — on PyPI (`pip install jarn`) and npm (`npm install -g
+> **Status:** v0.11.0 (Alpha) — on PyPI (`pip install jarn`) and npm (`npm install -g
 > jarn-cli` — a standalone binary, no Python). v0.10 adds an optional
 > **single-operator Telegram gateway**: long-poll DM control, isolated per-root
 > workers, durable approval cards, inbound media, scheduling, and VPS/systemd
@@ -58,8 +58,9 @@ base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists 
 
 ## Why J.A.R.N.?
 
-- **Reliable by design** — plan → act → verify is baked into the system prompt. The
-  default `verify.gate: suggest` shows the detected acceptance command; opt-in
+- **Reliable without prompt micromanagement** — a small outcome-and-safety kernel
+  leaves the model free to adapt its workflow to the task. The default
+  `verify.gate: suggest` shows the detected acceptance command; opt-in
   `verify.gate: auto` runs it before completion.
   The completion badge — `` ⎿ verified: pytest ✓ 214 passed · 3.2s `` — confirms the
   result. A failure is fed back for a bounded repair round and, if still failing,
@@ -87,8 +88,14 @@ base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists 
   and a per-session budget that can warn or hard-stop; a context-% gauge and live
   generation throughput (tok/s) that work for local models (LM Studio / Ollama)
   too, not just priced cloud ones.
-- **Date-aware** — the current local date is injected into the system prompt,
-  so "today"-relative requests don't anchor to the model's training cutoff.
+- **Observable prompt modules** — only the 146-word reliability/safety kernel is
+  unconditional. Plan guidance, trusted project context, memory/skill/wiki catalogs,
+  repo maps, the date, and explicitly loaded skill bodies are activated when relevant,
+  budget-capped, and manageable through an interactive `/modules` picker with short
+  explanations. `/modules active` retains the detailed scope, source, token, and
+  truncation report.
+- **Date-aware** — the current local date is injected once per thread/day, so
+  "today"-relative requests don't anchor to the model's training cutoff.
 - **Pluggable web search** — `web_search` supports Tavily, Brave Search, and Exa in
   addition to the keyless DuckDuckGo fallback.  Set `search.provider: auto` (default)
   and export `TAVILY_API_KEY` / `BRAVE_API_KEY` / `EXA_API_KEY` — the first one set wins.
@@ -417,6 +424,8 @@ runs as the next turn (never lost). Disable with `ui.steering: false` (hides the
 | `/key [<key>]` | Set or replace the API key for the current provider (stored in the keychain). Codex subscription redirects to `jarn codex login`. |
 | `/preset [<preset-name>]` | Show or apply a preset — a shortcut that sets mode + sandbox at once. |
 | `/cost` | Show session token usage and cost. |
+| `/modules [active]` | Open the prompt-module picker; 'active' prints active module details. |
+| `/module [on <name> [turn\|session] \| off <name>]` | Open the prompt-module picker, or activate/deactivate a module directly. |
 | `/compact` | Summarize and compact the conversation context. |
 | `/expand` | Open the last turn's full tool output in the pager (same as Ctrl+O). |
 | `/clear` | Clear the conversation and start a fresh thread. |
@@ -475,7 +484,7 @@ Two tiers, both YAML, merged together (project overrides global):
 ```
 ~/.jarn/config.yaml      global: providers, keys (by reference), defaults, budget
 .jarn/config.yaml        per-project: MCP servers, hooks, permission rules (committed)
-JARN.md                  per-project context, auto-loaded into the system prompt
+JARN.md                  project guidance; bounded excerpt loaded, full file on demand
 ```
 
 API keys are **referenced, never inlined** — `${ENV_VAR}` or `keychain:jarn/<provider>`.
@@ -553,7 +562,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                 # 2435 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 2460 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

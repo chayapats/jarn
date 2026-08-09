@@ -23,7 +23,7 @@ J.A.R.N. คือ terminal coding agent ที่ออกแบบในแน
 
 รันทั้งหมดใน terminal ของคุณ (Web UI อยู่ใน roadmap หลัง launch) ความสามารถเด่นได้แก่: **AGENTS.md / CLAUDE.md interop** (ทำงานร่วมกับ agent อื่นได้ทันที), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcript**, **`!` shell escape** (output ถูกส่งเข้า context ของ agent turn ถัดไปโดยอัตโนมัติ), **OS-level execution sandbox** (macOS `sandbox-exec` / Linux `bwrap`) และ **Docker container backend** (`execution.backend: docker`), **presets** (`/preset`, `jarn --preset`) ที่ตั้ง mode + sandbox พร้อมกันในคำสั่งเดียวพร้อม untrusted floor, **auto-checkpoint + `/undo` / `/redo`**, **repo map** (`/map`), **wiki knowledge base** (`/wiki`), **`/config` settings panel** (UI แบบ tab โต้ตอบได้ เซฟลง `~/.jarn/config.yaml`), และ **MCP health** ราย server (`/mcp status`)
 
-> **สถานะ:** v0.10.0 (Alpha) — อยู่บน PyPI (`pip install jarn`) และ npm
+> **สถานะ:** v0.11.0 (Alpha) — อยู่บน PyPI (`pip install jarn`) และ npm
 > (`npm install -g jarn-cli` — binary สำเร็จรูป ไม่ต้องมี Python) v0.10 เพิ่ม
 > **Telegram gateway สำหรับ operator คนเดียว**: ควบคุมผ่าน DM แบบ long-poll,
 > แยก worker ตาม project root, approval card ที่คงอยู่หลัง restart, รับไฟล์/รูป,
@@ -38,13 +38,14 @@ J.A.R.N. คือ terminal coding agent ที่ออกแบบในแน
 
 ## ทำไมต้องเลือก J.A.R.N.?
 
-- **Reliable by design** — flow แบบ plan → act → verify ฝังอยู่ใน system prompt ค่าเริ่มต้น `verify.gate: suggest` จะแสดงคำสั่งตรวจสอบที่ตรวจพบ ส่วน `verify.gate: auto` จะรันคำสั่งนั้นก่อนจบงาน หากไม่ผ่าน ระบบจะส่งผลกลับให้ agent แก้แบบจำกัดรอบ และจบ headless run ด้วย error หากยังไม่ผ่าน completion badge `` ⎿ verified: pytest ✓ 214 passed · 3.2s `` จึงยืนยันผลที่รันจริง และมี diagnostics feedback loop (LSP-lite) สำหรับไฟล์ที่แก้ (`verify.diagnostics: auto`)
+- **Reliable โดยไม่ micromanage model** — system prompt หลักมีเฉพาะเป้าหมายและขอบเขตความปลอดภัยสั้นๆ จึงปล่อยให้ model เลือก workflow ตามงาน ค่าเริ่มต้น `verify.gate: suggest` จะแสดงคำสั่งตรวจสอบที่ตรวจพบ ส่วน `verify.gate: auto` จะรันคำสั่งนั้นก่อนจบงาน หากไม่ผ่านระบบจะส่งผลกลับให้ agent แก้แบบจำกัดรอบ และมี diagnostics feedback loop สำหรับไฟล์ที่แก้ (`verify.diagnostics: auto`)
 - **ปลอดภัยเป็นค่าเริ่มต้น** — ระบบ permission หลายชั้น (coarse mode + fine-grained rules) คั่นกลางทุก file write และ shell command โดยมี *danger-guard* ที่ยืนยันการกระทำร้ายแรงเสมอ — แม้แต่ใน YOLO mode
 - **รู้ขอบเขตของคำสั่ง** — project context และ skill ใช้ชี้นำได้เฉพาะเป้าหมายที่ผู้ใช้ระบุ ส่วนข้อความจาก source file, เว็บ, log และผลลัพธ์ของ tool ถือเป็นข้อมูล จึงห้าม override เจตนาของผู้ใช้หรือ permission, trust และ sandbox boundary ของระบบ และ agent จะใช้เฉพาะ tool ที่ policy/backend ปัจจุบันเปิดให้จริง
 - **เลือก model เองได้ (Bring your own model)** — รองรับ 14 provider รวม **Codex ผ่าน ChatGPT subscription**, OpenRouter, Anthropic, OpenAI, Google, Mistral, Groq, DeepSeek, Together, Fireworks, xAI, Ollama, LM Studio, และ generic OpenAI-compatible endpoint พร้อม per-task routing ให้ subagent ใช้ model ที่เหมาะกับงานได้
 - **สตรีม subagent แบบมีป้ายกำกับ** — output จาก subagent ที่ถูก delegate ผ่าน `task` จะถูกติดป้ายด้วย prefix สีจาง `┊ <name> ` และยุบเป็นบรรทัดสถานะเดียว `└ <name>: working… (N tool calls)` (ข้อความเต็มดูได้ใน pager ด้วย Ctrl+O) ทำให้ subagent ที่รันขนานกันไม่ปนกันแบบไม่มีชื่ออีกต่อไป
 - **รู้ต้นทุนและ context ตลอดเวลา** — ติดตาม token/cost แบบ live (พร้อม breakdown ราย tool) และ budget ต่อ session ที่แจ้งเตือนหรือหยุดอัตโนมัติได้; มี context-% gauge และ throughput การ generate แบบ live (tok/s) ที่ทำงานกับ local model (LM Studio / Ollama) ด้วย ไม่ใช่แค่ cloud model ที่มีราคา
-- **รู้วันที่ (Date-aware)** — วันที่ท้องถิ่นปัจจุบันถูกใส่เข้า system prompt ทำให้คำสั่งที่อ้างอิง "วันนี้" ไม่ยึดติดกับ training cutoff ของ model
+- **Prompt module ที่ตรวจสอบและเลือกง่าย** — มีเพียง kernel ด้าน reliability/security 146 คำที่ติดมากับทุก turn ส่วน plan guidance, project context ที่ trust แล้ว, catalog ของ memory/skill/wiki, repo map, วันที่ และ skill body ที่โหลดเอง จะ activate เฉพาะเมื่อเกี่ยวข้องและมี token cap; `/modules` เปิดหน้าจอเลือกพร้อมคำอธิบายสั้นๆ ส่วน `/modules active` แสดง state/scope/source/token/truncation จริง
+- **รู้วันที่ (Date-aware)** — วันที่ท้องถิ่นปัจจุบันถูกใส่เพียงครั้งเดียวต่อ thread/วัน ทำให้คำสั่งที่อ้างอิง "วันนี้" ไม่ยึดติดกับ training cutoff ของ model
 - **ค้นหาเว็บแบบ Pluggable** — `web_search` รองรับ Tavily, Brave Search, และ Exa นอกจาก DuckDuckGo แบบ keyless ที่ใช้เป็น fallback  ตั้งค่า `search.provider: auto` (ค่าเริ่มต้น) แล้ว export `TAVILY_API_KEY` / `BRAVE_API_KEY` / `EXA_API_KEY` — ตัวแรกที่มีค่าจะถูกใช้งาน
 - **ขยายได้ง่าย** — skill, slash command, custom subagent, lifecycle hook, และ MCP server ทั้งหมดกำหนดผ่านไฟล์ธรรมดาใน `~/.jarn` และ `.jarn/`
 
@@ -286,16 +287,19 @@ Reply ของ assistant render เป็น **Markdown** (heading, list, code 
 | `/key [<key>]` | ตั้ง/เปลี่ยน API key ของ provider ปัจจุบัน (keychain); Codex subscription จะพาไป `jarn codex login` |
 | `/preset [<preset-name>]` | ดูหรือ apply preset — shortcut ที่ตั้ง mode + sandbox พร้อมกัน |
 | `/cost` | ดู token usage และ cost ของ session |
+| `/modules [active]` | เปิดหน้าจอเลือก prompt module; เติม `active` เพื่อพิมพ์รายละเอียด module ที่เปิดอยู่ |
+| `/module [on <name> [turn\|session] \| off <name>]` | เปิดหน้าจอเลือก หรือเปิด/ปิด module โดยพิมพ์คำสั่งตรงๆ |
 | `/compact` | สรุปและบีบอัด conversation context |
 | `/expand` | เปิด tool output เต็มของ turn ล่าสุดใน pager (เหมือน Ctrl+O) |
 | `/clear` | ล้าง conversation และเริ่ม thread ใหม่ |
 | `/sessions` | รายการ session เก่า พร้อมเลือก resume |
 | `/resume` | เลือก session เก่าเพื่อ resume |
 | `/rewind` | ย้อนไป turn ก่อนหน้าแล้วทำต่อ (fork เป็น thread ใหม่) มี confirm ที่ restore working tree กลับไปที่ checkpoint ของ turn นั้นได้ด้วย เพื่อให้ conversation กับไฟล์ย้อนพร้อมกัน |
+| `/skill <name>` | เรียก skill ตามชื่อและ inject instruction เข้า turn แบบมีขอบเขต token |
 | `/skills` | รายการ skill ที่ใช้ได้ |
 | `/memory [search\|show\|add\|update\|delete\|dump] ...` | จัดการ long-term memory: list, search, show, add, update, delete, dump |
 | `/permissions` | ดู permission rule และ allowlist ปัจจุบัน |
-| `/mcp [status] [--refresh]` | ดู MCP server ที่ตั้งไว้ พร้อม health และ error ล่าสุดราย server |
+| `/mcp [status\|refresh\|prompts\|prompt <server> <name>\|resources\|read <server> <uri>]` | ดู health ของ MCP server, เรียก prompt และอ่าน resource จาก server |
 | `/trust` | trust project root นี้ เพื่อยกเลิก review-only floor ของ repo ที่ยังไม่ trust |
 | `/add-dir <path>` | เพิ่ม directory เข้า write scope ของ session นี้ (multi-root; ต้องอนุมัติ) |
 | `/queue [clear\|cancel <n>\|move <from> <to>\|steer <n>]` | ดูหรือจัดการ input ที่ queue ไว้ (ขณะ turn รันอยู่) |
@@ -334,7 +338,7 @@ Reply ของ assistant render เป็น **Markdown** (heading, list, code 
 ```
 ~/.jarn/config.yaml      global: provider, key (แบบอ้างอิง), default, budget
 .jarn/config.yaml        per-project: MCP server, hook, permission rule (commit ได้)
-JARN.md                  per-project context, โหลดเข้า system prompt อัตโนมัติ
+JARN.md                  project guidance; โหลด excerpt ขนาดจำกัด และอ่านเต็มเมื่อจำเป็น
 ```
 
 API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${ENV_VAR}` หรือ `keychain:jarn/<provider>` Project config ถูกกั้นด้วย **trust prompt** (ดูด้านบน) ดูรายละเอียดทั้งหมดที่ [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
@@ -370,7 +374,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                 # 2435 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 2460 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)

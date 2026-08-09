@@ -24,6 +24,21 @@ def test_empty_config_has_defaults(tmp_path):
     )
     assert cfg.default_profile == "openrouter"
     assert cfg.permission_mode is PermissionMode.ASK
+    assert cfg.context.project_context_tokens == 1024
+    assert cfg.context.memory_tokens == 1024
+    assert cfg.context.skill_catalog_tokens == 512
+    assert cfg.context.wiki_index_tokens == 512
+
+
+def test_skill_catalog_budget_round_trips_and_must_be_positive(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"context": {"skill_catalog_tokens": 321}})
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.context.skill_catalog_tokens == 321
+
+    _write(gp, {"context": {"skill_catalog_tokens": 0}})
+    with pytest.raises(ConfigError, match="context.skill_catalog_tokens"):
+        load_config(global_path=gp, project_path=None)
 
 
 def test_ui_theme_and_accent_parsed(tmp_path):

@@ -298,6 +298,10 @@ context:
                            #   endpoints) → this % has NO effect and deepagents' 170k
                            #   token default applies instead; `/compact status` reports
                            #   which case you're in.
+  project_context_tokens: 1024  # always-loaded excerpt; full file remains readable
+  memory_tokens: 1024      # ONE shared budget across global + project indices
+  skill_catalog_tokens: 512 # names/descriptions only; bodies are read on demand
+  wiki_index_tokens: 512   # page catalog only; full pages are read on demand
   repo_map: tool            # off | tool | auto
                             # off  — repo map disabled entirely.
                             # tool — (default) a read-only `repo_map` tool is
@@ -570,6 +574,40 @@ shared palette (chat colors, toolbar background/foreground, cost/context colors)
 The bottom toolbar is rendered by `tui/toolbar.py` and shows **model · mode · queue ·
 ctx · cost** (low-priority segments drop on narrow terminals).
 
+## Prompt modules and context budgets
+
+The 146-word kernel is the only unconditional J.A.R.N. prompt text. Everything
+else is assembled by the prompt-module registry and can be inspected with:
+
+```text
+/modules                         # open the interactive picker in the REPL
+/modules active
+/module on skill.<name> [turn|session]
+/module off skill.<name>
+```
+
+In the terminal REPL, `/modules` (or `/module` with no arguments) opens an inline
+picker with short, plain-language explanations. Use Up/Down to move, Space or Enter
+to enable an optional skill for the next turn (or turn it off), `s` to keep it for
+the current thread, `x` to turn it off, and Esc or `q` to close. Automatic context
+modules remain visible but read-only because mode, trust, configuration, and
+available content determine their state.
+
+`/modules active` keeps the non-interactive diagnostics form: it reports activation
+reason, runtime/session/turn scope, source, actual tokens versus configured budget,
+and truncation. `/skill <name>` is the immediate one-turn shortcut;
+`/module on ... session` keeps the bounded body active for the current thread and
+clears it when `/clear`, `/compact`, `/rewind`, or `/resume` replaces the thread.
+
+The context keys above are per-module hard caps, including headings and truncation
+notices. `memory_tokens` is shared across global and project memory and redistributes
+unused capacity between tiers. `repo_map: tool` keeps the map on demand; `auto`
+activates the volatile `repo.map` suffix. Project guidance, project memory/wiki, and
+project skills remain unavailable until the project is trusted. These modules only
+guide the model: permissions, writable roots, network/tool authorization, sandboxing,
+secret filtering, and verification remain enforced in code and cannot be enabled or
+disabled through `/module`.
+
 ## ChatGPT subscription through Codex
 
 The `codex_subscription` provider connects to the official local Codex App Server
@@ -672,9 +710,9 @@ wiki:
 | `~/.jarn/wiki/pages/*.md` | global (always available) |
 | `<project>/.jarn/wiki/pages/*.md` | project (gated by trust) |
 
-A one-line-per-page `index.md` in each wiki dir is injected into the system prompt at
-build time so the model knows what pages exist without calling a tool. Full pages are
-read on demand via `wiki_read`.
+A budget-capped, one-line-per-page `index.md` catalog is injected at build time so the
+model knows what pages exist without carrying their bodies. Full pages are read on
+demand via `wiki_read`.
 
 **Tools registered when `wiki.enabled: true`:**
 
@@ -731,10 +769,11 @@ finds first in the project root. The default resolution order is:
 | 2 | `AGENTS.md` | OpenAI Codex / other agents |
 | 3 (lowest) | `CLAUDE.md` | Claude Code |
 
-**First present wins** — if `JARN.md` exists it is loaded and the others are
-ignored, even if they also exist. At session start J.A.R.N. prints a one-line
-notice naming the file that was loaded (e.g. `context: CLAUDE.md`) so you
-always know which one is active.
+**First present wins** — if `JARN.md` exists its bounded opening excerpt is loaded and
+the others are ignored, even if they also exist. The full selected file remains
+available through `read_file`. At session start J.A.R.N. prints a one-line notice
+naming the active file (e.g. `context: CLAUDE.md`). Put universal rules first and move
+long, task-specific workflows to skills.
 
 To use a different file or order, set `compat.context_files` explicitly:
 

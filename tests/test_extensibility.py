@@ -129,6 +129,27 @@ def test_manual_skill_excluded_from_auto_catalog(monkeypatch, tmp_path, project_
     assert skills["manualskill"].is_manual
 
 
+def test_auto_skill_catalog_has_a_hard_combined_budget(tmp_path):
+    from jarn.memory.tokens import count_tokens
+
+    skills = {
+        f"skill-{i}": Skill(
+            name=f"skill-{i}",
+            description=("specialized reusable workflow " * 12).strip(),
+            body="full instructions stay lazy",
+            path=tmp_path / f"skill-{i}.md",
+        )
+        for i in range(30)
+    }
+
+    catalog = auto_skill_catalog(skills, token_budget=160)
+
+    assert count_tokens(catalog) <= 160
+    assert catalog.startswith("# Available skills")
+    assert "Read a matching skill file" in catalog
+    assert "truncated" in catalog
+
+
 def test_find_skill_exact_and_case_insensitive():
     skills = {
         "Deploy": Skill(name="Deploy", description="d", body="b", trigger="manual"),
