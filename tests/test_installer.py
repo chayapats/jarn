@@ -7,8 +7,15 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "install.sh"
+
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="install.sh targets macOS/Linux/WSL, not native Windows",
+)
 
 
 def _write_executable(path: Path, body: str) -> None:
