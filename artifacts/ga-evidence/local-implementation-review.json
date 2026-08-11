@@ -7,7 +7,7 @@
     "tests/test_installer.py",
     "tests/test_util_atomic.py"
   ],
-  "command": "git diff --check; .venv/bin/ruff check src tests scripts; .venv/bin/mypy src/; exact full 3039-test accounting; manual constraint review against section T",
+  "command": "git diff --check; .venv/bin/ruff check src tests scripts; .venv/bin/mypy src/; exact full 3042-test accounting; manual constraint review against section T",
   "criterion_ids": [
     "CONSTRAINT-IMPLEMENTATION"
   ],

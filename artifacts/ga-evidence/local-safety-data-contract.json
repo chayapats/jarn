@@ -8,7 +8,7 @@
     "tests/test_transcript.py",
     "tests/test_ga_config_migrations.py"
   ],
-  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q full 3039-test collection including permissions, guards, approval bypass, checkpoint/session/transcript, migration, and admin CLI contracts",
+  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q full 3042-test collection including permissions, guards, approval bypass, checkpoint/session/transcript, migration, and admin CLI contracts",
   "criterion_ids": [
     "AC-SAFE-001",
     "AC-SAFE-002",

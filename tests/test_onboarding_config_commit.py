@@ -70,8 +70,10 @@ ui:
 
 
 def test_completion_identity_smokes_the_user_visible_unmanaged_command(tmp_path, monkeypatch):
+    from jarn.version import __version__
+
     executable = tmp_path / "jarn"
-    executable.write_text("#!/bin/sh\necho 'J.A.R.N. 0.11.0'\n", encoding="utf-8")
+    executable.write_text(f"#!/bin/sh\necho 'J.A.R.N. {__version__}'\n", encoding="utf-8")
     executable.chmod(0o755)
     monkeypatch.setenv("JARN_STATE_DIR", str(tmp_path / "no-managed-state"))
     monkeypatch.setattr("jarn.onboarding.completion.shutil.which", lambda _name: str(executable))
@@ -80,9 +82,39 @@ def test_completion_identity_smokes_the_user_visible_unmanaged_command(tmp_path,
 
     assert identity == InstallIdentity(
         executable=str(executable.absolute()),
-        version="0.11.0",
+        version=__version__,
         method="unmanaged/Python package",
     )
+
+
+def test_completion_refuses_unmanaged_entrypoint_shadowed_on_path(tmp_path, monkeypatch):
+    from jarn.version import __version__
+
+    invoked = tmp_path / "venv" / "bin" / "jarn"
+    shadow = tmp_path / "legacy" / "jarn"
+    for executable in (invoked, shadow):
+        executable.parent.mkdir(parents=True, exist_ok=True)
+        executable.write_text(f"#!/bin/sh\necho 'jarn {__version__}'\n", encoding="utf-8")
+        executable.chmod(0o755)
+    monkeypatch.setenv("JARN_STATE_DIR", str(tmp_path / "no-managed-state"))
+    monkeypatch.setattr("sys.argv", [str(invoked), "setup"])
+    monkeypatch.setattr("jarn.onboarding.completion.shutil.which", lambda _name: str(shadow))
+
+    with pytest.raises(SetupCompletionError, match="setup was launched from"):
+        verify_install_identity()
+
+
+def test_completion_refuses_unmanaged_command_from_another_version(tmp_path, monkeypatch):
+    shadow = tmp_path / "legacy" / "jarn"
+    shadow.parent.mkdir(parents=True)
+    shadow.write_text("#!/bin/sh\necho 'jarn 0.4.4'\n", encoding="utf-8")
+    shadow.chmod(0o755)
+    monkeypatch.setenv("JARN_STATE_DIR", str(tmp_path / "no-managed-state"))
+    monkeypatch.setattr("sys.argv", ["pytest"])
+    monkeypatch.setattr("jarn.onboarding.completion.shutil.which", lambda _name: str(shadow))
+
+    with pytest.raises(SetupCompletionError, match="ordinary `jarn` resolves.*reports 0.4.4"):
+        verify_install_identity()
 
 
 def test_completion_identity_does_not_ignore_unsafe_managed_record(tmp_path, monkeypatch):

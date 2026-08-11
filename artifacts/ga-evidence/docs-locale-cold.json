@@ -10,7 +10,7 @@
     "AC-I18N-001"
   ],
   "decisions": [
-    "pytest collection count is 3039 in every current-count document"
+    "pytest collection count is 3042 in every current-count document"
   ],
   "documentation_lookups": [],
   "duration_seconds": 294.46,

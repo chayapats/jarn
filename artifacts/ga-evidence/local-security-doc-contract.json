@@ -7,7 +7,7 @@
     "tests/test_telemetry_reliability.py",
     "tests/test_doc_sync.py"
   ],
-  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q full 3039-test collection including CI/installer/subprocess/bypass/secrets/telemetry/doctor/doc-sync contracts; pip-audit 2.9.0",
+  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q full 3042-test collection including CI/installer/subprocess/bypass/secrets/telemetry/doctor/doc-sync contracts; pip-audit 2.9.0",
   "criterion_ids": [
     "AC-SEC-002",
     "AC-SEC-003",

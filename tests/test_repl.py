@@ -2444,6 +2444,54 @@ async def test_skills_available_after_ensure_extensions(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_first_prompt_precedes_provider_and_extension_warmup(tmp_path, monkeypatch):
+    """Cold provider/runtime construction must not block the editable prompt."""
+    import jarn.repl.app as repl_app_module
+    from jarn import repl
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    root.mkdir(parents=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={
+            "openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")
+        },
+        routing=RoutingConfig(main="openrouter/m"),
+    )
+    app = repl.InlineApp(cfg, root)
+    app.console = Console(file=StringIO(), width=100, no_color=True)
+    events: list[str] = []
+    runtime_ready = asyncio.Event()
+
+    async def _ensure_extensions() -> None:
+        events.append("extensions")
+        runtime_ready.set()
+
+    async def _aclose() -> None:
+        events.append("aclose")
+
+    class _PromptApp:
+        async def run_async(self) -> None:
+            events.append("prompt")
+            await asyncio.wait_for(runtime_ready.wait(), timeout=1.0)
+
+    monkeypatch.setattr(repl_app_module, "_DEFERRED_RUNTIME_DELAY_SECONDS", 0)
+    monkeypatch.setattr(app.controller, "aclose", _aclose)
+    monkeypatch.setattr(app, "_ensure_extensions", _ensure_extensions)
+    monkeypatch.setattr(app, "_warm_pricing_catalog", lambda: None)
+    monkeypatch.setattr(app, "_build_app", _PromptApp)
+    monkeypatch.setattr(app, "_title_hook", lambda _state: None)
+    monkeypatch.setattr("jarn.update_check.maybe_start_update_check", lambda *_a, **_k: None)
+
+    try:
+        await app.run()
+        assert events == ["prompt", "extensions", "aclose"]
+    finally:
+        app.controller.close()
+
+
+@pytest.mark.asyncio
 async def test_skill_command_invokes_manual_skill(tmp_path, monkeypatch):
     """`/skill <name>` resolves a manual skill and injects its body; unknown
     names and a missing argument fail cleanly (no exception)."""

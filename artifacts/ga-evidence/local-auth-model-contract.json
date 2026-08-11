@@ -7,7 +7,7 @@
     "tests/test_codex_dependency.py",
     "tests/test_model_catalog.py"
   ],
-  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q full 3039-test collection including auth, Codex dependency/subscription, live model catalog, and ChatGPT onboarding contracts",
+  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q full 3042-test collection including auth, Codex dependency/subscription, live model catalog, and ChatGPT onboarding contracts",
   "criterion_ids": [
     "AC-DEP-001",
     "AC-DEP-002",

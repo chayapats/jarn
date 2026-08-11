@@ -5,7 +5,7 @@
     "tests/test_update.py",
     "tests/test_ci.py"
   ],
-  "command": "sh -n install.sh; bash -n install.sh; dash -n install.sh; exact full 3039-test collection including installer/CI/update contracts; patched real-binary Docker rollback and Ubuntu glibc-shadow E2E outside restricted sandbox",
+  "command": "sh -n install.sh; bash -n install.sh; dash -n install.sh; exact full 3042-test collection including installer/CI/update contracts; patched real-binary Docker rollback and Ubuntu glibc-shadow E2E outside restricted sandbox",
   "criterion_ids": [
     "AC-INSTALL-001",
     "AC-INSTALL-002",

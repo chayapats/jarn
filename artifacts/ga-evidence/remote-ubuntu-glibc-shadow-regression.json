@@ -27,7 +27,7 @@
     "tests/test_installer.py"
   ],
   "limitations": [
-    "Historical pre-final v1.0.3 build evidence only; the final reproducible wheel is SHA-256 f732f7839649c5c5a993d149c8c8381a2b38c4563c8a3ca38e3adfa142163b4d and must be rerun before this record can gate that candidate.",
+    "Historical pre-final v1.0.3 build evidence only; the final reproducible wheel is SHA-256 4216958719c4b414dc9b4804f9af66f3bbc31ee7028297126a9e00c892cb562e and must be rerun before this record can gate that candidate.",
     "This pre-release source/wheel fixture is not a public release URL canary, oldest-glibc execution, fresh-user login UAT, or proof of the complete Tier-1 matrix.",
     "Setup was intentionally disabled so this record contains no authentication ceremony or provider output."
   ],

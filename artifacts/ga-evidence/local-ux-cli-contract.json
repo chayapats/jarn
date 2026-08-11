@@ -8,7 +8,7 @@
     "tests/test_controller.py",
     "tests/test_headless.py"
   ],
-  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q full 3039-test collection including UX/plain-resume/Textual/model-picker/terminal/controller/completion/headless/exit-code contracts",
+  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q full 3042-test collection including UX/plain-resume/Textual/model-picker/terminal/controller/completion/headless/exit-code contracts",
   "criterion_ids": [
     "AC-UX-001",
     "AC-UX-002",

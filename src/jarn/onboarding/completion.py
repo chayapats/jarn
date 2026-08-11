@@ -20,6 +20,7 @@ from jarn.install_state import (
     load_actionable_install_record,
 )
 from jarn.permissions.labels import permission_mode_summary
+from jarn.version import __version__
 
 _VERSION_RE = re.compile(r"(?<!\d)(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)")
 
@@ -75,6 +76,22 @@ def _smoke_version(path: Path) -> str:
     return match.group(1)
 
 
+def _running_jarn_entrypoint() -> Path | None:
+    """Return the executable entrypoint that launched this setup, when knowable."""
+
+    import sys
+
+    argv0 = Path(sys.argv[0]).expanduser()
+    if "jarn" not in argv0.name.lower() or not argv0.is_file():
+        return None
+    if not os.access(argv0, os.X_OK):
+        return None
+    try:
+        return argv0.resolve(strict=True)
+    except OSError:
+        return None
+
+
 def verify_install_identity(*, manifest_path: Path | None = None) -> InstallIdentity:
     """Verify the active command and install method used in the final summary."""
 
@@ -120,20 +137,43 @@ def verify_install_identity(*, manifest_path: Path | None = None) -> InstallIden
 
     resolved = shutil.which("jarn")
     if resolved:
-        path = Path(resolved).absolute()
+        try:
+            path = Path(resolved).resolve(strict=True)
+        except OSError as exc:
+            raise SetupCompletionError(
+                f"ordinary `jarn` resolved to an unusable path: {exc}"
+            ) from exc
+        version = _smoke_version(path)
+        if version != __version__:
+            raise SetupCompletionError(
+                f"setup is running J.A.R.N. {__version__}, but ordinary `jarn` resolves "
+                f"to {path} and reports {version}. Remove or reorder the shadowing "
+                "installation, refresh the shell command cache, then retry `jarn setup`."
+            )
+        entrypoint = _running_jarn_entrypoint()
+        if entrypoint is not None and entrypoint != path:
+            raise SetupCompletionError(
+                f"setup was launched from {entrypoint}, but ordinary `jarn` resolves to "
+                f"{path}. Remove or reorder the shadowing installation, refresh the "
+                "shell command cache, then retry `jarn setup`."
+            )
         return InstallIdentity(
             executable=str(path),
-            version=_smoke_version(path),
+            version=version,
             method="unmanaged/Python package",
         )
 
-    import sys
-
-    argv0 = Path(sys.argv[0]).expanduser()
-    if "jarn" in argv0.name.lower() and argv0.is_file() and os.access(argv0, os.X_OK):
+    entrypoint = _running_jarn_entrypoint()
+    if entrypoint is not None:
+        version = _smoke_version(entrypoint)
+        if version != __version__:
+            raise SetupCompletionError(
+                f"the running entrypoint reports {version}, but this package expects "
+                f"{__version__}. Reinstall J.A.R.N. and retry `jarn setup`."
+            )
         return InstallIdentity(
-            executable=str(argv0.absolute()),
-            version=_smoke_version(argv0),
+            executable=str(entrypoint),
+            version=version,
             method="unmanaged current entrypoint",
         )
 

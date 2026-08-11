@@ -7,7 +7,7 @@
     "tests/test_uninstall_ga.py",
     "tests/test_turn_runner.py"
   ],
-  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q full 3039-test collection including errors/doctor/update/uninstall/turn/provider/background/catalog/auth contracts; patched real-binary rollback E2E outside restricted sandbox",
+  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q full 3042-test collection including errors/doctor/update/uninstall/turn/provider/background/catalog/auth contracts; patched real-binary rollback E2E outside restricted sandbox",
   "criterion_ids": [
     "AC-ERR-001",
     "AC-ERR-002",

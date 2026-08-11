@@ -70,6 +70,13 @@ if TYPE_CHECKING:
 #: push the input/toolbar off-screen (the committed end-of-turn render is uncapped).
 _LIVE_TODOS_CAP = 8
 
+# Render a usable input before constructing provider/model/runtime extensions.
+# The small delay guarantees prompt_toolkit gets its first event-loop turn even
+# on a cold, contended CI host; all expensive work then runs through the
+# controller's bounded background/thread paths and is still single-flighted if
+# the user submits immediately.
+_DEFERRED_RUNTIME_DELAY_SECONDS = 0.05
+
 
 class _GhostAutoSuggestion(AppendAutoSuggestion):
     """AppendAutoSuggestion that hides ghost text when the completion dropdown is open.
@@ -149,6 +156,8 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         # fresh message starting with 's' typed LATER is never swallowed (T-4-6 / I5).
         self._steer_armed_until: float = 0.0
         self._resume_task: asyncio.Task | None = None
+        self._extensions_task: asyncio.Task[None] | None = None
+        self._extensions_started = False
         self._line_future: asyncio.Future | None = None       # app-native asks
         self._yolo_confirm_inflight = False    # de-dupe rapid Shift+Tab→yolo presses
         self._menu_future: asyncio.Future | None = None     # arrow-key pickers
@@ -230,12 +239,6 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             c.print(SHORTCUT_HINT)
         c.print(f"[{palette.C_DIM}]terminal mode · Enter send · Shift+Enter newline · "
                 f"Shift+Tab mode · Esc interrupt · Ctrl+O or /expand · Ctrl+C exit[/{palette.C_DIM}]")
-        ok, message = self.controller.validate()
-        if not ok:
-            c.print(
-                f"[{palette.C_ERROR}]Provider not ready: {_rich_escape(message)}"
-                f"[/{palette.C_ERROR}]  [{palette.C_DIM}]run `jarn setup`[/{palette.C_DIM}]"
-            )
         # Startup notice: name the context file whose bounded excerpt was loaded.
         if self.controller.project_trusted and self.controller.project_root is not None:
             from jarn.memory.context import resolve_context_file
@@ -266,13 +269,20 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             self.config, c, preset_name=self._preset_name
         )
         self._warm_pricing_catalog()
-        await self._ensure_extensions()
         self.app = self._build_app()
         self._title_hook("idle")   # Set idle title on app start
         try:
             # patch_stdout routes all printed output above the pinned input, into
             # the terminal's native scrollback — the Claude-Code layout.
             with patch_stdout(raw=True):
+                # Prompt readiness is a user-visible performance contract. Model
+                # construction, live catalog validation, MCP and repo scanning
+                # are not prerequisites for editing the first input, so warm them
+                # just after the first prompt render. A first turn races safely
+                # through Controller.ensure_runtime's single-flight lock.
+                self._extensions_task = asyncio.create_task(
+                    self._prepare_runtime_after_prompt()
+                )
                 # Schedule the resume picker as a background task so it runs once
                 # the loop is live (_ask needs the running app/event loop).
                 if self._resume_on_start:
@@ -280,8 +290,37 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                     self._resume_task = asyncio.create_task(self._resume_picker())
                 await self.app.run_async()
         finally:
+            extensions_task = self._extensions_task
+            if (
+                extensions_task is not None
+                and not extensions_task.done()
+                and not self._extensions_started
+            ):
+                # Still inside the cancellable delay: no worker/runtime exists.
+                extensions_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await extensions_task
+                extensions_task = None
+            # Once warmup entered ensure_runtime, let Controller.aclose serialize
+            # with and settle its owned worker. Cancelling an asyncio.to_thread
+            # await would not stop the underlying thread and could orphan work.
             await self.controller.aclose()
+            if extensions_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await extensions_task
+            self._extensions_task = None
             self._title_hook("quit")   # Reset terminal title to plain "jarn" on exit
+
+    async def _prepare_runtime_after_prompt(self) -> None:
+        """Warm validation/extensions only after the first editable prompt.
+
+        ``ensure_runtime`` owns its worker lifecycle and remains the mandatory
+        pre-turn gate, so this scheduling change cannot permit an unverified
+        model turn or leave an unowned validation thread after shutdown.
+        """
+        await asyncio.sleep(_DEFERRED_RUNTIME_DELAY_SECONDS)
+        self._extensions_started = True
+        await self._ensure_extensions()
 
     async def _ensure_extensions(self) -> None:
         """Load skills/commands/MCP before the first turn so /skills and custom
