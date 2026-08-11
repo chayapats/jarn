@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
@@ -1321,10 +1322,20 @@ def _run_validation_request(
 def _direct_ping_worker(chat: Any, sender: Any) -> None:
     """Compatibility worker for callers that already constructed a test model."""
 
-    if os.name == "posix":
-        with contextlib.suppress(OSError):
-            os.setsid()
     try:
+        os.setsid()
+    except OSError as exc:
+        # The parent must never assume that a process group exists before this
+        # handshake.  In particular, a contended runner can reach its timeout
+        # before the forked child gets its first timeslice; blindly calling
+        # killpg(child_pid) then races with setsid() and can leave the model
+        # invocation alive after the timeout was reported.
+        with contextlib.suppress(BaseException):
+            sender.send(("init_error", type(exc).__name__, str(exc)))
+        sender.close()
+        return
+    try:
+        sender.send(("ready",))
         sender.send(("ok", chat.invoke("ping")))
     except BaseException as exc:
         try:
@@ -1358,21 +1369,59 @@ def _ping_with_timeout(chat: Any, timeout: float) -> Any:
         process.close()
         raise RuntimeError("validation worker did not start")
     sender.close()
-    try:
-        if not receiver.poll(timeout):
-            if process.is_alive():
-                with contextlib.suppress(ProcessLookupError):
+    deadline = time.monotonic() + timeout
+    process_group_ready = False
+
+    def _remaining() -> float:
+        return max(0.0, deadline - time.monotonic())
+
+    def _kill_and_reap() -> None:
+        if process.is_alive():
+            if process_group_ready:
+                try:
                     os.killpg(worker_pid, signal.SIGKILL)
-            process.join()
+                except ProcessLookupError:
+                    # The leader may have exited between is_alive() and killpg;
+                    # Process.kill below remains a safe direct-child fallback.
+                    with contextlib.suppress(ProcessLookupError):
+                        process.kill()
+            else:
+                # The worker sends ``ready`` before invoking the model, so a
+                # pre-handshake timeout cannot yet have spawned descendants.
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+        process.join()
+
+    try:
+        if not receiver.poll(_remaining()):
+            _kill_and_reap()
+            raise TimeoutError(f"no response within {timeout:.0f}s")
+        handshake = receiver.recv()
+        if not isinstance(handshake, tuple) or not handshake:
+            _kill_and_reap()
+            raise RuntimeError("validation worker returned an invalid handshake")
+        if handshake[0] == "init_error":
+            _kill_and_reap()
+            raise RuntimeError(f"{handshake[1]}: {handshake[2]}")
+        if handshake[0] != "ready":
+            _kill_and_reap()
+            raise RuntimeError("validation worker did not establish isolation")
+        process_group_ready = True
+
+        if not receiver.poll(_remaining()):
+            _kill_and_reap()
             raise TimeoutError(f"no response within {timeout:.0f}s")
         payload = receiver.recv()
-        process.join()
+        # Receiving the result does not excuse a lingering model/helper tree.
+        # Give normal process teardown only the caller's remaining deadline,
+        # then synchronously kill and reap the isolated group if necessary.
+        process.join(timeout=_remaining())
+        if process.is_alive():
+            _kill_and_reap()
     finally:
         receiver.close()
         if process.is_alive():
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(worker_pid, signal.SIGKILL)
-            process.join()
+            _kill_and_reap()
         process.close()
     if payload[0] == "ok":
         return payload[1]

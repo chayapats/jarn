@@ -39,6 +39,19 @@ class _SlashFileCompleter(Completer):
         text = document.text_before_cursor
         if "\n" in text:
             return
+
+        # Building the provider collects the live model/session/MCP catalogs.
+        # Some model catalogs probe a local endpoint, so doing that for every
+        # ordinary character made a no-op keystroke pay tens of milliseconds
+        # even though CompletionProvider.complete() can only return candidates
+        # for a leading slash command or the current ``@`` mention token.
+        # Mirror that trigger grammar here and keep normal text on the input
+        # render fast path.
+        if not text.startswith("/"):
+            token = text.rsplit(" ", 1)[-1] if " " in text else text
+            if not token.startswith("@"):
+                return
+
         for cand in self._factory().complete(text):
             yield Completion(
                 cand.replacement,

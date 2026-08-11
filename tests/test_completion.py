@@ -115,6 +115,34 @@ def test_plain_text_no_completion(tmp_path):
     assert _provider(tmp_path).complete("just chatting") == []
 
 
+def test_prompt_completer_skips_catalog_factory_for_ordinary_input(tmp_path):
+    """Normal typing must not build the live model/session/MCP catalog.
+
+    The catalog factory may perform local-provider discovery.  Completion is
+    only possible for slash commands and the current ``@`` token, so ordinary
+    keystrokes must stay on a side-effect-free fast path.
+    """
+    from prompt_toolkit.document import Document
+
+    from jarn.repl.completer import _SlashFileCompleter
+
+    calls = 0
+
+    def factory():
+        nonlocal calls
+        calls += 1
+        return _provider(tmp_path)
+
+    completer = _SlashFileCompleter(factory)
+    for text in ("", "~", "just chatting", "look @README then type"):
+        assert list(completer.get_completions(Document(text), None)) == []
+    assert calls == 0
+
+    assert list(completer.get_completions(Document("/mo"), None))
+    list(completer.get_completions(Document("look at @"), None))
+    assert calls == 2
+
+
 def test_completion_catalog_includes_builtins():
     from jarn.extensibility.commands import BUILTINS, completion_catalog
 

@@ -220,6 +220,43 @@ def test_ping_with_timeout_raises_on_slow_model(tmp_path: Path):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="supported validation runtime is POSIX")
+def test_ping_timeout_before_process_group_ready_kills_direct_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A scheduler delay before setsid cannot race timeout cleanup.
+
+    The child advertises readiness only after creating its isolated process
+    group.  Before that handshake, direct-child SIGKILL is safe because model
+    invocation (and therefore descendant creation) has not begun.
+    """
+    from jarn.onboarding import wizard
+
+    child_pid_path = tmp_path / "pre-handshake.pid"
+    invoked_path = tmp_path / "model-was-invoked"
+    real_setsid = os.setsid
+
+    def _delayed_setsid():
+        child_pid_path.write_text(str(os.getpid()), encoding="utf-8")
+        time.sleep(1.0)
+        return real_setsid()
+
+    monkeypatch.setattr(wizard.os, "setsid", _delayed_setsid)
+
+    class _MustNotRun:
+        def invoke(self, _prompt):
+            invoked_path.write_text("unsafe", encoding="utf-8")
+            return "late"
+
+    with pytest.raises(TimeoutError):
+        wizard._ping_with_timeout(_MustNotRun(), timeout=0.1)
+
+    pid = int(child_pid_path.read_text(encoding="utf-8"))
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+    assert not invoked_path.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="supported validation runtime is POSIX")
 def test_ping_with_timeout_propagates_invoke_error():
     """An error from the model surfaces to the caller (not swallowed by the thread)."""
     import pytest

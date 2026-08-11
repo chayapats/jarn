@@ -8,7 +8,7 @@
     "tests/test_controller.py",
     "tests/test_headless.py"
   ],
-  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q full 3042-test collection including UX/plain-resume/Textual/model-picker/terminal/controller/completion/headless/exit-code contracts",
+  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q full 3044-test collection including UX/plain-resume/Textual/model-picker/terminal/controller/completion/headless/exit-code contracts",
   "criterion_ids": [
     "AC-UX-001",
     "AC-UX-002",
@@ -41,8 +41,8 @@
     "The one-line activation design is exercised locally; immediate usability from the public URL remains a separate published-artifact/UAT observation."
   ],
   "documentation_lookups": [],
-  "duration_seconds": 294.46,
-  "ended_at": "2026-08-11T19:14:25Z",
+  "duration_seconds": 290.57,
+  "ended_at": "2026-08-11T21:38:15Z",
   "errors": [],
   "implementation": [
     "src/jarn/onboarding",
@@ -69,6 +69,6 @@
   },
   "result": "Simple/Advanced onboarding, staged cancel/resume, verified completion, plain/TUI parity, 80x24/resize/Thai/color contracts, session header, slash discovery/suggestions, cancellation, exec JSON, and exit taxonomy passed.",
   "schema_version": 2,
-  "started_at": "2026-08-11T19:09:31Z",
+  "started_at": "2026-08-11T21:33:15Z",
   "status": "passed"
 }

@@ -16,13 +16,13 @@
   "decisions": [
     "Exact candidate v1.0.3 full suite passed with loopback access enabled for OAuth and local integration fixtures.",
     "Ruff passed all src/tests/scripts; mypy passed 177 source files; pip-audit 2.9.0 found no known vulnerabilities.",
-    "Two independent builds were byte-identical: wheel SHA-256 4216958719c4b414dc9b4804f9af66f3bbc31ee7028297126a9e00c892cb562e; sdist SHA-256 43e44c844dd11ae2f9ca496f7b85663b660c11e09ac634b774e2a7047c49e5c7.",
+    "Two independent builds were byte-identical: wheel SHA-256 b72aaa106ce1f28b9ea4ac3d90b2579eeb77fe1cee6b20c9827502ddefd1763a; sdist SHA-256 04b37905f30931efd97950897f2cf431725cf63fb168e87e9a344efd3821aac5.",
     "Clean Python 3.12 wheel install reported jarn 1.0.3; offline help and schema-v1 doctor JSON were parseable and bounded.",
     "Catalog tests use per-test cache roots and cannot read the operator real catalog cache; the separate UAT records live Ollama observations."
   ],
   "documentation_lookups": [],
-  "duration_seconds": 299.17,
-  "ended_at": "2026-08-11T21:12:12Z",
+  "duration_seconds": 290.57,
+  "ended_at": "2026-08-11T21:38:15Z",
   "errors": [],
   "implementation": [
     "src/jarn"
@@ -44,8 +44,8 @@
     "raw_terminal_output_persisted": false,
     "secrets_allowed": false
   },
-  "result": "All 3042 collected tests on candidate v1.0.3 are accounted for in one clean run: 3041 passed and 1 intentional platform fixture skip, with zero failures or errors; the only warning was the intentional unresolved mcp.example fixture hostname.",
+  "result": "All 3044 collected tests on candidate v1.0.3 are accounted for in one clean run: 3043 passed and 1 intentional platform fixture skip, with zero failures or errors; the only warning was the intentional unresolved mcp.example fixture hostname.",
   "schema_version": 2,
-  "started_at": "2026-08-11T21:07:12Z",
+  "started_at": "2026-08-11T21:33:15Z",
   "status": "passed"
 }
