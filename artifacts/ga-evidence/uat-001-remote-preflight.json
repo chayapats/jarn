@@ -1,42 +1,40 @@
 {
   "automated_tests": [
-    "tests/test_uat_harnesses.py"
+    "tests/test_installer.py"
   ],
-  "command": "ssh [HOST] read-only platform and install inventory",
+  "candidate_version": "1.0.3",
+  "command": "jarn_installer_tmp=$(mktemp \"${TMPDIR:-/tmp}/jarn-install.XXXXXX\") && trap '[ -z \"${jarn_installer_tmp:-}\" ] || rm -f \"$jarn_installer_tmp\"' 0 HUP INT TERM && curl -fsSL 'https://raw.githubusercontent.com/chayapats/jarn/main/install.sh' -o \"$jarn_installer_tmp\" && sh \"$jarn_installer_tmp\"; jarn_install_rc=$?; [ -z \"${jarn_installer_tmp:-}\" ] || rm -f \"$jarn_installer_tmp\"; trap - 0 HUP INT TERM; if [ \"$jarn_install_rc\" -eq 0 ] || [ \"$jarn_install_rc\" -eq 10 ]; then exec \"$SHELL\" -l; else (exit \"$jarn_install_rc\"); fi",
   "criterion_ids": [
     "UAT-001"
   ],
-  "decisions": [
-    "Ubuntu 22.04 x86_64 with glibc 2.35",
-    "fresh-account guard failed before mutation"
-  ],
+  "decisions": [],
   "documentation_lookups": [],
-  "duration_seconds": 1.23,
-  "ended_at": "2026-08-11T14:40:08Z",
+  "duration_seconds": 2.0,
+  "ended_at": "2026-08-11T19:31:14Z",
   "errors": [],
   "implementation": [
-    "scripts/uat/uat-001-ubuntu-ssh.sh"
+    "install.sh"
   ],
   "limitations": [
-    "Provision a disposable fresh Ubuntu account, then run the protected harness with the published GA installer."
+    "Resolution=$HOME/.local/bin/jarn; config=present. Provision a new disposable account."
   ],
   "platform": {
     "architecture": "x86_64",
     "libc": "glibc 2.35",
-    "os": "Ubuntu",
+    "os": "ubuntu",
     "version": "22.04"
   },
   "record_id": "UAT-001",
   "redaction": {
-    "home_path_redacted": false,
+    "home_path_redacted": true,
     "host_identifier_redacted": true,
     "raw_auth_output_persisted": false,
     "raw_terminal_output_persisted": false,
     "secrets_allowed": false
   },
-  "result": "The available Ubuntu account is not a fresh UAT-001 fixture: J.A.R.N. configuration and multiple commands already exist. No install/login command was sent.",
-  "schema_version": 1,
-  "started_at": "2026-08-11T14:20:00Z",
+  "result": "Fresh-account guard refused to install over existing J.A.R.N. state.",
+  "schema_version": 2,
+  "started_at": "2026-08-11T19:31:12Z",
   "status": "blocked",
   "uat_id": "UAT-001"
 }

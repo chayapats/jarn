@@ -1,0 +1,57 @@
+{
+  "candidate_version": "1.0.3",
+  "automated_tests": [
+    "tests/test_model_catalog.py",
+    "tests/test_local_backend.py",
+    "tests/test_tui_wizard_model_picker.py"
+  ],
+  "command": "Isolated disposable macOS HOME using the exact v1.0.3 wheel; interactive jarn setup and one headless local turn with all cloud HTTP proxies directed to closed loopback port 9, followed by a deliberately missing Ollama model.",
+  "criterion_ids": [
+    "UAT-005"
+  ],
+  "decisions": [
+    "passed: Setup visibly discovered local Ollama and reported 1 installed; 1 tool-capable model.",
+    "passed: No API-key [REDACTED_SECRET] appeared; the Ollama provider section contained only type and loopback base_url.",
+    "passed: Standard setup selected ollama/qwen2.5:0.5b from live capability metadata and routed main, subagent, and summarizer to it without manual config editing.",
+    "passed: With cloud proxies closed, the harmless local turn returned UAT_OK with exit 0 and zero tool calls.",
+    "passed: Missing model returned exit 4, JARN-MODEL-001, /model refresh plus Ollama pull/tool-capability remediation, and no Done or Ready success text.",
+    "passed: Offline doctor returned ok=true with version 1.0.3, current schema, fresh local-live catalog evidence, and all selected routes available.",
+    "Exact wheel SHA-256: f732f7839649c5c5a993d149c8c8381a2b38c4563c8a3ca38e3adfa142163b4d."
+  ],
+  "documentation_lookups": [
+    "Official Ollama library metadata was consulted while repairing the pre-fix fixture; the final v1.0.3 user path required no documentation lookup or model-ID entry."
+  ],
+  "duration_seconds": 109.0,
+  "ended_at": "2026-08-11T19:37:27Z",
+  "errors": [],
+  "implementation": [
+    "src/jarn/providers/models.py",
+    "src/jarn/catalog/service.py",
+    "src/jarn/onboarding/model_catalog.py",
+    "src/jarn/onboarding/wizard.py",
+    "src/jarn/controller/core.py"
+  ],
+  "limitations": [
+    "This is a truthful local equivalent of the SSH-first harness on the current macOS host; scripts/uat/uat-005-ollama.sh --execute was not invoked because it requires a separate disposable SSH target.",
+    "Artifact installation is covered by separate installer/release evidence; this provider UAT used a clean install of the exact candidate wheel."
+  ],
+  "platform": {
+    "architecture": "arm64",
+    "libc": "n/a",
+    "os": "macOS",
+    "version": "26.5.2"
+  },
+  "record_id": "UAT-005",
+  "redaction": {
+    "home_path_redacted": true,
+    "host_identifier_redacted": false,
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false
+  },
+  "result": "Exact v1.0.3 wheel discovered the loopback Ollama endpoint, selected the sole tool-capable model without an API-key [REDACTED_SECRET], completed a cloud-offline local turn, and rejected an unavailable model with stable actionable remediation.",
+  "schema_version": 2,
+  "started_at": "2026-08-11T19:35:38Z",
+  "status": "passed",
+  "uat_id": "UAT-005"
+}

@@ -29,6 +29,7 @@ from jarn.errors import ErrorCode
 from jarn.providers import (
     RemoteModelCatalog,
     RemoteModelDiscoveryError,
+    RemoteModelRecord,
     fetch_remote_model_catalog,
     parse_model_ref,
     qualify_model_ref,
@@ -357,7 +358,7 @@ class ModelCatalogService:
             snapshot = self._local_catalog(
                 provider_profile,
                 provider,
-                [item.model_id for item in remote.models],
+                remote.models,
             )
             self.cache.save(snapshot)
             return snapshot
@@ -477,7 +478,7 @@ class ModelCatalogService:
         self,
         provider_profile: str,
         provider: ProviderConfig,
-        model_ids: list[str],
+        models: Sequence[RemoteModelRecord],
     ) -> ModelCatalogSnapshot:
         defaults_profile = (
             provider_profile if provider_profile in DEFAULT_MODELS else provider.type.value
@@ -488,19 +489,43 @@ class ModelCatalogService:
             if raw_default
             else None
         )
-        entries = tuple(
-            ModelCatalogEntry(
+        entries_by_id: dict[str, ModelCatalogEntry] = {}
+        for item in models:
+            if item.model_id in entries_by_id:
+                continue
+            ref = qualify_model_ref(item.model_id, provider_profile)
+            tool_label = "Reported by the local endpoint"
+            if provider.type is ProviderType.OLLAMA:
+                if item.supports_tools is True:
+                    tool_label = "Reported by Ollama; tool support verified"
+                elif item.supports_tools is False:
+                    tool_label = "Reported by Ollama; tools are not supported"
+                else:
+                    tool_label = "Reported by Ollama; tool support unverified"
+            entries_by_id[item.model_id] = ModelCatalogEntry(
                 provider_profile=provider_profile,
-                model_id=model_id,
-                ref=qualify_model_ref(model_id, provider_profile),
-                display_name=model_id,
-                is_default=qualify_model_ref(model_id, provider_profile) == default_ref,
+                model_id=item.model_id,
+                ref=ref,
+                display_name=item.display_name or item.model_id,
+                description=item.description,
+                is_default=ref == default_ref,
                 account_available=True,
+                input_modalities=item.input_modalities,
+                supports_tools=item.supports_tools,
+                preview=item.preview,
+                deprecated=item.deprecated,
+                context_window=item.context_window,
                 billing_mode="local",
-                availability_label="Reported by the local endpoint",
+                availability_label=tool_label,
             )
-            for model_id in dict.fromkeys(model_ids)
-        )
+        entries = tuple(entries_by_id.values())
+        label = f"Live local endpoint catalog ({len(entries)} models)"
+        if provider.type is ProviderType.OLLAMA:
+            tool_capable = sum(entry.supports_tools is True for entry in entries)
+            label = (
+                f"Live local endpoint catalog ({len(entries)} installed; "
+                f"{tool_capable} tool-capable)"
+            )
         return self._snapshot(
             provider_profile=provider_profile,
             provider_type=provider.type.value,
@@ -508,7 +533,7 @@ class ModelCatalogService:
             account_scope=_endpoint_fingerprint(provider_profile, provider),
             models=entries,
             verified=True,
-            label=f"Live local endpoint catalog ({len(entries)} models)",
+            label=label,
         )
 
     def _provider_catalog(
@@ -907,6 +932,21 @@ class ModelCatalogService:
             return False, f"{model_ref} is hidden; open Advanced to select it explicitly."
         if entry.account_available is False:
             return False, f"{model_ref} is not available for this account."
+        if snapshot.provider_type == ProviderType.OLLAMA.value:
+            if entry.supports_tools is False:
+                return (
+                    False,
+                    f"{model_ref} is installed but does not support Ollama tools. "
+                    "Run `ollama pull <tool-capable-model>`, then `/model refresh` "
+                    "or select a model whose capability list includes `tools`.",
+                )
+            if entry.supports_tools is not True:
+                return (
+                    False,
+                    f"{model_ref} tool support could not be verified through Ollama "
+                    "`/api/show`. Upgrade Ollama or select a model whose capability "
+                    "list includes `tools`, then run `/model refresh`.",
+                )
         if entry.deprecated:
             suggestion = (
                 f" Select {entry.replacement_ref} instead."

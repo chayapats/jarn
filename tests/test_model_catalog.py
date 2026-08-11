@@ -352,6 +352,42 @@ def test_local_model_removed_after_update_fails_before_turn(monkeypatch, tmp_pat
     controller.close()
 
 
+@pytest.mark.asyncio
+async def test_runtime_catalog_gate_raises_stable_model_error(monkeypatch, tmp_path):
+    from jarn.config.schema import Config, RoutingConfig
+    from jarn.errors import JarnUserError
+    from jarn.tui.controller import Controller
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "project"
+    root.mkdir()
+    config = Config(
+        default_profile="ollama",
+        default_model="ollama/completion-only",
+        providers={
+            "ollama": ProviderConfig(
+                type=ProviderType.OLLAMA,
+                base_url="http://127.0.0.1:11434",
+            )
+        },
+        routing=RoutingConfig(main="ollama/completion-only"),
+    )
+    controller = Controller(config, root)
+    monkeypatch.setattr(
+        controller,
+        "validate_selected_model_catalog",
+        lambda: (False, "completion-only does not support Ollama tools"),
+    )
+
+    with pytest.raises(JarnUserError) as raised:
+        await controller.ensure_runtime()
+
+    assert raised.value.code == "JARN-MODEL-001"
+    assert raised.value.detail.component == "model catalog"
+    assert "pull a model" in raised.value.detail.action
+    await controller.aclose()
+
+
 def test_local_catalog_uses_same_service_and_reports_live_source(monkeypatch, tmp_path):
     now = [START]
     service = catalog_service(tmp_path, now)
@@ -360,9 +396,9 @@ def test_local_catalog_uses_same_service_and_reports_live_source(monkeypatch, tm
         "jarn.catalog.service.fetch_remote_model_catalog",
         lambda _provider, **_kwargs: RemoteModelCatalog(
             (
-                RemoteModelRecord("qwen-thai"),
-                RemoteModelRecord("qwen-thai"),
-                RemoteModelRecord("coder"),
+                RemoteModelRecord("qwen-thai", supports_tools=True),
+                RemoteModelRecord("qwen-thai", supports_tools=True),
+                RemoteModelRecord("coder", supports_tools=False),
             ),
             "live local fixture",
             "local-scope",
@@ -374,6 +410,70 @@ def test_local_catalog_uses_same_service_and_reports_live_source(monkeypatch, tm
     assert snapshot.source is CatalogSource.LOCAL_LIVE
     assert [entry.ref for entry in snapshot.models] == ["ollama/qwen-thai", "ollama/coder"]
     assert all(entry.account_available is True for entry in snapshot.models)
+    assert [entry.supports_tools for entry in snapshot.models] == [True, False]
+    assert snapshot.provenance_label == (
+        "Live local endpoint catalog (2 installed; 1 tool-capable)"
+    )
+    cached = service.cache.load(
+        "ollama",
+        account_fingerprint=snapshot.account_fingerprint,
+    )
+    assert cached is not None
+    assert [entry.supports_tools for entry in cached.models] == [True, False]
+
+
+def test_ollama_selection_rejects_completion_only_and_unknown_tools(monkeypatch, tmp_path):
+    from jarn.config.schema import Config, RoutingConfig
+    from jarn.onboarding.model_catalog import selectable_setup_models
+    from jarn.tui.controller import Controller
+
+    service = catalog_service(tmp_path, [START])
+    provider = ProviderConfig(type=ProviderType.OLLAMA, base_url="http://localhost:11434")
+    monkeypatch.setattr(
+        "jarn.catalog.service.fetch_remote_model_catalog",
+        lambda _provider, **_kwargs: RemoteModelCatalog(
+            (
+                RemoteModelRecord("completion-only", supports_tools=False),
+                RemoteModelRecord("unknown-tools"),
+                RemoteModelRecord("agent-model", supports_tools=True),
+            ),
+            "live local fixture",
+            "local-scope",
+        ),
+    )
+
+    snapshot = service.get_catalog("ollama", provider)
+
+    assert [entry.ref for entry in selectable_setup_models(snapshot)] == [
+        "ollama/agent-model"
+    ]
+
+    ok, message = service.validate_selection(snapshot, "ollama/completion-only")
+    assert ok is False
+    assert "does not support Ollama tools" in message
+    assert "ollama pull" in message
+    ok, message = service.validate_selection(snapshot, "ollama/unknown-tools")
+    assert ok is False
+    assert "could not be verified" in message
+    assert service.validate_selection(snapshot, "ollama/agent-model") == (
+        True,
+        "selection valid",
+    )
+
+    project = tmp_path / "project"
+    project.mkdir()
+    controller = Controller(
+        Config(
+            default_profile="ollama",
+            default_model="ollama/completion-only",
+            providers={"ollama": provider},
+            routing=RoutingConfig(main="ollama/completion-only"),
+        ),
+        project,
+    )
+    controller._model_catalog_snapshot = snapshot
+    assert set(dict(controller.model_choices())) == {"ollama/agent-model"}
+    controller.close()
 
 
 def test_cloud_without_adapter_is_explicit_unverified_fallback(tmp_path):
@@ -541,18 +641,84 @@ def test_documented_model_list_adapters_use_provider_specific_endpoints(
     expected_id,
 ):
     calls: list[str] = []
+    post_calls: list[tuple[str, dict]] = []
 
     def get(url, **_kwargs):
         calls.append(url)
         return _CatalogResponse(payload)
 
+    def post(url, **kwargs):
+        post_calls.append((url, kwargs.get("json") or {}))
+        return _CatalogResponse(
+            {
+                "capabilities": ["completion", "tools"],
+                "model_info": {"qwen.context_length": 32768},
+            }
+        )
+
     monkeypatch.setattr("httpx.get", get)
+    monkeypatch.setattr("httpx.post", post)
 
     catalog = fetch_remote_model_catalog(provider)
 
     assert calls == [expected_url]
     assert [entry.model_id for entry in catalog.models] == [expected_id]
     assert "configured provider endpoint" in catalog.provenance_label
+    if provider.type is ProviderType.OLLAMA:
+        assert post_calls == [
+            ("http://localhost:11434/api/show", {"model": "qwen-live"})
+        ]
+        assert catalog.models[0].supports_tools is True
+        assert catalog.models[0].context_window == 32768
+    else:
+        assert post_calls == []
+
+
+def test_ollama_catalog_carries_each_models_tool_capability(monkeypatch):
+    provider = ProviderConfig(
+        type=ProviderType.OLLAMA,
+        base_url="http://localhost:11434",
+    )
+    monkeypatch.setattr(
+        "httpx.get",
+        lambda *_args, **_kwargs: _CatalogResponse(
+            {"models": [{"name": "completion-only"}, {"name": "agent-model"}]}
+        ),
+    )
+
+    def post(_url, **kwargs):
+        model = kwargs["json"]["model"]
+        capabilities = ["completion", "tools"] if model == "agent-model" else ["completion"]
+        return _CatalogResponse({"capabilities": capabilities})
+
+    monkeypatch.setattr("httpx.post", post)
+
+    catalog = fetch_remote_model_catalog(provider)
+
+    assert [(item.model_id, item.supports_tools) for item in catalog.models] == [
+        ("completion-only", False),
+        ("agent-model", True),
+    ]
+
+
+def test_ollama_catalog_rejects_malformed_capability_metadata(monkeypatch):
+    provider = ProviderConfig(
+        type=ProviderType.OLLAMA,
+        base_url="http://localhost:11434",
+    )
+    monkeypatch.setattr(
+        "httpx.get",
+        lambda *_args, **_kwargs: _CatalogResponse(
+            {"models": [{"name": "unverifiable"}]}
+        ),
+    )
+    monkeypatch.setattr(
+        "httpx.post",
+        lambda *_args, **_kwargs: _CatalogResponse({"capabilities": "tools"}),
+    )
+
+    with pytest.raises(RemoteModelDiscoveryError, match="malformed capabilities"):
+        fetch_remote_model_catalog(provider)
 
 
 def test_anthropic_and_google_catalog_adapters_paginate(monkeypatch):

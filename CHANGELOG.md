@@ -5,6 +5,24 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-08-12
+
+### Fixed
+
+- Verify Ollama model capabilities through the local `/api/show` endpoint before
+  setup or a turn can claim readiness. Completion-only models are no longer
+  offered as agent-ready; J.A.R.N. returns `JARN-MODEL-001` with exact pull and
+  refresh remediation when the required `tools` capability is absent or unknown.
+- Start installer, smoke, and version subprocesses as independent PyInstaller
+  applications. This makes a same-path rollback from the candidate to v0.11.0
+  and the forward rollback safe instead of reusing the frozen parent's stale
+  extraction directory. The v1.0.2 tag remained a private failed draft; no
+  v1.0.2 GitHub Release, PyPI package, or npm package was promoted.
+- Bind every GA evidence result to an exact candidate version, with optional
+  full-commit enforcement for tagged evidence. Stale Passed records are ignored
+  instead of silently certifying a newer candidate, and protected UAT preflight
+  artifacts redact remote home paths before they are persisted.
+
 ## [1.0.2] - 2026-08-12
 
 ### Fixed
@@ -1390,6 +1408,7 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Windows: use WSL; native Windows terminal is unsupported
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
+[1.0.3]: https://github.com/chayapats/jarn/releases/tag/v1.0.3
 [1.0.2]: https://github.com/chayapats/jarn/releases/tag/v1.0.2
 [1.0.1]: https://github.com/chayapats/jarn/releases/tag/v1.0.1
 [1.0.0]: https://github.com/chayapats/jarn/releases/tag/v1.0.0

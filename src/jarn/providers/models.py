@@ -196,6 +196,7 @@ class RemoteModelRecord:
     description: str | None = None
     context_window: int | None = None
     input_modalities: tuple[str, ...] = ()
+    supports_tools: bool | None = None
     preview: bool = False
     deprecated: bool = False
 
@@ -321,6 +322,35 @@ def _safe_get_json(
         ) from exc
 
 
+def _safe_post_json(
+    url: str,
+    *,
+    provider: ProviderConfig,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    timeout_seconds: float,
+) -> Any:
+    """POST JSON without exposing a model name or endpoint response in errors."""
+
+    try:
+        import httpx
+
+        response = httpx.post(
+            url,
+            headers=headers or None,
+            json=payload,
+            timeout=timeout_seconds,
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as exc:  # noqa: BLE001 - translate at the local API boundary
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        detail = f"HTTP {status}" if isinstance(status, int) else type(exc).__name__
+        raise RemoteModelDiscoveryError(
+            f"{provider.type.value} capability request failed ({detail})"
+        ) from exc
+
+
 def _optional_text(row: dict[str, Any], *keys: str) -> str | None:
     for key in keys:
         value = row.get(key)
@@ -394,6 +424,14 @@ def _remote_record(provider_type: ProviderType, row: dict[str, Any]) -> RemoteMo
             dict.fromkeys(item for item in raw_modalities if isinstance(item, str) and item)
         )
 
+    supports_tools: bool | None = None
+    if provider_type is ProviderType.OLLAMA:
+        raw_capabilities = row.get("_jarn_ollama_capabilities")
+        if isinstance(raw_capabilities, list) and all(
+            isinstance(item, str) for item in raw_capabilities
+        ):
+            supports_tools = "tools" in raw_capabilities
+
     return RemoteModelRecord(
         model_id=model_id,
         display_name=_optional_text(row, "displayName", "display_name", "name") or model_id,
@@ -407,6 +445,7 @@ def _remote_record(provider_type: ProviderType, row: dict[str, Any]) -> RemoteMo
             "input_token_limit",
         ),
         input_modalities=modalities,
+        supports_tools=supports_tools,
         preview="preview" in lowered,
         deprecated=bool(row.get("deprecated", False) or row.get("deprecation_date")),
     )
@@ -540,6 +579,59 @@ def fetch_remote_model_catalog(
                 f"{provider.type.value} model-list returned malformed JSON"
             )
         rows.extend(item for item in raw_rows if isinstance(item, dict))
+
+    # Ollama's /api/tags proves only that a model is installed. J.A.R.N. binds
+    # tools on every agent turn, so treating an installed completion-only model
+    # as selectable creates a false-success setup followed by an immediate
+    # runtime failure. /api/show is local and non-billable and reports the
+    # authoritative capability list. Keep all installed models in the catalog,
+    # but carry an explicit true/false/unknown tool-support fact for shared
+    # setup, /model, doctor, and pre-turn validation.
+    if provider.type is ProviderType.OLLAMA:
+        enriched_rows: list[dict[str, Any]] = []
+        for row in rows:
+            model_name = _optional_text(row, "name", "id")
+            if not model_name:
+                enriched_rows.append(row)
+                continue
+            show_payload = _safe_post_json(
+                f"{base}/api/show",
+                provider=provider,
+                headers=headers,
+                payload={"model": model_name},
+                timeout_seconds=remaining_timeout(),
+            )
+            if not isinstance(show_payload, dict):
+                raise RemoteModelDiscoveryError(
+                    "ollama capability response returned malformed JSON"
+                )
+            raw_capabilities = show_payload.get("capabilities")
+            if raw_capabilities is not None and (
+                not isinstance(raw_capabilities, list)
+                or not all(isinstance(item, str) for item in raw_capabilities)
+            ):
+                raise RemoteModelDiscoveryError(
+                    "ollama capability response returned malformed capabilities"
+                )
+            enriched = {**row, "_jarn_ollama_capabilities": raw_capabilities}
+            model_info = show_payload.get("model_info")
+            if isinstance(model_info, dict):
+                context_window = next(
+                    (
+                        value
+                        for key, value in model_info.items()
+                        if isinstance(key, str)
+                        and key.endswith(".context_length")
+                        and isinstance(value, int)
+                        and not isinstance(value, bool)
+                        and value > 0
+                    ),
+                    None,
+                )
+                if context_window is not None:
+                    enriched["context_window"] = context_window
+            enriched_rows.append(enriched)
+        rows = enriched_rows
 
     records: list[RemoteModelRecord] = []
     seen_models: set[str] = set()

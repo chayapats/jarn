@@ -66,7 +66,12 @@ def selectable_setup_models(
     return tuple(
         entry
         for entry in snapshot.visible_models()
-        if entry.account_available is not False and not entry.deprecated
+        if entry.account_available is not False
+        and not entry.deprecated
+        and not (
+            snapshot.provider_type == ProviderType.OLLAMA.value
+            and entry.supports_tools is not True
+        )
     )
 
 
@@ -84,6 +89,12 @@ def setup_catalog_status(snapshot: ModelCatalogSnapshot) -> str:
     if choices:
         return snapshot.provenance_label
     if snapshot.availability_verified:
+        if snapshot.provider_type == ProviderType.OLLAMA.value and snapshot.models:
+            return (
+                f"{snapshot.provenance_label}; no installed model has verified "
+                "Ollama tool support — run `ollama pull <tool-capable-model>` "
+                "and refresh"
+            )
         return f"{snapshot.provenance_label}; no selectable chat models were reported"
     detail = snapshot.error.message if snapshot.error else snapshot.provenance_label
     return f"availability unverified: {detail}"

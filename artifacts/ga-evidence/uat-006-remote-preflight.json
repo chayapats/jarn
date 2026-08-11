@@ -1,4 +1,5 @@
 {
+  "candidate_version": "1.0.0",
   "automated_tests": [
     "tests/test_uat_harnesses.py"
   ],
@@ -34,7 +35,7 @@
     "secrets_allowed": false
   },
   "result": "A prior command exists, but no GA candidate has been published; injecting a failure against the old 0.11.0 artifact would not validate the current updater. No failure injection was sent.",
-  "schema_version": 1,
+  "schema_version": 2,
   "started_at": "2026-08-11T14:20:00Z",
   "status": "blocked",
   "uat_id": "UAT-006"

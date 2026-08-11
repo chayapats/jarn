@@ -28,6 +28,7 @@ def _snapshot(
     models: tuple[str, ...],
     *,
     verified: bool = True,
+    ollama_supports_tools: bool | None = True,
 ) -> ModelCatalogSnapshot:
     entries = tuple(
         ModelCatalogEntry(
@@ -37,6 +38,9 @@ def _snapshot(
             display_name=model,
             is_default=index == 0,
             account_available=True if verified else None,
+            supports_tools=(
+                ollama_supports_tools if provider == "ollama" and verified else None
+            ),
         )
         for index, model in enumerate(models)
     )
@@ -334,3 +338,31 @@ async def test_reachable_local_endpoint_still_offers_picklist(tmp_path, monkeypa
         rendered = _rendered(ol)
         assert "qwen3-coder:30b" in rendered
         assert "llama3:8b" in rendered
+
+
+@pytest.mark.asyncio
+async def test_completion_only_ollama_model_is_not_offered_as_ready(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr(
+        "jarn.onboarding.tui_wizard.load_setup_catalog",
+        lambda provider, **_kwargs: _snapshot(
+            provider,
+            ("completion-only",),
+            ollama_supports_tools=False,
+        ),
+    )
+    from jarn.onboarding.tui_wizard import SetupApp
+
+    app = SetupApp()
+    async with app.run_test(size=(90, 40)) as pilot:
+        await pilot.pause()
+        await _choose_local_provider(pilot, app, "ollama")
+        await pilot.press("enter")  # base_url → model
+        await pilot.pause()
+
+        assert app.step == "model"
+        title = str(app.query_one("#title").render()).lower()
+        assert "no installed model has verified ollama tool support" in title
+        assert "couldn't reach" not in title
+        assert app.query_one("#step-input") is not None

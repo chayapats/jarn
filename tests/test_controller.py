@@ -1507,6 +1507,7 @@ def test_discover_models_queries_local_ollama_provider(tmp_path, monkeypatch, ba
     """discover_models() probes the configured Ollama endpoint and qualifies refs."""
     ctrl = _controller(tmp_path, monkeypatch, base_config)
     urls = []
+    post_calls = []
 
     class _Resp:
         def raise_for_status(self):
@@ -1519,13 +1520,34 @@ def test_discover_models_queries_local_ollama_provider(tmp_path, monkeypatch, ba
         urls.append(url)
         return _Resp()
 
-    with patch("httpx.get", _get):
+    class _ShowResp:
+        def __init__(self, supports_tools: bool):
+            self.supports_tools = supports_tools
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            capabilities = ["completion"]
+            if self.supports_tools:
+                capabilities.append("tools")
+            return {"capabilities": capabilities}
+
+    def _post(url, *a, **k):
+        post_calls.append((url, k.get("json")))
+        return _ShowResp(k.get("json", {}).get("model") == "qwen3-coder:30b")
+
+    with patch("httpx.get", _get), patch("httpx.post", _post):
         out = ctrl.discover_models()
     # Returned refs are qualified under the provider profile name ("ollama").
     assert ("ollama/qwen3-coder:30b", "ollama") in out
-    assert ("ollama/llama3:8b", "ollama") in out
+    assert ("ollama/llama3:8b", "ollama") not in out
     # Only the local (ollama) provider was probed, not the cloud openrouter one.
     assert urls == ["http://localhost:11434/api/tags"]
+    assert post_calls == [
+        ("http://localhost:11434/api/show", {"model": "qwen3-coder:30b"}),
+        ("http://localhost:11434/api/show", {"model": "llama3:8b"}),
+    ]
     ctrl.close()
 
 

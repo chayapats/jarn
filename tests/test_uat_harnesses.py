@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -14,6 +15,11 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 UAT_DIR = ROOT / "scripts" / "uat"
 HARNESSES = sorted(UAT_DIR.glob("uat-*.sh"))
+CURRENT_VERSION = re.search(
+    r'^version\s*=\s*"([^"]+)"\s*$',
+    (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+    re.MULTILINE,
+).group(1)
 
 
 def test_all_six_goal_uats_have_reproducible_harnesses() -> None:
@@ -84,6 +90,8 @@ def test_dry_run_can_write_explicit_not_run_evidence(
     schema = json.loads((UAT_DIR / "result.schema.json").read_text(encoding="utf-8"))
     jsonschema.validate(record, schema)
     assert record["uat_id"] == f"UAT-{uat_number}"
+    assert record["schema_version"] == 2
+    assert record["candidate_version"] == CURRENT_VERSION
     assert record["status"] == "not_run"
     assert "no target state changed" in record["result"].lower()
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
@@ -99,6 +107,10 @@ def test_result_writer_redacts_host_home_and_secret_shapes(tmp_path: Path) -> No
             str(output),
             "--uat-id",
             "UAT-001",
+            "--candidate-version",
+            "9.8.7",
+            "--candidate-commit",
+            "a" * 40,
             "--status",
             "failed",
             "--started-at",
@@ -128,6 +140,9 @@ def test_result_writer_redacts_host_home_and_secret_shapes(tmp_path: Path) -> No
     assert "ABCD-EFGH" not in serialized
     assert "hunter2" not in serialized
     assert "[HOST]" in serialized and "$HOME" in serialized
+    record = json.loads(serialized)
+    assert record["candidate_version"] == "9.8.7"
+    assert record["candidate_commit"] == "a" * 40
 
 
 def test_result_writer_supports_non_uat_release_gate_evidence(tmp_path: Path) -> None:
@@ -166,6 +181,7 @@ def test_result_writer_supports_non_uat_release_gate_evidence(tmp_path: Path) ->
     schema = json.loads((UAT_DIR / "result.schema.json").read_text(encoding="utf-8"))
     jsonschema.validate(record, schema)
     assert record["record_id"] == "REVIEW-GA-001"
+    assert record["candidate_version"] == CURRENT_VERSION
     assert "uat_id" not in record
     assert record["criterion_ids"] == ["GATE-RELEASE", "COMPLETION-W"]
 
@@ -272,6 +288,13 @@ count=0
 count=$((count + 1))
 printf '%s\\n' "$count" > "$JARN_FAKE_SSH_COUNT"
 case "$JARN_FAKE_SSH_SCENARIO:$count" in
+  uat1:1)
+    printf '%s\n' 'os=ubuntu' 'version=22.04' 'arch=x86_64' 'libc=glibc 2.35'
+    ;;
+  uat1:2)
+    printf '%s\n' 'home=/home/uat' 'resolution=/home/uat/.local/bin/jarn' \
+      'config=present' 'node=/usr/bin/node' 'python=/usr/bin/python3' 'uv=absent'
+    ;;
   macos:1)
     printf '%s\\n' 'os=macos' 'version=14.6' 'arch=arm64' 'libc=unknown'
     ;;
@@ -317,6 +340,47 @@ esac
         encoding="utf-8",
     )
     path.chmod(0o755)
+
+
+def test_uat001_blocked_preflight_redacts_remote_home(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_fixture_ssh(fake_bin / "ssh")
+    output = tmp_path / "uat001-blocked.json"
+    env = os.environ.copy()
+    env.update(
+        {
+            "JARN_FAKE_SSH_COUNT": str(tmp_path / "ssh-count"),
+            "JARN_FAKE_SSH_SCENARIO": "uat1",
+            "PATH": f"{fake_bin}:{env['PATH']}",
+        }
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(UAT_DIR / "uat-001-ubuntu-ssh.sh"),
+            "--host",
+            "uat@fixture",
+            "--output",
+            str(output),
+            "--execute",
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    serialized = output.read_text(encoding="utf-8")
+    record = json.loads(serialized)
+    assert record["status"] == "blocked"
+    assert record["redaction"]["home_path_redacted"] is True
+    assert "/home/uat" not in serialized
+    assert "$HOME" in serialized
+    assert (tmp_path / "ssh-count").read_text(encoding="utf-8").strip() == "2"
 
 
 @pytest.mark.parametrize(

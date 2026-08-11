@@ -40,22 +40,31 @@ prompt text, and raw authentication output are intentionally excluded.
 ```sh
 python3 scripts/ga_evidence.py \
   --evidence-dir artifacts/ga-evidence \
+  --candidate-version 1.0.3 \
   --output artifacts/GA_RELEASE_EVIDENCE.md
 
 python3 scripts/ga_evidence.py \
   --evidence-dir artifacts/ga-evidence \
+  --candidate-version 1.0.3 \
+  --candidate-commit FULL_TAGGED_COMMIT_SHA \
   --strict \
   --output artifacts/GA_RELEASE_EVIDENCE.md
 ```
 
 `--strict` exits non-zero if even one row is failed, blocked, or not run. It also
 rejects malformed evidence, unknown criterion IDs, or evidence that does not
-declare that secrets and raw authentication output are prohibited.
+declare that secrets and raw authentication output are prohibited. The candidate
+version defaults to `JARN_GA_CANDIDATE_VERSION` or the project version. A commit
+is enforced only when `--candidate-commit` or `JARN_GA_CANDIDATE_COMMIT` is set.
+Passed evidence with a different version, a missing required commit, or a
+different commit is ignored and cannot satisfy strict mode.
 
 Each result artifact supplies the required observed fields:
 
 | Field | Meaning |
 |---|---|
+| `candidate_version` | Exact version exercised by this observation; required |
+| `candidate_commit` | Optional full 40/64-character Git commit exercised by this observation |
 | `criterion_ids` | Stable goal IDs supported by this observation |
 | `status` | `passed`, `failed`, `blocked`, or `not_run` |
 | `platform` | OS, version, architecture, and libc |
@@ -69,3 +78,9 @@ Use `scripts/uat/result.template.json` and
 atomic writer also supports non-UAT gates with `--record-id` plus one or more
 `--criterion-id` arguments. Keep raw result files as protected release
 artifacts; publish only after a secret scan and human review.
+
+`write_result.py` accepts `--candidate-version` and `--candidate-commit`. When
+the version is omitted it derives `JARN_UAT_CANDIDATE_VERSION` or the repository
+project version; the optional commit may also come from
+`JARN_UAT_CANDIDATE_COMMIT`. For tagged-release evidence, always supply both
+exact values so results cannot be reused across candidates.

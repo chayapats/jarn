@@ -419,7 +419,9 @@ def test_update_delegates_to_canonical_installer_and_preserves_exit_10(tmp_path,
 
     def runner(argv, **kwargs):
         seen.append(argv)
-        assert kwargs == {"check": False}
+        assert kwargs["check"] is False
+        assert kwargs["env"]["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
+        assert set(kwargs) == {"check", "env"}
         return subprocess.CompletedProcess(argv, 10)
 
     code = run_update(
@@ -560,7 +562,11 @@ def test_update_json_captures_installer_noise(tmp_path: Path, capsys) -> None:
         return "https://example.test/install.sh"
 
     def runner(argv, **kwargs):
-        assert kwargs == {"check": False, "capture_output": True, "text": True}
+        assert kwargs["check"] is False
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert kwargs["env"]["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
+        assert set(kwargs) == {"check", "capture_output", "env", "text"}
         return subprocess.CompletedProcess(argv, 0, stdout="noisy stage output", stderr="")
 
     assert (
@@ -897,6 +903,39 @@ def test_rollback_swaps_verified_commands_and_manifest(tmp_path: Path, capsys) -
     assert updated.version == "1.0.0"
     assert updated.previous_path == previous
     assert "retained for a forward rollback" in capsys.readouterr().out
+
+
+def test_rollback_resets_pyinstaller_environment_for_swapped_binary(
+    tmp_path: Path,
+) -> None:
+    """A new archive at the parent's path must not reuse its one-file runtime."""
+    from jarn.install_state import load_install_record
+    from jarn.update import run_rollback
+
+    active = tmp_path / "bin" / "jarn"
+    previous = active.parent / ".jarn.rollback.1.0.0"
+    _command(active, "2.0.0")
+    previous.parent.mkdir(parents=True, exist_ok=True)
+    previous.write_text(
+        "#!/bin/sh\n"
+        'if [ "${PYINSTALLER_RESET_ENVIRONMENT:-}" != 1 ]; then\n'
+        "  echo 'stale PyInstaller runtime' >&2\n"
+        "  exit 86\n"
+        "fi\n"
+        "if [ \"$1\" = --version ]; then echo 'jarn 1.0.0'; exit 0; fi\n"
+        'if [ "$1" = --help ]; then echo help; exit 0; fi\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    previous.chmod(0o755)
+    manifest = tmp_path / "state" / "install.json"
+    manifest.parent.mkdir()
+    manifest.write_text(json.dumps(_record(active, previous)), encoding="utf-8")
+
+    assert run_rollback(manifest_path=manifest) == 0
+    updated = load_install_record(manifest)
+    assert updated.version == "1.0.0"
+    assert updated.active_path == active
 
 
 def test_rollback_rejects_broken_candidate_without_touching_active(tmp_path: Path) -> None:

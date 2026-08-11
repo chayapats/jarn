@@ -1,9 +1,9 @@
 # Release process — General Availability candidate
 
 Fail-closed checklist for promoting one identical J.A.R.N. candidate to GitHub,
-PyPI, and npm. v0.11.0 remains the latest published Alpha until the v1.0.2 draft
-passes every criterion, UAT, and published-artifact gate. A tag push cannot promote
-the draft by itself.
+PyPI, and npm. This source line targets v1.0.3; the registries and GitHub Releases
+remain the authority for current publication status. A tag push cannot promote a
+draft by itself: every criterion, UAT, and published-artifact gate must pass first.
 
 ## Automated gates (must pass)
 
@@ -11,11 +11,14 @@ the draft by itself.
 uv sync --extra dev --extra telegram
 uv run ruff check src tests scripts
 uv run mypy src/
-uv run pytest -q                    # 3032 tests
+uv run pytest -q                    # 3039 tests
 uv run pytest tests/test_packaging.py -q
 uv run pytest tests/test_installer.py tests/test_ci.py tests/test_update.py -q
 uv run python scripts/benchmark_startup.py --output artifacts/startup.json
-uv run python scripts/ga_evidence.py --strict
+uv run python scripts/ga_evidence.py \
+  --evidence-dir artifacts/ga-evidence \
+  --candidate-version 1.0.3 \
+  --strict
 uv build
 ```
 
@@ -63,8 +66,8 @@ Optional binary smoke (maintainer):
 3. Tag and push (the tag creates a **draft**, not a public release):
 
 ```bash
-git tag v1.0.2
-git push origin v1.0.2
+git tag v1.0.3
+git push origin v1.0.3
 ```
 
 4. GitHub Actions builds binaries/packages plus the exact tagged `install.sh`, creates
@@ -75,8 +78,18 @@ git push origin v1.0.2
    itemized uninstall, reinstall, data-preservation, and integrity canaries.
 6. The tag workflow intentionally stops at a verified draft unless the repository
    variable `JARN_GA_PROMOTE_TAG` equals the exact immutable tag. Run all protected
-   UAT harnesses, commit the redacted evidence, and require
-   `python scripts/ga_evidence.py --strict` to pass before setting that variable.
+   UAT harnesses against that tagged candidate, commit the redacted evidence to
+   `main` without moving or replacing the tag, and require the final evidence gate
+   to pass before setting that variable:
+
+```bash
+tag_commit=$(git rev-list -n 1 v1.0.3)
+python scripts/ga_evidence.py \
+  --evidence-dir artifacts/ga-evidence \
+  --candidate-version 1.0.3 \
+  --candidate-commit "$tag_commit" \
+  --strict
+```
 7. Rerun the same tag workflow only after the strict evidence gate. Only
    `promote_release` may make the draft public; PyPI/npm consume the already verified
    internal artifacts after the anonymous public-URL canary passes. Clear

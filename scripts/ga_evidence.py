@@ -26,6 +26,12 @@ CRITERION_HEADING = re.compile(
     r"^###\s+((?:AC|TEST|UAT)-[A-Z0-9-]+)(?:\s+—.*)?\s*$", re.MULTILINE
 )
 VALID_STATUSES = {"passed", "failed", "blocked", "not_run"}
+CANDIDATE_VERSION_PATTERN = re.compile(r"^[0-9][0-9A-Za-z.!+_-]*$")
+CANDIDATE_COMMIT_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+PROJECT_VERSION_PATTERN = re.compile(
+    r'^version\s*=\s*"([^"]+)"\s*$',
+    re.MULTILINE,
+)
 SECRET_PATTERNS = (
     re.compile(r"\b(?:sk|sess|key)-[A-Za-z0-9._-]{8,}"),
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}"),
@@ -63,7 +69,47 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Exit 1 unless every criterion has valid passing evidence",
     )
+    parser.add_argument(
+        "--candidate-version",
+        help=(
+            "Exact candidate version required for Passed evidence; defaults to "
+            "JARN_GA_CANDIDATE_VERSION or pyproject.toml"
+        ),
+    )
+    parser.add_argument(
+        "--candidate-commit",
+        help=(
+            "Optional full 40/64-character Git commit required for Passed evidence; "
+            "defaults to JARN_GA_CANDIDATE_COMMIT when set"
+        ),
+    )
     return parser
+
+
+def _candidate_version(explicit: str | None) -> str:
+    value = explicit or os.environ.get("JARN_GA_CANDIDATE_VERSION")
+    if value is None:
+        try:
+            project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"cannot derive candidate version from pyproject.toml: {exc}") from exc
+        match = PROJECT_VERSION_PATTERN.search(project)
+        if match is None:
+            raise ValueError("cannot derive candidate version from pyproject.toml")
+        value = match.group(1)
+    if CANDIDATE_VERSION_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"invalid candidate version: {value!r}")
+    return value
+
+
+def _candidate_commit(explicit: str | None) -> str | None:
+    value = explicit or os.environ.get("JARN_GA_CANDIDATE_COMMIT")
+    if value is None or value == "":
+        return None
+    normalized = value.lower()
+    if CANDIDATE_COMMIT_PATTERN.fullmatch(normalized) is None:
+        raise ValueError("candidate commit must be a full 40- or 64-character hexadecimal ID")
+    return normalized
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -155,6 +201,8 @@ def effective_mapping(mapping: dict[str, Any], criterion_id: str) -> dict[str, l
 
 
 def _validate_record(path: Path, record: dict[str, Any]) -> None:
+    if record.get("schema_version") != 2:
+        raise ValueError(f"{path}: evidence schema_version must be 2")
     record_id = record.get("record_id")
     status = record.get("status")
     criterion_ids = record.get("criterion_ids")
@@ -168,6 +216,18 @@ def _validate_record(path: Path, record: dict[str, Any]) -> None:
         raise ValueError(f"{path}: criterion_ids must be a non-empty string array")
     if len(set(criterion_ids)) != len(criterion_ids):
         raise ValueError(f"{path}: criterion_ids must be unique")
+    candidate_version = record.get("candidate_version")
+    if (
+        not isinstance(candidate_version, str)
+        or CANDIDATE_VERSION_PATTERN.fullmatch(candidate_version) is None
+    ):
+        raise ValueError(f"{path}: invalid or missing candidate_version")
+    candidate_commit = record.get("candidate_commit")
+    if candidate_commit is not None and (
+        not isinstance(candidate_commit, str)
+        or CANDIDATE_COMMIT_PATTERN.fullmatch(candidate_commit) is None
+    ):
+        raise ValueError(f"{path}: invalid candidate_commit")
     redaction = record.get("redaction")
     if not isinstance(redaction, dict):
         raise ValueError(f"{path}: missing redaction declaration")
@@ -182,8 +242,14 @@ def _validate_record(path: Path, record: dict[str, Any]) -> None:
         raise ValueError(f"{path}: evidence contains a secret-shaped value")
 
 
-def load_evidence(directories: list[Path]) -> dict[str, dict[str, Any]]:
+def load_evidence(
+    directories: list[Path],
+    *,
+    candidate_version: str,
+    candidate_commit: str | None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
     selected: dict[str, dict[str, Any]] = {}
+    ignored_passes: dict[str, list[str]] = {}
     for directory in directories:
         if not directory.exists():
             continue
@@ -197,10 +263,29 @@ def load_evidence(directories: list[Path]) -> dict[str, dict[str, Any]]:
             sort_key = (str(record.get("ended_at", "")), str(path))
             enriched["_sort_key"] = sort_key
             for criterion_id in record["criterion_ids"]:
+                mismatch: str | None = None
+                if record["status"] == "passed" and record["candidate_version"] != candidate_version:
+                    mismatch = (
+                        f"{enriched['_source']} declares candidate "
+                        f"{record['candidate_version']}, expected {candidate_version}"
+                    )
+                elif (
+                    record["status"] == "passed"
+                    and candidate_commit is not None
+                    and record.get("candidate_commit") != candidate_commit
+                ):
+                    declared = record.get("candidate_commit") or "no commit"
+                    mismatch = (
+                        f"{enriched['_source']} declares {declared}, expected commit "
+                        f"{candidate_commit}"
+                    )
+                if mismatch is not None:
+                    ignored_passes.setdefault(criterion_id, []).append(mismatch)
+                    continue
                 current = selected.get(criterion_id)
                 if current is None or sort_key > current["_sort_key"]:
                     selected[criterion_id] = enriched
-    return selected
+    return selected, ignored_passes
 
 
 def _cell(value: str) -> str:
@@ -240,6 +325,9 @@ def render_report(
     mapping: dict[str, Any],
     criteria: list[str],
     evidence: dict[str, dict[str, Any]],
+    ignored_passes: dict[str, list[str]],
+    candidate_version: str,
+    candidate_commit: str | None,
 ) -> tuple[str, Counter[str]]:
     counts: Counter[str] = Counter()
     rows: list[str] = []
@@ -252,6 +340,11 @@ def render_report(
         tests = list(mapped["automated_tests"])
         commands = list(mapped["commands"])
         limitations = list(mapped["limitations"])
+        mismatches = ignored_passes.get(criterion_id, [])
+        if mismatches:
+            limitations.append(
+                "Ignored Passed evidence not bound to this candidate: " + "; ".join(mismatches)
+            )
         result = "No result artifact supplied; mapping is not proof of completion."
         if record:
             implementation.extend(_record_strings(record, "implementation"))
@@ -299,6 +392,16 @@ def render_report(
         "",
         f"- Goal: `{_display_path(goal)}`",
         f"- Mapping: `{_display_path(mapping_path)}`",
+        f"- Candidate version: `{candidate_version}`",
+        (
+            f"- Candidate commit: `{candidate_commit}`"
+            if candidate_commit is not None
+            else "- Candidate commit: not enforced (pass `--candidate-commit` for a tagged release)"
+        ),
+        (
+            "- Ignored mismatched Passed criterion claims: "
+            f"{sum(map(len, ignored_passes.values()))}"
+        ),
         f"- Summary: {summary}",
         f"- Strict completion: {'yes' if counts['passed'] == len(criteria) else 'no'}",
         "",
@@ -328,12 +431,18 @@ def _write_atomic(path: Path, content: str) -> None:
 def main() -> int:
     args = _parser().parse_args()
     try:
+        candidate_version = _candidate_version(args.candidate_version)
+        candidate_commit = _candidate_commit(args.candidate_commit)
         mapping = _read_json(args.mapping)
         if mapping.get("schema_version") != 1:
             raise ValueError("evidence map schema_version must be 1")
         criteria = extract_criteria(args.goal, mapping)
-        evidence = load_evidence(args.evidence_dir)
-        unknown = sorted(set(evidence) - set(criteria))
+        evidence, ignored_passes = load_evidence(
+            args.evidence_dir,
+            candidate_version=candidate_version,
+            candidate_commit=candidate_commit,
+        )
+        unknown = sorted((set(evidence) | set(ignored_passes)) - set(criteria))
         if unknown:
             raise ValueError(f"evidence contains unknown criterion IDs: {', '.join(unknown)}")
         report, counts = render_report(
@@ -342,6 +451,9 @@ def main() -> int:
             mapping=mapping,
             criteria=criteria,
             evidence=evidence,
+            ignored_passes=ignored_passes,
+            candidate_version=candidate_version,
+            candidate_commit=candidate_commit,
         )
         if args.output:
             _write_atomic(args.output, report)

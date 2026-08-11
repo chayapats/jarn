@@ -1,4 +1,5 @@
 {
+  "candidate_version": "1.0.3",
   "automated_tests": [
     "tests/test_ci.py",
     "tests/test_subprocess_security_audit.py",
@@ -6,7 +7,7 @@
     "tests/test_telemetry_reliability.py",
     "tests/test_doc_sync.py"
   ],
-  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q tests/test_ci.py tests/test_installer.py tests/test_subprocess_security_audit.py tests/test_permission_bypass_matrix.py tests/test_secrets.py tests/test_telemetry_reliability.py tests/test_ga_errors_and_doctor.py tests/test_doc_sync.py",
+  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q full 3039-test collection including CI/installer/subprocess/bypass/secrets/telemetry/doctor/doc-sync contracts; pip-audit 2.9.0",
   "criterion_ids": [
     "AC-SEC-002",
     "AC-SEC-003",
@@ -26,8 +27,8 @@
   "documentation_lookups": [
     "Official GitHub hosted-runner reference verified the configured macOS and Linux ARM labels on 2026-08-11."
   ],
-  "duration_seconds": 305.0,
-  "ended_at": "2026-08-11T14:59:30Z",
+  "duration_seconds": 294.46,
+  "ended_at": "2026-08-11T19:14:25Z",
   "errors": [],
   "implementation": [
     ".github/workflows",
@@ -46,7 +47,7 @@
     "os": "macOS",
     "version": "26.5.2"
   },
-  "record_id": "LOCAL-SECURITY-DOC-20260811",
+  "record_id": "LOCAL-SECURITY-DOC-20260811-V103",
   "redaction": {
     "home_path_redacted": false,
     "host_identifier_redacted": false,
@@ -55,7 +56,7 @@
     "secrets_allowed": false
   },
   "result": "Immutable action pinning, HTTPS/checksum refusal including pinned uv bootstrap, local telemetry consent/boundary, central exact-secret [REDACTED_SECRET], argv-only subprocess audit, secure temporary/support-report handling, required docs, troubleshooting, error references, and doc-sync contracts passed.",
-  "schema_version": 1,
-  "started_at": "2026-08-11T14:34:18Z",
+  "schema_version": 2,
+  "started_at": "2026-08-11T19:09:31Z",
   "status": "passed"
 }

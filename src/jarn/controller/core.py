@@ -357,9 +357,24 @@ class Controller:
         if self.runtime is None:
             ok, message = await asyncio.to_thread(self.validate_selected_model_catalog)
             if not ok:
+                from jarn.errors import ErrorCode, JarnUserError, error_detail
+
                 self.health = "error"
                 self.last_error = message
-                raise RuntimeError(message)
+                raise JarnUserError(
+                    error_detail(
+                        ErrorCode.MODEL_UNAVAILABLE,
+                        "Selected model routing is unavailable",
+                        cause=message,
+                        component="model catalog",
+                        retryable=True,
+                        action=(
+                            "Run `/model refresh` or `jarn setup`; for Ollama, "
+                            "pull a model whose `/api/show` capabilities include "
+                            "`tools`, then retry."
+                        ),
+                    )
+                )
         if self._saver is None:
             self._saver, self._saver_cm = await create_async_checkpointer(self._db_path)
         # Build via a controller-owned, generation-tagged worker task. Invariants:
@@ -1517,7 +1532,12 @@ class Controller:
                 {
                     entry.ref
                     for entry in snapshot.visible_models()
-                    if not entry.deprecated and entry.account_available is not False
+                    if not entry.deprecated
+                    and entry.account_available is not False
+                    and not (
+                        snapshot.provider_type == "ollama"
+                        and entry.supports_tools is not True
+                    )
                 }
                 if snapshot is not None and snapshot.availability_verified
                 else set()
@@ -1543,7 +1563,14 @@ class Controller:
             if not snapshot.availability_verified:
                 continue
             for entry in snapshot.visible_models():
-                if entry.deprecated or entry.account_available is False:
+                if (
+                    entry.deprecated
+                    or entry.account_available is False
+                    or (
+                        snapshot.provider_type == "ollama"
+                        and entry.supports_tools is not True
+                    )
+                ):
                     continue
                 flags: list[str] = [entry.display_name]
                 if entry.is_default:
@@ -1559,6 +1586,8 @@ class Controller:
                     flags.append(f"{entry.context_window:,} token context")
                 if entry.input_modalities:
                     flags.append("input " + "/".join(entry.input_modalities))
+                if entry.supports_tools is True:
+                    flags.append("tools verified")
                 if entry.service_tiers:
                     flags.append("tiers " + "/".join(entry.service_tiers))
                 if entry.description:
@@ -1647,7 +1676,15 @@ class Controller:
             if not snapshot.availability_verified:
                 continue
             for entry in snapshot.visible_models():
-                if entry.ref in seen or entry.deprecated or entry.account_available is False:
+                if (
+                    entry.ref in seen
+                    or entry.deprecated
+                    or entry.account_available is False
+                    or (
+                        snapshot.provider_type == "ollama"
+                        and entry.supports_tools is not True
+                    )
+                ):
                     continue
                 seen.add(entry.ref)
                 entries.append(entry)
@@ -1748,6 +1785,10 @@ class Controller:
                     entry.ref not in seen
                     and not entry.deprecated
                     and entry.account_available is not False
+                    and not (
+                        snapshot.provider_type == "ollama"
+                        and entry.supports_tools is not True
+                    )
                 ):
                     seen.add(entry.ref)
                     out.append((entry.ref, name))

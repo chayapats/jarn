@@ -51,7 +51,7 @@ are not successful “ready for first prompt” states.
 | `JARN-AUTH-008` | Authentication network is unavailable | Check proxy/CA/network, then retry the bounded operation |
 | `JARN-AUTH-009` | Codex app-server protocol response is invalid/incompatible | Repair/update Codex and rerun status |
 | `JARN-AUTH-010` | Verified login ceremony did not complete | Follow the displayed browser/device recovery action |
-| `JARN-MODEL-001` | Selected model is unavailable or invalid | Refresh the catalog and select an available entry |
+| `JARN-MODEL-001` | Selected model is unavailable, invalid, or lacks a required capability | Refresh the catalog and select an available entry; for Ollama, pull one whose `/api/show` capabilities include `tools` |
 | `JARN-MODEL-002` | A verified model catalog is unavailable | Restore credentials/network or use an honestly labelled cache |
 | `JARN-GATEWAY-001` | Telegram optional dependency is missing | Install the documented Telegram extra for this installation method |
 | `JARN-GATEWAY-002` | Gateway configuration is missing or invalid | Validate the global-only gateway configuration and retry |

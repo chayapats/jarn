@@ -891,7 +891,12 @@ def test_release_bootstraps_real_prior_upgrade_lifecycles_with_preserved_data() 
     for mutation in ("gh release create", "gh release edit", "gh release upload", "gh release delete"):
         assert mutation not in joined
     assert 'sh "$current_dir/install.sh" --version "$current_number"' in joined
-    assert joined.count("rollback --json") == 2
+    assert joined.count("rollback --json") == 1
+    assert joined.count('run_rollback_stage "') == 2
+    assert 'run_rollback_stage "first rollback to $PRIOR_VERSION"' in joined
+    assert 'run_rollback_stage "forward rollback to ${CURRENT_VERSION#v}"' in joined
+    assert "upgrade canary: %s failed (exit %s)" in joined
+    assert 'sed -n \'1,200p\' "$rollback_output" "$rollback_error"' in joined
     assert "uninstall --yes --executable --dependencies" in joined
     assert "Preserved: config, sessions, cache, credentials." in joined
     for sentinel in (

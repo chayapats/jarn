@@ -1,4 +1,5 @@
 {
+  "candidate_version": "1.0.3",
   "automated_tests": [
     "tests/test_subprocess_security_audit.py",
     "tests/test_auth_service.py",
@@ -6,7 +7,7 @@
     "tests/test_installer.py",
     "tests/test_util_atomic.py"
   ],
-  "command": "git diff --check; .venv/bin/ruff check .; .venv/bin/mypy src/jarn; full 3029-test accounting; manual constraint review against section T",
+  "command": "git diff --check; .venv/bin/ruff check src tests scripts; .venv/bin/mypy src/; exact full 3039-test accounting; manual constraint review against section T",
   "criterion_ids": [
     "CONSTRAINT-IMPLEMENTATION"
   ],
@@ -15,8 +16,8 @@
     "Publishing and tagging remain intentionally unauthorized and unperformed."
   ],
   "documentation_lookups": [],
-  "duration_seconds": 1722.0,
-  "ended_at": "2026-08-11T15:03:00Z",
+  "duration_seconds": 294.46,
+  "ended_at": "2026-08-11T19:14:25Z",
   "errors": [],
   "implementation": [
     "docs/GOAL_GENERAL_AVAILABILITY.md",
@@ -33,7 +34,7 @@
     "os": "macOS",
     "version": "26.5.2"
   },
-  "record_id": "LOCAL-IMPLEMENTATION-REVIEW-20260811",
+  "record_id": "LOCAL-IMPLEMENTATION-REVIEW-20260811-V103",
   "redaction": {
     "home_path_redacted": false,
     "host_identifier_redacted": false,
@@ -42,7 +43,7 @@
     "secrets_allowed": false
   },
   "result": "Section T review passed: compatibility aliases and advanced providers remain; auth/catalog/redaction are shared; state changes are atomic/recoverable; subprocess audit passes; regression assertions remain strict; entitlement/auth/install success are verified rather than inferred; standard install is user-space; cleanup is explicit; no tag, release, publish, or unauthorized remote mutation occurred.",
-  "schema_version": 1,
-  "started_at": "2026-08-11T14:34:18Z",
+  "schema_version": 2,
+  "started_at": "2026-08-11T19:09:31Z",
   "status": "passed"
 }

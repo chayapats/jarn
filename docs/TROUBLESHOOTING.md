@@ -164,7 +164,11 @@ reasoning level advertised for that model. Routing targets are validated by the 
 service rather than accepted as free-form IDs.
 
 For an offline local model, start Ollama/LM Studio, verify the configured endpoint,
-and refresh. Cloud failure must not block a healthy local endpoint.
+and refresh. Cloud failure must not block a healthy local endpoint. J.A.R.N. binds
+tools on agent turns, so an Ollama model must advertise `tools` in `POST /api/show`.
+If a model is installed but completion-only, pull a tool-capable model, run
+`/model refresh`, and select the verified entry; J.A.R.N. refuses the incompatible
+route before sending a turn.
 
 ## Corrupt or unreadable configuration
 

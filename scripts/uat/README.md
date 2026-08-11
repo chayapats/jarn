@@ -52,3 +52,8 @@ at a LAN or public model server.
 `write_result.py --record-id ... --criterion-id ...` can also create a redacted
 manual result for aggregate release gates. Mapping alone never marks a gate as
 passed; record the observed review outcome and limitations explicitly.
+
+Every result is bound to `candidate_version`. Pass `--candidate-version` or set
+`JARN_UAT_CANDIDATE_VERSION`; otherwise the writer derives the repository
+project version. Tagged-release evidence should also pass `--candidate-commit`
+or set `JARN_UAT_CANDIDATE_COMMIT` to the full immutable tag commit.

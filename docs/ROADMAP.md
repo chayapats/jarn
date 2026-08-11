@@ -5,7 +5,7 @@
 > current release; `[ ]` items are scaffolded or documented but not yet shipped.
 
 Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-12** (this source line
-targets v1.0.2 GA; consult the release and package registries for publication status).
+targets v1.0.3 GA; consult the release and package registries for publication status).
 
 ## v1 — implemented
 
@@ -151,7 +151,7 @@ multi-agent review. See the design spec under `docs/superpowers/specs/`.
 - [x] **Quality floor (M3)** — `scripts/eval.py` smoke-eval harness + fixtures (CI-safe offline logic)
 - [x] **Release UX (M4)** — `/mcp status`, in-REPL `/trust` + untrusted-launch notice; security
   audit fixes (Docker cancel/reaper, web_fetch SSRF, eval-checker guard, transcript redaction)
-- Historical v0.x line remained **Alpha**; v1.0.2 targets the completed GA hardening
+- Historical v0.x line remained **Alpha**; v1.0.3 targets the completed GA hardening
   contract (see Known limitations for constraints that still apply).
 
 ## v0.2.0 — released

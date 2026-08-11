@@ -3,7 +3,8 @@
     "tests/test_installer.py::test_python_fallback_preserves_uv_absolute_launcher_target",
     "tests/test_installer.py npm-shadow and glibc fallback contracts"
   ],
-  "command": "SSH isolated-home candidate install on a redacted Ubuntu fixture with an old npm command first on PATH, a deliberately incompatible GLIBC_2.38 release binary, and the current wheel as the managed-Python fallback",
+  "candidate_version": "1.0.3-pre-final.836d050c",
+  "command": "SSH isolated-home candidate install on a redacted Ubuntu fixture with the real old global-npm command first on PATH, a deliberately incompatible GLIBC_2.38 release-binary fixture, and the exact v1.0.3 wheel as the managed-Python fallback",
   "criterion_ids": [
     "AC-INSTALL-005",
     "AC-INSTALL-006",
@@ -12,12 +13,13 @@
   ],
   "decisions": [
     "The test used an isolated HOME, JARN_HOME, state directory, cache, tool directory, and install directory; the host's existing J.A.R.N. commands and configuration were not changed.",
-    "A real uv absolute launcher symlink exposed a relocation defect that the fake fixture had hidden; prepare_python now installs directly into its unique final version directory and never relocates that tool root.",
-    "The legacy configuration was fingerprinted before installation and remained byte-identical after --no-setup receipt validation."
+    "The fallback used uv 0.12.3 and preserved its absolute launcher symlink into the unique managed version directory.",
+    "The existing configuration and global-npm command were fingerprinted before installation and remained byte-identical after --no-setup receipt validation.",
+    "The first receipt assertion omitted JARN_STATE_DIR in the doctor subprocess and was rejected; rerunning that read-only assertion with the fixture state directory verified the canonical actionable receipt."
   ],
   "documentation_lookups": [],
-  "duration_seconds": 18.2,
-  "ended_at": "2026-08-11T17:38:13Z",
+  "duration_seconds": 9.0,
+  "ended_at": "2026-08-11T18:57:41Z",
   "errors": [],
   "implementation": [
     "install.sh",
@@ -25,6 +27,7 @@
     "tests/test_installer.py"
   ],
   "limitations": [
+    "Historical pre-final v1.0.3 build evidence only; the final reproducible wheel is SHA-256 f732f7839649c5c5a993d149c8c8381a2b38c4563c8a3ca38e3adfa142163b4d and must be rerun before this record can gate that candidate.",
     "This pre-release source/wheel fixture is not a public release URL canary, oldest-glibc execution, fresh-user login UAT, or proof of the complete Tier-1 matrix.",
     "Setup was intentionally disabled so this record contains no authentication ceremony or provider output."
   ],
@@ -34,7 +37,7 @@
     "os": "Ubuntu",
     "version": "22.04"
   },
-  "record_id": "REMOTE-UBUNTU-GLIBC-SHADOW-20260811-V102",
+  "record_id": "REMOTE-UBUNTU-GLIBC-SHADOW-20260811-V103",
   "redaction": {
     "home_path_redacted": true,
     "host_identifier_redacted": true,
@@ -42,8 +45,8 @@
     "raw_terminal_output_persisted": false,
     "secrets_allowed": false
   },
-  "result": "Passed on the exact v1.0.2 source/wheel candidate (wheel SHA-256 c1239b5ed33e1f091b391b557ad3cda25ebcef907ae1147b7ec5165239a095e9): installer rejected the incompatible release binary, verified its checksum, selected the portable managed-Python path, preserved the real uv absolute launcher target, activated jarn 1.0.2 with exit 10, resolved the new command in a fresh shell, retained the old npm command, preserved the existing config byte-for-byte during receipt validation, produced an actionable receipt whose active path matched doctor inventory, and emitted no Done/Ready false-success text.",
-  "schema_version": 1,
-  "started_at": "2026-08-11T17:37:55Z",
+  "result": "Passed on the exact v1.0.3 source/wheel candidate (wheel SHA-256 836d050cf97b375c2353f5f3e1015084c8d8f03baca363f721934f74fa098d4b): installer verified then rejected the incompatible GLIBC_2.38 binary fixture, selected the portable managed-Python path, preserved the real uv absolute launcher target, activated jarn 1.0.3 with exit 10, resolved the new command in fresh login and interactive shells, retained the old global-npm command, preserved the existing config byte-for-byte, produced an actionable canonical receipt whose active path matched doctor inventory, and emitted no Done/Ready false-success text.",
+  "schema_version": 2,
+  "started_at": "2026-08-11T18:57:32Z",
   "status": "passed"
 }

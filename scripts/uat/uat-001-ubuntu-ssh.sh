@@ -79,6 +79,7 @@ PLATFORM_OS=unknown
 PLATFORM_VERSION=unknown
 PLATFORM_ARCH=unknown
 PLATFORM_LIBC=unknown
+REMOTE_HOME=""
 
 write_evidence() {
   local status=$1
@@ -101,6 +102,7 @@ write_evidence() {
     --platform-libc "$PLATFORM_LIBC"
     --redact-host "$HOST"
   )
+  [[ -z "$REMOTE_HOME" ]] || args+=(--redact-home "$REMOTE_HOME")
   [[ -z "$limitation" ]] || args+=(--limitation "$limitation")
   uat_write_result "${args[@]}"
 }
@@ -124,11 +126,12 @@ case "$PLATFORM_OS:$PLATFORM_VERSION" in
     ;;
 esac
 
-INITIAL_PROBE=$(uat_ssh_readonly "$HOST" 'resolution=$(bash -lic '\''command -v jarn 2>/dev/null || true'\'' 2>/dev/null | tail -n 1); config=absent; [ -e "$HOME/.jarn" ] && config=present; printf "resolution=%s\nconfig=%s\nnode=%s\npython=%s\nuv=%s\n" "${resolution:-absent}" "$config" "$(command -v node 2>/dev/null || printf absent)" "$(command -v python3 2>/dev/null || printf absent)" "$(command -v uv 2>/dev/null || printf absent)"') || {
+INITIAL_PROBE=$(uat_ssh_readonly "$HOST" 'resolution=$(bash -lic '\''command -v jarn 2>/dev/null || true'\'' 2>/dev/null | tail -n 1); config=absent; [ -e "$HOME/.jarn" ] && config=present; printf "home=%s\nresolution=%s\nconfig=%s\nnode=%s\npython=%s\nuv=%s\n" "$HOME" "${resolution:-absent}" "$config" "$(command -v node 2>/dev/null || printf absent)" "$(command -v python3 2>/dev/null || printf absent)" "$(command -v uv 2>/dev/null || printf absent)"') || {
   write_evidence blocked "Fresh-account probe failed before mutation." \
     "Fix SSH login-shell startup, then rerun the harness."
   exit 2
 }
+REMOTE_HOME=$(uat_probe_value "$INITIAL_PROBE" home)
 INITIAL_RESOLUTION=$(uat_probe_value "$INITIAL_PROBE" resolution)
 INITIAL_CONFIG=$(uat_probe_value "$INITIAL_PROBE" config)
 INITIAL_NODE=$(uat_probe_value "$INITIAL_PROBE" node)

@@ -16,13 +16,19 @@ MAPPING = ROOT / "docs" / "ga-evidence-map.json"
 HEADING = re.compile(
     r"^###\s+((?:AC|TEST|UAT)-[A-Z0-9-]+)(?:\s+—.*)?\s*$", re.MULTILINE
 )
+CURRENT_VERSION = re.search(
+    r'^version\s*=\s*"([^"]+)"\s*$',
+    (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+    re.MULTILINE,
+).group(1)
 
 
 def _result(*criterion_ids: str, status: str = "passed") -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "record_id": "UAT-006",
         "uat_id": "UAT-006",
+        "candidate_version": CURRENT_VERSION,
         "criterion_ids": list(criterion_ids),
         "status": status,
         "started_at": "2026-08-09T00:00:00Z",
@@ -76,6 +82,7 @@ def test_report_contains_every_goal_heading_and_never_passes_from_mapping() -> N
     ):
         assert f"| {supplemental} | Not run |" in result.stdout
     assert "Strict completion: no" in result.stdout
+    assert f"Candidate version: `{CURRENT_VERSION}`" in result.stdout
     for number in range(1, 7):
         criterion = f"UAT-{number:03d}"
         assert f"scripts/uat/uat-{number:03d}-" in result.stdout.split(
@@ -102,6 +109,10 @@ def test_redacted_result_can_mark_only_its_criterion_passed(tmp_path: Path) -> N
     assert "| UAT-006 | Passed |" in result.stdout
     assert "| UAT-001 | Not run |" in result.stdout
     assert "observed result" in result.stdout
+    _assert_other_candidate_is_ignored(tmp_path / "mismatched-version")
+    _assert_matching_older_pass_can_win(tmp_path / "matching-version")
+    _assert_commit_binding(tmp_path / "commit-binding")
+    _assert_missing_candidate_is_rejected(tmp_path / "missing-binding")
 
 
 def test_strict_mode_fails_with_any_gap_and_passes_complete_small_goal(
@@ -169,6 +180,144 @@ def test_strict_mode_fails_with_any_gap_and_passes_complete_small_goal(
     )
     assert complete.returncode == 0, complete.stderr
     assert "Strict completion: yes" in complete.stdout
+
+
+def _assert_other_candidate_is_ignored(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir(parents=True)
+    stale = _result("UAT-006")
+    stale["candidate_version"] = "0.11.0"
+    (evidence_dir / "stale.json").write_text(json.dumps(stale), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(GENERATOR),
+            "--evidence-dir",
+            str(evidence_dir),
+            "--candidate-version",
+            CURRENT_VERSION,
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "| UAT-006 | Not run |" in result.stdout
+    assert "Ignored mismatched Passed criterion claims: 1" in result.stdout
+    assert "declares candidate 0.11.0" in result.stdout
+
+
+def _assert_matching_older_pass_can_win(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir(parents=True)
+    matching = _result("UAT-006")
+    matching["ended_at"] = "2026-08-09T00:00:01Z"
+    matching["result"] = "matching candidate result"
+    stale = _result("UAT-006")
+    stale["candidate_version"] = "9.9.9"
+    stale["ended_at"] = "2026-08-10T00:00:01Z"
+    stale["result"] = "newer stale result"
+    (evidence_dir / "matching.json").write_text(json.dumps(matching), encoding="utf-8")
+    (evidence_dir / "stale.json").write_text(json.dumps(stale), encoding="utf-8")
+
+    result = subprocess.run(
+        ["python3", str(GENERATOR), "--evidence-dir", str(evidence_dir)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "| UAT-006 | Passed |" in result.stdout
+    assert "matching candidate result" in result.stdout
+    assert "newer stale result" not in result.stdout
+
+
+def _assert_commit_binding(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir(parents=True)
+    expected = "a" * 40
+    record = _result("UAT-006")
+    (evidence_dir / "result.json").write_text(json.dumps(record), encoding="utf-8")
+
+    missing = subprocess.run(
+        [
+            "python3",
+            str(GENERATOR),
+            "--evidence-dir",
+            str(evidence_dir),
+            "--candidate-commit",
+            expected,
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert missing.returncode == 0, missing.stderr
+    assert "| UAT-006 | Not run |" in missing.stdout
+    assert "declares no commit" in missing.stdout
+
+    record["candidate_commit"] = "b" * 40
+    (evidence_dir / "result.json").write_text(json.dumps(record), encoding="utf-8")
+    wrong = subprocess.run(
+        [
+            "python3",
+            str(GENERATOR),
+            "--evidence-dir",
+            str(evidence_dir),
+            "--candidate-commit",
+            expected,
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert wrong.returncode == 0, wrong.stderr
+    assert "| UAT-006 | Not run |" in wrong.stdout
+
+    record["candidate_commit"] = expected
+    (evidence_dir / "result.json").write_text(json.dumps(record), encoding="utf-8")
+    matching = subprocess.run(
+        [
+            "python3",
+            str(GENERATOR),
+            "--evidence-dir",
+            str(evidence_dir),
+            "--candidate-commit",
+            expected,
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert matching.returncode == 0, matching.stderr
+    assert "| UAT-006 | Passed |" in matching.stdout
+
+
+def _assert_missing_candidate_is_rejected(tmp_path: Path) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir(parents=True)
+    record = _result("UAT-006")
+    record.pop("candidate_version")
+    (evidence_dir / "unbound.json").write_text(json.dumps(record), encoding="utf-8")
+
+    result = subprocess.run(
+        ["python3", str(GENERATOR), "--evidence-dir", str(evidence_dir)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "missing candidate_version" in result.stderr
 
 
 @pytest.mark.parametrize(

@@ -3295,8 +3295,8 @@ async def test_command_model_refresh_picks_discovered_model(tmp_path, monkeypatc
         if provider.type is ProviderType.OLLAMA:
             return RemoteModelCatalog(
                 (
-                    RemoteModelRecord("qwen3-coder:30b"),
-                    RemoteModelRecord("llama3:8b"),
+                    RemoteModelRecord("qwen3-coder:30b", supports_tools=True),
+                    RemoteModelRecord("llama3:8b", supports_tools=False),
                 ),
                 "live local fixture",
                 "local-scope",
@@ -3313,6 +3313,7 @@ async def test_command_model_refresh_picks_discovered_model(tmp_path, monkeypatc
             if app._menu_future is not None and app._menu_options:
                 break
         assert app._menu_options[0][1] == "ollama/qwen3-coder:30b"
+        assert all(option[1] != "ollama/llama3:8b" for option in app._menu_options)
         app._menu_future.set_result(app._menu_options[0][1])
         await task
 

@@ -109,7 +109,9 @@ device login, billing-mode mismatch, stale catalogs, proxy/CA, and permissions.
   without echo and stored in the OS keychain or permission-restricted fallback;
   config stores only a reference.
 - **Ollama or LM Studio:** choose “Use a local model.” Healthy endpoints and models
-  are discovered before any cloud-key prompt.
+  are discovered before any cloud-key prompt. For Ollama, the standard picker also
+  verifies `/api/show` reports the `tools` capability; completion-only models are
+  shown as incompatible instead of allowing setup to false-succeed.
 - **Advanced providers:** choose Advanced only when you need Anthropic, OpenRouter,
   OpenAI-compatible endpoints, custom routing, or the broader provider registry.
 

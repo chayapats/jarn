@@ -37,6 +37,7 @@ def _setup_snapshot(
                 ref=f"{provider}/{model}",
                 display_name=model,
                 account_available=True if verified else None,
+                supports_tools=(True if provider == "ollama" and verified else None),
             )
             for model in models
         ),

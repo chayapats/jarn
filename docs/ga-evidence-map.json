@@ -204,7 +204,7 @@
     "GATE-RELEASE": {
       "implementation": ["docs/GOAL_GENERAL_AVAILABILITY.md section R", ".github/workflows/release.yml"],
       "automated_tests": ["All mapped automated and manual evidence"],
-      "commands": ["python3 scripts/ga_evidence.py --evidence-dir artifacts/ga-evidence --strict --output artifacts/GA_RELEASE_EVIDENCE.md"],
+      "commands": ["python3 scripts/ga_evidence.py --evidence-dir artifacts/ga-evidence --candidate-version VERSION --candidate-commit FULL_TAGGED_COMMIT_SHA --strict --output artifacts/GA_RELEASE_EVIDENCE.md"],
       "limitations": ["This aggregate gate cannot pass while any underlying criterion is not Passed."]
     },
     "CONSTRAINT-IMPLEMENTATION": {
@@ -227,13 +227,13 @@
     "DELIVERABLES-GA": {
       "implementation": ["docs/GOAL_GENERAL_AVAILABILITY.md section V"],
       "automated_tests": ["full repository test suite and all UAT artifacts"],
-      "commands": ["python3 scripts/ga_evidence.py --evidence-dir artifacts/ga-evidence --strict"],
+      "commands": ["python3 scripts/ga_evidence.py --evidence-dir artifacts/ga-evidence --candidate-version VERSION --candidate-commit FULL_TAGGED_COMMIT_SHA --strict"],
       "limitations": ["Aggregate of all thirteen required deliverables; a file existing is not proof that it is complete."]
     },
     "COMPLETION-W": {
       "implementation": ["docs/GOAL_GENERAL_AVAILABILITY.md section W"],
       "automated_tests": ["all automated, published-canary, and manual UAT evidence"],
-      "commands": ["python3 scripts/ga_evidence.py --evidence-dir artifacts/ga-evidence --strict"],
+      "commands": ["python3 scripts/ga_evidence.py --evidence-dir artifacts/ga-evidence --candidate-version VERSION --candidate-commit FULL_TAGGED_COMMIT_SHA --strict"],
       "limitations": ["Must remain not Passed until no required work remains."]
     }
   }

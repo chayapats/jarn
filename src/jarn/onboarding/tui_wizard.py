@@ -548,7 +548,9 @@ class SetupApp(App):
             return
 
         endpoint = self.answers.get("base_url") or PROVIDER_BASE_URLS.get(prov, "")
-        if profile_needs_base_url(prov):
+        if snapshot.availability_verified:
+            notice = setup_catalog_status(snapshot)
+        elif profile_needs_base_url(prov):
             notice = (
                 f"couldn't reach or verify the catalog at {endpoint} — "
                 f"{setup_catalog_status(snapshot)}"

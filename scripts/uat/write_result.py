@@ -12,9 +12,16 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parents[2]
 _SECRET_PATTERNS = (
     re.compile(r"\b(?:sk|sess|key)-[A-Za-z0-9._-]{8,}"),
     re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}"),
+)
+_CANDIDATE_VERSION_PATTERN = re.compile(r"^[0-9][0-9A-Za-z.!+_-]*$")
+_CANDIDATE_COMMIT_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_PROJECT_VERSION_PATTERN = re.compile(
+    r'^version\s*=\s*"([^"]+)"\s*$',
+    re.MULTILINE,
 )
 
 
@@ -38,6 +45,20 @@ def _redact(value: str, *, home: str = "", host: str = "") -> str:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--candidate-version",
+        help=(
+            "Exact candidate version; defaults to JARN_UAT_CANDIDATE_VERSION "
+            "or the repository pyproject.toml"
+        ),
+    )
+    parser.add_argument(
+        "--candidate-commit",
+        help=(
+            "Optional full candidate Git commit; defaults to "
+            "JARN_UAT_CANDIDATE_COMMIT when set"
+        ),
+    )
     identity = parser.add_mutually_exclusive_group(required=True)
     identity.add_argument("--uat-id")
     identity.add_argument("--record-id")
@@ -70,6 +91,36 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _candidate_version(explicit: str | None) -> str:
+    value = explicit or os.environ.get("JARN_UAT_CANDIDATE_VERSION")
+    if value is None:
+        try:
+            project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        except OSError as exc:
+            raise SystemExit(
+                f"error: cannot derive candidate version from pyproject.toml: {exc}"
+            ) from exc
+        match = _PROJECT_VERSION_PATTERN.search(project)
+        if match is None:
+            raise SystemExit("error: cannot derive candidate version from pyproject.toml")
+        value = match.group(1)
+    if _CANDIDATE_VERSION_PATTERN.fullmatch(value) is None:
+        raise SystemExit("error: invalid candidate version")
+    return value
+
+
+def _candidate_commit(explicit: str | None) -> str | None:
+    value = explicit or os.environ.get("JARN_UAT_CANDIDATE_COMMIT")
+    if value is None or value == "":
+        return None
+    normalized = value.lower()
+    if _CANDIDATE_COMMIT_PATTERN.fullmatch(normalized) is None:
+        raise SystemExit(
+            "error: candidate commit must be a full 40- or 64-character hexadecimal ID"
+        )
+    return normalized
+
+
 def _redacted_list(values: list[str], args: argparse.Namespace) -> list[str]:
     return [_redact(value, home=args.redact_home, host=args.redact_host) for value in values]
 
@@ -78,8 +129,9 @@ def build_result(args: argparse.Namespace) -> dict[str, Any]:
     record_id = args.record_id or args.uat_id
     criterion_ids = args.criterion_id or ([args.uat_id] if args.uat_id else [])
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "record_id": record_id,
+        "candidate_version": _candidate_version(args.candidate_version),
         "criterion_ids": criterion_ids,
         "status": args.status,
         "started_at": args.started_at,
@@ -107,6 +159,9 @@ def build_result(args: argparse.Namespace) -> dict[str, Any]:
             "home_path_redacted": bool(args.redact_home),
         },
     }
+    candidate_commit = _candidate_commit(args.candidate_commit)
+    if candidate_commit is not None:
+        result["candidate_commit"] = candidate_commit
     if args.uat_id:
         result["uat_id"] = args.uat_id
     return result

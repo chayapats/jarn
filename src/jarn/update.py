@@ -55,10 +55,26 @@ _CANARY_SOURCE_ENVS = {
     "raw_base": "JARN_UPDATE_CANARY_RAW_BASE",
     "download_base": "JARN_UPDATE_CANARY_DOWNLOAD_BASE",
 }
+_PYINSTALLER_RESET_ENV = "PYINSTALLER_RESET_ENVIRONMENT"
 
 
 class UpdateError(RuntimeError):
     """An update or rollback could not be safely completed."""
+
+
+def _independent_executable_env() -> dict[str, str]:
+    """Start managed executables as independent frozen applications.
+
+    A PyInstaller one-file process records its archive by path.  Update and
+    rollback intentionally replace the executable at that same path, so a
+    post-activation smoke child must not reuse the running parent's extraction
+    directory for the now-different archive.  PyInstaller's public reset flag
+    makes the child unpack and own a fresh runtime; non-frozen commands ignore
+    it.
+    """
+    env = os.environ.copy()
+    env[_PYINSTALLER_RESET_ENV] = "1"
+    return env
 
 
 @dataclass(frozen=True)
@@ -906,7 +922,10 @@ def run_update(
                 "The current executable remains available until the candidate passes verification."
             )
         try:
-            runner_kwargs: dict[str, Any] = {"check": False}
+            runner_kwargs: dict[str, Any] = {
+                "check": False,
+                "env": _independent_executable_env(),
+            }
             # A machine-readable command must emit exactly one JSON document;
             # keep the installer's human stage log out of stdout in this mode.
             if as_json:
@@ -978,6 +997,7 @@ def _smoke(path: Path) -> tuple[bool, str]:
             result = subprocess.run(
                 [str(path), *args],
                 capture_output=True,
+                env=_independent_executable_env(),
                 text=True,
                 timeout=10,
                 check=False,
@@ -1150,6 +1170,7 @@ def _version_from_command(path: Path) -> str | None:
             [str(path), "--version"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
+            env=_independent_executable_env(),
             text=True,
             timeout=10,
             check=False,

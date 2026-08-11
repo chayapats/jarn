@@ -1017,9 +1017,28 @@ jobs:
           PY
           )
 
-          "$active" rollback --json > "$work/rollback.json"
+          run_rollback_stage() {
+            rollback_label=$1
+            rollback_command=$2
+            rollback_output=$3
+            rollback_error="$rollback_output.stderr"
+            set +e
+            "$rollback_command" rollback --json > "$rollback_output" 2> "$rollback_error"
+            rollback_status=$?
+            set -e
+            if [ "$rollback_status" -ne 0 ]; then
+              printf 'upgrade canary: %s failed (exit %s)\n' \
+                "$rollback_label" "$rollback_status" >&2
+              sed -n '1,200p' "$rollback_output" "$rollback_error" >&2
+              exit 1
+            fi
+          }
+
+          run_rollback_stage "first rollback to $PRIOR_VERSION" \
+            "$active" "$work/rollback.json"
           test "$("$active" --version)" = "jarn $PRIOR_VERSION"
-          "$retained" rollback --json > "$work/roll-forward.json"
+          run_rollback_stage "forward rollback to ${CURRENT_VERSION#v}" \
+            "$retained" "$work/roll-forward.json"
           test "$("$active" --version)" = "jarn ${CURRENT_VERSION#v}"
 
           node_before=$(command -v node || true)

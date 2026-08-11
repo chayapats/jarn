@@ -1,8 +1,11 @@
 {
+  "candidate_version": "1.0.3",
   "automated_tests": [
-    "tests/ full collection"
+    "tests full collection",
+    "tests/test_packaging.py",
+    "tests/test_ci.py"
   ],
-  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q (outside the restricted socket/network sandbox)",
+  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q in loopback-enabled environment; plus Ruff, mypy, pip-audit, packaging and reproducible-build gates",
   "criterion_ids": [
     "TEST-AUTH",
     "TEST-MODEL",
@@ -11,18 +14,21 @@
     "TEST-SECURITY"
   ],
   "decisions": [
-    "The exact v1.0.2 candidate completed one clean full run with loopback and package-build network access enabled.",
-    "Catalog tests use per-test cache roots and cannot read the operator's real catalog cache or live Ollama state."
+    "Exact candidate v1.0.3 full suite passed with loopback access enabled for OAuth and local integration fixtures.",
+    "Ruff passed all src/tests/scripts; mypy passed 177 source files; pip-audit 2.9.0 found no known vulnerabilities.",
+    "Two independent builds were byte-identical: wheel SHA-256 f732f7839649c5c5a993d149c8c8381a2b38c4563c8a3ca38e3adfa142163b4d; sdist SHA-256 c60a7b307e91e37425a3f2d23c1e1c8d7fd6cc3ed6824298c6777061df330093.",
+    "Clean Python 3.12 wheel install reported jarn 1.0.3; offline help and schema-v1 doctor JSON were parseable and bounded.",
+    "Catalog tests use per-test cache roots and cannot read the operator real catalog cache; the separate UAT records live Ollama observations."
   ],
   "documentation_lookups": [],
-  "duration_seconds": 299.05,
-  "ended_at": "2026-08-11T17:34:11Z",
+  "duration_seconds": 302.45,
+  "ended_at": "2026-08-11T19:45:21Z",
   "errors": [],
   "implementation": [
     "src/jarn"
   ],
   "limitations": [
-    "No live provider account, published artifact, or Tier-1 remote platform is inferred from this local automated result."
+    "No live cloud-provider account, published artifact, or Tier-1 remote platform is inferred from this local automated result."
   ],
   "platform": {
     "architecture": "arm64",
@@ -30,7 +36,7 @@
     "os": "macOS",
     "version": "26.5.2"
   },
-  "record_id": "LOCAL-FULL-20260811-V102",
+  "record_id": "LOCAL-FULL-20260811-V103",
   "redaction": {
     "home_path_redacted": false,
     "host_identifier_redacted": false,
@@ -38,8 +44,8 @@
     "raw_terminal_output_persisted": false,
     "secrets_allowed": false
   },
-  "result": "All 3032 collected tests on the exact v1.0.2 candidate are accounted for in one run: 3023 passed and 9 intentional platform/fixture skips, with no failures or errors; the only warning was the intentional unresolved mcp.example fixture hostname.",
-  "schema_version": 1,
-  "started_at": "2026-08-11T17:29:12Z",
+  "result": "All 3039 collected tests on candidate v1.0.3 are accounted for in one clean run: 3038 passed and 1 intentional platform fixture skip, with zero failures or errors; the only warning was the intentional unresolved mcp.example fixture hostname.",
+  "schema_version": 2,
+  "started_at": "2026-08-11T19:40:18Z",
   "status": "passed"
 }

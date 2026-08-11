@@ -58,6 +58,7 @@ class ModelCatalogEntry:
     default_reasoning_effort: str | None = None
     supported_reasoning_efforts: tuple[ReasoningEffort, ...] = ()
     input_modalities: tuple[str, ...] = ()
+    supports_tools: bool | None = None
     supports_personality: bool | None = None
     preview: bool = False
     deprecated: bool = False
@@ -83,6 +84,7 @@ class ModelCatalogEntry:
                 effort.to_dict() for effort in self.supported_reasoning_efforts
             ],
             "input_modalities": list(self.input_modalities),
+            "supports_tools": self.supports_tools,
             "supports_personality": self.supports_personality,
             "preview": self.preview,
             "deprecated": self.deprecated,
@@ -118,6 +120,9 @@ class ModelCatalogEntry:
         personality = raw.get("supports_personality")
         if personality is not None and not isinstance(personality, bool):
             raise ValueError("cached personality support must be boolean or null")
+        supports_tools = raw.get("supports_tools")
+        if supports_tools is not None and not isinstance(supports_tools, bool):
+            raise ValueError("cached tool support must be boolean or null")
 
         def optional_text(key: str) -> str | None:
             value = raw.get(key)
@@ -138,6 +143,7 @@ class ModelCatalogEntry:
                 ReasoningEffort.from_dict(item) for item in efforts_raw
             ),
             input_modalities=tuple(modalities),
+            supports_tools=supports_tools,
             supports_personality=personality,
             preview=bool(raw.get("preview", False)),
             deprecated=bool(raw.get("deprecated", False)),
