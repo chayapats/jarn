@@ -19,6 +19,28 @@ jobs:
           python-version: "3.12"
           save-cache: false
       - run: uv sync --extra dev --extra telegram
+      - name: Verify tag and package versions match
+        run: |
+          uv run python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          if not tag.startswith("v"):
+              raise SystemExit(f"release ref must start with v: {tag!r}")
+          tag_version = tag[1:]
+          project_version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          scope: dict[str, str] = {}
+          exec(Path("src/jarn/version.py").read_text(), scope)
+          source_version = scope["__version__"]
+          if len({tag_version, project_version, source_version}) != 1:
+              raise SystemExit(
+                  "release version mismatch: "
+                  f"tag={tag_version}, project={project_version}, source={source_version}"
+              )
+          print(f"Release version verified: {tag_version}")
+          PY
       - run: uv run ruff check src tests scripts
       - run: uv run mypy src/
       - run: uv run pytest -q

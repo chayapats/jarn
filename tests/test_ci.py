@@ -196,6 +196,10 @@ def test_release_publish_jobs_need_preflight() -> None:
 def test_release_preflight_runs_ci_gates() -> None:
     run_lines = _run_lines(RELEASE_YML, "preflight")
     joined = "\n".join(run_lines)
+    assert 'os.environ["GITHUB_REF_NAME"]' in joined
+    assert 'Path("pyproject.toml")' in joined
+    assert 'Path("src/jarn/version.py")' in joined
+    assert "release version mismatch" in joined
     assert "ruff check src tests scripts" in joined
     assert "mypy src/" in joined
     assert "pytest -q" in joined

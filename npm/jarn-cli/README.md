@@ -51,6 +51,6 @@ binary). On any unsupported host the `jarn` command prints these instructions.
 - Changelog: <https://github.com/chayapats/jarn/blob/main/CHANGELOG.md>
 - License: Apache-2.0
 
-The source line is the **v1.0.0 GA candidate**; v0.11.0 remains public until the
-protected release workflow promotes the exact GitHub Release binaries, PyPI package,
-and npm packages in lockstep.
+The source line targets **v1.0.1 GA**. The protected release workflow promotes the
+exact GitHub Release binaries, PyPI package, and npm packages in lockstep; consult
+those registries for the currently published version.

@@ -36,10 +36,9 @@ agents), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcrip
 base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists to
 `~/.jarn/config.yaml`), and per-server **MCP health** (`/mcp status`).
 
-> **Status:** this source is the v1.0.0 General Availability candidate. Its workflow
-> keeps the release draft until every automated gate, protected UAT, and strict
-> evidence row passes; until promotion, v0.11.0 (Alpha) remains the latest public
-> package on PyPI and npm. v0.10 adds an optional
+> **Status:** this source line targets v1.0.1 General Availability. Publication is
+> controlled by automated gates, protected UAT, and strict evidence; consult the
+> GitHub Releases, PyPI, and npm pages for the currently published version. v0.10 adds an optional
 > **single-operator Telegram gateway**: long-poll DM control, isolated per-root
 > workers, durable approval cards, inbound media, scheduling, and VPS/systemd
 > deployment. Earlier releases landed **engine reliability**; **UX parity with Claude Code** (live
@@ -605,7 +604,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                 # 3030 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 3031 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

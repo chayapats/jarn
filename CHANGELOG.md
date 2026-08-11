@@ -5,6 +5,14 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-08-11
+
+### Security
+
+- Require `langgraph-checkpoint-sqlite>=3.1.1`, which contains the fix for
+  `PYSEC-2026-3636`. The v1.0.0 tag failed the pre-publication dependency-audit
+  gate; no v1.0.0 GitHub Release, PyPI package, or npm package was promoted.
+
 ## [1.0.0] - 2026-08-11
 
 ### Added
@@ -1370,6 +1378,7 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Windows: use WSL; native Windows terminal is unsupported
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
+[1.0.1]: https://github.com/chayapats/jarn/releases/tag/v1.0.1
 [1.0.0]: https://github.com/chayapats/jarn/releases/tag/v1.0.0
 [0.11.0]: https://github.com/chayapats/jarn/releases/tag/v0.11.0
 [0.5.0]: https://github.com/chayapats/jarn/releases/tag/v0.5.0

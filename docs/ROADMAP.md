@@ -4,8 +4,8 @@
 > choosing where to contribute. Items marked `[x]` are implemented and in the
 > current release; `[ ]` items are scaffolded or documented but not yet shipped.
 
-Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-11** (the source is the
-v1.0.0 GA candidate; v0.11.0 remains the latest public Alpha until promotion).
+Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-11** (this source line
+targets v1.0.1 GA; consult the release and package registries for publication status).
 
 ## v1 — implemented
 
@@ -151,7 +151,8 @@ multi-agent review. See the design spec under `docs/superpowers/specs/`.
 - [x] **Quality floor (M3)** — `scripts/eval.py` smoke-eval harness + fixtures (CI-safe offline logic)
 - [x] **Release UX (M4)** — `/mcp status`, in-REPL `/trust` + untrusted-launch notice; security
   audit fixes (Docker cancel/reaper, web_fetch SSRF, eval-checker guard, transcript redaction)
-- Stays **Alpha**; v1.0.0 pending the road-to-1.0 hardening (see Known limitations).
+- Historical v0.x line remained **Alpha**; v1.0.1 targets the completed GA hardening
+  contract (see Known limitations for constraints that still apply).
 
 ## v0.2.0 — released
 

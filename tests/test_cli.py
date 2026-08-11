@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import stat
@@ -74,6 +75,20 @@ def test_sessions_cli_lists_exports_and_deletes_one_session(tmp_path, monkeypatc
     assert main(["sessions", "delete", "thread-1", "--yes"]) == 0
     assert SessionIndex().get("thread-1") is None
     assert not transcript.exists()
+
+
+def test_cli_disables_ambiguous_long_option_abbreviations() -> None:
+    from jarn.cli import build_parser
+
+    parser = build_parser()
+    assert parser.allow_abbrev is False
+
+    subparsers = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    assert all(child.allow_abbrev is False for child in subparsers.choices.values())
 
 
 def test_sessions_cli_failures_use_stable_anatomy(tmp_path, monkeypatch, capsys):

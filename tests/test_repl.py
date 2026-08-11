@@ -3308,8 +3308,8 @@ async def test_command_model_refresh_picks_discovered_model(tmp_path, monkeypatc
     task = asyncio.create_task(app._command("model", "refresh"))
     try:
         # Wait until the picker registers its options, then select the first model.
-        for _ in range(50):
-            await asyncio.sleep(0)
+        for _ in range(200):
+            await asyncio.sleep(0.01)
             if app._menu_future is not None and app._menu_options:
                 break
         assert app._menu_options[0][1] == "ollama/qwen3-coder:30b"

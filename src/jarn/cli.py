@@ -35,6 +35,15 @@ from jarn.version import __version__
 class JarnArgumentParser(argparse.ArgumentParser):
     """Argparse with the same stable error anatomy as runtime failures."""
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        # Abbreviated long options are ambiguous across parser/subparser
+        # boundaries and have changed behaviour between Python patch releases.
+        # Require the documented spelling so e.g. ``sessions export --output``
+        # can never be consumed as top-level ``--output-format`` or
+        # ``--output-schema`` before the sessions parser sees it.
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
+
     def error(self, message: str) -> Never:
         from jarn.errors import ErrorCode, error_detail
 

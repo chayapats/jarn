@@ -23,10 +23,9 @@ J.A.R.N. คือ terminal coding agent ที่ออกแบบในแน
 
 รันทั้งหมดใน terminal ของคุณ (Web UI อยู่ใน roadmap หลัง launch) ความสามารถเด่นได้แก่: **AGENTS.md / CLAUDE.md interop** (ทำงานร่วมกับ agent อื่นได้ทันที), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcript**, **`!` shell escape** (output ถูกส่งเข้า context ของ agent turn ถัดไปโดยอัตโนมัติ), **OS-level execution sandbox** (macOS `sandbox-exec` / Linux `bwrap`) และ **Docker container backend** (`execution.backend: docker`), **presets** (`/preset`, `jarn --preset`) ที่ตั้ง mode + sandbox พร้อมกันในคำสั่งเดียวพร้อม untrusted floor, **auto-checkpoint + `/undo` / `/redo`**, **repo map** (`/map`), **wiki knowledge base** (`/wiki`), **`/config` settings panel** (UI แบบ tab โต้ตอบได้ เซฟลง `~/.jarn/config.yaml`), และ **MCP health** ราย server (`/mcp status`)
 
-> **สถานะ:** โค้ดบน `main` เป็น GA candidate ที่ยังไม่ publish ส่วนแพ็กเกจล่าสุด
-> source ชุดนี้คือ candidate v1.0.0; workflow จะเก็บ release เป็น draft จน automated
-> gate, protected UAT และ strict evidence ผ่านครบ ระหว่างนั้น v0.11.0 บน PyPI/npm
-> ยังเป็น Alpha และยังไม่ใช่ GA artifact
+> **สถานะ:** source ชุดนี้มุ่งสู่ v1.0.1 General Availability การ publish ถูกควบคุม
+> ด้วย automated gates, protected UAT และ strict evidence; โปรดดู GitHub Releases,
+> PyPI และ npm เพื่อยืนยันรุ่นที่ publish อยู่ในปัจจุบัน
 > ตามเอกสารชุดนี้ v0.10 เพิ่ม
 > **Telegram gateway สำหรับ operator คนเดียว**: ควบคุมผ่าน DM แบบ long-poll,
 > แยก worker ตาม project root, approval card ที่คงอยู่หลัง restart, รับไฟล์/รูป,
@@ -393,7 +392,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                 # 3030 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 3031 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)

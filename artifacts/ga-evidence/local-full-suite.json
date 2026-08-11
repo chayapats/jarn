@@ -11,12 +11,12 @@
     "TEST-SECURITY"
   ],
   "decisions": [
-    "The exact v1.0.0 candidate completed one clean full run with loopback and package-build network access enabled.",
+    "The exact v1.0.1 candidate completed one clean full run with loopback and package-build network access enabled.",
     "Catalog tests use per-test cache roots and cannot read the operator's real catalog cache or live Ollama state."
   ],
   "documentation_lookups": [],
-  "duration_seconds": 323.41,
-  "ended_at": "2026-08-11T16:11:43Z",
+  "duration_seconds": 314.87,
+  "ended_at": "2026-08-11T16:53:34Z",
   "errors": [],
   "implementation": [
     "src/jarn"
@@ -30,7 +30,7 @@
     "os": "macOS",
     "version": "26.5.2"
   },
-  "record_id": "LOCAL-FULL-20260811",
+  "record_id": "LOCAL-FULL-20260811-V101",
   "redaction": {
     "home_path_redacted": false,
     "host_identifier_redacted": false,
@@ -38,8 +38,8 @@
     "raw_terminal_output_persisted": false,
     "secrets_allowed": false
   },
-  "result": "All 3030 collected tests on the exact v1.0.0 candidate are accounted for in one run: 3021 passed and 9 intentional platform/fixture skips, with no failures or errors.",
+  "result": "All 3031 collected tests on the exact v1.0.1 candidate are accounted for in one run: 3022 passed and 9 intentional platform/fixture skips, with no failures or errors; the only warning was the intentional unresolved mcp.example fixture hostname.",
   "schema_version": 1,
-  "started_at": "2026-08-11T16:06:20Z",
+  "started_at": "2026-08-11T16:48:19Z",
   "status": "passed"
 }
