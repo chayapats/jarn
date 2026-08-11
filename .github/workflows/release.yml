@@ -451,8 +451,15 @@ jobs:
     name: Draft artifact + glibc/npm-shadow canary
     needs: release_assets
     runs-on: ubuntu-22.04
+    # GitHub hides draft releases from tokens without push-level repository
+    # access.  This job only performs `gh release view/download`; write scope is
+    # nevertheless required for those authenticated draft reads.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
@@ -475,6 +482,8 @@ jobs:
             gh release download "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" \
               --dir canary --pattern "$asset"
           done
+          # Do not expose the push-capable draft-read token to candidate code.
+          unset GH_TOKEN
           python3 - <<'PY'
           import hashlib
           from pathlib import Path
@@ -747,10 +756,13 @@ jobs:
           export JARN_CANARY_UV_BIN="$(command -v uv)"
           scripts/release_lifecycle_canary.sh
 
-  # Resolve two usable, already-published stable versions. Fewer than two is a
-  # hard release blocker rather than a skipped migration matrix.
+  # Resolve up to two usable, already-published stable versions.  The first GA
+  # bootstrap has only v0.11.0 with both a checksum manifest and Linux binary;
+  # older releases predate the checksum contract and none shipped install.sh as
+  # a release asset.  At least one real immutable predecessor remains a hard
+  # requirement, and future releases exercise the newest two when available.
   release_history:
-    name: Resolve two prior releases
+    name: Resolve compatible prior releases
     needs: release_assets
     runs-on: ubuntu-latest
     outputs:
@@ -776,28 +788,36 @@ jobs:
                   continue
               if not re.fullmatch(r"v[0-9A-Za-z._-]+", tag):
                   continue
-              if {"jarn-linux-x86_64", "checksums.txt", "install.sh"}.issubset(assets):
+              if {"jarn-linux-x86_64", "checksums.txt"}.issubset(assets):
                   selected.append(tag[1:])
               if len(selected) == 2:
                   break
-          if len(selected) != 2:
+          if not selected:
               raise SystemExit(
-                  "release gate requires two prior stable releases with binary/checksum/installer assets"
+                  "release gate requires at least one prior stable release with binary/checksum assets"
               )
           print(json.dumps(selected, separators=(",", ":")))
           PY
           )
           printf 'versions=%s\n' "$versions" >> "$GITHUB_OUTPUT"
 
-  # Each matrix leg starts with that release's historical installer and state,
-  # then invokes the current candidate's real `jarn update` command against an
-  # authenticated-draft fixture before rollback/uninstall/reinstall checks.
+  # Each matrix leg verifies and installs the real historical binary in a
+  # controlled legacy receipt fixture, then invokes the current candidate's
+  # real `jarn update` command against an authenticated-draft fixture before
+  # rollback/uninstall/reinstall checks.  This bootstrap is necessary because
+  # releases through v0.11.0 did not publish install.sh as a release asset.
   upgrade_canary:
     name: Upgrade lifecycle from ${{ matrix.prior }}
     needs: [release_assets, release_history]
-    runs-on: ubuntu-22.04
+    # v0.11.0's immutable Linux binary requires glibc 2.38, so it cannot be
+    # executed on the Ubuntu 22.04 regression runner.  Ubuntu 24.04 can execute
+    # that real predecessor; oldest-runtime coverage remains in the independent
+    # Tier-1 and draft-binary canaries.
+    runs-on: ubuntu-24.04
+    # As above, draft view/download requires push-level visibility even though
+    # every command in this job is read-only with respect to GitHub.
     permissions:
-      contents: read
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -810,7 +830,7 @@ jobs:
           PRIOR_VERSION: ${{ matrix.prior }}
         run: |
           set -euo pipefail
-          test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.35"
+          test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.39"
           work=$(mktemp -d)
           server_pid=""
           cleanup_upgrade() {
@@ -835,7 +855,7 @@ jobs:
           download_assets "$CURRENT_VERSION" "$current_dir" \
             checksums.txt install.sh jarn-linux-x86_64
           download_assets "v$PRIOR_VERSION" "$prior_dir" \
-            checksums.txt install.sh jarn-linux-x86_64
+            checksums.txt jarn-linux-x86_64
           # Draft authentication is no longer needed beyond this point; the
           # updater receives only credential-free loopback fixture URLs.
           unset GH_TOKEN
@@ -845,44 +865,68 @@ jobs:
           import os
           from pathlib import Path
 
-          for variable in ("CURRENT_ROOT", "PRIOR_ROOT"):
+          required = {
+              "CURRENT_ROOT": ("install.sh", "jarn-linux-x86_64"),
+              "PRIOR_ROOT": ("jarn-linux-x86_64",),
+          }
+          for variable, names in required.items():
               root = Path(os.environ[variable])
               rows: dict[str, list[str]] = {}
               for line in (root / "checksums.txt").read_text().splitlines():
                   digest, marked_name = line.split(maxsplit=1)
                   rows.setdefault(marked_name.lstrip("* "), []).append(digest.lower())
-              for name in ("install.sh", "jarn-linux-x86_64"):
+              for name in names:
                   assert len(rows.get(name, [])) == 1, (variable, name, rows.get(name))
                   actual = hashlib.sha256((root / name).read_bytes()).hexdigest()
                   assert actual == rows[name][0], (variable, name)
           PY
           chmod 700 "$current_dir/install.sh" "$current_dir/jarn-linux-x86_64" \
-            "$prior_dir/install.sh" "$prior_dir/jarn-linux-x86_64"
+            "$prior_dir/jarn-linux-x86_64"
           test "$("$current_dir/jarn-linux-x86_64" --version)" = "jarn ${CURRENT_VERSION#v}"
           test "$("$prior_dir/jarn-linux-x86_64" --version)" = "jarn $PRIOR_VERSION"
-          prior_fixture="$work/prior-origin/$GITHUB_REPOSITORY/releases/download/v$PRIOR_VERSION"
-          mkdir -p "$prior_fixture"
-          cp "$prior_dir/checksums.txt" "$prior_dir/jarn-linux-x86_64" "$prior_fixture/"
 
           export HOME="$work/home"
           export PATH="$HOME/.local/bin:/usr/bin:/bin"
           export SHELL=/bin/bash
           export JARN_GITHUB_REPO="$GITHUB_REPOSITORY"
           export JARN_RUN_SETUP=never
-          mkdir -p "$HOME"
-          run_historical_install() {
-            set +e
-            JARN_GITHUB_BASE="file://$work/prior-origin" \
-              sh "$prior_dir/install.sh" --version "$PRIOR_VERSION" \
-                --method binary --no-setup --yes
-            rc=$?
-            set -e
-            [ "$rc" -eq 10 ]
-          }
-
-          run_historical_install
+          mkdir -p "$HOME/.local/bin" "$HOME/.local/state/jarn"
           active="$HOME/.local/bin/jarn"
           manifest="$HOME/.local/state/jarn/install.json"
+          # Controlled bootstrap adoption: use the checksum-verified historical
+          # executable, but the current schema-1 ownership receipt.  No legacy
+          # release published the current installer/receipt format.
+          cp "$prior_dir/jarn-linux-x86_64" "$active"
+          chmod 700 "$active"
+          ACTIVE="$active" MANIFEST="$manifest" PRIOR="$PRIOR_VERSION" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          active = Path(os.environ["ACTIVE"])
+          manifest = Path(os.environ["MANIFEST"])
+          record = {
+              "schema_version": 1,
+              "version": os.environ["PRIOR"],
+              "method": "binary",
+              "channel": "stable",
+              "active_path": str(active),
+              "candidate_path": str(active),
+              "previous_path": None,
+              "state_dir": str(manifest.parent),
+              "platform": {
+                  "os": "linux",
+                  "architecture": "x86_64",
+                  "libc": "glibc",
+                  "libc_version": "2.39",
+              },
+              "dependency": {"uv_owned_by_jarn": False},
+              "activation": {"status": "active"},
+              "setup_status": "skipped",
+              "installed_at": "2026-08-11T00:00:00Z",
+          }
+          manifest.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+          PY
           test "$("$active" --version)" = "jarn $PRIOR_VERSION"
           MANIFEST="$manifest" PRIOR="$PRIOR_VERSION" python3 - <<'PY'
           import json

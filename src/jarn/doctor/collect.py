@@ -72,6 +72,21 @@ def collect_doctor(
             ).to_dict()
         )
 
+    # The installer calls doctor once after atomically activating the command
+    # and receipt.  That ceremony must validate only the installation identity:
+    # loading the user's configuration here would run the normal on-disk schema
+    # migration even when the caller explicitly selected ``--no-setup``.  In
+    # addition to surprising the user, that made an otherwise independent
+    # installer transaction mutate data it could not roll back.  Keep this
+    # private mode deliberately narrow and machine-visible so the installer can
+    # prove the receipt without touching config, credentials, catalogs, or the
+    # network.
+    if os.environ.get("JARN_INSTALL_RECEIPT_VALIDATION") == "1":
+        diag["receipt_validation_only"] = True
+        diag["config_checked"] = False
+        diag["ok"] = not bool(diag.get("errors"))
+        return 0 if diag["ok"] else 1
+
     gpath = paths.global_config_path()
     home = paths.global_home()
     diag["jarn_home"] = str(home)

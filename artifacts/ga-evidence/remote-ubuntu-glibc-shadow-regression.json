@@ -12,14 +12,16 @@
   ],
   "decisions": [
     "The test used an isolated HOME, JARN_HOME, state directory, cache, tool directory, and install directory; the host's existing J.A.R.N. commands and configuration were not changed.",
-    "A real uv absolute launcher symlink exposed a relocation defect that the fake fixture had hidden; prepare_python now installs directly into its unique final version directory and never relocates that tool root."
+    "A real uv absolute launcher symlink exposed a relocation defect that the fake fixture had hidden; prepare_python now installs directly into its unique final version directory and never relocates that tool root.",
+    "The legacy configuration was fingerprinted before installation and remained byte-identical after --no-setup receipt validation."
   ],
   "documentation_lookups": [],
-  "duration_seconds": 10.7,
-  "ended_at": "2026-08-11T16:54:43Z",
+  "duration_seconds": 18.2,
+  "ended_at": "2026-08-11T17:38:13Z",
   "errors": [],
   "implementation": [
     "install.sh",
+    "src/jarn/doctor/collect.py",
     "tests/test_installer.py"
   ],
   "limitations": [
@@ -32,7 +34,7 @@
     "os": "Ubuntu",
     "version": "22.04"
   },
-  "record_id": "REMOTE-UBUNTU-GLIBC-SHADOW-20260811-V101",
+  "record_id": "REMOTE-UBUNTU-GLIBC-SHADOW-20260811-V102",
   "redaction": {
     "home_path_redacted": true,
     "host_identifier_redacted": true,
@@ -40,8 +42,8 @@
     "raw_terminal_output_persisted": false,
     "secrets_allowed": false
   },
-  "result": "Passed on the exact v1.0.1 source/wheel candidate (wheel SHA-256 8ab164532953969e179d014daad847647be7acb010ab145132f99530ed30de40): installer rejected the incompatible release binary, verified its checksum, selected the portable managed-Python path, preserved the real uv absolute launcher target, activated jarn 1.0.1 with exit 10, resolved the new command in a fresh shell, retained the old npm command, produced an actionable receipt whose active path matched doctor inventory, and emitted no Done/Ready false-success text.",
+  "result": "Passed on the exact v1.0.2 source/wheel candidate (wheel SHA-256 c1239b5ed33e1f091b391b557ad3cda25ebcef907ae1147b7ec5165239a095e9): installer rejected the incompatible release binary, verified its checksum, selected the portable managed-Python path, preserved the real uv absolute launcher target, activated jarn 1.0.2 with exit 10, resolved the new command in a fresh shell, retained the old npm command, preserved the existing config byte-for-byte during receipt validation, produced an actionable receipt whose active path matched doctor inventory, and emitted no Done/Ready false-success text.",
   "schema_version": 1,
-  "started_at": "2026-08-11T16:54:32Z",
+  "started_at": "2026-08-11T17:37:55Z",
   "status": "passed"
 }

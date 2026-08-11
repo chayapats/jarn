@@ -136,9 +136,23 @@ SH
 chmod 755 "$lifecycle_home/.local/bin/jarn"
 printf '%s\n' 'default_profile: lifecycle-preserved' >"$lifecycle_home/.jarn/config.yaml"
 printf '%s\n' 'session-preserved' >"$lifecycle_home/.jarn/sessions/canary"
+cp "$lifecycle_home/.jarn/config.yaml" "$work/config.original"
+cp "$lifecycle_home/.jarn/sessions/canary" "$work/session.original"
+
+assert_user_data_preserved() {
+  preservation_stage=$1
+  cmp -s "$work/config.original" "$lifecycle_home/.jarn/config.yaml" || \
+    fail "$preservation_stage changed user config"
+  cmp -s "$work/session.original" "$lifecycle_home/.jarn/sessions/canary" || \
+    fail "$preservation_stage changed session data"
+}
 
 run_installer "$lifecycle_home"
 assert_candidate_install "$lifecycle_home"
+# ``--no-setup`` makes installation and receipt validation strictly independent
+# of user data.  Catch a migration or other write at the stage that caused it,
+# rather than later misreporting it as an uninstall failure.
+assert_user_data_preserved "install"
 active="$lifecycle_home/.local/bin/jarn"
 manifest="$lifecycle_home/.local/state/jarn/install.json"
 previous=$(sed -n 's/.*"previous_path": "\([^"]*\)".*/\1/p' "$manifest" | sed -n '1p')
@@ -166,6 +180,7 @@ if [ "$roll_forward_rc" -ne 0 ]; then
 fi
 [ "$("$active" --version)" = "jarn $JARN_CANARY_VERSION" ] || \
   fail "forward rollback did not restore candidate"
+assert_user_data_preserved "rollback"
 
 set +e
 HOME="$lifecycle_home" PATH="$lifecycle_path" "$active" \
@@ -179,18 +194,12 @@ if [ "$uninstall_rc" -ne 0 ]; then
 fi
 [ ! -e "$active" ] || fail "uninstall retained the active command"
 [ ! -e "$manifest" ] || fail "uninstall retained the install receipt"
-[ "$(cat "$lifecycle_home/.jarn/config.yaml")" = 'default_profile: lifecycle-preserved' ] || \
-  fail "uninstall changed user config"
-[ "$(cat "$lifecycle_home/.jarn/sessions/canary")" = 'session-preserved' ] || \
-  fail "uninstall changed session data"
+assert_user_data_preserved "uninstall"
 
 # Reinstall must remain possible without erasing preserved data.
 run_installer "$lifecycle_home"
 assert_candidate_install "$lifecycle_home"
-[ "$(cat "$lifecycle_home/.jarn/config.yaml")" = 'default_profile: lifecycle-preserved' ] || \
-  fail "reinstall changed user config"
-[ "$(cat "$lifecycle_home/.jarn/sessions/canary")" = 'session-preserved' ] || \
-  fail "reinstall changed session data"
+assert_user_data_preserved "reinstall"
 
 printf 'release lifecycle canary passed: %s/%s (%s)\n' \
   "$(uname -s)" "$(uname -m)" "$JARN_CANARY_EXPECT_METHOD"

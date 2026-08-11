@@ -462,8 +462,14 @@ def test_release_canary_fetches_authenticated_draft_before_promotion() -> None:
     canary = workflow["jobs"]["draft_canary"]
     assert _needs(workflow, "draft_canary") == {"release_assets"}
     assert canary["runs-on"] == "ubuntu-22.04"
+    assert canary["permissions"] == {"contents": "write"}
+    checkout = next(step for step in canary["steps"] if "actions/checkout" in step.get("uses", ""))
+    assert checkout["with"]["persist-credentials"] is False
     joined = "\n".join(_run_lines(RELEASE_YML, "draft_canary"))
     assert "gh release download" in joined
+    assert joined.index("unset GH_TOKEN") < joined.index("canary/jarn-linux-x86_64 --version")
+    for mutation in ("gh release create", "gh release edit", "gh release upload", "gh release delete"):
+        assert mutation not in joined
     assert "--json isDraft" in joined
     assert 'test "$state" = true' in joined
     assert "file://$GITHUB_WORKSPACE/canary/draft-origin" in joined
@@ -850,31 +856,40 @@ fi
         assert executed.exists()
 
 
-def test_release_requires_two_prior_upgrade_lifecycles_with_preserved_data() -> None:
+def test_release_bootstraps_real_prior_upgrade_lifecycles_with_preserved_data() -> None:
     workflow = yaml.safe_load(RELEASE_YML.read_text())
     history = "\n".join(_run_lines(RELEASE_YML, "release_history"))
     assert "len(selected) == 2" in history
-    assert "len(selected) != 2" in history
-    assert (
-        '{"jarn-linux-x86_64", "checksums.txt", "install.sh"}.issubset(assets)'
-        in history
-    )
+    assert "if not selected" in history
+    assert '{"jarn-linux-x86_64", "checksums.txt"}.issubset(assets)' in history
+    assert "at least one prior stable release" in history
 
     upgrade = workflow["jobs"]["upgrade_canary"]
     assert {"release_assets", "release_history"} == _needs(workflow, "upgrade_canary")
+    assert upgrade["runs-on"] == "ubuntu-24.04"
+    assert upgrade["permissions"] == {"contents": "write"}
     assert "fromJSON(needs.release_history.outputs.versions)" in str(
         upgrade["strategy"]["matrix"]["prior"]
     )
     joined = "\n".join(_run_lines(RELEASE_YML, "upgrade_canary"))
+    assert 'getconf GNU_LIBC_VERSION)" = "glibc 2.39"' in joined
     assert 'download_assets "v$PRIOR_VERSION"' in joined
-    assert 'sh "$prior_dir/install.sh" --version "$PRIOR_VERSION"' in joined
+    assert 'cp "$prior_dir/jarn-linux-x86_64" "$active"' in joined
+    assert '"schema_version": 1' in joined
+    assert '"version": os.environ["PRIOR"]' in joined
+    assert '"method": "binary"' in joined
+    assert '"active_path": str(active)' in joined
+    assert '"libc_version": "2.39"' in joined
+    assert '"setup_status": "skipped"' in joined
+    assert 'sh "$prior_dir/install.sh"' not in joined
     assert '"$current_dir/jarn-linux-x86_64" update --version "$current_number"' in joined
     assert "JARN_UPDATE_CANARY_MODE=1" in joined
     assert "http://127.0.0.1:" in joined
-    assert "file://$work/prior-origin" in joined
     assert joined.index("unset GH_TOKEN") < joined.index(
         '"$current_dir/jarn-linux-x86_64" update --version'
     )
+    for mutation in ("gh release create", "gh release edit", "gh release upload", "gh release delete"):
+        assert mutation not in joined
     assert 'sh "$current_dir/install.sh" --version "$current_number"' in joined
     assert joined.count("rollback --json") == 2
     assert "uninstall --yes --executable --dependencies" in joined
@@ -907,10 +922,10 @@ def test_release_history_step_executes_and_fails_closed_with_fixtures(
     releases_path = tmp_path / "fixture-releases.json"
     output = tmp_path / "github-output"
 
-    def release(tag: str, *, complete: bool = True) -> dict[str, object]:
+    def release(tag: str, *, compatible: bool = True) -> dict[str, object]:
         names = (
-            ["jarn-linux-x86_64", "checksums.txt", "install.sh"]
-            if complete
+            ["jarn-linux-x86_64", "checksums.txt"]
+            if compatible
             else ["checksums.txt"]
         )
         return {
@@ -935,7 +950,7 @@ def test_release_history_step_executes_and_fails_closed_with_fixtures(
         json.dumps(
             [
                 release("v3.0.0"),
-                release("v2.5.0", complete=False),
+                release("v2.5.0", compatible=False),
                 release("v2.0.0"),
                 release("v1.0.0"),
             ]
@@ -963,8 +978,23 @@ def test_release_history_step_executes_and_fails_closed_with_fixtures(
         text=True,
         check=False,
     )
+    assert result.returncode == 0, result.stderr
+    assert output.read_text(encoding="utf-8") == 'versions=["2.0.0"]\n'
+
+    output.unlink()
+    releases_path.write_text(
+        json.dumps([release("v2.0.0", compatible=False)]), encoding="utf-8"
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     assert result.returncode != 0
-    assert "requires two prior stable releases" in result.stderr
+    assert "requires at least one prior stable release" in result.stderr
     assert not output.exists()
 
 

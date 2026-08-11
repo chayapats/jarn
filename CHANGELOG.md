@@ -5,6 +5,18 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-08-12
+
+### Fixed
+
+- Keep installer receipt validation independent from onboarding: `--no-setup`
+  no longer loads or migrates an existing user configuration while proving the
+  activated command and install record.
+- Correct the protected draft canaries discovered by the v1.0.1 pre-publication
+  run, including authenticated draft visibility and truthful first-GA legacy
+  upgrade fixtures. The v1.0.1 tag remained a private draft; no v1.0.1 GitHub
+  Release, PyPI package, or npm package was promoted.
+
 ## [1.0.1] - 2026-08-11
 
 ### Security
@@ -1378,6 +1390,7 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Windows: use WSL; native Windows terminal is unsupported
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
+[1.0.2]: https://github.com/chayapats/jarn/releases/tag/v1.0.2
 [1.0.1]: https://github.com/chayapats/jarn/releases/tag/v1.0.1
 [1.0.0]: https://github.com/chayapats/jarn/releases/tag/v1.0.0
 [0.11.0]: https://github.com/chayapats/jarn/releases/tag/v0.11.0

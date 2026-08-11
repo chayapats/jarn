@@ -209,6 +209,49 @@ def test_human_doctor_renders_off_path_installation_with_source():
     assert "pipx" in rendered
 
 
+def test_installer_receipt_validation_never_loads_or_migrates_user_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    from jarn.config import loader as config_loader
+    from jarn.config import paths
+
+    home = tmp_path / ".jarn"
+    home.mkdir()
+    config = home / "config.yaml"
+    original = b"default_profile: lifecycle-preserved\n"
+    config.write_bytes(original)
+
+    monkeypatch.setenv("JARN_INSTALL_RECEIPT_VALIDATION", "1")
+    monkeypatch.setattr(paths, "global_home", lambda: home)
+    monkeypatch.setattr(paths, "global_config_path", lambda: config)
+    monkeypatch.setattr(
+        inventory,
+        "collect_host_inventory",
+        lambda **_kwargs: {
+            "jarn": {
+                "install": {
+                    "metadata_present": True,
+                    "metadata_source": "canonical-install-record",
+                    "active_matches_record": True,
+                }
+            }
+        },
+    )
+
+    def _unexpected_load(**_kwargs):
+        pytest.fail("receipt validation must not load or migrate configuration")
+
+    monkeypatch.setattr(config_loader, "load_config", _unexpected_load)
+
+    diagnostics: dict = {}
+    assert collect_doctor(diagnostics) == 0
+    assert diagnostics["receipt_validation_only"] is True
+    assert diagnostics["config_checked"] is False
+    assert diagnostics["ok"] is True
+    assert config.read_bytes() == original
+
+
 def test_install_metadata_json_is_parsed_not_reported_as_brace(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

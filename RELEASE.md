@@ -1,7 +1,7 @@
 # Release process — General Availability candidate
 
 Fail-closed checklist for promoting one identical J.A.R.N. candidate to GitHub,
-PyPI, and npm. v0.11.0 remains the latest published Alpha until the v1.0.1 draft
+PyPI, and npm. v0.11.0 remains the latest published Alpha until the v1.0.2 draft
 passes every criterion, UAT, and published-artifact gate. A tag push cannot promote
 the draft by itself.
 
@@ -11,7 +11,7 @@ the draft by itself.
 uv sync --extra dev --extra telegram
 uv run ruff check src tests scripts
 uv run mypy src/
-uv run pytest -q                    # 3031 tests
+uv run pytest -q                    # 3032 tests
 uv run pytest tests/test_packaging.py -q
 uv run pytest tests/test_installer.py tests/test_ci.py tests/test_update.py -q
 uv run python scripts/benchmark_startup.py --output artifacts/startup.json
@@ -63,8 +63,8 @@ Optional binary smoke (maintainer):
 3. Tag and push (the tag creates a **draft**, not a public release):
 
 ```bash
-git tag v1.0.1
-git push origin v1.0.1
+git tag v1.0.2
+git push origin v1.0.2
 ```
 
 4. GitHub Actions builds binaries/packages plus the exact tagged `install.sh`, creates
