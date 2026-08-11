@@ -254,13 +254,16 @@ jobs:
           cp npm-tarballs/*.tgz release-subjects/
           (
             cd release-subjects
+            artifact_list=$(mktemp)
             for artifact in *; do
               [ -f "$artifact" ] || continue
               [ "$artifact" = checksums.txt ] && continue
               printf '%s\n' "$artifact"
-            done | LC_ALL=C sort | while IFS= read -r artifact; do
+            done | LC_ALL=C sort > "$artifact_list"
+            while IFS= read -r artifact; do
               sha256sum "$artifact"
-            done > checksums.txt
+            done < "$artifact_list" > checksums.txt
+            rm -f "$artifact_list"
             sha256sum -c checksums.txt
             test "$(awk '$2 == "install.sh" || $2 == "*install.sh" {n++} END {print n + 0}' checksums.txt)" -eq 1
           )
@@ -521,7 +524,10 @@ jobs:
           rc=$?
           set -e
           [ "$rc" -eq 10 ]
-          ! grep -Eq '(^|[^[:alpha:]])(Done|Ready)([^[:alpha:]]|$)' canary/clean.stdout
+          if grep -Eq '(^|[^[:alpha:]])(Done|Ready)([^[:alpha:]]|$)' canary/clean.stdout; then
+            echo "draft clean-install canary emitted false-success text" >&2
+            exit 1
+          fi
           test "$("$clean_home/.local/bin/jarn" --version)" = "jarn ${RELEASE_VERSION#v}"
           "$clean_home/.local/bin/jarn" --help >/dev/null
           CLEAN_HOME="$clean_home" python3 - <<'PY'
@@ -566,7 +572,10 @@ jobs:
           set -e
           [ "$rc" -eq 10 ]
           test -e /usr/local/bin/jarn
-          ! grep -Eq '(^|[^[:alpha:]])(Done|Ready)([^[:alpha:]]|$)' canary/legacy.stdout
+          if grep -Eq '(^|[^[:alpha:]])(Done|Ready)([^[:alpha:]]|$)' canary/legacy.stdout; then
+            echo "draft collision canary emitted false-success text" >&2
+            exit 1
+          fi
           grep -F "Activation required" canary/legacy.stderr
           test "$("$legacy_home/.local/bin/jarn" --version)" = "jarn ${RELEASE_VERSION#v}"
           resolution=$(HOME="$legacy_home" PATH="/usr/local/bin:/usr/bin:/bin" SHELL=/bin/bash \
@@ -753,7 +762,8 @@ jobs:
           export JARN_CANARY_METHOD="$RELEASE_METHOD"
           export JARN_CANARY_EXPECT_METHOD="$EXPECTED_METHOD"
           export JARN_CANARY_ASSET="$RELEASE_ASSET"
-          export JARN_CANARY_UV_BIN="$(command -v uv)"
+          JARN_CANARY_UV_BIN=$(command -v uv)
+          export JARN_CANARY_UV_BIN
           scripts/release_lifecycle_canary.sh
 
   # Resolve up to two usable, already-published stable versions.  The first GA

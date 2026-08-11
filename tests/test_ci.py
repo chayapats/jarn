@@ -264,7 +264,7 @@ def test_release_publishes_binary_checksums() -> None:
     assert {"python_dist", "binaries", "npm_build"}.issubset(set(checksums["needs"]))
     joined = "\n".join(_run_lines(RELEASE_YML, "checksums"))
     assert 'sha256sum "$artifact"' in joined
-    assert "done > checksums.txt" in joined
+    assert 'done < "$artifact_list" > checksums.txt' in joined
     assert "sha256sum -c checksums.txt" in joined
     assert "install -m 0755 install.sh release-subjects/install.sh" in joined
     assert "install.sh\" {n++}" in joined
