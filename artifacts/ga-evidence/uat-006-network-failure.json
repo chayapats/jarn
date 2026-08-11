@@ -1,0 +1,44 @@
+{
+  "automated_tests": [
+    "tests/test_installer.py"
+  ],
+  "command": "NO_PROXY=127.0.0.1 JARN_GITHUB_BASE=https://127.0.0.1:9 JARN_GITHUB_REPO=unreachable JARN_CONNECT_TIMEOUT=1 sh install.sh --version 99.0.0 --method binary --no-setup",
+  "criterion_ids": [
+    "UAT-006"
+  ],
+  "decisions": [
+    "failure exit=1; stage=release_asset_download; retry=present; success_text=no",
+    "prior resolution/version preserved: $HOME/.local/bin/jarn / jarn 0.11.0",
+    "doctor JSON: valid"
+  ],
+  "documentation_lookups": [
+    "none; operator confirmed"
+  ],
+  "duration_seconds": 41.0,
+  "ended_at": "2026-08-11T17:16:17Z",
+  "errors": [],
+  "implementation": [
+    "install.sh",
+    "src/jarn/doctor/collect.py"
+  ],
+  "limitations": [],
+  "platform": {
+    "architecture": "x86_64",
+    "libc": "glibc 2.35",
+    "os": "ubuntu",
+    "version": "22.04"
+  },
+  "record_id": "UAT-006",
+  "redaction": {
+    "home_path_redacted": true,
+    "host_identifier_redacted": true,
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false
+  },
+  "result": "Injected release-download failure named its stage/retry, emitted no success, preserved prior bytes, and remained diagnosable.",
+  "schema_version": 1,
+  "started_at": "2026-08-11T17:15:36Z",
+  "status": "passed",
+  "uat_id": "UAT-006"
+}
