@@ -8,6 +8,7 @@ which are concatenated so a project can extend (not just replace) global rules.
 
 from __future__ import annotations
 
+import hashlib
 import warnings
 from pathlib import Path
 from typing import Any
@@ -21,8 +22,9 @@ from jarn.config.pydantic_schema import (
     ConfigValidationError,
     config_to_dataclass,
     parse_config_model,
+    safe_config_validation_message,
 )
-from jarn.config.schema import Config, ProviderConfig
+from jarn.config.schema import Config
 
 _LIST_EXTEND_KEYS = {"hooks", "mcp_servers", "async_subagents"}
 
@@ -35,6 +37,43 @@ _GLOBAL_ONLY_KEYS: frozenset[str] = frozenset({"gateway"})
 
 class ConfigError(ValueError):
     """Raised on malformed configuration."""
+
+
+def _migrate_before_load(
+    path: Path | None,
+    *,
+    expected_raw: dict[str, Any] | None = None,
+) -> None:
+    """Transactionally migrate an existing tier before it enters the merge.
+
+    ``expected_raw`` is used by the project-trust flow, which deliberately read
+    the project bytes once before calling the loader.  A migration is allowed
+    only while the on-disk mapping still matches those trusted bytes; the plan's
+    digest then closes the remaining read/apply race.
+    """
+    if path is None or not path.is_file():
+        return
+    from jarn.config.migrations import apply_config_migration, plan_config_migration
+    from jarn.errors import JarnUserError
+
+    try:
+        plan = plan_config_migration(path)
+        if not plan.changed:
+            return
+        if expected_raw is not None:
+            current_text = path.read_text(encoding="utf-8")
+            current_hash = hashlib.sha256(current_text.encode("utf-8")).hexdigest()
+            current_raw = _parse_yaml_text(current_text, path)
+            if current_hash != plan.source_sha256 or current_raw != expected_raw:
+                raise ConfigError(
+                    "Project config changed after its trust read; migration was not "
+                    "applied. Re-run the command to review the current file."
+                )
+        apply_config_migration(plan)
+    except JarnUserError as exc:
+        # Keep the long-standing ConfigError boundary for callers while retaining
+        # the stable code and complete actionable anatomy in the message.
+        raise ConfigError(exc.detail.render()) from exc
 
 
 def _strip_global_only_keys(raw: dict[str, Any]) -> dict[str, Any]:
@@ -132,16 +171,20 @@ def _merge_permissions(base: dict[str, Any], overlay: dict[str, Any]) -> dict[st
     return merged
 
 
-def _validation_error_to_config_error(exc: ValidationError | ConfigValidationError) -> ConfigError:
+def _validation_error_to_config_error(
+    exc: ValidationError | ConfigValidationError,
+    *,
+    raw: dict[str, Any] | None = None,
+) -> ConfigError:
     if isinstance(exc, ConfigValidationError):
-        return ConfigError(str(exc))
+        return ConfigError(safe_config_validation_message(exc, raw=raw))
     errors = exc.errors()
     if not errors:
-        return ConfigError(str(exc))
+        return ConfigError(safe_config_validation_message(exc, raw=raw))
     first = errors[0]
     loc_parts = [str(part) for part in first.get("loc", ())]
     loc = ".".join(loc_parts)
-    msg = first.get("msg", str(exc))
+    msg = first.get("msg", "Invalid configuration value.")
     if "extra_forbidden" in msg or "Extra inputs are not permitted" in msg:
         key = loc_parts[-1] if loc_parts else "unknown"
         if len(loc_parts) == 1:
@@ -150,18 +193,16 @@ def _validation_error_to_config_error(exc: ValidationError | ConfigValidationErr
                 "see docs/CONFIGURATION.md for recognised keys."
             )
         return ConfigError(f"Unknown config key {key!r} at {loc}")
-    if loc:
-        return ConfigError(f"{loc}: {msg}")
-    return ConfigError(msg)
+    return ConfigError(safe_config_validation_message(exc, raw=raw))
 
 
 def _build_config(raw: dict[str, Any]) -> Config:
     try:
         model = parse_config_model(raw)
     except (ValidationError, ConfigValidationError) as exc:
-        raise _validation_error_to_config_error(exc) from exc
+        raise _validation_error_to_config_error(exc, raw=raw) from exc
     cfg = config_to_dataclass(model)
-    _validate_inline_api_keys(cfg.providers, cfg.strict_secrets)
+    _validate_secret_references(cfg)
     for mcp in cfg.mcp_servers:
         if mcp.url and mcp.transport in ("http", "sse", "streamable_http"):
             _warn_mcp_url_ssrf(mcp.url, name=mcp.name)
@@ -186,44 +227,61 @@ def _warn_mcp_url_ssrf(url: str, *, name: str) -> None:
 class InlineSecretWarning(UserWarning):
     """Emitted when a provider defines an inline plaintext ``api_key``.
 
-    Inline keys sit in config.yaml on disk and in memory, contradicting the
-    "referenced, never inlined" guidance. Default behaviour is to warn; set
-    ``strict_secrets: true`` to turn this into a hard :class:`ConfigError`.
+    Deprecated compatibility warning retained for import stability. GA config
+    rejects credential-shaped inline keys regardless of ``strict_secrets``.
     """
 
 
-def _validate_inline_api_keys(
-    providers: dict[str, ProviderConfig], strict: bool
-) -> None:
-    """Warn/error on providers whose ``api_key`` is an inline plaintext secret.
+def _validate_secret_references(cfg: Config) -> None:
+    """Reject plaintext credentials in every supported config secret field.
 
-    A reference (``${ENV}``, ``keychain:``, ``file:``) is never flagged — only a
-    literal that :func:`looks_like_secret` recognises. Empty keys and short
-    local-provider tokens (e.g. ``lm-studio``) pass silently.
+    Explicit credential fields require a reference for every non-empty value.
+    Header/environment maps may also contain ordinary values, so only a
+    credential-shaped field name or value requires a reference there.
     """
-    from jarn.config.secrets import is_reference, looks_like_secret
+    from jarn.config.secrets import (
+        is_reference,
+        is_sensitive_field_name,
+        looks_like_secret,
+    )
 
     offenders: list[str] = []
-    for name, prov in providers.items():
+    for name, prov in cfg.providers.items():
         ref = prov.api_key
-        if ref is None or is_reference(ref):
-            continue
-        if looks_like_secret(ref):
-            offenders.append(name)
-            if not strict:
-                warnings.warn(
-                    f"Provider {name!r} has an inline plaintext api_key in "
-                    "config.yaml — move it to a reference (keychain:..., "
-                    "file:..., or ${ENV_VAR}) so it isn't persisted to disk. "
-                    "Set strict_secrets: true to reject this.",
-                    InlineSecretWarning,
-                    stacklevel=2,
-                )
-    if strict and offenders:
+        if ref and not is_reference(ref):
+            offenders.append(f"providers.{name}.api_key")
+
+        for header, value in prov.headers.items():
+            if value and not is_reference(value) and (
+                is_sensitive_field_name(header) or looks_like_secret(value)
+            ):
+                offenders.append(f"providers.{name}.headers.{header}")
+
+    if cfg.search.api_key and not is_reference(cfg.search.api_key):
+        offenders.append("search.api_key")
+    if cfg.gateway.telegram.token and not is_reference(cfg.gateway.telegram.token):
+        offenders.append("gateway.telegram.token")
+
+    for server in cfg.mcp_servers:
+        for kind, mapping in (("headers", server.headers), ("env", server.env)):
+            for key, value in mapping.items():
+                if value and not is_reference(value) and (
+                    is_sensitive_field_name(key) or looks_like_secret(value)
+                ):
+                    offenders.append(f"mcp_servers.{server.name}.{kind}.{key}")
+
+    for agent in cfg.async_subagents:
+        for header, value in agent.headers.items():
+            if value and not is_reference(value) and (
+                is_sensitive_field_name(header) or looks_like_secret(value)
+            ):
+                offenders.append(f"async_subagents.{agent.name}.headers.{header}")
+
+    if offenders:
         raise ConfigError(
-            f"Provider(s) {offenders!r} define inline plaintext api_keys but "
-            "strict_secrets is on. Move each to a reference (keychain:..., "
-            "file:..., or ${ENV_VAR})."
+            "Inline plaintext credentials are not allowed at: "
+            f"{', '.join(sorted(offenders))}. Store each as a reference "
+            "(${ENV_VAR}, keychain:service/account, or file:service/account)."
         )
 
 
@@ -259,8 +317,18 @@ def load_config(
         else paths.project_config_path(project_root)
     )
 
+    # The global tier is always trusted operator state.  Migrate it first so the
+    # bytes users see on disk match the schema actually used by the process.
+    _migrate_before_load(gpath)
+
     if project_raw is None:
+        if project_trusted:
+            _migrate_before_load(ppath)
         project_raw = _read_yaml(ppath)
+    elif project_trusted:
+        # The trust flow supplied an already-read mapping.  Preserve its TOCTOU
+        # guarantee while still upgrading the on-disk project tier.
+        _migrate_before_load(ppath, expected_raw=project_raw)
     # Global-only keys are stripped from every project tier (trusted == untrusted).
     project_raw = _strip_global_only_keys(project_raw)
     if not project_trusted:

@@ -1,0 +1,42 @@
+{
+  "automated_tests": [
+    "tests/test_uat_harnesses.py"
+  ],
+  "command": "ssh [HOST] read-only platform and collision inventory",
+  "criterion_ids": [
+    "UAT-002"
+  ],
+  "decisions": [
+    "three command locations discovered; npm ownership retained",
+    "destructive PATH rollback or state reconstruction was refused"
+  ],
+  "documentation_lookups": [],
+  "duration_seconds": 1.23,
+  "ended_at": "2026-08-11T14:40:08Z",
+  "errors": [],
+  "implementation": [
+    "scripts/uat/uat-002-legacy-collision.sh"
+  ],
+  "limitations": [
+    "Provision a disposable fixture whose initial fresh shell resolves the legacy npm command, then run the published candidate harness."
+  ],
+  "platform": {
+    "architecture": "x86_64",
+    "libc": "glibc 2.35",
+    "os": "Ubuntu",
+    "version": "22.04"
+  },
+  "record_id": "UAT-002",
+  "redaction": {
+    "home_path_redacted": false,
+    "host_identifier_redacted": true,
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false
+  },
+  "result": "The host retains npm and user-space commands plus a schema-0 config, but its fresh shell already resolves the user-space 0.11.0 command; it is post-install state, not the required pre-install legacy fixture. Nothing was changed.",
+  "schema_version": 1,
+  "started_at": "2026-08-11T14:20:00Z",
+  "status": "blocked",
+  "uat_id": "UAT-002"
+}

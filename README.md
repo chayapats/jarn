@@ -36,8 +36,10 @@ agents), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcrip
 base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists to
 `~/.jarn/config.yaml`), and per-server **MCP health** (`/mcp status`).
 
-> **Status:** v0.11.0 (Alpha) — on PyPI (`pip install jarn`) and npm (`npm install -g
-> jarn-cli` — a standalone binary, no Python). v0.10 adds an optional
+> **Status:** this source is the v1.0.0 General Availability candidate. Its workflow
+> keeps the release draft until every automated gate, protected UAT, and strict
+> evidence row passes; until promotion, v0.11.0 (Alpha) remains the latest public
+> package on PyPI and npm. v0.10 adds an optional
 > **single-operator Telegram gateway**: long-poll DM control, isolated per-root
 > workers, durable approval cards, inbound media, scheduling, and VPS/systemd
 > deployment. Earlier releases landed **engine reliability**; **UX parity with Claude Code** (live
@@ -109,14 +111,25 @@ macOS (Apple Silicon) and Linux (x64 / arm64) are supported; on Windows use WSL.
 **Recommended — one-command installer:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chayapats/jarn/main/install.sh | sh
+jarn_installer_tmp=$(mktemp "${TMPDIR:-/tmp}/jarn-install.XXXXXX") && trap '[ -z "${jarn_installer_tmp:-}" ] || rm -f "$jarn_installer_tmp"' 0 HUP INT TERM && curl -fsSL 'https://raw.githubusercontent.com/chayapats/jarn/main/install.sh' -o "$jarn_installer_tmp" && sh "$jarn_installer_tmp"; jarn_install_rc=$?; [ -z "${jarn_installer_tmp:-}" ] || rm -f "$jarn_installer_tmp"; trap - 0 HUP INT TERM; if [ "$jarn_install_rc" -eq 0 ] || [ "$jarn_install_rc" -eq 10 ]; then exec "$SHELL" -l; else (exit "$jarn_install_rc"); fi
 ```
 
-The installer detects the OS, CPU architecture, and Linux libc; downloads the
-matching GitHub Release binary; verifies its SHA-256 checksum; installs to
-`~/.local/bin`; and starts first-time setup. If the binary cannot run on the
-host (for example, an older GLIBC) it automatically installs a managed Python
-3.12 and the same J.A.R.N. version through `uv`. Re-run the command to update.
+The command first downloads the installer to a private temporary file, so a failed
+download is never executed. The installer inventories old `jarn` commands, detects
+the OS/CPU/libc, verifies the release checksum, stages and smoke-tests the candidate,
+activates it transactionally, and verifies what a fresh shell resolves. If a native
+binary cannot run (for example because of older GLIBC), it uses an isolated managed
+Python fallback. The final `exec` solves the parent-shell PATH limitation; status
+`10` means installation is verified but shell activation was still required, and
+status `20` means setup remains incomplete.
+
+The installer can acquire a compatible official standalone Codex dependency during
+ChatGPT setup after showing its source, version, purpose, destination, and integrity
+checks. No separate Node/npm/Python/Codex preparation is required on the standard
+path. See the [five-minute quickstart](docs/QUICKSTART.md).
+
+<details>
+<summary><strong>Advanced installation alternatives</strong></summary>
 
 **Via npm** — a self-contained binary, **no Python required**:
 
@@ -143,12 +156,17 @@ uv run jarn
 
 `uv.lock` is tracked in the repo so every teammate gets the same dependency versions.
 
+Package-manager installs retain package-manager ownership; use that manager to
+update/remove them unless J.A.R.N. presents and you confirm an explicit migration.
+
+</details>
+
 ### Sharing with your team
 
 ```bash
 git clone <repo-url> && cd jarn
 uv sync --extra dev --extra telegram
-uv run jarn setup          # once per machine — stores API key in ~/.jarn
+uv run jarn setup          # once per machine — stores only a keychain/env/file reference in config
 cd your-project
 jarn doctor                # config, providers, and loaded extensions
 jarn                       # trust prompt appears if the project declares hooks/MCP
@@ -163,27 +181,28 @@ would load (including shadowed or skipped files).
 
 ## Uninstall
 
-To fully remove all J.A.R.N. state (config, secrets, trust store, sessions) and
-OS keychain entries:
+Removal is itemized and preserves user data by default:
 
 ```bash
-jarn uninstall          # shows an itemized summary, then prompts for confirmation
-jarn uninstall --yes    # skip the prompt
+jarn uninstall                         # choose categories interactively
+jarn uninstall --yes                   # remove only the managed executable
+jarn uninstall --sessions --cache      # confirm only those two categories
+jarn uninstall --credentials --yes     # explicitly remove J.A.R.N. credentials
 ```
 
-`jarn uninstall` removes **only** `~/.jarn` (global state) — it never touches
-project-local `.jarn/` directories. After removal it prints the package-manager
-uninstall line (`npm uninstall -g jarn-cli` or `pip uninstall jarn`).
+Categories are executable, exclusively owned dependencies, configuration, sessions,
+cache/logs/telemetry, and credentials. Shared Node, Python, uv, and Codex installs
+are never removed. Project-local `.jarn/` directories are never touched. See
+[Update, rollback, and uninstall](docs/UPDATE_ROLLBACK.md).
 
 ## Quick start
 
 **With a ChatGPT/Codex subscription (no OpenAI API key billing):**
 
 ```bash
-# Install the official Codex CLI separately and ensure `codex` is on PATH.
-jarn codex login          # managed ChatGPT browser login
-jarn codex status         # verifies auth mode + plan without printing a token
-jarn setup                # choose provider: codex_subscription
+jarn setup                # choose “Continue with ChatGPT”
+# Setup offers a verified Codex dependency install when needed, then shows login.
+jarn auth status          # verifies dependency, auth mode, plan/workspace
 cd your-project && jarn
 ```
 
@@ -194,7 +213,7 @@ existing permission, danger-guard, checkpoint, and `/undo` paths remain authorit
 Subscription usage is shown as tokens with `$0` API cost and still consumes the
 limits/credits of your ChatGPT plan. For shared CI, use an API-key provider instead.
 
-**With OpenRouter (recommended — one browser click, no manual key handling):**
+**With OpenRouter OAuth (separate, advanced credential command):**
 
 ```bash
 jarn login        # opens browser → authorize → key stored in OS keychain
@@ -210,7 +229,7 @@ cd your-project
 jarn init         # create a JARN.md project-context file (optional but recommended)
 jarn              # launch the TUI
 jarn doctor       # diagnose config / providers / keys / extensions at any time
-jarn bug          # assemble a redacted report + open a prefilled GitHub issue
+jarn bug          # write a privacy-scanned report; ask before opening GitHub
 ```
 
 **Shell completions (tab-complete subcommands and flags):**
@@ -229,7 +248,9 @@ jarn completions fish > ~/.config/fish/completions/jarn.fish
 ```
 
 On first launch with no config, J.A.R.N. runs the setup wizard automatically.
-The OpenRouter option in the wizard also offers a one-click browser login.
+Transactional setup accepts an environment reference or an in-memory pasted key;
+it deliberately does not run OpenRouter OAuth because that exchange persists a key
+before final confirmation. Run `jarn login` separately when OAuth is desired.
 
 ### Telegram gateway (optional)
 
@@ -251,6 +272,8 @@ project's `.jarn/config.yaml`.
 ## Non-interactive / scripting
 
 ```bash
+jarn exec "summarise the open TODOs"        # recommended discoverable form
+jarn exec --json "what changed?"            # one machine-readable JSON result
 jarn -p "summarise the open TODOs"          # one-shot: print reply and exit
 echo "what changed?" | jarn -p -            # read prompt from stdin
 jarn -p "do X" --json                        # emit JSON: {result, tokens, cost, turns}
@@ -259,6 +282,9 @@ jarn -p "do X" --permission-mode auto-edit  # allow file writes without promptin
 jarn -p "do X" --cwd /path/to/project       # set working directory
 jarn -p "extract the version" --output-schema schema.json --json  # structured output
 ```
+
+`jarn exec` and the shorter legacy `jarn -p` spelling use the same execution,
+permission, output, and exit-code contract.
 
 **Structured output (`--output-schema`):** pass a JSON Schema file to constrain the
 agent's final answer. The parsed object replaces the free-text `result` field in the
@@ -270,7 +296,7 @@ jarn -p "list changed files as JSON" --output-schema files.schema.json --json \
 ```
 
 Exit codes when `--output-schema` is used: `0` success (structured object in `result`);
-`1` with `error.kind: "schema"` if the agent fails to produce a conforming response;
+`9` with `error.kind: "schema"` if the agent fails to produce a conforming response;
 `2` with `error.kind: "usage"` if the schema file can't be read or parsed.
 
 **Fail-closed safety:** the default modes (`ask` / `plan`) refuse any tool that
@@ -427,9 +453,12 @@ runs as the next turn (never lost). Disable with `ui.steering: false` (hides the
 | Command | Description |
 |---|---|
 | `/help` | Show available commands and shortcuts. |
+| `/status` | Show the active directory, model, permissions, provider, and session state. |
 | `/init` | Create a JARN.md project context file. |
 | `/config` | View or edit settings: /config, /config get <key>, /config set <key> <value> (persists). |
 | `/model [/ref\|refresh]` | Show or switch the active model; /model refresh re-queries local endpoints. |
+| `/login` | Sign in or re-verify ChatGPT authentication (maps to `jarn auth login`). |
+| `/logout` | Sign out of ChatGPT authentication (maps to `jarn auth logout`). |
 | `/mode [plan\|ask\|auto-edit\|yolo]` | Show or switch the permission mode (plan/ask/auto-edit/yolo). |
 | `/theme [dark\|light\|high-contrast\|auto]` | Show or switch the color theme (dark/light/high-contrast/auto). |
 | `/sandbox [on\|off]` | Show or toggle the execution backend (local/sandbox). |
@@ -441,6 +470,7 @@ runs as the next turn (never lost). Disable with `ui.steering: false` (hides the
 | `/compact` | Summarize and compact the conversation context. |
 | `/expand` | Open the last turn's full tool output in the pager (same as Ctrl+O). |
 | `/clear` | Clear the conversation and start a fresh thread. |
+| `/new` | Start a fresh conversation (alias for /clear). |
 | `/sessions` | List and resume previous sessions. |
 | `/resume` | Pick a previous session to resume. |
 | `/rewind` | Rewind to an earlier turn and continue (forks a new thread); optionally restore files to that turn too. A second arrow-key confirm reverts the working tree to that turn's checkpoint (shown as a `git diff --stat` preview), so conversation and files rewind together. |
@@ -460,6 +490,7 @@ runs as the next turn (never lost). Disable with `ui.steering: false` (hides the
 | `/checkpoints` | List recent auto-checkpoints. |
 | `/ps [kill <id>]` | List or kill background processes (from run_in_background). |
 | `/quit` | Exit J.A.R.N. |
+| `/exit` | Exit J.A.R.N. (alias for /quit). |
 | `/map [focus] [--refresh]` | Show the ranked repo map (codebase overview). |
 | `/wiki [search <q>\|list]` | Search or list wiki knowledge-base pages. |
 | `/doctor` | Diagnose configuration, providers, and keys. |
@@ -574,11 +605,11 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                 # 2466 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 3030 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)
-uv run jarn bug --dry-run    # write redacted bug report to ~/.jarn/bug-report.md
+uv run jarn bug --dry-run    # write scanned JSON to ~/.jarn/bug-report.json
 ```
 
 ## License

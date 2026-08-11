@@ -589,10 +589,9 @@ class Config:
     default_profile: str = "openrouter"
     default_model: str | None = None
     permission_mode: PermissionMode = PermissionMode.ASK
-    #: When True, inline plaintext ``api_key`` literals in config.yaml are
-    #: rejected at load; when False (default) they emit a warning. Back-compat
-    #: default is False so existing setups keep working, just noisier.
-    strict_secrets: bool = False
+    #: Compatibility field retained for older config files. GA always rejects
+    #: credential-shaped inline ``api_key`` values; secrets must be references.
+    strict_secrets: bool = True
     #: When True, lifecycle-hook subprocesses inherit the *full* ``os.environ``
     #: (pre-T-1-8 behavior, leaks secrets to hook scripts). Default False → hooks
     #: get only a minimal allowlist (``PATH``/``HOME``/``JARN_*`` + declared

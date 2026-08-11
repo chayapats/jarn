@@ -7,7 +7,7 @@ import warnings
 import pytest
 import yaml
 
-from jarn.config.loader import ConfigError, InlineSecretWarning, load_config
+from jarn.config.loader import ConfigError, load_config
 from jarn.config.schema import PermissionMode
 from jarn.config.secrets import SecretResolutionError, is_reference, resolve
 
@@ -535,14 +535,19 @@ def test_doctor_json_is_valid(tmp_path, monkeypatch, capsys):
 
     from jarn.config import paths
 
-    # A config that resolves end-to-end: a provider with an inline key so the
-    # main model both resolves its secret and constructs without network.
+    # A config that resolves end-to-end through a reference without network.
     gp = tmp_path / "config.yaml"
+    monkeypatch.setenv("TEST_OPENROUTER_KEY", "sk-test")
     _write(
         gp,
         {
             "default_profile": "openrouter",
-            "providers": {"openrouter": {"type": "openrouter", "api_key": "sk-test"}},
+            "providers": {
+                "openrouter": {
+                    "type": "openrouter",
+                    "api_key": "${TEST_OPENROUTER_KEY}",
+                }
+            },
         },
     )
     monkeypatch.setattr(paths, "global_config_path", lambda: gp)
@@ -572,14 +577,13 @@ def test_doctor_json_is_valid(tmp_path, monkeypatch, capsys):
 _INLINE_KEY = "sk-proj-" + "A" * 40  # long enough to look like a real key
 
 
-def test_inline_api_key_warns(tmp_path, recwarn):
-    """A real-looking inline api_key loads with a visible warning (non-strict)."""
+def test_inline_api_key_is_rejected_by_default(tmp_path):
+    """GA never persists a plaintext credential merely because strict is omitted."""
     gp = tmp_path / "g.yaml"
     _write(gp, {"providers": {"openrouter": {"type": "openrouter", "api_key": _INLINE_KEY}}})
-    with pytest.warns(InlineSecretWarning, match="inline plaintext api_key"):
-        cfg = load_config(global_path=gp, project_path=None)
-    assert cfg.strict_secrets is False  # default
-    assert cfg.providers["openrouter"].api_key == _INLINE_KEY  # still loads
+    with pytest.raises(ConfigError, match="providers.openrouter.api_key") as caught:
+        load_config(global_path=gp, project_path=None)
+    assert _INLINE_KEY not in str(caught.value)
 
 
 def test_inline_api_key_strict_rejects(tmp_path):
@@ -592,19 +596,37 @@ def test_inline_api_key_strict_rejects(tmp_path):
             "providers": {"openrouter": {"type": "openrouter", "api_key": _INLINE_KEY}},
         },
     )
-    with pytest.raises(ConfigError, match="inline plaintext api_keys"):
+    with pytest.raises(ConfigError, match="providers.openrouter.api_key"):
         load_config(global_path=gp, project_path=None)
 
 
-def test_local_provider_no_warn(tmp_path, recwarn):
-    """Empty key and short local tokens (lm-studio) pass without warning."""
+def test_explicit_strict_secrets_false_cannot_bypass_reference_requirement(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(
+        gp,
+        {
+            "strict_secrets": False,
+            "providers": {"openrouter": {"type": "openrouter", "api_key": _INLINE_KEY}},
+        },
+    )
+    with pytest.raises(ConfigError) as caught:
+        load_config(global_path=gp, project_path=None)
+    message = str(caught.value)
+    assert "JARN-CONFIG-002" in message
+    assert "providers.openrouter.api_key" in message
+    assert "credential contents were redacted" in message
+    assert _INLINE_KEY not in message
+
+
+def test_local_provider_without_key_loads(tmp_path):
+    """Local profiles need no credential placeholder in persisted config."""
     gp = tmp_path / "g.yaml"
     _write(
         gp,
         {
             "providers": {
                 "ollama": {"type": "ollama", "base_url": "http://localhost:11434"},
-                "lmstudio": {"type": "lmstudio", "api_key": "lm-studio"},
+                "lmstudio": {"type": "lmstudio"},
             }
         },
     )
@@ -612,7 +634,61 @@ def test_local_provider_no_warn(tmp_path, recwarn):
         warnings.simplefilter("error")  # any InlineSecretWarning would fail
         cfg = load_config(global_path=gp, project_path=None)
     assert cfg.providers["ollama"].api_key is None
-    assert cfg.providers["lmstudio"].api_key == "lm-studio"
+    assert cfg.providers["lmstudio"].api_key is None
+
+
+def test_malformed_sensitive_field_never_leaks_input_value(tmp_path):
+    credential = "arbitrary-provider-key-7q2"
+    gp = tmp_path / "g.yaml"
+    _write(
+        gp,
+        {
+            "providers": {
+                "leaky": {"type": "openrouter", "api_key": [credential]}
+            }
+        },
+    )
+    with pytest.raises(ConfigError) as caught:
+        load_config(global_path=gp, project_path=None)
+    message = str(caught.value)
+    assert credential not in message
+    assert "providers.leaky.api_key" in message
+    assert "credential contents were redacted" in message
+
+
+@pytest.mark.parametrize(
+    "data,path",
+    [
+        ({"search": {"api_key": "opaque-search-secret"}}, "search.api_key"),
+        (
+            {"gateway": {"telegram": {"token": "opaque-telegram-secret"}}},
+            "gateway.telegram.token",
+        ),
+        (
+            {
+                "mcp_servers": [
+                    {
+                        "name": "remote",
+                        "transport": "http",
+                        "url": "https://example.com/mcp",
+                        "headers": {"Authorization": "opaque-mcp-secret"},
+                    }
+                ]
+            },
+            "mcp_servers.0.headers",
+        ),
+    ],
+)
+def test_all_secret_fields_require_references(tmp_path, data, path):
+    gp = tmp_path / "g.yaml"
+    _write(gp, data)
+    with pytest.raises(ConfigError) as caught:
+        load_config(global_path=gp, project_path=None)
+    message = str(caught.value)
+    assert path in message
+    assert "credential contents were redacted" in message
+    for value in ("opaque-search-secret", "opaque-telegram-secret", "opaque-mcp-secret"):
+        assert value not in message
 
 
 def test_reference_api_key_no_warn(tmp_path):

@@ -204,6 +204,25 @@ def test_toolbar_shows_queue_and_collapses_narrow():
     assert "ask" in narrow.value
 
 
+def test_toolbar_shows_ga_session_context_when_wide():
+    result = render_toolbar(
+        model="gpt-5",
+        mode="ask",
+        cwd="งานไทย",
+        provider="chatgpt",
+        auth="ChatGPT",
+        reasoning="high",
+        cost_line="$0.00 · 0 tok · 0 calls",
+        cost_status=BudgetStatus.OK,
+        context_frac=0.12,
+        width=180,
+    )
+    assert "cwd งานไทย" in result.value
+    assert "chatgpt · ChatGPT" in result.value
+    assert "reasoning high" in result.value
+    assert "ctx 12%" in result.value
+
+
 def test_toolbar_trusted_shows_lock():
     result = render_toolbar(
         model="openrouter/claude",

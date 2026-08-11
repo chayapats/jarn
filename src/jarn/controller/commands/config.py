@@ -39,9 +39,8 @@ def cmd_config(ctrl: Controller, args: str) -> CommandResult:
         if len(parts) < 3:
             return CommandResult("Usage: /config set <key> <value>")
         return ctrl._config_set(parts[1], parts[2])
-    return CommandResult(
-        "Usage: /config  |  /config get <key>  |  /config set <key> <value>"
-    )
+    return CommandResult("Usage: /config  |  /config get <key>  |  /config set <key> <value>")
+
 
 def cmd_preset(ctrl, args: str) -> CommandResult:
     """Expand a preset — a launch-time shortcut that sets mode + OS sandbox +
@@ -78,9 +77,8 @@ def cmd_preset(ctrl, args: str) -> CommandResult:
     suffix = ""
     if effective != choice:
         suffix = f" (clamped to {effective} — project untrusted)"
-    return CommandResult(
-        f"preset '{effective}'{suffix} → {expansion} (rebuilding).", rebuilt=True
-    )
+    return CommandResult(f"preset '{effective}'{suffix} → {expansion} (rebuilding).", rebuilt=True)
+
 
 def cmd_sandbox(ctrl, args: str) -> CommandResult:
     current = ctrl.config.execution.backend
@@ -93,8 +91,7 @@ def cmd_sandbox(ctrl, args: str) -> CommandResult:
     # alongside the untrusted-mode floor); viewing it (no-arg) stays allowed.
     if not ctrl.project_trusted:
         return CommandResult(
-            "Project untrusted — execution backend is locked. "
-            "Run `jarn trust` to change it."
+            "Project untrusted — execution backend is locked. Run `jarn trust` to change it."
         )
     choice = args.strip().lower()
     if choice == "docker":
@@ -113,6 +110,7 @@ def cmd_sandbox(ctrl, args: str) -> CommandResult:
         rebuilt=True,
     )
 
+
 def cmd_model(ctrl, args: str) -> CommandResult:
     if not args.strip():
         return CommandResult(f"Current model: {ctrl.config.resolved_main_model()}")
@@ -121,9 +119,15 @@ def cmd_model(ctrl, args: str) -> CommandResult:
     ctrl._invalidate_runtime()  # force rebuild on next turn
     return CommandResult(f"Model set to {args.strip()} (rebuilding).", rebuilt=True)
 
+
 def cmd_mode(ctrl, args: str) -> CommandResult:
+    from jarn.permissions.labels import permission_mode_summary
+
     if not args.strip():
-        return CommandResult(f"Current mode: {ctrl.config.permission_mode.value}")
+        return CommandResult(
+            "Current permissions: "
+            f"{permission_mode_summary(ctrl.config.permission_mode.value, include_internal=True)}"
+        )
     try:
         mode = PermissionMode(args.strip())
     except ValueError:
@@ -150,7 +154,12 @@ def cmd_mode(ctrl, args: str) -> CommandResult:
             "Run `jarn trust` to unlock other modes. (rebuilding)",
             rebuilt=True,
         )
-    return CommandResult(f"Permission mode set to {applied} (rebuilding).", rebuilt=True)
+    return CommandResult(
+        f"Permissions set to {permission_mode_summary(applied, include_internal=True)} "
+        "(rebuilding).",
+        rebuilt=True,
+    )
+
 
 def cmd_trust(ctrl, args: str) -> CommandResult:
     """Trust the current project root and lift the untrusted review-only floor.
@@ -211,9 +220,7 @@ def cmd_trust(ctrl, args: str) -> CommandResult:
     from jarn.config.loader import load_config
     from jarn.config.profiles import resolve_effective_profile
 
-    ctrl.config = load_config(
-        project_root=root, project_trusted=True, project_raw=project_raw
-    )
+    ctrl.config = load_config(project_root=root, project_trusted=True, project_raw=project_raw)
     resolve_effective_profile(ctrl.config, project_trusted=True, cli_profile=None)
     ctrl.engine.mode = ctrl.config.permission_mode
     ctrl.engine.rules = ctrl.config.permissions

@@ -1,0 +1,61 @@
+{
+  "automated_tests": [
+    "tests/test_ci.py",
+    "tests/test_subprocess_security_audit.py",
+    "tests/test_permission_bypass_matrix.py",
+    "tests/test_telemetry_reliability.py",
+    "tests/test_doc_sync.py"
+  ],
+  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q tests/test_ci.py tests/test_installer.py tests/test_subprocess_security_audit.py tests/test_permission_bypass_matrix.py tests/test_secrets.py tests/test_telemetry_reliability.py tests/test_ga_errors_and_doctor.py tests/test_doc_sync.py",
+  "criterion_ids": [
+    "AC-SEC-002",
+    "AC-SEC-003",
+    "AC-SEC-004",
+    "AC-SEC-005",
+    "AC-SEC-006",
+    "AC-SEC-007",
+    "AC-SEC-008",
+    "AC-DOC-002",
+    "AC-DOC-003",
+    "AC-DOC-004",
+    "AC-DOC-005"
+  ],
+  "decisions": [
+    "The uv bootstrap uses the version-specific upstream URL and verifies a pinned script digest before execution; the verified upstream script checks its selected archive."
+  ],
+  "documentation_lookups": [
+    "Official GitHub hosted-runner reference verified the configured macOS and Linux ARM labels on 2026-08-11."
+  ],
+  "duration_seconds": 305.0,
+  "ended_at": "2026-08-11T14:59:30Z",
+  "errors": [],
+  "implementation": [
+    ".github/workflows",
+    "install.sh",
+    "src/jarn/observability",
+    "src/jarn/config/secrets.py",
+    "src/jarn/doctor/report.py",
+    "docs"
+  ],
+  "limitations": [
+    "Actual release checksums, provenance attestations, SBOMs, and public URLs remain AC-SEC-001/TEST-RELEASE evidence and are not inferred from workflow structure."
+  ],
+  "platform": {
+    "architecture": "arm64",
+    "libc": "n/a",
+    "os": "macOS",
+    "version": "26.5.2"
+  },
+  "record_id": "LOCAL-SECURITY-DOC-20260811",
+  "redaction": {
+    "home_path_redacted": false,
+    "host_identifier_redacted": false,
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false
+  },
+  "result": "Immutable action pinning, HTTPS/checksum refusal including pinned uv bootstrap, local telemetry consent/boundary, central exact-secret [REDACTED_SECRET], argv-only subprocess audit, secure temporary/support-report handling, required docs, troubleshooting, error references, and doc-sync contracts passed.",
+  "schema_version": 1,
+  "started_at": "2026-08-11T14:34:18Z",
+  "status": "passed"
+}

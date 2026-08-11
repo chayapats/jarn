@@ -57,6 +57,12 @@ def _write_global_config(home: Path, *, body: str) -> Path:
     return path
 
 
+def _assert_blocking_error(stderr: str, code: str) -> None:
+    assert stderr.startswith(f"{code}:")
+    for label in ("Cause:", "Component:", "retryable:", "Next:", "Log:"):
+        assert label in stderr
+
+
 @dataclass
 class FakeBot:
     """Minimal aiogram Bot stand-in (no network)."""
@@ -68,9 +74,7 @@ class FakeBot:
     _page: int = 0
 
     async def get_webhook_info(self):
-        return SimpleNamespace(
-            url=self.webhook_url, pending_update_count=self.pending_update_count
-        )
+        return SimpleNamespace(url=self.webhook_url, pending_update_count=self.pending_update_count)
 
     async def get_updates(self, offset=None, timeout=0, limit=100, allowed_updates=None):
         if self._page >= len(self.updates_pages):
@@ -164,6 +168,7 @@ def test_missing_telegram_extra_exits_clearly(monkeypatch, capsys):
         load_gateway_settings(config=_gateway_config(), env={})
     assert excinfo.value.code == 2
     err = capsys.readouterr().err
+    _assert_blocking_error(err, "JARN-GATEWAY-001")
     assert "jarn[telegram]" in err
     assert "configured-but-uninstalled" in err
 
@@ -178,7 +183,9 @@ def test_gateway_disabled_refuses(monkeypatch, capsys):
             env={},
         )
     assert excinfo.value.code == 2
-    assert "gateway.enabled is false" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    _assert_blocking_error(err, "JARN-GATEWAY-002")
+    assert "gateway.enabled is false" in err
 
 
 def test_missing_token_refuses(monkeypatch, capsys):
@@ -191,7 +198,9 @@ def test_missing_token_refuses(monkeypatch, capsys):
             env={},
         )
     assert excinfo.value.code == 2
-    assert "Missing bot token" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    _assert_blocking_error(err, "JARN-GATEWAY-003")
+    assert "Missing bot token" in err
 
 
 def test_empty_allowlist_refuses(monkeypatch, capsys):
@@ -204,7 +213,59 @@ def test_empty_allowlist_refuses(monkeypatch, capsys):
             env={},
         )
     assert excinfo.value.code == 2
-    assert "allowed_user_ids is empty" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    _assert_blocking_error(err, "JARN-GATEWAY-004")
+    assert "allowed_user_ids is empty" in err
+
+
+def test_invalid_env_allowlist_has_stable_redacted_anatomy(monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "aiogram", SimpleNamespace(__name__="aiogram"))
+    from jarn.telegram.cli import load_gateway_settings
+
+    with pytest.raises(SystemExit) as excinfo:
+        load_gateway_settings(
+            config=_gateway_config(),
+            env={"JARN_TELEGRAM_ALLOWED_USER_IDS": "42,not-a-user"},
+        )
+
+    assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    _assert_blocking_error(err, "JARN-GATEWAY-004")
+    assert "not-a-user" not in err
+
+
+def test_unresolvable_token_has_stable_redacted_anatomy(monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "aiogram", SimpleNamespace(__name__="aiogram"))
+    from jarn.config.secrets import SecretResolutionError
+    from jarn.telegram.cli import load_gateway_settings
+
+    def _fail_resolve(_reference: str) -> str:
+        raise SecretResolutionError("backend rejected sk-abcdefghijklmnopqrst")
+
+    monkeypatch.setattr("jarn.config.secrets.resolve", _fail_resolve)
+    with pytest.raises(SystemExit) as excinfo:
+        load_gateway_settings(
+            config=_gateway_config(token="keychain:jarn/telegram"),
+            env={},
+        )
+
+    assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    _assert_blocking_error(err, "JARN-GATEWAY-003")
+    assert "abcdefghijklmnopqrst" not in err
+
+
+def test_corrupt_config_has_stable_redacted_anatomy(monkeypatch, capsys):
+    def _fail_config():
+        raise ValueError("invalid yaml with sk-abcdefghijklmnopqrst")
+
+    monkeypatch.setattr("jarn.config.loader.load_config", _fail_config)
+    from jarn.telegram.cli import run_gateway_cli
+
+    assert run_gateway_cli(fake_backend=True) == 2
+    err = capsys.readouterr().err
+    _assert_blocking_error(err, "JARN-GATEWAY-002")
+    assert "abcdefghijklmnopqrst" not in err
 
 
 def test_load_settings_env_overrides(monkeypatch):
@@ -265,16 +326,18 @@ def test_run_gateway_cli_wires_fake_backend(monkeypatch, tmp_path):
         home,
         body=(
             "providers:\n"
-            "  openrouter:\n"
-            "    type: openrouter\n"
-            "    api_key: sk-test\n"
+                "  openrouter:\n"
+                "    type: openrouter\n"
+                "    api_key: ${TEST_OPENROUTER_KEY}\n"
             "gateway:\n"
             "  enabled: true\n"
             "  telegram:\n"
-            "    token: fake-token\n"
+                "    token: ${TEST_TELEGRAM_TOKEN}\n"
             "    allowed_user_ids: [42]\n"
         ),
     )
+    monkeypatch.setenv("TEST_OPENROUTER_KEY", "sk-test")
+    monkeypatch.setenv("TEST_TELEGRAM_TOKEN", "fake-token")
     monkeypatch.setenv("JARN_HOME", str(home))
     monkeypatch.setattr(paths, "global_config_path", lambda: home / "config.yaml")
     monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
@@ -355,9 +418,7 @@ async def test_smoke_boot_auth_reject_and_synthetic_dm(monkeypatch, tmp_path):
 
     # Backlog drain (mocked Bot — no network); must not execute.
     backlog_bot = FakeBot(
-        updates_pages=[
-            [_update_message(uid=1, user_id=42, chat_id=42, text="stale backlog")]
-        ]
+        updates_pages=[[_update_message(uid=1, user_id=42, chat_id=42, text="stale backlog")]]
     )
     report = await drain_backlog(backlog_bot)
     assert report.count == 1
@@ -373,15 +434,11 @@ async def test_smoke_boot_auth_reject_and_synthetic_dm(monkeypatch, tmp_path):
     app._offset = report.offset
 
     # Auth reject
-    await app.handle_update(
-        _update_message(uid=2, user_id=99, chat_id=99, text="nope")
-    )
+    await app.handle_update(_update_message(uid=2, user_id=99, chat_id=99, text="nope"))
     assert backend.turns == []
 
     # Synthetic allowed DM → backend.submit_turn
-    await app.handle_update(
-        _update_message(uid=3, user_id=42, chat_id=42, text="hello from smoke")
-    )
+    await app.handle_update(_update_message(uid=3, user_id=42, chat_id=42, text="hello from smoke"))
     turn = backend.last_turn()
     assert turn is not None
     assert turn.chat_id == 42

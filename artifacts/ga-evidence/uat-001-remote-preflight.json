@@ -1,0 +1,42 @@
+{
+  "automated_tests": [
+    "tests/test_uat_harnesses.py"
+  ],
+  "command": "ssh [HOST] read-only platform and install inventory",
+  "criterion_ids": [
+    "UAT-001"
+  ],
+  "decisions": [
+    "Ubuntu 22.04 x86_64 with glibc 2.35",
+    "fresh-account guard failed before mutation"
+  ],
+  "documentation_lookups": [],
+  "duration_seconds": 1.23,
+  "ended_at": "2026-08-11T14:40:08Z",
+  "errors": [],
+  "implementation": [
+    "scripts/uat/uat-001-ubuntu-ssh.sh"
+  ],
+  "limitations": [
+    "Provision a disposable fresh Ubuntu account, then run the protected harness with the published GA installer."
+  ],
+  "platform": {
+    "architecture": "x86_64",
+    "libc": "glibc 2.35",
+    "os": "Ubuntu",
+    "version": "22.04"
+  },
+  "record_id": "UAT-001",
+  "redaction": {
+    "home_path_redacted": false,
+    "host_identifier_redacted": true,
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false
+  },
+  "result": "The available Ubuntu account is not a fresh UAT-001 fixture: J.A.R.N. configuration and multiple commands already exist. No install/login command was sent.",
+  "schema_version": 1,
+  "started_at": "2026-08-11T14:20:00Z",
+  "status": "blocked",
+  "uat_id": "UAT-001"
+}

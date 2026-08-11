@@ -5,6 +5,54 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-11
+
+### Added
+
+- **One-command, user-space installation for real machines.** The canonical curl
+  installer inventories conflicting npm/pip/pipx/uv/Homebrew commands, validates
+  OS/architecture/libc/disk/TLS prerequisites, verifies checksums, and falls back
+  to an isolated managed Python tool when a native binary is incompatible. Staged
+  activation, durable journals, stale-lock recovery, retained rollback candidates,
+  exact shell-resolution checks, and automatic rollback eliminate false success.
+- **Verified ChatGPT onboarding.** A four-choice simple setup and an explicit
+  Advanced path can install/repair a compatible Codex dependency, show browser or
+  device-code challenges, verify the refreshed ChatGPT account, load the complete
+  live model catalog with reasoning capabilities, and commit configuration only
+  after every readiness gate passes. Interrupted setup is resumable.
+- **Unified auth and model contracts.** Versioned JSON status, paginated Codex
+  `model/list`, live/local/cache provenance, privacy-scoped cache keys, stale/offline
+  labels, route validation, and pre-turn availability checks now power setup,
+  `/model`, doctor, and execution from one source of truth.
+- **GA administration surface.** Added `jarn auth`, `config`, `telemetry`, `doctor
+  --fix/--dry-run/--report`, `update --check`, `rollback`, itemized `uninstall`, and
+  session list/export/delete commands with stable exit codes and machine schemas.
+- **Evidence-driven releases.** Tier-1 lifecycle matrices, oldest-glibc execution,
+  authenticated draft canaries, two-version upgrade/rollback tests, public URL
+  canaries, signed provenance, SPDX/CycloneDX SBOMs, protected UAT harnesses, and a
+  fail-closed criterion evidence generator gate promotion and registry publication.
+
+### Changed
+
+- Setup, config migration, credentials, install state, transcripts, telemetry,
+  session deletion/export, updates, and support reports use locked atomic writes,
+  backups, rollback, symlink refusal, and explicit ownership boundaries.
+- Permission modes use end-user labels while keeping hard deny floors; approvals
+  show affected scope, persistent grants cannot widen silently, and `/undo` previews
+  the exact checkpoint before restoration.
+- Terminal behavior now has plain/`TERM=dumb`/`NO_COLOR` parity, Unicode and Thai
+  coverage, bounded cancellation, stable structured failures, and offline help.
+
+### Security
+
+- Exact live-secret redaction is shared across logs, transcripts, diagnostics,
+  provider errors, telemetry, and support reports. Keyring operations run in
+  bounded killable workers; inline credentials are rejected by default.
+- Bug reports are strict allowlisted, path-free, scanned, atomic mode 0600, and
+  never place report content in a remote issue URL without explicit consent.
+- Release actions are immutable-SHA pinned; distributable subjects include
+  checksums, SBOMs, and attestations before any public mutation.
+
 ## [0.11.0] - 2026-08-09
 
 ### Added
@@ -1322,6 +1370,7 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Windows: use WSL; native Windows terminal is unsupported
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
+[1.0.0]: https://github.com/chayapats/jarn/releases/tag/v1.0.0
 [0.11.0]: https://github.com/chayapats/jarn/releases/tag/v0.11.0
 [0.5.0]: https://github.com/chayapats/jarn/releases/tag/v0.5.0
 [0.4.4]: https://github.com/chayapats/jarn/releases/tag/v0.4.4

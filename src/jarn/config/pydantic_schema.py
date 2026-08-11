@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 from urllib.parse import urlparse
 
@@ -83,6 +85,107 @@ class ConfigValidationError(ValueError):
     """Raised by pydantic validators; converted to ConfigError at the boundary."""
 
 
+_SENSITIVE_VALIDATION_SEGMENT = re.compile(
+    r"(?:^|_)(?:api_?key|access_?key|auth|authorization|credential|password|passwd|"
+    r"refresh_?token|secret|token)(?:$|_)",
+    re.IGNORECASE,
+)
+
+
+def _sensitive_validation_segment(value: object) -> bool:
+    segment = str(value)
+    return segment.lower() in {"headers", "env"} or bool(
+        _SENSITIVE_VALIDATION_SEGMENT.search(segment)
+    )
+
+
+def _validation_known_secrets(
+    value: object,
+    *,
+    inherited_sensitive: bool = False,
+    depth: int = 0,
+) -> set[str]:
+    """Collect strings below credential-bearing config fields for redaction."""
+
+    if depth >= 16:
+        return set()
+    if isinstance(value, str):
+        return {value} if inherited_sensitive and value else set()
+    if isinstance(value, Mapping):
+        found: set[str] = set()
+        for key, item in value.items():
+            found.update(
+                _validation_known_secrets(
+                    item,
+                    inherited_sensitive=(
+                        inherited_sensitive or _sensitive_validation_segment(key)
+                    ),
+                    depth=depth + 1,
+                )
+            )
+        return found
+    if isinstance(value, (list, tuple, set, frozenset)):
+        found = set()
+        for item in value:
+            found.update(
+                _validation_known_secrets(
+                    item,
+                    inherited_sensitive=inherited_sensitive,
+                    depth=depth + 1,
+                )
+            )
+        return found
+    return set()
+
+
+def safe_config_validation_message(
+    exc: BaseException,
+    *,
+    raw: Mapping[str, Any] | None = None,
+) -> str:
+    """Render a config validation failure without Pydantic input-value leakage.
+
+    Pydantic's default ``str(ValidationError)`` includes ``input_value``. That is
+    useful for ordinary fields but unsafe for malformed ``api_key``, ``token``,
+    header, or environment values. This renderer omits input/context entirely,
+    replaces messages at sensitive locations, and exact-redacts values found
+    beneath credential-bearing keys in the raw candidate.
+    """
+
+    from jarn.config.secrets import redact_secrets
+
+    known = _validation_known_secrets(raw or {})
+    errors_method = getattr(exc, "errors", None)
+    if callable(errors_method):
+        try:
+            errors = errors_method(
+                include_url=False,
+                include_context=False,
+                include_input=False,
+            )
+        except TypeError:
+            errors = errors_method()
+        except Exception:  # noqa: BLE001 - the fallback remains centrally redacted
+            errors = []
+        rendered: list[str] = []
+        for error in errors if isinstance(errors, list) else []:
+            if not isinstance(error, Mapping):
+                continue
+            loc_parts = tuple(error.get("loc", ()))
+            loc = ".".join(str(part) for part in loc_parts)
+            if any(_sensitive_validation_segment(part) for part in loc_parts):
+                message = "Value is invalid; credential contents were redacted."
+            else:
+                message = redact_secrets(
+                    str(error.get("msg") or "Invalid configuration value."),
+                    known=known,
+                )
+            rendered.append(f"{loc}: {message}" if loc else message)
+        if rendered:
+            return "; ".join(rendered)
+    return redact_secrets(str(exc), known=known)
+
+
 def _normalize_bool(value: Any, path: str) -> bool:
     if isinstance(value, bool):
         return value
@@ -152,7 +255,36 @@ def _validate_string_headers(headers: object, *, context: str) -> dict[str, str]
                 f"{context} keys and values must be strings (got {key!r}: {val!r})."
             )
         out[key] = val
+    from jarn.config.secrets import (
+        is_reference,
+        is_sensitive_field_name,
+        looks_like_secret,
+    )
+
+    for key, val in out.items():
+        if val and not is_reference(val) and (
+            is_sensitive_field_name(key) or looks_like_secret(val)
+        ):
+            raise ConfigValidationError(
+                f"{context}.{key} contains a plaintext credential; use an "
+                "environment, keychain, or file reference."
+            )
     return out
+
+
+def _validate_secret_reference(value: Any, *, context: str) -> str | None:
+    if value is None or value == "":
+        return None if value is None else ""
+    if not isinstance(value, str):
+        raise ConfigValidationError(f"{context} must be a string reference.")
+    from jarn.config.secrets import is_reference
+
+    if not is_reference(value):
+        raise ConfigValidationError(
+            f"{context} contains a plaintext credential; use an environment, "
+            "keychain, or file reference."
+        )
+    return value
 
 
 class _StrictModel(BaseModel):
@@ -165,6 +297,11 @@ class ProviderConfigModel(_StrictModel):
     base_url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
     extra: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def _api_key(cls, value: Any) -> str | None:
+        return _validate_secret_reference(value, context="provider.api_key")
 
     @model_validator(mode="before")
     @classmethod
@@ -542,9 +679,7 @@ class MCPServerModel(_StrictModel):
     def _env(cls, value: Any) -> dict[str, str]:
         if value is None:
             return {}
-        if not isinstance(value, dict):
-            raise ConfigValidationError(f"MCP server 'env' must be a mapping (got {value!r}).")
-        return dict(value)
+        return _validate_string_headers(value, context="MCP server 'env'")
 
     @field_validator("enabled", mode="before")
     @classmethod
@@ -859,13 +994,7 @@ class SearchConfigModel(_StrictModel):
     @field_validator("api_key", mode="before")
     @classmethod
     def _api_key(cls, value: Any) -> str:
-        if value is None:
-            return ""
-        if not isinstance(value, str):
-            raise ConfigValidationError(
-                f"search.api_key must be a string (got {value!r})."
-            )
-        return value
+        return _validate_secret_reference(value, context="search.api_key") or ""
 
 
 class UpdatesConfigModel(_StrictModel):
@@ -884,13 +1013,7 @@ class GatewayTelegramConfigModel(_StrictModel):
     @field_validator("token", mode="before")
     @classmethod
     def _token(cls, value: Any) -> str:
-        if value is None:
-            return ""
-        if not isinstance(value, str):
-            raise ConfigValidationError(
-                f"gateway.telegram.token must be a string (got {value!r})."
-            )
-        return value
+        return _validate_secret_reference(value, context="gateway.telegram.token") or ""
 
     @field_validator("allowed_user_ids", mode="before")
     @classmethod
@@ -966,7 +1089,7 @@ class ConfigModel(_StrictModel):
     default_profile: str = "openrouter"
     default_model: str | None = None
     permission_mode: PermissionMode = PermissionMode.ASK
-    strict_secrets: bool = False
+    strict_secrets: bool = True
     hook_inherit_env: bool = False
     hook_global_require_trust: bool = False
     providers: dict[str, ProviderConfigModel] = Field(default_factory=dict)
@@ -1028,12 +1151,16 @@ class ConfigModel(_StrictModel):
 
 def _migrate_v0_to_v1(raw: dict[str, Any]) -> dict[str, Any]:
     """Upgrade version-0 (no ``config_version``) configs to version 1."""
-    out = dict(raw)
+    # deepcopy deliberately preserves ruamel ``CommentedMap`` nodes when the
+    # on-disk transactional migrator calls us.  A plain ``dict(raw)`` discarded
+    # the document's top-level comments even though migration otherwise claimed
+    # to preserve user customization.
+    out = deepcopy(raw)
     # v0 placed log_level at the top level; v1 nests it under observability.
     if "log_level" in out and "observability" not in out:
         out["observability"] = {"log_level": out.pop("log_level")}
     elif "log_level" in out:
-        obs = dict(out.get("observability") or {})
+        obs = deepcopy(out.get("observability") or {})
         obs.setdefault("log_level", out.pop("log_level"))
         out["observability"] = obs
     out["config_version"] = 1
@@ -1049,11 +1176,12 @@ def _migrate_v1_to_v2(raw: dict[str, Any]) -> dict[str, Any]:
     """
     import warnings
 
-    out = dict(raw)
+    out = deepcopy(raw)
     policy = out.get("policy")
     if isinstance(policy, dict) and "profile" in policy:
         dropped = policy["profile"]
-        new_policy = {k: v for k, v in policy.items() if k != "profile"}
+        new_policy = deepcopy(policy)
+        del new_policy["profile"]
         out["policy"] = new_policy
         preset_hint = (
             f" Use 'jarn --preset {dropped}' or '/preset {dropped}' instead."
@@ -1078,12 +1206,12 @@ def _migrate_v2_to_v3(raw: dict[str, Any]) -> dict[str, Any]:
     """
     import warnings
 
-    out = dict(raw)
+    out = deepcopy(raw)
     execution = out.get("execution")
     if isinstance(execution, dict) and "multimodal" in execution:
-        out["execution"] = {
-            k: v for k, v in execution.items() if k != "multimodal"
-        }
+        new_execution = deepcopy(execution)
+        del new_execution["multimodal"]
+        out["execution"] = new_execution
         warnings.warn(
             "execution.multimodal was removed and has been ignored; media reads "
             "are always available (subject to size/type gates). Remove it from "
@@ -1109,7 +1237,12 @@ def migrate_config(raw: dict[str, Any]) -> dict[str, Any]:
         raise ConfigValidationError(
             f"config_version must be an integer (got {version!r})."
         )
-    data = dict(raw)
+    if version > CURRENT_CONFIG_VERSION:
+        raise ConfigValidationError(
+            f"Unsupported config_version {version}; this J.A.R.N. supports up to "
+            f"{CURRENT_CONFIG_VERSION}. Upgrade J.A.R.N. before using this file."
+        )
+    data = deepcopy(raw)
     while version < CURRENT_CONFIG_VERSION:
         migrator = _MIGRATORS.get(version)
         if migrator is None:

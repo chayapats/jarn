@@ -194,6 +194,25 @@ def _replace(tmp: Path, path: Path) -> None:
             time.sleep(_REPLACE_RETRY_SECS)
 
 
+def _fsync_directory(path: Path) -> None:
+    """Best-effort persist the rename itself on filesystems that support it."""
+
+    if os.name == "nt":  # Windows does not support opening directories this way.
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags)
+        os.fsync(descriptor)
+    except OSError:
+        # Some network/FUSE filesystems reject directory fsync even though the
+        # atomic rename is valid. Publication must still remain usable there.
+        pass
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def atomic_write_text(
     path: Path,
     text: str,
@@ -231,12 +250,34 @@ def atomic_write_text(
     if mode is None:
         with contextlib.suppress(OSError):
             mode = stat.S_IMODE(path.stat().st_mode)
+    descriptor: int | None = None
     try:
-        tmp.write_text(text, encoding=encoding)
+        # Create the inode with a private ceiling *before* writing the first
+        # byte. `Path.write_text(); chmod(0600)` leaves secret content readable
+        # under the process umask for a small but real window. O_EXCL also makes
+        # a guessed/symlinked temp name fail closed.
+        create_mode = mode if mode is not None else 0o600
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_BINARY", 0)
+        descriptor = os.open(tmp, flags, create_mode)
         if mode is not None:
-            tmp.chmod(mode)
+            if hasattr(os, "fchmod"):
+                os.fchmod(descriptor, mode)
+            else:  # pragma: no cover - Windows has no descriptor chmod.
+                os.chmod(tmp, mode)
+        with os.fdopen(descriptor, "w", encoding=encoding) as handle:
+            descriptor = None  # fdopen owns and closes it from here.
+            handle.write(text)
+            handle.flush()
+            # Flush file content before activation. Without this, a power loss
+            # can leave a successfully renamed but empty/truncated inode.
+            os.fsync(handle.fileno())
         _replace(tmp, path)
+        _fsync_directory(path.parent)
     except BaseException:
+        if descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
         with contextlib.suppress(OSError):
             tmp.unlink()
         raise

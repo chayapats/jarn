@@ -276,7 +276,6 @@ def test_disallowed_provider_extra_rejected_at_load(tmp_path):
                 "providers": {
                     "openai": {
                         "type": "openai",
-                        "api_key": "sk-test",
                         "default_headers": {"X-Evil": "yes"},
                     }
                 }

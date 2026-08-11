@@ -558,13 +558,14 @@ async def test_disabled_servers_ignored(monkeypatch):
     assert result.health == {}  # disabled server not probed at all
 
 
-def test_mcp_http_headers_round_trip(tmp_path):
+def test_mcp_http_headers_round_trip(tmp_path, monkeypatch):
     """HTTP MCP auth headers survive config load and to_connection()."""
     import yaml
 
     from jarn.config.loader import load_config
     from jarn.extensibility.mcp import to_connection
 
+    monkeypatch.setenv("MCP_REMOTE_AUTH", "Bearer secret")
     gp = tmp_path / "g.yaml"
     gp.write_text(
         yaml.safe_dump(
@@ -574,7 +575,7 @@ def test_mcp_http_headers_round_trip(tmp_path):
                         "name": "remote",
                         "transport": "http",
                         "url": "https://mcp.example/v1",
-                        "headers": {"Authorization": "Bearer secret"},
+                        "headers": {"Authorization": "${MCP_REMOTE_AUTH}"},
                     }
                 ]
             }
@@ -583,7 +584,7 @@ def test_mcp_http_headers_round_trip(tmp_path):
     )
     cfg = load_config(global_path=gp, project_path=None)
     server = cfg.mcp_servers[0]
-    assert server.headers == {"Authorization": "Bearer secret"}
+    assert server.headers == {"Authorization": "${MCP_REMOTE_AUTH}"}
     conn = to_connection(server)
     assert conn["headers"] == {"Authorization": "Bearer secret"}
     assert conn["transport"] == "streamable_http"

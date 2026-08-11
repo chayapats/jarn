@@ -14,6 +14,21 @@ from jarn.config.schema import GitConfig, PermissionMode
 from jarn.tui.controller import Controller
 
 
+@pytest.fixture(autouse=True)
+def _isolate_controller_mechanics_from_live_catalog(monkeypatch):
+    """This module tests controller lifecycle mechanics, not provider I/O.
+
+    The live/cached cross-provider pre-turn contract has dedicated coverage in
+    ``test_model_catalog.py``.  Keep these tests deterministic and offline.
+    """
+
+    monkeypatch.setattr(
+        Controller,
+        "validate_selected_model_catalog",
+        lambda _self: (True, "test catalog verified"),
+    )
+
+
 def _controller(tmp_path, monkeypatch, base_config):
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     root = tmp_path / "proj"
@@ -66,6 +81,48 @@ def test_help_text_has_no_stale_features(tmp_path, monkeypatch, base_config):
     text = ctrl.handle_command("help", "").text
     for stale in ("Ctrl+T", "/mouse", "PageUp", "PageDown", "side panel"):
         assert stale not in text, f"/help still mentions removed feature: {stale}"
+    ctrl.close()
+
+
+def test_required_general_user_aliases_are_discoverable_and_work(
+    tmp_path, monkeypatch, base_config
+):
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    help_text = ctrl.handle_command("help", "").text
+    for name in ("/status", "/new", "/login", "/logout", "/exit"):
+        assert name in help_text
+
+    status = ctrl.handle_command("status", "").text
+    assert str(ctrl.project_root) in status
+    assert "provider:" in status
+    assert "authentication:" in status
+    assert "reasoning:" in status
+    assert "permissions:" in status
+
+    old_thread = ctrl.thread_id
+    fresh = ctrl.handle_command("new", "")
+    assert fresh.clear_screen
+    assert ctrl.thread_id != old_thread
+    assert ctrl.handle_command("exit", "").quit
+    assert "jarn auth login" in ctrl.handle_command("login", "").text
+    assert "jarn auth logout" in ctrl.handle_command("logout", "").text
+    ctrl.close()
+
+
+def test_unknown_slash_command_offers_close_match(tmp_path, monkeypatch, base_config):
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    text = ctrl.handle_command("modle", "").text
+    assert "Unknown command" in text
+    assert "/model" in text
+    ctrl.close()
+
+
+def test_permissions_uses_plain_language_mode_name(tmp_path, monkeypatch, base_config):
+    base_config.permission_mode = PermissionMode.ASK
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    text = ctrl.handle_command("permissions", "").text
+    assert "Ask before changes" in text
+    assert "(ask)" in text
     ctrl.close()
 
 
@@ -1302,8 +1359,10 @@ def _repo_with_commit(tmp_path: Path) -> Path:
     return root
 
 
-def test_undo_enabled_normal_behavior(tmp_path, monkeypatch, base_config):
-    """/undo with autocheckpoint ON and a snapshot present must succeed."""
+def test_sync_undo_previews_but_cannot_bypass_confirmation(
+    tmp_path, monkeypatch, base_config
+):
+    """The synchronous slash-command registry is preview-only and non-mutating."""
     base_config.git = GitConfig(autocheckpoint=True)
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
 
@@ -1319,10 +1378,10 @@ def test_undo_enabled_normal_behavior(tmp_path, monkeypatch, base_config):
     (root / "file.txt").write_text("after\n", encoding="utf-8")
 
     result = ctrl.handle_command("undo", "")
-    assert result.text.lower().startswith("undone"), (
-        f"Expected 'Undone. ...' but got: {result.text!r}"
-    )
-    assert (root / "file.txt").read_text(encoding="utf-8") == "before\n"
+    assert result.text.lower().startswith("undo preview")
+    assert "file.txt" in result.text
+    assert "confirmation required" in result.text.lower()
+    assert (root / "file.txt").read_text(encoding="utf-8") == "after\n"
     ctrl.close()
 
 
@@ -1472,15 +1531,19 @@ def test_discover_models_queries_local_ollama_provider(tmp_path, monkeypatch, ba
 
 def test_discover_models_empty_when_endpoint_unreachable(tmp_path, monkeypatch, base_config):
     """Unreachable endpoint -> [] so the caller falls back to manual entry."""
-    import httpx
+    from jarn.catalog import ModelCatalogCache, ModelCatalogService
+    from jarn.providers import RemoteModelDiscoveryError
 
     ctrl = _controller(tmp_path, monkeypatch, base_config)
+    ctrl._model_catalog_service = ModelCatalogService(
+        cache=ModelCatalogCache(tmp_path / "catalog-cache")
+    )
+    monkeypatch.setattr(
+        "jarn.catalog.service.fetch_remote_model_catalog",
+        lambda *_a, **_k: (_ for _ in ()).throw(RemoteModelDiscoveryError("no endpoint")),
+    )
 
-    def _boom(*a, **k):
-        raise httpx.ConnectError("no endpoint")
-
-    with patch("httpx.get", _boom):
-        assert ctrl.discover_models() == []
+    assert ctrl.discover_models() == []
     ctrl.close()
 
 
@@ -2233,7 +2296,7 @@ async def test_aclose_serializes_after_live_caller_no_post_close_build(
 
 @pytest.mark.asyncio
 async def test_async_undo_settles_then_reverts(tmp_path, monkeypatch, base_config):
-    """await controller.undo() settles any pending snapshot before mutating."""
+    """A confirmed controller undo settles, previews, then mutates."""
     base_config.git = GitConfig(autocheckpoint=True)
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     root = _repo_with_commit(tmp_path)
@@ -2250,10 +2313,97 @@ async def test_async_undo_settles_then_reverts(tmp_path, monkeypatch, base_confi
     ctrl.checkpoint_manager.snapshot("test-turn")
     (root / "file.txt").write_text("after\n", encoding="utf-8")
 
-    result = await ctrl.undo()
+    previews = []
+
+    async def _confirm(preview):
+        previews.append(preview)
+        return True
+
+    result = await ctrl.undo(confirm=_confirm)
     assert settled == [True]
+    assert len(previews) == 1
+    assert previews[0].file_count == 1
+    assert any("file.txt" in line for line in previews[0].files)
     assert result.text.lower().startswith("undone")
     assert (root / "file.txt").read_text(encoding="utf-8") == "before\n"
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_async_undo_cancel_is_safe_noop(tmp_path, monkeypatch, base_config):
+    """Declining the displayed preview leaves files and stacks untouched."""
+    base_config.git = GitConfig(autocheckpoint=True)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = _repo_with_commit(tmp_path)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    ctrl = Controller(base_config, root)
+    tracked = root / "file.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    snap = ctrl.checkpoint_manager.snapshot("test-turn")
+    assert snap.ok
+    tracked.write_text("after\n", encoding="utf-8")
+
+    async def _decline(preview):
+        assert any("file.txt" in line for line in preview.files)
+        return False
+
+    result = await ctrl.undo(confirm=_decline)
+
+    assert "cancelled" in result.text.lower()
+    assert "no files" in result.text.lower()
+    assert tracked.read_text(encoding="utf-8") == "after\n"
+    assert ctrl.checkpoint_manager.list()[0].sha == snap.sha
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_async_undo_without_confirm_callback_only_previews(
+    tmp_path, monkeypatch, base_config
+):
+    """A new frontend cannot omit the confirmation callback and restore files."""
+    base_config.git = GitConfig(autocheckpoint=True)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = _repo_with_commit(tmp_path)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    ctrl = Controller(base_config, root)
+    tracked = root / "file.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    assert ctrl.checkpoint_manager.snapshot("test-turn").ok
+    tracked.write_text("after\n", encoding="utf-8")
+
+    result = await ctrl.undo()
+
+    assert result.text.lower().startswith("undo preview")
+    assert "confirmation required" in result.text.lower()
+    assert tracked.read_text(encoding="utf-8") == "after\n"
+    ctrl.close()
+
+
+@pytest.mark.asyncio
+async def test_async_undo_refuses_stale_confirmed_preview(
+    tmp_path, monkeypatch, base_config
+):
+    """Edits made while confirming require a new preview."""
+    base_config.git = GitConfig(autocheckpoint=True)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = _repo_with_commit(tmp_path)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    ctrl = Controller(base_config, root)
+    tracked = root / "file.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    snap = ctrl.checkpoint_manager.snapshot("test-turn")
+    assert snap.ok
+    tracked.write_text("previewed\n", encoding="utf-8")
+
+    async def _change_then_confirm(_preview):
+        tracked.write_text("changed while prompting\n", encoding="utf-8")
+        return True
+
+    result = await ctrl.undo(confirm=_change_then_confirm)
+
+    assert "changed after preview" in result.text.lower()
+    assert tracked.read_text(encoding="utf-8") == "changed while prompting\n"
+    assert ctrl.checkpoint_manager.list()[0].sha == snap.sha
     ctrl.close()
 
 

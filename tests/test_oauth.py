@@ -12,6 +12,7 @@ All network is mocked — no live HTTP in CI.
 from __future__ import annotations
 
 import contextlib
+import os
 import socket
 import sys
 import threading
@@ -26,6 +27,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # test_pkce_rfc_vector
 # ---------------------------------------------------------------------------
+
 
 def test_pkce_rfc_vector():
     """pkce_challenge must match the RFC 7636 Appendix B.2 S256 test vector.
@@ -43,6 +45,7 @@ def test_pkce_rfc_vector():
 # ---------------------------------------------------------------------------
 # test_loopback_receives_code
 # ---------------------------------------------------------------------------
+
 
 def test_loopback_receives_code():
     """Loopback server handles GET /callback?code=X and returns the code.
@@ -95,6 +98,7 @@ def test_loopback_timeout_raises():
 # test_exchange_and_keychain_store
 # ---------------------------------------------------------------------------
 
+
 def test_exchange_and_keychain_store(monkeypatch, tmp_path):
     """Code exchange posts the verifier and stores the key via the keychain path.
 
@@ -139,6 +143,7 @@ def test_exchange_and_keychain_store(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 # test_login_with_existing_key_prompts
 # ---------------------------------------------------------------------------
+
 
 def test_login_with_existing_key_prompts(monkeypatch):
     """When a key already resolves, login_openrouter asks replace/keep.
@@ -207,6 +212,7 @@ def test_login_with_existing_key_prompts(monkeypatch):
 # Wizard integration tests
 # ---------------------------------------------------------------------------
 
+
 def test_wizard_plain_openrouter_shows_oauth_option(monkeypatch):
     """Plain wizard _configure_key for openrouter offers 'oauth' as a choice.
 
@@ -220,6 +226,7 @@ def test_wizard_plain_openrouter_shows_oauth_option(monkeypatch):
     def _fake_login(**_kwargs):
         login_calls.append(1)
         from jarn.onboarding.oauth import LoginResult
+
         return LoginResult(
             reference="keychain:jarn/openrouter",
             masked_key="sk-…test",
@@ -248,18 +255,12 @@ def test_wizard_plain_openrouter_shows_oauth_option(monkeypatch):
     )
 
 
-def test_wizard_tui_openrouter_storage_shows_login_first(monkeypatch):
-    """TUI wizard _STORAGE list for openrouter has 'oauth' as the first entry."""
+def test_wizard_tui_does_not_expose_non_transactional_oauth_storage():
+    """Setup must not invoke eager OAuth before its transactional commit gate."""
     from jarn.onboarding import tui_wizard
 
-    # The constant _OPENROUTER_STORAGE must have 'oauth' as first key.
-    assert hasattr(tui_wizard, "_OPENROUTER_STORAGE"), (
-        "tui_wizard must expose _OPENROUTER_STORAGE for openrouter provider"
-    )
-    first_key = tui_wizard._OPENROUTER_STORAGE[0][0]
-    assert first_key == "oauth", (
-        f"First storage option for openrouter must be 'oauth', got {first_key!r}"
-    )
+    assert not hasattr(tui_wizard, "_OPENROUTER_STORAGE")
+    assert [key for key, _label in tui_wizard._STORAGE] == ["env", "keychain"]
 
 
 # ===========================================================================
@@ -347,10 +348,7 @@ def test_login_env_key_prompts_and_keep_skips_browser(monkeypatch):
     cfg = paths.global_config_path()
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text(
-        "providers:\n"
-        "  openrouter:\n"
-        "    type: openrouter\n"
-        "    api_key: ${OPENROUTER_API_KEY}\n",
+        "providers:\n  openrouter:\n    type: openrouter\n    api_key: ${OPENROUTER_API_KEY}\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-fromenv1234567890abcd")
@@ -388,9 +386,7 @@ def test_cmd_login_skips_config_write_when_kept(monkeypatch):
     from jarn.onboarding.oauth import LoginResult
 
     writes: list[str] = []
-    monkeypatch.setattr(
-        cli, "_write_openrouter_key_ref", lambda ref: writes.append(ref) or True
-    )
+    monkeypatch.setattr(cli, "_write_openrouter_key_ref", lambda ref: writes.append(ref) or True)
     monkeypatch.setattr(
         "jarn.onboarding.oauth.login_openrouter",
         lambda: LoginResult(
@@ -404,6 +400,20 @@ def test_cmd_login_skips_config_write_when_kept(monkeypatch):
     rc = cli._cmd_login()
     assert rc == 0
     assert writes == [], "config must not be rewritten when the key is kept"
+
+
+def test_cmd_login_timeout_uses_timeout_exit_and_stable_anatomy(monkeypatch, capsys):
+    from jarn import cli
+
+    monkeypatch.setattr(
+        "jarn.onboarding.oauth.login_openrouter",
+        lambda: (_ for _ in ()).throw(TimeoutError("callback deadline reached")),
+    )
+
+    assert cli._cmd_login() == 124
+    error = capsys.readouterr().err
+    assert "JARN-NET-001" in error
+    assert all(field in error for field in ("Cause:", "Component:", "Next:", "Log:"))
 
 
 def test_write_openrouter_key_ref_refuses_on_malformed_config(monkeypatch, capsys, tmp_path):
@@ -423,6 +433,70 @@ def test_write_openrouter_key_ref_refuses_on_malformed_config(monkeypatch, capsy
     assert cfg.read_text(encoding="utf-8") == malformed, "malformed config must be untouched"
     err = capsys.readouterr().err
     assert "config" in err.lower(), "must warn on stderr about the unparseable config"
+
+
+def test_write_openrouter_key_ref_rolls_back_mid_write_failure(monkeypatch, tmp_path):
+    """A failed activation keeps the exact prior config retryable and backed up."""
+    from jarn import cli
+    from jarn.config import paths
+    from jarn.util import atomic
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "jarn-home"))
+    cfg = paths.global_config_path()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    original = (
+        b"config_version: 3\n"
+        b"default_profile: anthropic\n"
+        b"default_model: anthropic/claude-sonnet-4-5\n"
+        b"providers:\n"
+        b"  anthropic:\n"
+        b"    type: anthropic\n"
+        b"    api_key: ${ANTHROPIC_API_KEY}\n"
+        b"ui:\n"
+        b"  theme: high-contrast\n"
+    )
+    cfg.write_bytes(original)
+    real_atomic_write = atomic.atomic_write_text
+    calls = 0
+
+    def fail_after_partial(path, text, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            path.write_text("config_version:", encoding="utf-8")
+            raise OSError("ENOSPC during activation")
+        return real_atomic_write(path, text, **kwargs)
+
+    monkeypatch.setattr("jarn.util.atomic.atomic_write_text", fail_after_partial)
+
+    assert cli._write_openrouter_key_ref("keychain:jarn/openrouter") is False
+    assert cfg.read_bytes() == original
+    assert cfg.with_name("config.yaml.bak").read_bytes() == original
+
+
+def test_write_openrouter_key_ref_is_private_and_preserves_custom_config(monkeypatch, tmp_path):
+    from jarn import cli
+    from jarn.config import paths
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "jarn-home"))
+    cfg = paths.global_config_path()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(
+        "config_version: 3\n"
+        "default_profile: anthropic\n"
+        "providers:\n"
+        "  anthropic: {type: anthropic, api_key: '${ANTHROPIC_API_KEY}'}\n"
+        "ui: {theme: high-contrast}\n",
+        encoding="utf-8",
+    )
+
+    assert cli._write_openrouter_key_ref("keychain:jarn/openrouter") is True
+    rendered = cfg.read_text(encoding="utf-8")
+    assert "default_profile: anthropic" in rendered
+    assert "theme: high-contrast" in rendered
+    assert "api_key: keychain:jarn/openrouter" in rendered
+    if os.name != "nt":
+        assert cfg.stat().st_mode & 0o777 == 0o600
 
 
 # ---------------------------------------------------------------------------
@@ -643,7 +717,7 @@ def test_authorize_url_callback_carries_the_nonce_path(monkeypatch):
     query = urllib.parse.parse_qs(urllib.parse.urlparse(opened[0]).query)
     callback = urllib.parse.urlparse(query["callback_url"][0])
     assert callback.path.startswith("/callback/")
-    assert len(callback.path[len("/callback/"):]) >= 32
+    assert len(callback.path[len("/callback/") :]) >= 32
     assert query["code_challenge_method"] == ["S256"]
 
 
@@ -717,9 +791,7 @@ def test_a_non_ascii_callback_path_is_rejected_not_crashed():
     server.handle_error = lambda request, addr: errors.append(sys.exc_info()[1])  # type: ignore[method-assign]
 
     client = socket.create_connection(("127.0.0.1", port), timeout=5)
-    client.sendall(
-        "GET /callback/éé?code=x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".encode()
-    )
+    client.sendall("GET /callback/éé?code=x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".encode())
 
     with pytest.raises(TimeoutError):
         _wait_for_callback(server, timeout=0.5)

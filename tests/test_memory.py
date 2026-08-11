@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import time
+from pathlib import Path
+
 import pytest
 
 from jarn.memory.context import (
@@ -10,7 +18,13 @@ from jarn.memory.context import (
     memory_index_context,
     write_jarn_md,
 )
-from jarn.memory.sessions import SessionIndex, default_db_path, new_thread_id
+from jarn.memory.sessions import (
+    SessionIndex,
+    TranscriptWriter,
+    UnsafeSessionExportError,
+    default_db_path,
+    new_thread_id,
+)
 from jarn.memory.store import Memory, MemoryStore, slugify  # noqa: F401 (slugify used indirectly)
 
 # ---------------------------------------------------------------------------
@@ -24,6 +38,7 @@ def _make_controller(tmp_path, monkeypatch, base_config, *, trusted: bool = True
     root = tmp_path / "proj"
     (root / ".jarn").mkdir(parents=True)
     from jarn.tui.controller import Controller
+
     return Controller(base_config, root, project_trusted=trusted)
 
 
@@ -34,7 +49,9 @@ def test_slugify():
 
 def test_save_and_load_memory(tmp_path):
     store = MemoryStore(tmp_path / "memory")
-    mem = Memory(name="Likes TOML", description="prefers toml", body="The user likes config.", type="user")
+    mem = Memory(
+        name="Likes TOML", description="prefers toml", body="The user likes config.", type="user"
+    )
     path = store.save(mem)
     assert path.is_file()
     loaded = store.load_all()
@@ -94,6 +111,344 @@ def test_session_index_roundtrip(tmp_path):
     assert sessions[0].title == "first task"  # title sticks from first prompt
     assert sessions[0].updated_at == 300.0
     assert len(sessions) == 2
+
+
+def test_session_index_tracks_recovery_metadata_and_completion(tmp_path):
+    idx = SessionIndex(tmp_path / "state.sqlite")
+    idx.touch(
+        "thai-thread",
+        "แก้ระบบติดตั้ง",
+        when=100.0,
+        project_root=tmp_path / "โปรเจกต์",
+        model="codex_subscription/gpt-test",
+    )
+    interrupted = idx.latest_incomplete()
+    assert interrupted is not None
+    assert interrupted.thread_id == "thai-thread"
+    assert interrupted.project_root.endswith("โปรเจกต์")
+    assert interrupted.model == "codex_subscription/gpt-test"
+
+    assert idx.mark_complete("thai-thread", when=101.0)
+    assert idx.latest_incomplete() is None
+    assert idx.get("thai-thread").state == "complete"
+
+
+def test_session_index_migrates_legacy_table_without_data_loss(tmp_path):
+    db = tmp_path / "state.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE jarn_sessions "
+            "(thread_id TEXT PRIMARY KEY, title TEXT NOT NULL, updated_at REAL NOT NULL)"
+        )
+        conn.execute("INSERT INTO jarn_sessions VALUES ('old', 'legacy', 1.0)")
+
+    idx = SessionIndex(db)
+    old = idx.get("old")
+    assert old is not None
+    assert old.title == "legacy"
+    assert old.state == "complete"
+
+
+def test_session_export_is_redacted_atomic_and_delete_removes_owned_data(tmp_path):
+    idx = SessionIndex(tmp_path / "state.sqlite")
+    idx.touch("t1", "secret test", when=1.0)
+    transcript = idx.transcript_path("t1")
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(
+        json.dumps({"type": "user", "text": "token sk-" + "x" * 40}) + "\n",
+        encoding="utf-8",
+    )
+    destination = tmp_path / "exports" / "t1.jsonl"
+    assert idx.export("t1", destination) == destination.resolve()
+    assert "sk-" + "x" * 40 not in destination.read_text(encoding="utf-8")
+    assert idx.delete("t1")
+    assert idx.get("t1") is None
+    assert not transcript.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs Windows privileges")
+def test_session_export_refuses_source_and_destination_symlinks_without_data_loss(
+    tmp_path: Path,
+) -> None:
+    idx = SessionIndex(tmp_path / "state.sqlite")
+    idx.touch("safe-export", "safe export", when=1.0)
+    transcript = idx.transcript_path("safe-export")
+    transcript.parent.mkdir(parents=True)
+
+    outside_source = tmp_path / "outside-source.jsonl"
+    outside_source_bytes = b'{"type":"user","text":"outside"}\n'
+    outside_source.write_bytes(outside_source_bytes)
+    transcript.symlink_to(outside_source)
+    refused_output = tmp_path / "must-not-exist.jsonl"
+
+    with pytest.raises(UnsafeSessionExportError, match="symbolic-link transcript"):
+        idx.export("safe-export", refused_output)
+
+    assert outside_source.read_bytes() == outside_source_bytes
+    assert transcript.is_symlink()
+    assert not refused_output.exists()
+
+    transcript.unlink()
+    transcript.write_text('{"type":"user","text":"safe"}\n', encoding="utf-8")
+    victim = tmp_path / "outside-important.txt"
+    victim_bytes = b"DO NOT OVERWRITE\n"
+    victim.write_bytes(victim_bytes)
+    destination = tmp_path / "export.jsonl"
+    destination.symlink_to(victim)
+
+    with pytest.raises(UnsafeSessionExportError, match="export destination"):
+        idx.export("safe-export", destination)
+
+    assert victim.read_bytes() == victim_bytes
+    assert destination.is_symlink()
+    assert not list(tmp_path.glob(".jarn-session-export-*.tmp"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs Windows privileges")
+def test_session_export_refuses_symlinked_source_or_destination_parent(
+    tmp_path: Path,
+) -> None:
+    idx = SessionIndex(tmp_path / "state.sqlite")
+    idx.touch("parent-export", "parent export", when=1.0)
+    transcript = idx.transcript_path("parent-export")
+    outside_sessions = tmp_path / "outside-sessions"
+    outside_sessions.mkdir()
+    (outside_sessions / transcript.name).write_text(
+        '{"type":"user","text":"outside"}\n', encoding="utf-8"
+    )
+    transcript.parent.symlink_to(outside_sessions)
+
+    with pytest.raises(UnsafeSessionExportError, match="transcript directory"):
+        idx.export("parent-export", tmp_path / "unused.jsonl")
+
+    transcript.parent.unlink()
+    transcript.parent.mkdir()
+    transcript.write_text('{"type":"user","text":"safe"}\n', encoding="utf-8")
+    outside_exports = tmp_path / "outside-exports"
+    outside_exports.mkdir()
+    victim = outside_exports / "victim.jsonl"
+    victim_bytes = b"PRESERVE ME\n"
+    victim.write_bytes(victim_bytes)
+    linked_parent = tmp_path / "linked-exports"
+    linked_parent.symlink_to(outside_exports, target_is_directory=True)
+
+    with pytest.raises(UnsafeSessionExportError, match="export parent"):
+        idx.export("parent-export", linked_parent / "victim.jsonl")
+
+    assert victim.read_bytes() == victim_bytes
+    assert linked_parent.is_symlink()
+
+
+def _seed_session_delete_rows(db: Path, thread_id: str) -> None:
+    with sqlite3.connect(db) as conn:
+        for table in ("checkpoint_writes", "writes", "checkpoint_blobs", "checkpoints"):
+            conn.execute(f"CREATE TABLE {table} (thread_id TEXT, payload TEXT)")
+            conn.execute(
+                f"INSERT INTO {table} (thread_id, payload) VALUES (?, 'keep')",
+                (thread_id,),
+            )
+
+
+def _session_delete_row_counts(db: Path, thread_id: str) -> dict[str, int]:
+    with sqlite3.connect(db) as conn:
+        return {
+            table: int(
+                conn.execute(
+                    f"SELECT count(*) FROM {table} WHERE thread_id=?", (thread_id,)
+                ).fetchone()[0]
+            )
+            for table in ("checkpoint_writes", "writes", "checkpoint_blobs", "checkpoints")
+        }
+
+
+def test_session_delete_unlink_failure_restores_transcript_and_allows_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "state.sqlite"
+    idx = SessionIndex(db)
+    idx.touch("retry-me", "retry deletion", when=1.0)
+    transcript = idx.transcript_path("retry-me")
+    transcript.parent.mkdir(parents=True)
+    original = b'{"type":"user","text":"keep me retryable"}\n'
+    transcript.write_bytes(original)
+    _seed_session_delete_rows(db, "retry-me")
+    real_unlink = Path.unlink
+
+    def fail_tombstone_unlink(path: Path, *args, **kwargs) -> None:
+        if path.name == ".retry-me.jsonl.delete-pending":
+            raise PermissionError("injected unlink refusal")
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_tombstone_unlink)
+
+    assert idx.delete("retry-me") is False
+    assert idx.get("retry-me") is not None
+    assert transcript.read_bytes() == original
+    assert not transcript.with_name(".retry-me.jsonl.delete-pending").exists()
+    assert _session_delete_row_counts(db, "retry-me") == {
+        "checkpoint_writes": 1,
+        "writes": 1,
+        "checkpoint_blobs": 1,
+        "checkpoints": 1,
+    }
+
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    assert idx.delete("retry-me") is True
+    assert idx.get("retry-me") is None
+    assert not transcript.exists()
+    assert _session_delete_row_counts(db, "retry-me") == {
+        "checkpoint_writes": 0,
+        "writes": 0,
+        "checkpoint_blobs": 0,
+        "checkpoints": 0,
+    }
+
+
+def test_session_delete_staging_failure_never_deletes_database_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "state.sqlite"
+    idx = SessionIndex(db)
+    idx.touch("stage-me", "stage deletion", when=1.0)
+    transcript = idx.transcript_path("stage-me")
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("one durable line\n", encoding="utf-8")
+    _seed_session_delete_rows(db, "stage-me")
+    real_replace = os.replace
+
+    def fail_staging(source, destination) -> None:
+        if Path(source) == transcript and Path(destination).name.endswith(".delete-pending"):
+            raise PermissionError("injected rename refusal")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail_staging)
+
+    assert idx.delete("stage-me") is False
+    assert idx.get("stage-me") is not None
+    assert transcript.read_text(encoding="utf-8") == "one durable line\n"
+    assert _session_delete_row_counts(db, "stage-me") == {
+        "checkpoint_writes": 1,
+        "writes": 1,
+        "checkpoint_blobs": 1,
+        "checkpoints": 1,
+    }
+
+
+def test_session_delete_recovers_staged_transcript_after_interrupted_attempt(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "state.sqlite"
+    idx = SessionIndex(db)
+    idx.touch("recover-me", "recover deletion", when=1.0)
+    transcript = idx.transcript_path("recover-me")
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("recoverable\n", encoding="utf-8")
+    tombstone = transcript.with_name(".recover-me.jsonl.delete-pending")
+    os.replace(transcript, tombstone)
+
+    assert idx.delete("recover-me") is True
+    assert idx.get("recover-me") is None
+    assert not transcript.exists()
+    assert not tombstone.exists()
+
+
+def test_session_delete_refuses_live_cross_process_writer_then_removes_all_data(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "state.sqlite"
+    idx = SessionIndex(db)
+    idx.touch("active-writer", "live session", when=1.0)
+    _seed_session_delete_rows(db, "active-writer")
+    sessions_dir = idx.transcript_path("active-writer").parent
+    ready = tmp_path / "writer.ready"
+    release = tmp_path / "writer.release"
+    child_code = """
+import sys
+import time
+from pathlib import Path
+from jarn.memory.sessions import TranscriptWriter
+
+sessions_dir, ready, release = map(Path, sys.argv[1:])
+writer = TranscriptWriter("active-writer", sessions_dir=sessions_dir)
+writer.append({"type": "user", "text": "held by child"})
+ready.write_text("ready", encoding="utf-8")
+while not release.exists():
+    time.sleep(0.01)
+writer.close()
+"""
+    process = subprocess.Popen(  # noqa: S603 - fixed interpreter/test fixture
+        [sys.executable, "-c", child_code, str(sessions_dir), str(ready), str(release)],
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        while not ready.exists() and process.poll() is None:
+            if time.monotonic() >= deadline:
+                pytest.fail("child transcript writer did not become ready")
+            time.sleep(0.01)
+        if process.poll() is not None:
+            pytest.fail(f"child transcript writer exited early: {process.stderr.read()}")
+
+        started = time.monotonic()
+        assert idx.delete("active-writer") is False
+        assert time.monotonic() - started < 1.0
+        assert idx.get("active-writer") is not None
+        assert idx.transcript_path("active-writer").read_text(encoding="utf-8") == (
+            '{"type": "user", "text": "held by child"}\n'
+        )
+        assert _session_delete_row_counts(db, "active-writer") == {
+            "checkpoint_writes": 1,
+            "writes": 1,
+            "checkpoint_blobs": 1,
+            "checkpoints": 1,
+        }
+    finally:
+        release.write_text("close", encoding="utf-8")
+        try:
+            process.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5.0)
+
+    stderr = process.stderr.read() if process.stderr is not None else ""
+    assert process.returncode == 0, stderr
+    assert idx.delete("active-writer") is True
+    assert idx.get("active-writer") is None
+    assert not idx.transcript_path("active-writer").exists()
+    assert _session_delete_row_counts(db, "active-writer") == {
+        "checkpoint_writes": 0,
+        "writes": 0,
+        "checkpoint_blobs": 0,
+        "checkpoints": 0,
+    }
+
+
+def test_session_delete_refuses_live_in_process_writer_without_waiting(
+    tmp_path: Path,
+) -> None:
+    idx = SessionIndex(tmp_path / "state.sqlite")
+    idx.touch("same-process", "live session", when=1.0)
+    writer = TranscriptWriter(
+        "same-process",
+        sessions_dir=idx.transcript_path("same-process").parent,
+    )
+    writer.write_user("still active", ts=1.0)
+
+    started = time.monotonic()
+    try:
+        assert idx.delete("same-process") is False
+        assert time.monotonic() - started < 1.0
+        assert idx.get("same-process") is not None
+        assert idx.transcript_path("same-process").is_file()
+    finally:
+        writer.close()
+
+    assert idx.delete("same-process") is True
+    assert idx.get("same-process") is None
+    assert not idx.transcript_path("same-process").exists()
 
 
 def test_write_jarn_md_and_context(tmp_path, monkeypatch):
@@ -213,6 +568,7 @@ def base_config():
         ProviderType,
         RoutingConfig,
     )
+
     return Config(
         default_profile="openrouter",
         permission_mode=PermissionMode.ASK,
@@ -248,16 +604,19 @@ def test_memory_dump_shows_global_index(tmp_path, monkeypatch, base_config):
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     # Write a global memory entry
     global_store = MemoryStore.global_store()
-    global_store.save(Memory(
-        name="Coding style",
-        description="Use single quotes",
-        body="Always use single quotes in Python.",
-        type="project",
-    ))
+    global_store.save(
+        Memory(
+            name="Coding style",
+            description="Use single quotes",
+            body="Always use single quotes in Python.",
+            type="project",
+        )
+    )
 
     root = tmp_path / "proj"
     (root / ".jarn").mkdir(parents=True)
     from jarn.tui.controller import Controller
+
     ctrl = Controller(base_config, root)
     result = ctrl.handle_command("memory", "dump")
     ctrl.close()
@@ -274,14 +633,17 @@ def test_memory_dump_shows_project_index(tmp_path, monkeypatch, base_config):
 
     project_store = MemoryStore.project_store(root)
     assert project_store is not None
-    project_store.save(Memory(
-        name="Project convention",
-        description="Use pytest",
-        body="All tests must use pytest.",
-        type="project",
-    ))
+    project_store.save(
+        Memory(
+            name="Project convention",
+            description="Use pytest",
+            body="All tests must use pytest.",
+            type="project",
+        )
+    )
 
     from jarn.tui.controller import Controller
+
     ctrl = Controller(base_config, root, project_trusted=True)
     result = ctrl.handle_command("memory", "dump")
     ctrl.close()
@@ -295,9 +657,12 @@ def test_memory_dump_shows_context_file(tmp_path, monkeypatch, base_config):
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     root = tmp_path / "proj"
     (root / ".jarn").mkdir(parents=True)
-    (root / "JARN.md").write_text("# My Project\n\nDo not touch the legacy module.", encoding="utf-8")
+    (root / "JARN.md").write_text(
+        "# My Project\n\nDo not touch the legacy module.", encoding="utf-8"
+    )
 
     from jarn.tui.controller import Controller
+
     ctrl = Controller(base_config, root, project_trusted=True)
     result = ctrl.handle_command("memory", "dump")
     ctrl.close()
@@ -326,14 +691,17 @@ def test_memory_dump_untrusted_skips_project(tmp_path, monkeypatch, base_config)
 
     project_store = MemoryStore.project_store(root)
     assert project_store is not None
-    project_store.save(Memory(
-        name="Secret",
-        description="Hidden",
-        body="Should not appear.",
-        type="project",
-    ))
+    project_store.save(
+        Memory(
+            name="Secret",
+            description="Hidden",
+            body="Should not appear.",
+            type="project",
+        )
+    )
 
     from jarn.tui.controller import Controller
+
     ctrl = Controller(base_config, root, project_trusted=False)
     result = ctrl.handle_command("memory", "dump")
     ctrl.close()
@@ -349,12 +717,14 @@ def test_memory_dump_assembles_all_sources(tmp_path, monkeypatch, base_config):
 
     # Global memory
     global_store = MemoryStore.global_store()
-    global_store.save(Memory(
-        name="Global rule",
-        description="Always lint",
-        body="Run ruff on every change.",
-        type="project",
-    ))
+    global_store.save(
+        Memory(
+            name="Global rule",
+            description="Always lint",
+            body="Run ruff on every change.",
+            type="project",
+        )
+    )
 
     root = tmp_path / "proj"
     (root / ".jarn").mkdir(parents=True)
@@ -362,17 +732,20 @@ def test_memory_dump_assembles_all_sources(tmp_path, monkeypatch, base_config):
     # Project memory
     project_store = MemoryStore.project_store(root)
     assert project_store is not None
-    project_store.save(Memory(
-        name="Project rule",
-        description="Use uv",
-        body="Use uv for dependency management.",
-        type="project",
-    ))
+    project_store.save(
+        Memory(
+            name="Project rule",
+            description="Use uv",
+            body="Use uv for dependency management.",
+            type="project",
+        )
+    )
 
     # Context file
     (root / "JARN.md").write_text("# Harness project\n\nNo bare except clauses.", encoding="utf-8")
 
     from jarn.tui.controller import Controller
+
     ctrl = Controller(base_config, root, project_trusted=True)
     result = ctrl.handle_command("memory", "dump")
     ctrl.close()
@@ -394,25 +767,30 @@ def test_memory_dump_recall_section_surfaces_a_memory(tmp_path, monkeypatch, bas
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
 
     global_store = MemoryStore.global_store()
-    global_store.save(Memory(
-        name="Use uv for deps",
-        description="Always use uv for dependency management",
-        body="Run uv sync / uv add for dependencies.",
-        type="project",
-    ))
+    global_store.save(
+        Memory(
+            name="Use uv for deps",
+            description="Always use uv for dependency management",
+            body="Run uv sync / uv add for dependencies.",
+            type="project",
+        )
+    )
 
     root = tmp_path / "proj"
     (root / ".jarn").mkdir(parents=True)
     project_store = MemoryStore.project_store(root)
     assert project_store is not None
-    project_store.save(Memory(
-        name="Run ruff",
-        description="Lint every change with ruff",
-        body="Run ruff check on all changes.",
-        type="project",
-    ))
+    project_store.save(
+        Memory(
+            name="Run ruff",
+            description="Lint every change with ruff",
+            body="Run ruff check on all changes.",
+            type="project",
+        )
+    )
 
     from jarn.tui.controller import Controller
+
     ctrl = Controller(base_config, root, project_trusted=True)
     result = ctrl.handle_command("memory", "dump")
     ctrl.close()
@@ -420,7 +798,7 @@ def test_memory_dump_recall_section_surfaces_a_memory(tmp_path, monkeypatch, bas
     # Isolate the recall section (everything from its header onward) so we assert
     # the recalled memory is named in the recall view itself, not in an index above.
     text = result.text
-    recall_section = text[text.index("Top-k recall"):]
+    recall_section = text[text.index("Top-k recall") :]
     assert "(no memories to recall)" not in recall_section
     assert "Use uv for deps" in recall_section or "Run ruff" in recall_section
 
@@ -432,6 +810,7 @@ def test_memory_crud_unaffected_by_dump(tmp_path, monkeypatch, base_config):
     (root / ".jarn").mkdir(parents=True)
 
     from jarn.tui.controller import Controller
+
     ctrl = Controller(base_config, root, project_trusted=True)
 
     add_result = ctrl.handle_command(
@@ -445,9 +824,7 @@ def test_memory_crud_unaffected_by_dump(tmp_path, monkeypatch, base_config):
     search_result = ctrl.handle_command("memory", "search description")
     assert "Test mem" in search_result.text
 
-    update_result = ctrl.handle_command(
-        "memory", 'update project "Test mem" "updated description"'
-    )
+    update_result = ctrl.handle_command("memory", 'update project "Test mem" "updated description"')
     assert "Updated" in update_result.text
 
     delete_result = ctrl.handle_command("memory", "delete project test-mem")

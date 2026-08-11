@@ -1,0 +1,71 @@
+{
+  "automated_tests": [
+    "tests/test_approval_contract.py",
+    "tests/test_permission_bypass_matrix.py",
+    "tests/test_checkpoint.py",
+    "tests/test_memory.py",
+    "tests/test_transcript.py",
+    "tests/test_ga_config_migrations.py"
+  ],
+  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q tests/test_permissions.py tests/test_guard.py tests/test_read_filter.py tests/test_approval_contract.py tests/test_permission_bypass_matrix.py tests/test_checkpoint.py tests/test_memory.py tests/test_transcript.py tests/test_ga_config_migrations.py tests/test_ga_cli_admin.py",
+  "criterion_ids": [
+    "AC-SAFE-001",
+    "AC-SAFE-002",
+    "AC-SAFE-003",
+    "AC-SAFE-004",
+    "AC-SAFE-005",
+    "AC-SAFE-006",
+    "AC-SAFE-007",
+    "AC-SAFE-008",
+    "AC-SAFE-009",
+    "AC-SAFE-010",
+    "AC-SESSION-001",
+    "AC-SESSION-002",
+    "AC-SESSION-003",
+    "AC-SESSION-004",
+    "AC-SESSION-005",
+    "AC-SESSION-006",
+    "AC-SESSION-007",
+    "AC-CONFIG-001",
+    "AC-CONFIG-002",
+    "AC-CONFIG-003",
+    "AC-CONFIG-004",
+    "AC-CONFIG-005",
+    "AC-CONFIG-006",
+    "AC-CONFIG-007"
+  ],
+  "decisions": [
+    "Cross-process failure injection and symlink/partial-write paths are part of the automated result; deletion and undo refuse active/stale state rather than widening scope."
+  ],
+  "documentation_lookups": [],
+  "duration_seconds": 303.06,
+  "ended_at": "2026-08-11T14:56:19Z",
+  "errors": [],
+  "implementation": [
+    "src/jarn/permissions",
+    "src/jarn/agent/checkpoint.py",
+    "src/jarn/memory/sessions.py",
+    "src/jarn/config"
+  ],
+  "limitations": [
+    "OS-specific sandbox strength and real power-loss behavior remain platform/release-matrix observations."
+  ],
+  "platform": {
+    "architecture": "arm64",
+    "libc": "n/a",
+    "os": "macOS",
+    "version": "26.5.2"
+  },
+  "record_id": "LOCAL-SAFETY-DATA-20260811",
+  "redaction": {
+    "home_path_redacted": false,
+    "host_identifier_redacted": false,
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false
+  },
+  "result": "Least-privilege labels/prompts, scoped approvals, bypass matrix, protected secrets, undo preview/stability, crash-safe session lifecycle/export/delete, exact-secret [REDACTED_SECRET] redaction, and transactional config migration/provenance contracts passed.",
+  "schema_version": 1,
+  "started_at": "2026-08-11T14:34:18Z",
+  "status": "passed"
+}

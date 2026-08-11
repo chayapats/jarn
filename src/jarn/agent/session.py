@@ -665,6 +665,22 @@ class SessionDriver:
                         self._turn_text + "\n…(turn interrupted)", ts=_time.time()
                     )
                     self._turn_text = ""
+                # A fallback retry creates a fresh driver for the same thread.
+                # Release this driver's transcript lease before that retry opens
+                # the same JSONL file; otherwise the safety lease correctly sees
+                # a second writer and fails closed. Every append is already
+                # flushed+fsynced, so turn-attempt scope retains crash durability.
+                if self.transcript is not None:
+                    close_transcript = getattr(self.transcript, "close", None)
+                    if callable(close_transcript):
+                        try:
+                            close_transcript()
+                        except OSError as exc:
+                            _log.warning(
+                                "transcript close failed thread=%s: %.300s",
+                                self.thread_id,
+                                str(exc),
+                            )
                 # T-QA-1: release a turn slot this driver acquired via make_driver
                 # (no-op when run_agent_turn holds the outer exclusive).
                 self._release_controller_turn()

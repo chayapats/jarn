@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from jarn.agent.builder import JarnRuntime, build_runtime
-from jarn.agent.checkpoint import CheckpointManager
+from jarn.agent.checkpoint import CheckpointManager, RestorePreview
 from jarn.agent.prompt_modules import (
     PromptAssembly,
     PromptModuleContext,
@@ -47,10 +47,13 @@ from jarn.permissions import PermissionEngine
 from jarn.tui import palette
 
 if TYPE_CHECKING:
+    from jarn.catalog import ModelCatalogEntry, ModelCatalogSnapshot
     from jarn.extensibility.mcp import MCPLoadResult
 
 #: Async confirm callback for yolo escalation (Telegram card, REPL `_ask`, …).
 YoloConfirm = Callable[[], Awaitable[bool]]
+#: Async confirmation callback for a concrete, read-only undo preview.
+UndoConfirm = Callable[[RestorePreview], Awaitable[bool]]
 
 _log = logging.getLogger("jarn")
 
@@ -162,6 +165,12 @@ class Controller:
         # Resolved context-window sizes per model ref (0 = unknown / gave up), so
         # a local-model endpoint (LM Studio / Ollama) is queried at most once.
         self._ctx_window_cache: dict[str, int] = {}
+        # Live/cache catalog shown by /model and enforced before the first
+        # runtime build.  Kept UI-independent so REPL, headless, and gateway all
+        # share the same selected-model evidence.
+        self._model_catalog_snapshot: ModelCatalogSnapshot | None = None
+        self._model_catalog_snapshots: dict[str, ModelCatalogSnapshot] = {}
+        self._model_catalog_service: Any | None = None
         # Auto-checkpoint manager: snapshots working tree before agent turns so
         # /undo and /redo can revert or re-apply file changes without touching HEAD.
         _cp_root = project_root or Path.cwd()
@@ -345,6 +354,12 @@ class Controller:
             return await self._ensure_runtime_locked()
 
     async def _ensure_runtime_locked(self) -> JarnRuntime:
+        if self.runtime is None:
+            ok, message = await asyncio.to_thread(self.validate_selected_model_catalog)
+            if not ok:
+                self.health = "error"
+                self.last_error = message
+                raise RuntimeError(message)
         if self._saver is None:
             self._saver, self._saver_cm = await create_async_checkpointer(self._db_path)
         # Build via a controller-owned, generation-tagged worker task. Invariants:
@@ -1146,11 +1161,15 @@ class Controller:
 
         return async_ops.turn_running(self)
 
-    async def undo(self) -> CommandResult:
-        """Settle any in-flight snapshot, then revert the last turn's file edits."""
+    async def undo(
+        self,
+        *,
+        confirm: UndoConfirm | None = None,
+    ) -> CommandResult:
+        """Preview, confirm, then revert the last turn's file edits."""
         from jarn.controller import async_ops
 
-        return await async_ops.undo(self)
+        return await async_ops.undo(self, confirm=confirm)
 
     async def redo(self) -> CommandResult:
         """Settle any in-flight snapshot, then re-apply the most recent undo."""
@@ -1400,7 +1419,17 @@ class Controller:
             return False
 
     def record_session_title(self, title: str, *, when: float) -> None:
-        self.sessions.touch(self.thread_id, title, when=when)
+        self.sessions.touch(
+            self.thread_id,
+            title,
+            when=when,
+            project_root=self.project_root,
+            model=self.config.resolved_main_model(),
+            state="incomplete",
+        )
+
+    def mark_session_complete(self, *, when: float) -> None:
+        self.sessions.mark_complete(self.thread_id, when=when)
 
     def record_turn(self, *, when: float) -> None:
         """Record one completed turn to telemetry (no-op when disabled).
@@ -1465,7 +1494,8 @@ class Controller:
 
     def model_choices(self) -> list[tuple[str, str]]:
         """Return (model_ref, provider_hint) candidates for the /model picker."""
-        from jarn.config.defaults import DEFAULT_MODELS
+        from jarn.catalog import ModelCatalogService
+        from jarn.providers import parse_model_ref
 
         seen: dict[str, str] = {}
 
@@ -1473,39 +1503,254 @@ class Controller:
             if ref and ref not in seen:
                 seen[ref] = hint
 
-        add(self.config.resolved_main_model(), "current")
-        for ref in self.config.routing.fallback:
-            add(ref, "fallback")
-        # Offer the default main/subagent models for every configured provider.
-        for name, prov in self.config.providers.items():
-            models = DEFAULT_MODELS.get(name) or DEFAULT_MODELS.get(prov.type.value)
-            if models:
-                add(models["main"], name)
-                add(models["subagent"], name)
+        snapshots = dict(self._model_catalog_snapshots)
+        if self._model_catalog_snapshot is not None:
+            snapshots.setdefault(
+                self._model_catalog_snapshot.provider_profile,
+                self._model_catalog_snapshot,
+            )
+
+        for route, ref, _effort in ModelCatalogService.configured_routes(self.config):
+            parsed = parse_model_ref(ref, default_profile=self.config.default_profile)
+            snapshot = snapshots.get(parsed.profile)
+            verified_refs = (
+                {
+                    entry.ref
+                    for entry in snapshot.visible_models()
+                    if not entry.deprecated and entry.account_available is not False
+                }
+                if snapshot is not None and snapshot.availability_verified
+                else set()
+            )
+            # A verified provider response is authoritative: a remembered route
+            # removed by that provider must not remain selectable as "current".
+            if (
+                snapshot is not None
+                and snapshot.availability_verified
+                and parsed.qualified not in verified_refs
+            ):
+                continue
+            if snapshot is not None and not snapshot.availability_verified:
+                continue
+            provenance = (
+                snapshot.provenance_label
+                if snapshot is not None
+                else "catalog not refreshed; availability unverified"
+            )
+            add(parsed.qualified, f"{route} · {provenance}")
+
+        for snapshot in snapshots.values():
+            if not snapshot.availability_verified:
+                continue
+            for entry in snapshot.visible_models():
+                if entry.deprecated or entry.account_available is False:
+                    continue
+                flags: list[str] = [entry.display_name]
+                if entry.is_default:
+                    flags.append("account default")
+                if entry.preview:
+                    flags.append("preview")
+                if entry.supported_reasoning_efforts:
+                    flags.append(
+                        "reasoning "
+                        + "/".join(effort.value for effort in entry.supported_reasoning_efforts)
+                    )
+                if entry.context_window:
+                    flags.append(f"{entry.context_window:,} token context")
+                if entry.input_modalities:
+                    flags.append("input " + "/".join(entry.input_modalities))
+                if entry.service_tiers:
+                    flags.append("tiers " + "/".join(entry.service_tiers))
+                if entry.description:
+                    flags.append(entry.description)
+                flags.append(snapshot.provenance_label)
+                add(entry.ref, " · ".join(flags))
         return list(seen.items())
 
-    def discover_models(self) -> list[tuple[str, str]]:
-        """Probe configured local endpoints for their served models.
+    def _active_catalog_target(self) -> tuple[str, Any, str] | None:
+        """Return ``(profile, provider, selected_ref)`` for the active model."""
 
-        Returns ``(qualified_ref, profile)`` for every model reported by a local
-        provider (Ollama / LM Studio / openai_compatible). Fails open: providers
-        that are unreachable contribute nothing, so the list is simply empty when
-        no endpoint answers — the caller then falls back to manual entry.
+        from jarn.providers import parse_model_ref
+
+        ref = self.config.resolved_main_model()
+        if not ref:
+            return None
+        parsed = parse_model_ref(ref, default_profile=self.config.default_profile)
+        provider = self.config.providers.get(parsed.profile)
+        if provider is None:
+            return None
+        return parsed.profile, provider, ref
+
+    def model_catalog_supported(self) -> bool:
+        """Whether the active target can use the unified catalog abstraction."""
+
+        return self._active_catalog_target() is not None
+
+    def model_catalog_requires_verification(self) -> bool:
+        """Every runtime target needs live/fresh-cache/exact-call evidence."""
+
+        return self._active_catalog_target() is not None
+
+    def refresh_model_catalog(self, *, include_hidden: bool = False) -> ModelCatalogSnapshot:
+        """Refresh every configured provider, returning the active snapshot."""
+
+        from jarn.catalog import ModelCatalogService
+
+        target = self._active_catalog_target()
+        if target is None:
+            raise RuntimeError("No active model/provider is configured.")
+        profile, provider, _ref = target
+        if self._model_catalog_service is None:
+            self._model_catalog_service = ModelCatalogService()
+        service = self._model_catalog_service
+
+        # A multi-provider picker should not make N serial timeout waits.  Each
+        # provider has independent state/cache files, so bounded parallel reads
+        # are safe and keep `/model` responsive.
+        from concurrent.futures import ThreadPoolExecutor
+
+        items = list(self.config.providers.items())
+
+        def fetch(item: tuple[str, Any]) -> tuple[str, ModelCatalogSnapshot]:
+            name, configured = item
+            return name, service.get_catalog(
+                name,
+                configured,
+                include_hidden=include_hidden,
+                allow_stale_cache=True,
+                cwd=self.project_root,
+            )
+
+        snapshots: dict[str, ModelCatalogSnapshot] = {}
+        with ThreadPoolExecutor(max_workers=min(4, max(1, len(items)))) as pool:
+            for name, fetched in pool.map(fetch, items):
+                snapshots[name] = fetched
+        snapshot = snapshots.get(profile)
+        if snapshot is None:  # pragma: no cover - target derives from providers
+            raise RuntimeError(f"No catalog could be loaded for {profile}.")
+        self._model_catalog_snapshots = snapshots
+        self._model_catalog_snapshot = snapshot
+        return snapshot
+
+    def catalog_models(self) -> tuple[ModelCatalogEntry, ...]:
+        """Visible entries from the latest shared catalog snapshot."""
+
+        snapshot = self._model_catalog_snapshot
+        return snapshot.visible_models() if snapshot is not None else ()
+
+    def verified_catalog_models(self) -> tuple[ModelCatalogEntry, ...]:
+        """Visible selectable models from every currently verified provider."""
+
+        entries: list[ModelCatalogEntry] = []
+        seen: set[str] = set()
+        for snapshot in self._model_catalog_snapshots.values():
+            if not snapshot.availability_verified:
+                continue
+            for entry in snapshot.visible_models():
+                if entry.ref in seen or entry.deprecated or entry.account_available is False:
+                    continue
+                seen.add(entry.ref)
+                entries.append(entry)
+        return tuple(entries)
+
+    def reasoning_choices(self, model_ref: str) -> list[tuple[str, str]]:
+        """Reasoning efforts for ``model_ref`` from the rendered catalog."""
+
+        snapshots = list(self._model_catalog_snapshots.values())
+        if self._model_catalog_snapshot is not None:
+            snapshots.append(self._model_catalog_snapshot)
+        entry = next(
+            (item for snapshot in snapshots for item in snapshot.models if item.ref == model_ref),
+            None,
+        )
+        if entry is None:
+            return []
+        return [
+            (
+                effort.value,
+                effort.description
+                or ("recommended default" if effort.value == entry.default_reasoning_effort else ""),
+            )
+            for effort in entry.supported_reasoning_efforts
+        ]
+
+    def default_reasoning_effort(self, model_ref: str) -> str | None:
+        snapshots = list(self._model_catalog_snapshots.values())
+        if self._model_catalog_snapshot is not None:
+            snapshots.append(self._model_catalog_snapshot)
+        entry = next(
+            (item for snapshot in snapshots for item in snapshot.models if item.ref == model_ref),
+            None,
+        )
+        return entry.default_reasoning_effort if entry is not None else None
+
+    def validate_selected_model_catalog(self) -> tuple[bool, str]:
+        """Validate all routes before a turn through one catalog service."""
+
+        from jarn.catalog import ModelCatalogService
+
+        if not ModelCatalogService.configured_routes(self.config):
+            return True, "catalog preflight not applicable"
+        if self._model_catalog_service is None:
+            self._model_catalog_service = ModelCatalogService()
+        snapshots = self._model_catalog_service.get_catalogs_for_routes(
+            self.config,
+            include_hidden=False,
+            allow_stale_cache=True,
+            cwd=self.project_root,
+        )
+        self._model_catalog_snapshots.update(snapshots)
+        target = self._active_catalog_target()
+        if target is not None:
+            self._model_catalog_snapshot = snapshots.get(target[0])
+        ok, errors = ModelCatalogService.validate_routes(self.config, snapshots)
+        if not ok:
+            return (
+                False,
+                "Selected model routing is unavailable: "
+                + "; ".join(errors)
+                + ". Run `/model refresh` or `jarn setup`, or update every route "
+                "in Advanced config.",
+            )
+        return True, "all selected model routes verified"
+
+    def discover_models(self) -> list[tuple[str, str]]:
+        """Return selectable models from configured endpoint catalogs.
+
+        This compatibility API now delegates to :class:`ModelCatalogService`, so
+        command completion cannot bypass the provenance/account-scoping rules
+        used by the picker and pre-turn gate. Unverified endpoints contribute no
+        entries; Advanced manual selection remains available elsewhere.
         """
+        from jarn.catalog import ModelCatalogService
         from jarn.config.schema import ProviderType
-        from jarn.providers import list_remote_models, qualify_model_ref
 
         local = {ProviderType.OLLAMA, ProviderType.LMSTUDIO, ProviderType.OPENAI_COMPATIBLE}
+        if self._model_catalog_service is None:
+            self._model_catalog_service = ModelCatalogService()
+        service = self._model_catalog_service
         out: list[tuple[str, str]] = []
         seen: set[str] = set()
         for name, prov in self.config.providers.items():
             if prov.type not in local:
                 continue
-            for model_id in list_remote_models(prov):
-                ref = qualify_model_ref(model_id, name)
-                if ref not in seen:
-                    seen.add(ref)
-                    out.append((ref, name))
+            snapshot = service.get_catalog(
+                name,
+                prov,
+                allow_stale_cache=True,
+                cwd=self.project_root,
+            )
+            self._model_catalog_snapshots[name] = snapshot
+            if not snapshot.availability_verified:
+                continue
+            for entry in snapshot.visible_models():
+                if (
+                    entry.ref not in seen
+                    and not entry.deprecated
+                    and entry.account_available is not False
+                ):
+                    seen.add(entry.ref)
+                    out.append((entry.ref, name))
         return out
 
     def mode_choices(self) -> list[tuple[str, str]]:
@@ -1520,9 +1765,17 @@ class Controller:
             for m in PermissionMode
         ]
 
-    def apply_model(self, ref: str) -> None:
+    def apply_model(self, ref: str, *, reasoning_effort: str | None = None) -> None:
+        from jarn.providers import parse_model_ref
+
         self.config.routing.main = ref
         self.config.default_model = ref
+        parsed = parse_model_ref(ref, default_profile=self.config.default_profile)
+        provider = self.config.providers.get(parsed.profile)
+        if provider is not None:
+            selected_effort = reasoning_effort or self.default_reasoning_effort(ref)
+            if selected_effort:
+                provider.extra["reasoning_effort"] = selected_effort
         self._candidates = [ref] + list(self.config.routing.fallback)
         self._candidate_idx = 0
         self._invalidate_runtime()
@@ -1689,11 +1942,23 @@ class Controller:
     # -- built-in commands --------------------------------------------------
 
     def handle_command(self, name: str, args: str) -> CommandResult:
+        import difflib
+
         from jarn.controller.commands import REGISTRY
 
-        handler = REGISTRY.get(name.replace("-", "_"))
+        normalized = name.replace("-", "_")
+        handler = REGISTRY.get(normalized)
         if handler is None:
-            return CommandResult(f"Unknown command: /{name}. Try /help.")
+            # Keep enough candidates to include common transposition typos such
+            # as ``/modle`` -> ``/model`` even when nearby real commands
+            # (``/mode``, ``/module``, ``/modules``) score similarly.
+            matches = difflib.get_close_matches(normalized, REGISTRY, n=5, cutoff=0.55)
+            suggestion = (
+                " Did you mean " + ", ".join(f"/{item.replace('_', '-')}" for item in matches) + "?"
+                if matches
+                else ""
+            )
+            return CommandResult(f"Unknown command: /{name}.{suggestion} Try /help.")
         return handler(self, args)
 
     def current_provider(self) -> str | None:

@@ -1,0 +1,82 @@
+{
+  "automated_tests": [
+    "tests/test_auth_service.py",
+    "tests/test_auth_cli.py",
+    "tests/test_codex_subscription.py",
+    "tests/test_codex_dependency.py",
+    "tests/test_model_catalog.py"
+  ],
+  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q tests/test_auth_service.py tests/test_auth_cli.py tests/test_codex_subscription.py tests/test_codex_dependency.py tests/test_model_catalog.py tests/test_chatgpt_onboarding.py; full 3027-test accounting",
+  "criterion_ids": [
+    "AC-DEP-001",
+    "AC-DEP-002",
+    "AC-DEP-003",
+    "AC-DEP-004",
+    "AC-DEP-005",
+    "AC-DEP-006",
+    "AC-DEP-007",
+    "AC-AUTH-001",
+    "AC-AUTH-002",
+    "AC-AUTH-003",
+    "AC-AUTH-004",
+    "AC-AUTH-005",
+    "AC-AUTH-006",
+    "AC-AUTH-007",
+    "AC-AUTH-008",
+    "AC-AUTH-009",
+    "AC-AUTH-010",
+    "AC-AUTH-011",
+    "AC-AUTH-012",
+    "AC-AUTH-013",
+    "AC-AUTH-014",
+    "AC-MODEL-001",
+    "AC-MODEL-002",
+    "AC-MODEL-003",
+    "AC-MODEL-004",
+    "AC-MODEL-005",
+    "AC-MODEL-006",
+    "AC-MODEL-007",
+    "AC-MODEL-008",
+    "AC-MODEL-009",
+    "AC-MODEL-010",
+    "AC-MODEL-011",
+    "AC-MODEL-012",
+    "AC-MODEL-013",
+    "AC-MODEL-014",
+    "AC-MODEL-015"
+  ],
+  "decisions": [
+    "Public tests use the fake Codex app-server and provider HTTP fixtures; real account/entitlement behavior remains a protected UAT rather than being inferred."
+  ],
+  "documentation_lookups": [],
+  "duration_seconds": 303.06,
+  "ended_at": "2026-08-11T14:56:19Z",
+  "errors": [],
+  "implementation": [
+    "src/jarn/auth",
+    "src/jarn/catalog",
+    "src/jarn/codex_dependency.py",
+    "src/jarn/providers/codex_subscription.py"
+  ],
+  "limitations": [
+    "No live ChatGPT, Anthropic, or other provider account was contacted; UAT-001, UAT-003, and UAT-004 remain separate."
+  ],
+  "platform": {
+    "architecture": "arm64",
+    "libc": "n/a",
+    "os": "macOS",
+    "version": "26.5.2"
+  },
+  "record_id": "LOCAL-AUTH-MODEL-20260811",
+  "redaction": {
+    "home_path_redacted": false,
+    "host_identifier_redacted": false,
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false
+  },
+  "result": "Versioned auth state, visible browser/device ceremonies, dependency acquisition, verification failures, scoped logout, paginated live catalog protocol, cache provenance, routing validation, retirement, and pre-turn refusal contracts passed with credential-free fixtures.",
+  "schema_version": 1,
+  "started_at": "2026-08-11T14:34:18Z",
+  "status": "passed"
+}

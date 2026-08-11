@@ -635,6 +635,100 @@ def test_diff_stat_empty_when_tree_matches_snapshot(repo: Path) -> None:
     assert all("|" not in ln for ln in lines), f"unexpected diff lines: {lines}"
 
 
+def test_preview_undo_lists_affected_files_without_mutating_stacks(repo: Path) -> None:
+    """The UI can inspect an exact restore before asking for confirmation."""
+    mgr = CheckpointManager(repo, enabled=True)
+    tracked = repo / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    snap = mgr.snapshot("before edit", thread_id="thread-a", turn_index=1)
+    assert snap.ok
+    tracked.write_text("after\n", encoding="utf-8")
+    before = mgr.list()
+
+    preview = mgr.preview_undo(thread_id="thread-a")
+
+    assert preview.ok
+    assert preview.sha == snap.sha
+    assert any("tracked.txt" in line for line in preview.files)
+    assert mgr.list() == before
+    assert tracked.read_text(encoding="utf-8") == "after\n"
+
+
+def test_preview_undo_includes_untracked_file_restore_would_remove(repo: Path) -> None:
+    """Preview scope matches restore scope, including newly-created files."""
+    mgr = CheckpointManager(repo, enabled=True)
+    snap = mgr.snapshot("before new file", thread_id="thread-a", turn_index=1)
+    assert snap.ok
+    (repo / "agent-created.txt").write_text("new\n", encoding="utf-8")
+
+    preview = mgr.preview_undo(thread_id="thread-a")
+
+    assert preview.ok
+    assert preview.file_count == 1
+    assert any("agent-created.txt" in line for line in preview.files)
+
+
+def test_confirmed_undo_refuses_workspace_changed_after_preview(repo: Path) -> None:
+    """A confirmation cannot authorize changes that were absent from its preview."""
+    mgr = CheckpointManager(repo, enabled=True)
+    snap = mgr.snapshot("before edit", thread_id="thread-a", turn_index=1)
+    assert snap.ok
+    tracked = repo / "README.txt"
+    tracked.write_text("previewed edit\n", encoding="utf-8")
+    preview = mgr.preview_undo(thread_id="thread-a")
+    assert preview.ok
+    tracked.write_text("changed while prompting\n", encoding="utf-8")
+
+    result = mgr.undo(
+        thread_id="thread-a",
+        expected_sha=preview.sha,
+        expected_current_tree=preview.current_tree,
+    )
+
+    assert result.ok is False
+    assert "changed after preview" in result.message
+    assert tracked.read_text(encoding="utf-8") == "changed while prompting\n"
+    assert mgr.list()[0].sha == snap.sha
+
+
+def test_confirmed_undo_refuses_checkpoint_changed_after_preview(repo: Path) -> None:
+    """A confirmation is valid only for the checkpoint the user actually saw."""
+    mgr = CheckpointManager(repo, enabled=True)
+    first = mgr.snapshot("first", thread_id="thread-a", turn_index=1)
+    assert first.ok
+    tracked = repo / "README.txt"
+    tracked.write_text("first edit\n", encoding="utf-8")
+    preview = mgr.preview_undo(thread_id="thread-a")
+    assert preview.ok
+    second = mgr.snapshot("second", thread_id="thread-a", turn_index=2)
+    assert second.ok
+
+    result = mgr.undo(
+        thread_id="thread-a",
+        expected_sha=preview.sha,
+        expected_current_tree=preview.current_tree,
+    )
+
+    assert result.ok is False
+    assert "checkpoint changed after preview" in result.message
+    assert tracked.read_text(encoding="utf-8") == "first edit\n"
+    assert mgr.list()[0].sha == second.sha
+
+
+def test_preview_undo_refuses_foreign_session_without_mutation(repo: Path) -> None:
+    mgr = CheckpointManager(repo, enabled=True)
+    tracked = repo / "owned.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    assert mgr.snapshot("owned", thread_id="owner", turn_index=1).ok
+    tracked.write_text("after\n", encoding="utf-8")
+
+    preview = mgr.preview_undo(thread_id="other")
+
+    assert preview.ok is False
+    assert "another session" in preview.message
+    assert tracked.read_text(encoding="utf-8") == "after\n"
+
+
 def test_has_uncheckpointed_changes_true_after_edit(repo: Path) -> None:
     """has_uncheckpointed_changes() returns True after a file is modified since the last snapshot."""
     mgr = _manager(repo)

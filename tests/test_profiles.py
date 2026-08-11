@@ -280,7 +280,6 @@ def test_doctor_includes_policy_web_tools(tmp_path, monkeypatch):
             "providers": {
                 "openrouter": {
                     "type": "openrouter",
-                    "api_key": "sk-test",
                     "base_url": "http://localhost:9999/v1",
                 }
             },

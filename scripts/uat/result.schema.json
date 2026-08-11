@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/chayapats/jarn/schemas/ga-evidence-result-v1.json",
+  "title": "J.A.R.N. GA evidence result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_id",
+    "criterion_ids",
+    "status",
+    "started_at",
+    "ended_at",
+    "platform",
+    "command",
+    "implementation",
+    "automated_tests",
+    "decisions",
+    "errors",
+    "documentation_lookups",
+    "result",
+    "limitations",
+    "redaction"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "record_id": {"pattern": "^[A-Z][A-Z0-9-]+$", "type": "string"},
+    "uat_id": {"pattern": "^UAT-[0-9]{3}$", "type": "string"},
+    "criterion_ids": {
+      "items": {
+        "pattern": "^(?:AC|TEST|UAT|GATE|CONSTRAINT|MILESTONE|DELIVERABLES|COMPLETION)-[A-Z0-9-]+$",
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "status": {
+      "enum": ["passed", "failed", "blocked", "not_run"],
+      "type": "string"
+    },
+    "started_at": {"format": "date-time", "type": "string"},
+    "ended_at": {"format": "date-time", "type": "string"},
+    "duration_seconds": {"minimum": 0, "type": ["number", "null"]},
+    "platform": {
+      "additionalProperties": false,
+      "properties": {
+        "os": {"type": "string"},
+        "version": {"type": "string"},
+        "architecture": {"type": "string"},
+        "libc": {"type": "string"}
+      },
+      "required": ["os", "version", "architecture", "libc"],
+      "type": "object"
+    },
+    "command": {"type": "string"},
+    "implementation": {"items": {"type": "string"}, "type": "array"},
+    "automated_tests": {"items": {"type": "string"}, "type": "array"},
+    "decisions": {"items": {"type": "string"}, "type": "array"},
+    "errors": {"items": {"type": "string"}, "type": "array"},
+    "documentation_lookups": {"items": {"type": "string"}, "type": "array"},
+    "result": {"type": "string"},
+    "limitations": {"items": {"type": "string"}, "type": "array"},
+    "redaction": {
+      "additionalProperties": false,
+      "properties": {
+        "raw_auth_output_persisted": {"const": false},
+        "raw_terminal_output_persisted": {"const": false},
+        "secrets_allowed": {"const": false},
+        "host_identifier_redacted": {"type": "boolean"},
+        "home_path_redacted": {"type": "boolean"}
+      },
+      "required": [
+        "raw_auth_output_persisted",
+        "raw_terminal_output_persisted",
+        "secrets_allowed",
+        "host_identifier_redacted",
+        "home_path_redacted"
+      ],
+      "type": "object"
+    }
+  }
+}

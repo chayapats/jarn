@@ -14,8 +14,12 @@ raise :class:`SecretResolutionError` so onboarding can surface a clear message.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
+import signal
+import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +37,43 @@ _KEYRING_TIMEOUT_SECS = 5.0
 
 #: Placeholder for fully-redacted secrets.
 _REDACTED = "[REDACTED]"
+
+# Resolved credentials can have completely provider-specific shapes, so pattern
+# matching alone cannot keep them out of transcripts, logs, or support output.
+# Keep a small process-local registry of values that have crossed the secret
+# resolver/storage boundary.  Every central redaction call consults it.  The
+# registry is deliberately bounded: it is a defensive sink filter, not another
+# credential store, and it must not grow without limit in a long-running gateway.
+_MAX_RESOLVED_SECRETS = 512
+_resolved_secrets: dict[str, None] = {}
+_resolved_secrets_lock = threading.Lock()
+
+
+def _remember_resolved_secret(value: str | None) -> None:
+    """Register one concrete credential for exact-value sink redaction."""
+
+    if not value:
+        return
+    with _resolved_secrets_lock:
+        # Reinsert so the most recently used values survive bounded eviction.
+        _resolved_secrets.pop(value, None)
+        _resolved_secrets[value] = None
+        while len(_resolved_secrets) > _MAX_RESOLVED_SECRETS:
+            del _resolved_secrets[next(iter(_resolved_secrets))]
+
+
+def _known_resolved_secrets() -> set[str]:
+    """Return a copy; callers must never receive the mutable registry itself."""
+
+    with _resolved_secrets_lock:
+        return set(_resolved_secrets)
+
+
+def _clear_resolved_secrets_for_testing() -> None:
+    """Reset process-local redaction state for an isolated unit test."""
+
+    with _resolved_secrets_lock:
+        _resolved_secrets.clear()
 
 # ── Central secret redaction ────────────────────────────────────────────────
 # A single source of truth for scrubbing secret-shaped substrings out of
@@ -101,10 +142,13 @@ def redact_secrets(value: str, *, known: set[str] | None = None) -> str:
     if not value:
         return value
     text = value
+    all_known = _known_resolved_secrets()
     if known:
+        all_known.update(known)
+    if all_known:
         # Longest first so a short secret that is a substring of a longer one
         # doesn't get partially redacted before the longer one is handled.
-        for secret in sorted(known, key=len, reverse=True):
+        for secret in sorted(all_known, key=len, reverse=True):
             # Known values are user-declared exact secrets — scrub any non-empty
             # value regardless of length; the >=8 floor is only for heuristic
             # pattern detection (below), not for values the caller marked secret.
@@ -119,8 +163,83 @@ def redact_secrets(value: str, *, known: set[str] | None = None) -> str:
     return text
 
 
+_SENSITIVE_FIELD = re.compile(
+    r"(?:^|_)(?:api_?key|access_?key|auth|authorization|credential|password|passwd|"
+    r"refresh_?token|secret|token)(?:$|_)",
+    re.IGNORECASE,
+)
+
+
+def redact_structure(
+    value: Any,
+    *,
+    known: set[str] | None = None,
+    max_depth: int = 12,
+    _depth: int = 0,
+) -> Any:
+    """Recursively scrub a JSON-like value with the central secret redactor.
+
+    Support reports, structured errors, gateway frames, and transcripts used to
+    grow their own slightly different recursive scrubbers.  That is dangerous:
+    adding a token pattern to :func:`redact_secrets` then protected only some of
+    the sinks.  This helper is the shared structured boundary.  In addition to
+    scrubbing secret-shaped *values*, fields whose names are credential-shaped
+    are replaced wholesale, including short PINs that a heuristic cannot safely
+    recognise.
+
+    Containers are copied, never mutated.  A depth bound makes the function safe
+    on model/provider supplied structures; values past the bound are omitted.
+    """
+    if _depth >= max_depth:
+        return "[OMITTED: structure too deep]"
+    if isinstance(value, str):
+        return redact_secrets(value, known=known)
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            if _SENSITIVE_FIELD.search(key):
+                out[key] = _REDACTED
+            else:
+                out[key] = redact_structure(
+                    item, known=known, max_depth=max_depth, _depth=_depth + 1
+                )
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [
+            redact_structure(item, known=known, max_depth=max_depth, _depth=_depth + 1)
+            for item in value
+        ]
+    return value
+
+
+def is_sensitive_field_name(value: object) -> bool:
+    """Return whether a config/map field name conventionally carries a secret."""
+
+    return bool(_SENSITIVE_FIELD.search(str(value)))
+
+
+def resolve_secret_mapping(mapping: dict[str, str]) -> dict[str, str]:
+    """Resolve secret references in a header/environment mapping without mutation."""
+
+    return {key: resolve(value) or "" for key, value in mapping.items()}
+
+
 class SecretResolutionError(RuntimeError):
     """Raised when a referenced secret cannot be resolved."""
+
+
+class SecretStorageError(RuntimeError):
+    """Raised when secret persistence cannot be completed unambiguously."""
+
+
+class KeyringOperationError(RuntimeError):
+    """A keyring worker reported a typed backend failure without its raw message."""
+
+    def __init__(self, operation: str, error_type: str) -> None:
+        self.operation = operation
+        self.error_type = error_type
+        super().__init__(f"OS keychain {operation} failed ({error_type})")
 
 
 @dataclass(frozen=True)
@@ -147,17 +266,24 @@ def resolve(reference: str | None) -> str | None:
             raise SecretResolutionError(
                 f"Environment variable ${{{var}}} is referenced in config but not set."
             )
+        _remember_resolved_secret(value)
         return value
 
     kc_match = _KEYCHAIN_RE.match(reference)
     if kc_match:
-        return _resolve_keychain(kc_match.group("service"), kc_match.group("account"))
+        value = _resolve_keychain(kc_match.group("service"), kc_match.group("account"))
+        _remember_resolved_secret(value)
+        return value
 
     file_match = _FILE_RE.match(reference)
     if file_match:
-        return _resolve_file(file_match.group("service"), file_match.group("account"))
+        value = _resolve_file(file_match.group("service"), file_match.group("account"))
+        _remember_resolved_secret(value)
+        return value
 
     # Literal value (e.g. a local-only base URL token, or a test stub).
+    if looks_like_secret(reference):
+        _remember_resolved_secret(reference)
     return reference
 
 
@@ -174,44 +300,123 @@ def _secret_file_path(service: str, account: str) -> Path:
     return global_secrets_dir() / service / account
 
 
+_KEYRING_WORKER_SELECTOR = "__jarn_internal_keyring_worker__"
+_KEYRING_WORKER_CODE = (
+    "from jarn.config.secrets import _keyring_worker_main; "
+    "raise SystemExit(_keyring_worker_main())"
+)
+
+
+def _keyring_worker_main() -> int:
+    """Process one keyring request from stdin and emit one redacted response."""
+
+    try:
+        request = json.load(sys.stdin)
+        import keyring
+
+        result: Any
+        if request["op"] == "get":
+            result = keyring.get_password(request["service"], request["account"])
+        elif request["op"] == "set":
+            keyring.set_password(request["service"], request["account"], request["value"])
+            result = True
+        elif request["op"] == "delete":
+            keyring.delete_password(request["service"], request["account"])
+            result = True
+        elif request["op"] == "metadata":
+            backend = keyring.get_keyring()
+            priority = getattr(backend, "priority", None)
+            result = {
+                "available": not isinstance(priority, (int, float)) or priority > 0,
+                "backend": f"{type(backend).__module__}.{type(backend).__name__}",
+                "priority": priority if isinstance(priority, (int, float)) else None,
+            }
+        else:
+            raise ValueError("unsupported keyring operation")
+        response = {"ok": True, "result": result}
+    except BaseException as exc:
+        # Backend messages are not returned: some implementations interpolate
+        # the credential they were given. The exception class is enough to
+        # explain the failure without putting a secret on stdout/stderr.
+        response = {"ok": False, "error_type": type(exc).__name__}
+    sys.stdout.write(json.dumps(response))
+    return 0
+
+
+def _keyring_worker_command() -> list[str]:
+    """Return a source- or PyInstaller-compatible isolated worker command."""
+
+    if getattr(sys, "frozen", False):
+        return [sys.executable, _KEYRING_WORKER_SELECTOR]
+    return [sys.executable, "-c", _KEYRING_WORKER_CODE]
+
+
+def _kill_keyring_worker(process: subprocess.Popen[bytes]) -> None:
+    """Terminate and reap the isolated worker, including its POSIX process group."""
+
+    if process.poll() is None:
+        if os.name == "posix":
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+        else:  # pragma: no cover - native Windows is not a supported runtime
+            process.kill()
+    # ``communicate`` after a timeout is supported and preserves buffered output.
+    # Reaping here is mandatory: callers must never continue with a live worker
+    # that can mutate the keychain after a timeout was reported.
+    process.communicate()
+
+
 def _keyring_call(
-    op: Literal["get", "set"],
+    op: Literal["get", "set", "delete", "metadata"],
     service: str,
     account: str,
     value: str | None = None,
     *,
     timeout: float = _KEYRING_TIMEOUT_SECS,
 ) -> Any:
-    """Run a blocking keyring operation with a hard timeout.
+    """Run a blocking keyring operation in a killable subprocess.
 
     A headless Linux host (e.g. Raspberry Pi over SSH) often has no Secret
     Service backend; without a timeout ``set_password`` / ``get_password`` can
-    block forever waiting on D-Bus.
+    block forever waiting on D-Bus.  The request is sent over stdin so the
+    credential never appears in argv, logs, or a temporary file.  A timed-out
+    worker is killed and reaped before this function returns.
     """
-    box: dict[str, Any] = {}
+    if timeout <= 0:
+        raise ValueError("keyring timeout must be greater than zero")
+    if op == "set" and value is None:
+        raise ValueError("value is required for keyring set")
 
-    def _run() -> None:
-        try:
-            import keyring
+    request = json.dumps(
+        {"op": op, "service": service, "account": account, "value": value}
+    ).encode("utf-8")
+    process = subprocess.Popen(  # noqa: S603 - fixed interpreter and worker code
+        _keyring_worker_command(),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=os.name == "posix",
+    )
+    try:
+        stdout, _stderr = process.communicate(input=request, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        _kill_keyring_worker(process)
+        raise TimeoutError(f"OS keychain did not respond within {timeout:.0f}s") from exc
 
-            if op == "get":
-                box["result"] = keyring.get_password(service, account)
-            else:
-                if value is None:
-                    raise ValueError("value is required for keyring set")
-                keyring.set_password(service, account, value)
-                box["result"] = True
-        except Exception as exc:  # noqa: BLE001 - any backend failure
-            box["err"] = exc
-
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-    thread.join(timeout)
-    if thread.is_alive():
-        raise TimeoutError(f"OS keychain did not respond within {timeout:.0f}s")
-    if "err" in box:
-        raise box["err"]
-    return box.get("result")
+    if process.returncode != 0:
+        raise RuntimeError(f"OS keychain worker exited with status {process.returncode}")
+    try:
+        response = json.loads(stdout)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("OS keychain worker returned an invalid response") from exc
+    if not isinstance(response, dict) or not response.get("ok"):
+        error_type = (
+            response.get("error_type", "backend error")
+            if isinstance(response, dict)
+            else "backend error"
+        )
+        raise KeyringOperationError(op, str(error_type))
+    return response.get("result")
 
 
 def _resolve_keychain(service: str, account: str) -> str:
@@ -302,17 +507,25 @@ def store_secret(
 ) -> StoredSecret:
     """Persist a secret, preferring the OS keychain with a file-store fallback.
 
-    Tries ``keyring.set_password`` first (bounded by ``timeout``). On timeout
-    or any backend error, writes ``~/.jarn/secrets/<service>/<account>`` with
-    mode ``0600`` and returns a ``file:`` reference instead.
+    Tries ``keyring.set_password`` first (bounded by ``timeout``). A definite
+    backend error writes ``~/.jarn/secrets/<service>/<account>`` with mode
+    ``0600`` and returns a ``file:`` reference. A timeout is indeterminate and
+    fails closed: writing a fallback then could leave the credential in both
+    stores if the keychain operation completed at the timeout boundary.
     """
+    _remember_resolved_secret(value)
     _validate_account(service)
     _validate_account(account)
     keychain_ref = f"keychain:{service}/{account}"
     file_ref = f"file:{service}/{account}"
     try:
         _keyring_call("set", service, account, value, timeout=timeout)
-    except (TimeoutError, Exception):  # noqa: BLE001 - fall back on any keyring failure
+    except TimeoutError as exc:
+        raise SecretStorageError(
+            "OS keychain write timed out; its completion state is unknown, so no "
+            "file fallback was created. Check the keychain service and retry."
+        ) from exc
+    except Exception:  # noqa: BLE001 - a definite backend failure permits fallback
         _store_file_secret(service, account, value)
         return StoredSecret(reference=file_ref, backend="file")
     return StoredSecret(reference=keychain_ref, backend="keychain")
@@ -321,6 +534,35 @@ def store_secret(
 def store_keychain(service: str, account: str, value: str) -> str:
     """Persist a secret (keychain preferred, file fallback). Returns the reference."""
     return store_secret(service, account, value).reference
+
+
+def delete_keychain_secret(
+    service: str,
+    account: str,
+    *,
+    timeout: float = _KEYRING_TIMEOUT_SECS,
+) -> None:
+    """Delete one keychain entry through the bounded, killable worker."""
+
+    _validate_account(service)
+    _validate_account(account)
+    _keyring_call("delete", service, account, timeout=timeout)
+
+
+def keyring_backend_metadata(*, timeout: float = 2.0) -> dict[str, Any]:
+    """Return non-credential backend metadata through the bounded worker."""
+
+    result = _keyring_call("metadata", "jarn", "doctor", timeout=timeout)
+    if not isinstance(result, dict):
+        raise KeyringOperationError("metadata", "InvalidResponse")
+    return {
+        "available": bool(result.get("available")),
+        "backend": str(result["backend"]) if result.get("backend") else None,
+        "priority": (
+            result["priority"] if isinstance(result.get("priority"), (int, float)) else None
+        ),
+        "credentials_read": False,
+    }
 
 
 def file_fallback_notice(

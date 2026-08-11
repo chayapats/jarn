@@ -18,9 +18,11 @@ store to drift when a Jarn session is compacted, rewound, or resumed.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import copy
 import json
+import os
 import queue
 import shutil
 import subprocess
@@ -39,6 +41,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import Field, PrivateAttr
 
+from jarn.agent.process_util import terminate_process_group
 from jarn.version import __version__
 
 
@@ -54,6 +57,20 @@ class CodexProtocolError(CodexSubscriptionError):
     """The app-server wire response is malformed or incompatible."""
 
 
+class CodexRPCError(CodexProtocolError):
+    """A structured JSON-RPC error returned by the Codex app-server.
+
+    ``code`` and ``data`` are retained for internal classification.  User-facing
+    callers should still redact :attr:`message` before displaying it because a
+    future server may include account-specific detail in an error string.
+    """
+
+    def __init__(self, message: str, *, code: int | None = None, data: Any = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.data = data
+
+
 class CodexSubscriptionAuthError(CodexSubscriptionError):
     """Codex is not signed in with a ChatGPT subscription."""
 
@@ -67,6 +84,7 @@ class CodexTurnError(CodexSubscriptionError):
 _EOF = object()
 _HARNESS_PROFILE_LOCK = threading.Lock()
 _HARNESS_PROFILE_READY = False
+_SHUTDOWN_GRACE_SECONDS = 0.25
 _SAFE_FEATURES_OFF = (
     # The bridge emits Jarn tool calls.  Leaving either Codex execution surface
     # enabled would let the inner agent bypass Jarn's permission/checkpoint loop.
@@ -90,6 +108,14 @@ def normalize_codex_command(command: str | Sequence[str] | None = None) -> tuple
     """
 
     if command is None:
+        # The official standalone installer activates below CODEX_HOME and only
+        # adds ~/.local/bin to future shells.  Prefer that managed executable so
+        # first-run setup works immediately in the current parent shell too.
+        from jarn.codex_dependency import managed_codex_executable
+
+        managed = managed_codex_executable()
+        if managed is not None:
+            return (str(managed),)
         resolved = shutil.which("codex")
         if not resolved:
             raise CodexUnavailableError(
@@ -147,25 +173,33 @@ class CodexAppServer:
         self._messages: queue.Queue[Any] = queue.Queue()
         self._stderr: deque[str] = deque(maxlen=80)
         self._next_id = 1
+        self._close_lock = threading.Lock()
+        self._closed = False
 
     def __enter__(self) -> CodexAppServer:
         argv = [*self.command, "app-server", "--listen", "stdio://"]
         if self.safe_model_mode:
             for feature in _SAFE_FEATURES_OFF:
                 argv.extend(("--disable", feature))
-        try:
-            self._proc = subprocess.Popen(  # noqa: S603 - argv only, never a shell
-                argv,
-                cwd=self.cwd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                bufsize=1,
-            )
-        except (OSError, ValueError) as exc:
-            raise CodexUnavailableError(f"Could not start Codex app-server: {exc}") from exc
+        with self._close_lock:
+            if self._closed:
+                raise CodexUnavailableError("Codex app-server start was cancelled")
+            try:
+                self._proc = subprocess.Popen(  # noqa: S603 - argv only, never a shell
+                    argv,
+                    cwd=self.cwd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    bufsize=1,
+                    # Codex can acquire descendants of its own. A dedicated
+                    # process group lets cancellation reap the whole tree.
+                    start_new_session=os.name == "posix",
+                )
+            except (OSError, ValueError) as exc:
+                raise CodexUnavailableError(f"Could not start Codex app-server: {exc}") from exc
 
         threading.Thread(target=self._read_stdout, name="jarn-codex-stdout", daemon=True).start()
         threading.Thread(target=self._read_stderr, name="jarn-codex-stderr", daemon=True).start()
@@ -284,7 +318,13 @@ class CodexAppServer:
                 continue
             if predicate(message):
                 if error := message.get("error"):
-                    raise CodexProtocolError(_error_text(error))
+                    code = error.get("code") if isinstance(error, dict) else None
+                    data = error.get("data") if isinstance(error, dict) else None
+                    raise CodexRPCError(
+                        _error_text(error),
+                        code=code if isinstance(code, int) else None,
+                        data=data,
+                    )
                 return message
             if on_notification is not None and "method" in message:
                 on_notification(message)
@@ -321,23 +361,113 @@ class CodexAppServer:
             raise CodexProtocolError("account/read returned an invalid account")
         return account
 
+    def start_login(
+        self,
+        *,
+        device_code: bool = False,
+        on_notification: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        """Start a managed ChatGPT login and return its visible challenge.
+
+        Browser and device-code login are both app-server protocol operations.
+        Keeping them here (instead of shelling out to ``codex login``) lets J.A.R.N.
+        guarantee that the fallback URL/code is available to its own UI.
+        """
+
+        login_type = "chatgptDeviceCode" if device_code else "chatgpt"
+        response = self.request(
+            "account/login/start",
+            {"type": login_type},
+            on_notification=on_notification,
+        )
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise CodexProtocolError("account/login/start returned an invalid result")
+        login_id = result.get("loginId")
+        if not isinstance(login_id, str) or not login_id:
+            raise CodexProtocolError("account/login/start returned no login id")
+        if device_code:
+            if not isinstance(result.get("verificationUrl"), str) or not result.get(
+                "verificationUrl"
+            ):
+                raise CodexProtocolError("device login did not provide a verification URL")
+            if not isinstance(result.get("userCode"), str) or not result.get("userCode"):
+                raise CodexProtocolError("device login did not provide a user code")
+        elif not isinstance(result.get("authUrl"), str) or not result.get("authUrl"):
+            raise CodexProtocolError("browser login did not provide an authentication URL")
+        return result
+
+    def logout(self) -> None:
+        """Remove only the credential managed by the Codex app-server."""
+
+        response = self.request("account/logout", {})
+        result = response.get("result")
+        if result is not None and not isinstance(result, dict):
+            raise CodexProtocolError("account/logout returned an invalid result")
+
+    def cancel_login(self, login_id: str) -> None:
+        """Cancel one pending managed login ceremony."""
+
+        if not login_id:
+            raise CodexProtocolError("account/login/cancel requires a login id")
+        response = self.request("account/login/cancel", {"loginId": login_id})
+        result = response.get("result")
+        if result is not None and not isinstance(result, dict):
+            raise CodexProtocolError("account/login/cancel returned an invalid result")
+
+    def model_list(
+        self,
+        *,
+        limit: int = 100,
+        include_hidden: bool = False,
+        cursor: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Return one validated page from app-server ``model/list``."""
+
+        params: dict[str, Any] = {
+            "limit": max(1, min(int(limit), 1000)),
+            "includeHidden": bool(include_hidden),
+        }
+        if cursor:
+            params["cursor"] = cursor
+        response = self.request("model/list", params)
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise CodexProtocolError("model/list returned an invalid result")
+        data = result.get("data")
+        if not isinstance(data, list) or any(not isinstance(row, dict) for row in data):
+            raise CodexProtocolError("model/list result.data must be an array of objects")
+        next_cursor = result.get("nextCursor")
+        if next_cursor is not None and not isinstance(next_cursor, str):
+            raise CodexProtocolError("model/list nextCursor must be a string or null")
+        return data, next_cursor or None
+
     def close(self) -> None:
-        proc, self._proc = self._proc, None
+        with self._close_lock:
+            self._closed = True
+            proc, self._proc = self._proc, None
         if proc is None:
             return
         with contextlib.suppress(OSError):
             if proc.stdin is not None:
                 proc.stdin.close()
         if proc.poll() is None:
+            terminate_process_group(
+                proc.pid,
+                grace_secs=_SHUTDOWN_GRACE_SECONDS,
+                reap=proc.poll,
+            )
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=_SHUTDOWN_GRACE_SECONDS)
+        if proc.poll() is None:
             with contextlib.suppress(OSError):
-                proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
+                proc.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=_SHUTDOWN_GRACE_SECONDS)
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
                 with contextlib.suppress(OSError):
-                    proc.kill()
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    proc.wait(timeout=2)
+                    pipe.close()
 
 
 def _error_text(error: Any) -> str:
@@ -530,6 +660,39 @@ def _tool_specs(tools: Sequence[Any]) -> list[dict[str, Any]]:
     return specs
 
 
+class _InvocationCancellation:
+    """Thread-safe bridge from async cancellation to one synchronous server."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._server: CodexAppServer | None = None
+        self._cancelled = False
+
+    def attach(self, server: CodexAppServer) -> bool:
+        with self._lock:
+            if self._cancelled:
+                cancelled = True
+            else:
+                self._server = server
+                cancelled = False
+        if cancelled:
+            server.close()
+            return False
+        return True
+
+    def detach(self, server: CodexAppServer) -> None:
+        with self._lock:
+            if self._server is server:
+                self._server = None
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancelled = True
+            server = self._server
+        if server is not None:
+            server.close()
+
+
 class CodexSubscriptionChatModel(BaseChatModel):
     """LangChain chat model backed by ChatGPT subscription usage in Codex."""
 
@@ -580,6 +743,7 @@ class CodexSubscriptionChatModel(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
+        cancel_handle = kwargs.pop("_jarn_cancel_handle", None)
         del stop, run_manager, kwargs
         system, transcript = _render_messages(messages)
         specs = _tool_specs(self._bound_tools)
@@ -621,48 +785,55 @@ class CodexSubscriptionChatModel(BaseChatModel):
                     "output_tokens": int(latest.get("outputTokens") or 0),
                 }
 
-        with CodexAppServer(
+        server = CodexAppServer(
             command=self.codex_command,
             cwd=self.working_directory,
             timeout_seconds=self.timeout_seconds,
             safe_model_mode=True,
-        ) as server:
-            account = require_chatgpt_subscription(server.account(refresh=False))
-            thread_response = server.request(
-                "thread/start",
-                {
-                    "model": self.model_name,
-                    "cwd": str(Path(self.working_directory).resolve()),
-                    "approvalPolicy": "never",
-                    "sandbox": "read-only",
-                    "baseInstructions": _BRIDGE_BASE_INSTRUCTIONS,
-                    "developerInstructions": developer,
-                    "ephemeral": True,
-                    "serviceName": self.service_name,
-                },
-                on_notification=observe,
-            )
-            thread = (thread_response.get("result") or {}).get("thread") or {}
-            thread_id = thread.get("id")
-            if not thread_id:
-                raise CodexProtocolError("thread/start returned no thread id")
-            server.request(
-                "turn/start",
-                {
-                    "threadId": thread_id,
-                    "input": turn_input,
-                    "model": self.model_name,
-                    "effort": self.reasoning_effort,
-                    "approvalPolicy": "never",
-                    "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
-                    "outputSchema": _OUTPUT_SCHEMA,
-                },
-                on_notification=observe,
-            )
-            completed = server.wait_for(
-                lambda message: message.get("method") == "turn/completed",
-                on_notification=observe,
-            )
+        )
+        if cancel_handle is not None and not cancel_handle.attach(server):
+            raise CodexTurnError("Codex turn was cancelled before startup")
+        try:
+            with server:
+                account = require_chatgpt_subscription(server.account(refresh=False))
+                thread_response = server.request(
+                    "thread/start",
+                    {
+                        "model": self.model_name,
+                        "cwd": str(Path(self.working_directory).resolve()),
+                        "approvalPolicy": "never",
+                        "sandbox": "read-only",
+                        "baseInstructions": _BRIDGE_BASE_INSTRUCTIONS,
+                        "developerInstructions": developer,
+                        "ephemeral": True,
+                        "serviceName": self.service_name,
+                    },
+                    on_notification=observe,
+                )
+                thread = (thread_response.get("result") or {}).get("thread") or {}
+                thread_id = thread.get("id")
+                if not thread_id:
+                    raise CodexProtocolError("thread/start returned no thread id")
+                server.request(
+                    "turn/start",
+                    {
+                        "threadId": thread_id,
+                        "input": turn_input,
+                        "model": self.model_name,
+                        "effort": self.reasoning_effort,
+                        "approvalPolicy": "never",
+                        "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
+                        "outputSchema": _OUTPUT_SCHEMA,
+                    },
+                    on_notification=observe,
+                )
+                completed = server.wait_for(
+                    lambda message: message.get("method") == "turn/completed",
+                    on_notification=observe,
+                )
+        finally:
+            if cancel_handle is not None:
+                cancel_handle.detach(server)
 
         turn = (completed.get("params") or {}).get("turn") or {}
         if turn.get("status") != "completed":
@@ -733,10 +904,42 @@ class CodexSubscriptionChatModel(BaseChatModel):
         )
         return ChatResult(generations=[ChatGeneration(message=message)])
 
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        """Run the sync protocol bridge while keeping its child cancellable."""
+        handle = _InvocationCancellation()
+        sync_manager = run_manager.get_sync() if run_manager is not None else None
+        worker = asyncio.create_task(
+            asyncio.to_thread(
+                self._generate,
+                messages,
+                stop,
+                sync_manager,
+                _jarn_cancel_handle=handle,
+                **kwargs,
+            )
+        )
+        try:
+            # Shield keeps the worker alive long enough to execute its `finally`;
+            # cancelling the outer LangGraph task then explicitly closes the
+            # associated app-server instead of orphaning its OS process/thread.
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            handle.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait_for(asyncio.shield(worker), timeout=0.9)
+            raise
+
 
 __all__ = [
     "CodexAppServer",
     "CodexProtocolError",
+    "CodexRPCError",
     "CodexSubscriptionAuthError",
     "CodexSubscriptionChatModel",
     "CodexSubscriptionError",

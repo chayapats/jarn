@@ -13,7 +13,8 @@ from jarn.doctor_extensions import collect_extensions
 def _write_global(home: Path) -> None:
     home.mkdir(parents=True)
     (home / "config.yaml").write_text(
-        "providers:\n  openrouter:\n    type: openrouter\n    api_key: sk-test\n"
+        "providers:\n  openrouter:\n    type: openrouter\n"
+        "    api_key: ${OPENROUTER_API_KEY}\n"
         "    base_url: https://openrouter.ai/api/v1\n",
         encoding="utf-8",
     )
@@ -85,7 +86,8 @@ def test_doctor_json_includes_extensions(isolated_home, tmp_path, monkeypatch, c
 
     gp = isolated_home / "config.yaml"
     gp.write_text(
-        "providers:\n  openrouter:\n    type: openrouter\n    api_key: sk-test\n"
+        "providers:\n  openrouter:\n    type: openrouter\n"
+        "    api_key: ${OPENROUTER_API_KEY}\n"
         "    base_url: https://openrouter.ai/api/v1\n",
         encoding="utf-8",
     )
@@ -122,7 +124,8 @@ def test_cli_and_command_parity(tmp_path, monkeypatch, base_config):
     monkeypatch.setenv("JARN_HOME", str(home))
     gp = home / "config.yaml"
     gp.write_text(
-        "providers:\n  openrouter:\n    type: openrouter\n    api_key: sk-test\n"
+        "providers:\n  openrouter:\n    type: openrouter\n"
+        "    api_key: ${OPENROUTER_API_KEY}\n"
         "    base_url: http://localhost:9999/v1\n"
         "routing:\n  main: openrouter/anthropic/claude-opus-4-8\n",
         encoding="utf-8",

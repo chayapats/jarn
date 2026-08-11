@@ -1,6 +1,6 @@
 [project]
 name = "jarn"
-version = "0.11.0"
+version = "1.0.0"
 description = "J.A.R.N. — Just A Reliable Nerd. A TUI-first coding agent harness built on DeepAgents."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -8,7 +8,7 @@ license = { text = "Apache-2.0" }
 authors = [{ name = "Chayapat" }]
 keywords = ["agent", "coding-agent", "tui", "deepagents", "llm", "harness"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3.12",

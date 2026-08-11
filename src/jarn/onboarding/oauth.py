@@ -110,6 +110,7 @@ _OPENROUTER_REF = f"keychain:{_SERVICE}/{_ACCOUNT}"
 # Public types
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class LoginResult:
     """Result of a successful ``login_openrouter`` call."""
@@ -130,6 +131,7 @@ class LoginResult:
 # ---------------------------------------------------------------------------
 # PKCE helpers
 # ---------------------------------------------------------------------------
+
 
 def pkce_verifier(length: int = 64) -> str:
     """Generate a PKCE code verifier.
@@ -163,6 +165,7 @@ def pkce_challenge(verifier: str) -> str:
 # Loopback callback server
 # ---------------------------------------------------------------------------
 
+
 class _CallbackHandler(BaseHTTPRequestHandler):
     """Captures ``?code=`` values onto the server's queue.
 
@@ -187,7 +190,7 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         params = urllib.parse.parse_qs(parsed.query)
         codes = params.get("code", [])
         nonce: str | None = self.server._nonce  # type: ignore[attr-defined]
-        suffix = parsed.path[len("/callback/"):]
+        suffix = parsed.path[len("/callback/") :]
         # ``compare_digest`` raises TypeError on a non-ASCII str, and the path is
         # attacker-controlled. The nonce is token_urlsafe, always ASCII, so a
         # non-ASCII suffix can never match — short-circuit instead of crashing.
@@ -199,9 +202,7 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         )
         # Once the flow has latched to verified-only, a bare callback is noise: a
         # burst of them has already been tried and rejected.
-        bare_ok = parsed.path == "/callback" and not getattr(
-            self.server, "_verified_only", False
-        )
+        bare_ok = parsed.path == "/callback" and not getattr(self.server, "_verified_only", False)
         accepted = codes and (verified or bare_ok)
         if accepted:
             self.server._codes.append((verified, codes[0]))  # type: ignore[attr-defined]
@@ -343,6 +344,7 @@ def _pop_code(server: HTTPServer) -> str | None:
 
 def _monotonic() -> float:
     import time
+
     return time.monotonic()
 
 
@@ -354,6 +356,7 @@ def _module_wait_for_callback(server: HTTPServer, *, timeout: float = 300.0) -> 
 # ---------------------------------------------------------------------------
 # Code exchange + key storage
 # ---------------------------------------------------------------------------
+
 
 def _exchange_and_store(code: str, verifier: str) -> StoredSecret:
     """Exchange an authorization code for an API key and store it securely.
@@ -487,6 +490,7 @@ def _is_code_rejection(exc: Exception) -> bool:
 # Existing-key helpers
 # ---------------------------------------------------------------------------
 
+
 def _resolve_existing(ref: str) -> str | None:
     """Return the resolved value for *ref*, or None if it cannot be resolved.
 
@@ -541,6 +545,7 @@ def _mask_key(raw: str) -> str:
 # ---------------------------------------------------------------------------
 # Replace/keep prompt
 # ---------------------------------------------------------------------------
+
 
 def _default_prompt_replace_or_keep(existing_ref: str) -> Literal["replace", "keep"]:
     """Interactive replace/keep prompt.
@@ -599,9 +604,7 @@ def _tui_replace_or_keep(existing_ref: str) -> Literal["replace", "keep"]:
         async def on_mount(self) -> None:
             self.query_one(OptionList).focus()
 
-        async def on_option_list_option_selected(
-            self, event: OptionList.OptionSelected
-        ) -> None:
+        async def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
             key = (event.option.id or "").removeprefix("opt:")
             self.choice = key
             self.exit()
@@ -615,6 +618,7 @@ def _tui_replace_or_keep(existing_ref: str) -> Literal["replace", "keep"]:
 # ---------------------------------------------------------------------------
 # Main login function
 # ---------------------------------------------------------------------------
+
 
 def login_openrouter(
     open_browser: Callable[..., object] | None = None,
@@ -648,9 +652,7 @@ def login_openrouter(
         else _default_prompt_replace_or_keep
     )
     _wait_fn: Callable[..., str] = (
-        _wait_for_callback
-        if _wait_for_callback is not None
-        else _module_wait_for_callback
+        _wait_for_callback if _wait_for_callback is not None else _module_wait_for_callback
     )
 
     # -- check for an existing key from ANY source --------------------------
@@ -709,6 +711,7 @@ def login_openrouter(
 # ---------------------------------------------------------------------------
 # Doctor helper
 # ---------------------------------------------------------------------------
+
 
 def key_source(ref: str | None) -> str:
     """Return a short label describing the source of a key reference.

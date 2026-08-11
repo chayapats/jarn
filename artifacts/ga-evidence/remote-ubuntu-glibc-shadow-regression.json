@@ -1,0 +1,47 @@
+{
+  "automated_tests": [
+    "tests/test_installer.py::test_python_fallback_preserves_uv_absolute_launcher_target",
+    "tests/test_installer.py npm-shadow and glibc fallback contracts"
+  ],
+  "command": "SSH isolated-home candidate install on a redacted Ubuntu fixture with an old npm command first on PATH, a deliberately incompatible GLIBC_2.38 release binary, and the current wheel as the managed-Python fallback",
+  "criterion_ids": [
+    "AC-INSTALL-005",
+    "AC-INSTALL-006",
+    "AC-INSTALL-007",
+    "TEST-INSTALL"
+  ],
+  "decisions": [
+    "The test used an isolated HOME, JARN_HOME, state directory, cache, tool directory, and install directory; the host's existing J.A.R.N. commands and configuration were not changed.",
+    "A real uv absolute launcher symlink exposed a relocation defect that the fake fixture had hidden; prepare_python now installs directly into its unique final version directory and never relocates that tool root."
+  ],
+  "documentation_lookups": [],
+  "duration_seconds": 12.0,
+  "ended_at": "2026-08-11T15:39:07Z",
+  "errors": [],
+  "implementation": [
+    "install.sh",
+    "tests/test_installer.py"
+  ],
+  "limitations": [
+    "This pre-release source/wheel fixture is not a public release URL canary, oldest-glibc execution, fresh-user login UAT, or proof of the complete Tier-1 matrix.",
+    "Setup was intentionally disabled so this record contains no authentication ceremony or provider output."
+  ],
+  "platform": {
+    "architecture": "x86_64",
+    "libc": "glibc 2.35",
+    "os": "Ubuntu",
+    "version": "22.04"
+  },
+  "record_id": "REMOTE-UBUNTU-GLIBC-SHADOW-20260811",
+  "redaction": {
+    "home_path_redacted": true,
+    "host_identifier_redacted": true,
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false
+  },
+  "result": "Passed on the final v1.0.0 source/wheel candidate: installer rejected the incompatible release binary, verified its checksum, selected the portable managed-Python path, preserved the real uv absolute launcher target, activated jarn 1.0.0 with exit 10, resolved the new command in a fresh shell, retained the old npm command, produced an actionable receipt whose active path matched doctor inventory, and emitted no Done/Ready false-success text.",
+  "schema_version": 1,
+  "started_at": "2026-08-11T15:38:55Z",
+  "status": "passed"
+}

@@ -10,11 +10,13 @@ substitute for sandboxing. Patterns target catastrophic, hard-to-undo actions.
 .. note::
 
    The guard is a **net, not a sandbox**. It inspects the pre-shell command
-   string with patterns; it does not parse shell syntax. Chaining via
-   ``eval``/``bash -c``/``python -c``/heredocs/``$(...)``/base64-decoded
-   payloads can hide a destructive command from these patterns. For untrusted
-   code, run with ``execution.backend: docker`` or the OS sandbox instead of
-   relying on this net. See ``SECURITY.md`` and ``docs/PERMISSIONS.md``.
+   string with patterns; it does not fully parse or emulate shell syntax. Known
+   dynamic boundaries (substitution, heredocs, inline interpreters,
+   aliases/functions, decoded payloads) force a one-shot confirmation, but a
+   sufficiently obfuscated program can still hide equivalent side effects. For
+   untrusted code, run with ``execution.backend: docker`` or the OS sandbox
+   instead of relying on this net. See ``SECURITY.md`` and
+   ``docs/PERMISSIONS.md``.
 """
 
 from __future__ import annotations
@@ -32,9 +34,9 @@ if TYPE_CHECKING:
 
 
 class GuardLevel(str, Enum):
-    SAFE = "safe"            # guard has no opinion; defer to engine
+    SAFE = "safe"  # guard has no opinion; defer to engine
     DANGEROUS = "dangerous"  # must confirm explicitly, even in YOLO
-    BLOCKED = "blocked"      # refused outright, cannot be allowlisted
+    BLOCKED = "blocked"  # refused outright, cannot be allowlisted
 
 
 @dataclass(slots=True, frozen=True)
@@ -56,7 +58,55 @@ _RM_FORCE = re.compile(r"(?:^|\s)(?:--force|-[a-zA-Z]*f[a-zA-Z]*)(?=\s|$)")
 #: Matches the literal root (``/``), ``/*``, bare ``~``/``~/*``, and the home
 #: env var in both ``$HOME`` and ``${HOME}`` spellings (brace form previously
 #: escaped the root-target block, letting ``rm -rf ${HOME}`` through).
-_ROOT_TARGET = re.compile(r"(?:^|\s)(?:/|/\*|~|~/\*?|\$HOME|\$\{HOME\})(?=\s|$)")
+_ROOT_TARGET = re.compile(r"(?:^|[\s'\"])(?:/|/\*|~|~/\*?|\$HOME|\$\{HOME\})(?=[\s'\"]|$)")
+
+# J.A.R.N.'s own file-backed credential store is a hard floor for path-aware
+# read/write tools.  Shell commands need the same floor: otherwise `cat` in full
+# access mode bypasses the path-aware bridge entirely.  Match common absolute,
+# tilde, and environment spellings without interpolating any environment value.
+_JARN_SECRET_PATH = re.compile(
+    r"(?:^|[\s'\"])(?:[^\s'\"]*/)?\.jarn/secrets(?:/|[\s'\"]|$)"
+    r"|(?:\$JARN_HOME|\$\{JARN_HOME\})/secrets(?:/|[\s'\"]|$)",
+    re.IGNORECASE,
+)
+
+# Other credential-bearing paths cannot be made an absolute deny because users
+# sometimes intentionally inspect them.  They still require an informed prompt
+# in every coarse mode, including full access.
+_SENSITIVE_SHELL_PATH = re.compile(
+    r"(?:^|[\s'\"])(?:[^\s'\"]*/)?(?:\.env(?:\.[^/\s'\"]+)?|"
+    r"\.ssh/(?:id_[^/\s'\"]+|config)|\.aws/credentials|"
+    r"[^/\s'\"]+\.(?:pem|key))(?:[\s'\"]|$)",
+    re.IGNORECASE,
+)
+
+# Shell expansion and code-evaluator boundaries can conceal the action that the
+# model asks the user to approve.  The guard cannot safely generalize these, so
+# it forces a one-shot confirmation even when the coarse mode is full access.
+_DYNAMIC_SHELL = re.compile(r"\$\(|`|(?:^|\s)[<>]\(|<<-?\s*['\"]?\w+")
+_SHELL_DYNAMIC_PAYLOAD = re.compile(
+    r"\b(?:bash|sh|zsh|dash|fish|ksh)\b[^|;&\n]*\s-c\s+['\"]?\$(?:\{|[A-Za-z_])"
+)
+_CODE_EVALUATOR = re.compile(
+    r"\b(?:python(?:2|3)?\s+-c|node\s+(?:-e|--eval)|ruby\s+-e|perl\s+-e|php\s+-r)\b"
+)
+_ALIAS_OR_FUNCTION = re.compile(
+    r"(?:^|[;&]\s*)(?:alias\s+\w+=|function\s+\w+|[A-Za-z_]\w*\s*\(\)\s*\{)"
+)
+_DYNAMIC_LOADER = re.compile(r"\b(?:LD_PRELOAD|DYLD_INSERT_LIBRARIES)\s*=")
+_REMOTE_TRANSFER = re.compile(
+    r"\b(?:scp|sftp|nc|netcat|socat)\b|\brsync\b[^|;&\n]*\s[^\s]+@[^\s:]+:"
+)
+_CURL_UPLOAD = re.compile(
+    r"\bcurl\b[^|;&\n]*(?:--upload-file|-T\b|--data(?:-binary|-raw)?\s+@|"
+    r"(?:-F|--form)\s+[^\s=]+=@)"
+)
+_ENV_DUMP = re.compile(r"(?:^|[|;&]\s*)(?:env|printenv|set|export)\s*(?:$|[|;&])")
+_SECRET_NAME = re.compile(
+    r"\b[A-Za-z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Za-z0-9_]*\b",
+    re.IGNORECASE,
+)
+_EGRESS_PROGRAM = re.compile(r"\b(?:curl|wget|scp|sftp|nc|netcat|socat|ssh)\b")
 
 # `[^|;&]*` lets flags like `-C <path>` sit between the verb and its subcommand
 # (`git -C /repo reset --hard`) without letting the match cross into a piped or
@@ -70,33 +120,33 @@ _GIT = r"\bgit\b[^|;&\n]*?"
 #: this explicit table covers the confusables most likely to disguise a verb.
 #: It is intentionally small and best-effort — a determined attacker can still
 #: pick a code point we don't map; sandbox untrusted code instead.
-_CONFUSABLES = str.maketrans({
-    "\u0430": "a",   # Cyrillic small a
-    "\u0435": "e",   # Cyrillic small ie
-    "\u0436": "x",   # Cyrillic small zhe (looks like x in some faces) — skipped below
-    "\u043e": "o",   # Cyrillic small o
-    "\u0440": "p",   # Cyrillic small er
-    "\u0441": "c",   # Cyrillic small es
-    "\u0443": "y",   # Cyrillic small u
-    "\u0445": "x",   # Cyrillic small ha
-    "\u043c": "m",   # Cyrillic small em
-    "\u0442": "t",   # Cyrillic small te
-    "\u0410": "A",   # Cyrillic capital a
-    "\u0412": "B",   # Cyrillic capital ve
-    "\u0415": "E",   # Cyrillic capital ie
-    "\u041a": "K",   # Cyrillic capital ka
-    "\u041c": "M",   # Cyrillic capital em
-    "\u041d": "H",   # Cyrillic capital en
-    "\u041e": "O",   # Cyrillic capital o
-    "\u0420": "P",   # Cyrillic capital er
-    "\u0421": "C",   # Cyrillic capital es
-    "\u0422": "T",   # Cyrillic capital te
-    "\u0425": "X",   # Cyrillic capital ha
-})
-# Remove the ambiguous zhe mapping (kept out to avoid false positives).
 _CONFUSABLES = str.maketrans(
-    {k: v for k, v in _CONFUSABLES.items() if k != "\u0436"}
+    {
+        "\u0430": "a",  # Cyrillic small a
+        "\u0435": "e",  # Cyrillic small ie
+        "\u0436": "x",  # Cyrillic small zhe (looks like x in some faces) — skipped below
+        "\u043e": "o",  # Cyrillic small o
+        "\u0440": "p",  # Cyrillic small er
+        "\u0441": "c",  # Cyrillic small es
+        "\u0443": "y",  # Cyrillic small u
+        "\u0445": "x",  # Cyrillic small ha
+        "\u043c": "m",  # Cyrillic small em
+        "\u0442": "t",  # Cyrillic small te
+        "\u0410": "A",  # Cyrillic capital a
+        "\u0412": "B",  # Cyrillic capital ve
+        "\u0415": "E",  # Cyrillic capital ie
+        "\u041a": "K",  # Cyrillic capital ka
+        "\u041c": "M",  # Cyrillic capital em
+        "\u041d": "H",  # Cyrillic capital en
+        "\u041e": "O",  # Cyrillic capital o
+        "\u0420": "P",  # Cyrillic capital er
+        "\u0421": "C",  # Cyrillic capital es
+        "\u0422": "T",  # Cyrillic capital te
+        "\u0425": "X",  # Cyrillic capital ha
+    }
 )
+# Remove the ambiguous zhe mapping (kept out to avoid false positives).
+_CONFUSABLES = str.maketrans({k: v for k, v in _CONFUSABLES.items() if k != "\u0436"})
 
 
 def _normalize(command: str) -> str:
@@ -113,56 +163,103 @@ def _normalize(command: str) -> str:
 # (compiled regex, level, human reason). Order matters: first match wins.
 _RULES: list[tuple[re.Pattern[str], GuardLevel, str]] = [
     # Catastrophic, effectively irreversible — block outright.
-    (re.compile(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:"),
-     GuardLevel.BLOCKED, "fork bomb"),
+    (re.compile(r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:"), GuardLevel.BLOCKED, "fork bomb"),
     (re.compile(r"\bmkfs(\.\w+)?\b"), GuardLevel.BLOCKED, "filesystem format"),
-    (re.compile(r"\bdd\b.*\bof=/dev/(sd|nvme|disk|rdisk)"),
-     GuardLevel.BLOCKED, "raw write to a block device"),
+    (
+        re.compile(r"\bdd\b.*\bof=/dev/(sd|nvme|disk|rdisk)"),
+        GuardLevel.BLOCKED,
+        "raw write to a block device",
+    ),
     (re.compile(r">\s*/dev/(sd|nvme|disk)"), GuardLevel.BLOCKED, "redirect into a block device"),
     # A privileged container escapes isolation: block it outright.
-    (re.compile(r"\bdocker\s+run\b[^|;&\n]*(?:--privileged|--pid=host|--net=host)\b"),
-     GuardLevel.BLOCKED, "privileged container (isolation escape)"),
-
+    (
+        re.compile(r"\bdocker\s+run\b[^|;&\n]*(?:--privileged|--pid=host|--net=host)\b"),
+        GuardLevel.BLOCKED,
+        "privileged container (isolation escape)",
+    ),
     # Dangerous but legitimate — require explicit confirmation.
-    (re.compile(_GIT + r"\bpush\b[^|;&\n]*(--force\b|--force-with-lease\b|\s-f\b)"),
-     GuardLevel.DANGEROUS, "force push"),
-    (re.compile(_GIT + r"\breset\s+--hard\b"), GuardLevel.DANGEROUS, "hard reset (discards changes)"),
-    (re.compile(_GIT + r"\bclean\s+-[a-zA-Z]*f"), GuardLevel.DANGEROUS, "git clean (deletes untracked)"),
+    (
+        re.compile(_GIT + r"\bpush\b[^|;&\n]*(--force\b|--force-with-lease\b|\s-f\b)"),
+        GuardLevel.DANGEROUS,
+        "force push",
+    ),
+    (
+        re.compile(_GIT + r"\breset\s+--hard\b"),
+        GuardLevel.DANGEROUS,
+        "hard reset (discards changes)",
+    ),
+    (
+        re.compile(_GIT + r"\bclean\s+-[a-zA-Z]*f"),
+        GuardLevel.DANGEROUS,
+        "git clean (deletes untracked)",
+    ),
     # Mass discard of working-tree changes: `git checkout .`, `git restore .`,
     # `git checkout -- *` / `git checkout -- .`. A single named file is not
     # matched — only the "everything" dot / wildcard forms.
-    (re.compile(
-        _GIT + r"\b(?:checkout|restore)\s+(?:\.|--\s+(?:\.|\*))(?:\s|$)"),
-     GuardLevel.DANGEROUS, "mass discard of working-tree changes (checkout/restore .)"),
+    (
+        re.compile(_GIT + r"\b(?:checkout|restore)\s+(?:\.|--\s+(?:\.|\*))(?:\s|$)"),
+        GuardLevel.DANGEROUS,
+        "mass discard of working-tree changes (checkout/restore .)",
+    ),
     # Recursive permission change — `-R` anywhere in the argv, so flag order
     # can't slip past (`chmod 777 -R .` previously escaped `\bchmod\s+-R\b`).
-    (re.compile(r"\b(?:chmod|chown)\b[^|;&\n]*\s-R[a-zA-Z]*(?:\s|$)"),
-     GuardLevel.DANGEROUS, "recursive permission change"),
+    (
+        re.compile(r"\b(?:chmod|chown)\b[^|;&\n]*\s-R[a-zA-Z]*(?:\s|$)"),
+        GuardLevel.DANGEROUS,
+        "recursive permission change",
+    ),
     (re.compile(r"\bsudo\b"), GuardLevel.DANGEROUS, "elevated privileges"),
-    (re.compile(r"\bcurl\b.*\|\s*(sudo\s+)?(sh|bash|zsh)\b"), GuardLevel.DANGEROUS, "pipe-to-shell install"),
-    (re.compile(r"\bwget\b.*\|\s*(sudo\s+)?(sh|bash|zsh)\b"), GuardLevel.DANGEROUS, "pipe-to-shell install"),
+    (
+        re.compile(r"\bcurl\b.*\|\s*(sudo\s+)?(sh|bash|zsh)\b"),
+        GuardLevel.DANGEROUS,
+        "pipe-to-shell install",
+    ),
+    (
+        re.compile(r"\bwget\b.*\|\s*(sudo\s+)?(sh|bash|zsh)\b"),
+        GuardLevel.DANGEROUS,
+        "pipe-to-shell install",
+    ),
     # Download-then-execute without a pipe: `curl -o f.sh url; sh f.sh`.
-    (re.compile(r"\b(?:curl|wget)\b[^|;&\n]*\s-[oO]\b[^;\n]*;\s*(?:sh|bash|zsh)\b"),
-     GuardLevel.DANGEROUS, "download-then-execute"),
+    (
+        re.compile(r"\b(?:curl|wget)\b[^|;&\n]*\s-[oO]\b[^;\n]*;\s*(?:sh|bash|zsh)\b"),
+        GuardLevel.DANGEROUS,
+        "download-then-execute",
+    ),
     # Decode-and-execute: `base64 -d … | sh` hides the payload from the net.
-    (re.compile(r"\bbase64\b[^|;&\n]*\s-d\b[^|;&\n]*\|\s*(?:sh|bash|zsh)\b"),
-     GuardLevel.DANGEROUS, "base64-decoded payload piped to shell"),
+    (
+        re.compile(r"\bbase64\b[^|;&\n]*\s-d\b[^|;&\n]*\|\s*(?:sh|bash|zsh)\b"),
+        GuardLevel.DANGEROUS,
+        "base64-decoded payload piped to shell",
+    ),
     (re.compile(r"\bkill(all)?\s+-9\b"), GuardLevel.DANGEROUS, "force kill"),
     (re.compile(r"\bfind\b[^|;&\n]*\s-delete\b"), GuardLevel.DANGEROUS, "find -delete"),
     # `find -exec rm` / `-execdir rm` deletes matched files (mass removal).
-    (re.compile(r"\bfind\b[^|;&\n]*\s-exec(?:dir)?\s+rm\b"),
-     GuardLevel.DANGEROUS, "find -exec rm (mass delete)"),
+    (
+        re.compile(r"\bfind\b[^|;&\n]*\s-exec(?:dir)?\s+rm\b"),
+        GuardLevel.DANGEROUS,
+        "find -exec rm (mass delete)",
+    ),
     # Package managers / remote-code runners: postinstall scripts and `npx`/`bunx`
     # fetch+run arbitrary code. DANGEROUS (not BLOCKED) so trusted workflows still
     # work with one confirmation.
-    (re.compile(r"\b(?:npm\s+install|pnpm\s+install|yarn\s+add)\b"),
-     GuardLevel.DANGEROUS, "package install (postinstall scripts run code)"),
-    (re.compile(r"\b(?:pip\s+install|uv\s+pip\s+install|uv\s+add|npx|bunx)\b"),
-     GuardLevel.DANGEROUS, "package manager / remote-code runner"),
+    (
+        re.compile(r"\b(?:npm\s+install|pnpm\s+install|yarn\s+add)\b"),
+        GuardLevel.DANGEROUS,
+        "package install (postinstall scripts run code)",
+    ),
+    (
+        re.compile(r"\b(?:pip\s+install|uv\s+pip\s+install|uv\s+add|npx|bunx)\b"),
+        GuardLevel.DANGEROUS,
+        "package manager / remote-code runner",
+    ),
     # Power control — a CI/agent context almost never legitimately halts the host.
     (re.compile(r"\b(?:shutdown|reboot|halt)\b"), GuardLevel.DANGEROUS, "host power control"),
     # Truncate-to-zero wipes a file's contents (often a config/log).
-    (re.compile(r"\btruncate\b[^|;&\n]*\s-s\s*0\b"), GuardLevel.DANGEROUS, "truncate file to zero bytes"),
+    (
+        re.compile(r"\btruncate\b[^|;&\n]*\s-s\s*0\b"),
+        GuardLevel.DANGEROUS,
+        "truncate file to zero bytes",
+    ),
 ]
 
 
@@ -188,9 +285,9 @@ def _rm_verdict(normalized: str) -> GuardVerdict | None:
 class NetworkVerdict(str, Enum):
     """Result of classifying a host against a :class:`NetworkPolicy`."""
 
-    ALLOWED = "allowed"          # permitted (or the policy is inert)
+    ALLOWED = "allowed"  # permitted (or the policy is inert)
     NOT_ALLOWED = "not_allowed"  # a non-empty allow-list the host isn't on
-    DENIED = "denied"            # an explicit deny-glob match (deny always wins)
+    DENIED = "denied"  # an explicit deny-glob match (deny always wins)
 
 
 def _host_matches(host: str, patterns: list[str]) -> bool:
@@ -246,9 +343,9 @@ def _host_from_token(token: str) -> str | None:
     if not tok or tok.startswith("-"):
         return None
     candidate = tok.split("/", 1)[0]
-    if "@" in candidate:                     # strip user:pass@ credentials
+    if "@" in candidate:  # strip user:pass@ credentials
         candidate = candidate.rsplit("@", 1)[-1]
-    candidate = candidate.split(":", 1)[0]   # strip :port
+    candidate = candidate.split(":", 1)[0]  # strip :port
     if _BARE_HOST.fullmatch(candidate):
         return candidate.lower()
     return None
@@ -271,16 +368,16 @@ def _egress_hosts(normalized: str) -> list[str]:
     for tok in normalized.split():
         if skip_next:
             skip_next = False
-            continue                          # this token is an output filename
+            continue  # this token is an output filename
         host = _host_from_token(tok)
         if host:
             hosts.append(host)
             continue
         prog = _PROG_TOKEN.search(tok)
-        if prog is not None:                  # switch flag arity to this program
+        if prog is not None:  # switch flag arity to this program
             filename_flags = _FILENAME_FLAGS[prog.group(1).lower()]
             continue
-        if tok in filename_flags:             # only these truly consume a filename
+        if tok in filename_flags:  # only these truly consume a filename
             skip_next = True
     return hosts
 
@@ -291,9 +388,7 @@ def _egress_verdict(normalized: str, policy: NetworkPolicy) -> GuardVerdict | No
     for host in _egress_hosts(normalized):
         verdict = classify_host(host, policy)
         if verdict is NetworkVerdict.DENIED:
-            return GuardVerdict(
-                GuardLevel.BLOCKED, f"network policy denies egress to {host!r}"
-            )
+            return GuardVerdict(GuardLevel.BLOCKED, f"network policy denies egress to {host!r}")
         if verdict is NetworkVerdict.NOT_ALLOWED:
             not_allowed.append(host)
     if not_allowed:
@@ -304,9 +399,7 @@ def _egress_verdict(normalized: str, policy: NetworkPolicy) -> GuardVerdict | No
     return None
 
 
-def inspect_command(
-    command: str, network_policy: NetworkPolicy | None = None
-) -> GuardVerdict:
+def inspect_command(command: str, network_policy: NetworkPolicy | None = None) -> GuardVerdict:
     """Classify a shell command against the danger-guard rules.
 
     When *network_policy* carries any allow/deny globs, ``curl``/``wget`` egress
@@ -316,6 +409,11 @@ def inspect_command(
     When *network_policy* is ``None`` or inert, behaviour is unchanged.
     """
     normalized = _normalize(command)
+    if _JARN_SECRET_PATH.search(normalized):
+        return GuardVerdict(
+            GuardLevel.BLOCKED,
+            "shell access to J.A.R.N.'s credential store is prohibited",
+        )
     rm = _rm_verdict(normalized)
     if rm is not None:
         return rm
@@ -329,6 +427,31 @@ def inspect_command(
     for pattern, level, reason in _RULES:
         if pattern.search(normalized):
             return GuardVerdict(level, reason)
+    # These conceal or export data rather than naming one destructive verb. Keep
+    # them after the explicit BLOCKED/rule scan so a visible catastrophe nested
+    # inside a wrapper still receives the stronger verdict.
+    if _SENSITIVE_SHELL_PATH.search(normalized):
+        return GuardVerdict(GuardLevel.DANGEROUS, "shell access to a sensitive credential path")
+    if _DYNAMIC_SHELL.search(normalized) or _SHELL_DYNAMIC_PAYLOAD.search(normalized):
+        return GuardVerdict(
+            GuardLevel.DANGEROUS, "dynamic shell expansion hides the executed payload"
+        )
+    if _CODE_EVALUATOR.search(normalized):
+        return GuardVerdict(GuardLevel.DANGEROUS, "inline code evaluator can hide side effects")
+    if _ALIAS_OR_FUNCTION.search(normalized):
+        return GuardVerdict(
+            GuardLevel.DANGEROUS, "shell alias/function can hide later side effects"
+        )
+    if _DYNAMIC_LOADER.search(normalized):
+        return GuardVerdict(GuardLevel.DANGEROUS, "dynamic-loader injection")
+    if _CURL_UPLOAD.search(normalized) or _REMOTE_TRANSFER.search(normalized):
+        return GuardVerdict(GuardLevel.DANGEROUS, "command can transfer local data remotely")
+    if _ENV_DUMP.search(normalized):
+        return GuardVerdict(GuardLevel.DANGEROUS, "command can expose environment credentials")
+    if _SECRET_NAME.search(normalized) and _EGRESS_PROGRAM.search(normalized):
+        return GuardVerdict(
+            GuardLevel.DANGEROUS, "credential-like environment value sent to network"
+        )
     if net is not None:
         return net
     return GuardVerdict(GuardLevel.SAFE)

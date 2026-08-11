@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -61,6 +63,55 @@ def test_command_normalization_is_argv_not_shell_split():
 def test_account_read_reports_managed_chatgpt(tmp_path):
     account = codex_subscription_account(command=FAKE_COMMAND, cwd=tmp_path, timeout_seconds=5)
     assert account == {"type": "chatgpt", "planType": "plus"}
+
+
+def test_wedged_app_server_is_reaped_within_cancellation_budget(monkeypatch, tmp_path):
+    monkeypatch.setenv("JARN_CODEX_FAKE_MODE", "hang_close")
+    server = CodexAppServer(command=FAKE_COMMAND, cwd=tmp_path, timeout_seconds=5)
+    server.__enter__()
+    assert server.account() == {"type": "chatgpt", "planType": "plus"}
+    proc = server._proc
+    assert proc is not None and proc.poll() is None
+
+    started = time.monotonic()
+    server.close()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0
+    assert proc.poll() is not None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_model_turn_reaps_its_wedged_app_server_within_one_second(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("JARN_CODEX_FAKE_MODE", "hang_turn")
+    entered: list[object] = []
+    original_enter = CodexAppServer.__enter__
+
+    def capture(server):
+        result = original_enter(server)
+        entered.append(server)
+        return result
+
+    monkeypatch.setattr(CodexAppServer, "__enter__", capture)
+    task = asyncio.create_task(model(tmp_path).ainvoke([HumanMessage(content="wait")]))
+    for _ in range(100):
+        if entered and entered[0]._proc is not None:  # type: ignore[attr-defined]
+            break
+        await asyncio.sleep(0.01)
+    assert entered
+    proc = entered[0]._proc  # type: ignore[attr-defined]
+    assert proc is not None and proc.poll() is None
+
+    started = time.monotonic()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0
+    assert proc.poll() is not None
 
 
 def test_safe_model_mode_disables_inner_execution_features(monkeypatch, tmp_path):

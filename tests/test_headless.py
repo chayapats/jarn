@@ -11,8 +11,13 @@ import pytest
 
 from jarn.agent.session import ApprovalRequest, Event, EventKind
 from jarn.config.schema import PermissionMode
+from jarn.exit_codes import (
+    EXIT_AUTH,
+    EXIT_BUDGET_EXCEEDED,
+    EXIT_USAGE_CONFIG,
+    EXIT_VERIFICATION_FAILED,
+)
 from jarn.headless import (
-    EXIT_ERROR,
     EXIT_REFUSED,
     EXIT_SUCCESS,
     EXIT_TIMEOUT,
@@ -408,21 +413,21 @@ async def test_max_turns_above_one_rejected(tmp_path, monkeypatch, base_config):
     with pytest.raises(HeadlessFailure) as exc_info:
         await _run_headless("do the thing", base_config, tmp_path, max_turns=5)
 
-    assert exc_info.value.kind == "error"
-    assert exc_info.value.exit_code == EXIT_ERROR
+    assert exc_info.value.kind == "usage"
+    assert exc_info.value.exit_code == EXIT_USAGE_CONFIG
     assert "max-turns" in str(exc_info.value).lower()
 
 
 def test_max_turns_above_one_exits_error_via_run_headless(
     tmp_path, monkeypatch, base_config, capsys
 ):
-    """The sync entry point surfaces the --max-turns > 1 rejection as exit 1 + message."""
+    """The sync entry point classifies --max-turns > 1 as invalid usage."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     _stub_controller(monkeypatch, text="unused")
 
     code = run_headless("do the thing", base_config, tmp_path, max_turns=3)
 
-    assert code == EXIT_ERROR
+    assert code == EXIT_USAGE_CONFIG
     err = capsys.readouterr().err
     assert "max-turns" in err.lower()
 
@@ -649,6 +654,59 @@ async def test_headless_records_exactly_one_turn_on_success(
     )
 
 
+@pytest.mark.asyncio
+async def test_successful_headless_run_is_indexed_complete(
+    tmp_path, monkeypatch, base_config
+):
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    captured: dict = {}
+    _spy_controller_init(monkeypatch, captured)
+    _stub_controller(monkeypatch, text="done")
+
+    result = await _run_headless("ดัชนีเซสชัน", base_config, tmp_path)
+
+    ctrl = captured["controller"]
+    indexed = ctrl.sessions.get(result.thread_id)
+    assert indexed is not None
+    assert indexed.title == "ดัชนีเซสชัน"
+    assert indexed.project_root == str(tmp_path)
+    assert indexed.model == base_config.resolved_main_model()
+    assert indexed.state == "complete"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["error", "cancel"])
+async def test_failed_or_cancelled_headless_run_remains_recoverable_incomplete(
+    tmp_path, monkeypatch, base_config, outcome
+):
+    from jarn.agent.session import Event
+
+    async def _unfinished(prompt, *, resume: bool = False):
+        del prompt, resume
+        if outcome == "error":
+            yield Event(kind=EventKind.ERROR, text="provider failed", data={})
+        else:
+            # Keep this an async generator while exercising cancellation.
+            if False:  # pragma: no cover
+                yield Event(kind=EventKind.TEXT, text="unused")
+            raise asyncio.CancelledError
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    captured: dict = {}
+    _spy_controller_init(monkeypatch, captured)
+    _stub_controller(monkeypatch, run_turn_side_effect=_unfinished)
+
+    expected = HeadlessFailure if outcome == "error" else asyncio.CancelledError
+    with pytest.raises(expected):
+        await _run_headless("unfinished task", base_config, tmp_path)
+
+    ctrl = captured["controller"]
+    indexed = ctrl.sessions.get(ctrl.thread_id)
+    assert indexed is not None
+    assert indexed.state == "incomplete"
+    assert ctrl.sessions.latest_incomplete().thread_id == ctrl.thread_id
+
+
 # ---------------------------------------------------------------------------
 # JSON tool_calls + structured errors
 # ---------------------------------------------------------------------------
@@ -725,7 +783,7 @@ def test_failed_verification_exits_nonzero_json(
 
     code = run_headless("fix it", base_config, tmp_path, as_json=True)
 
-    assert code == EXIT_ERROR
+    assert code == EXIT_VERIFICATION_FAILED
     data = json.loads(capsys.readouterr().out)
     assert data["error"]["kind"] == "verification"
     assert data["error"]["verification"]["ok"] is False
@@ -791,13 +849,13 @@ def test_exit_codes(tmp_path, monkeypatch, base_config, capsys):
     _stub_controller(monkeypatch, text="ok")
     assert run_headless("ok", base_config, tmp_path) == EXIT_SUCCESS
 
-    # Generic error
+    # Missing credentials
     monkeypatch.setattr(
         headless_mod.Controller,
         "validate",
         lambda self: (False, "no key"),
     )
-    assert run_headless("x", base_config, tmp_path) == EXIT_ERROR
+    assert run_headless("x", base_config, tmp_path) == EXIT_AUTH
     assert "no key" in capsys.readouterr().err
 
     # Refusal
@@ -822,7 +880,7 @@ def test_exit_codes(tmp_path, monkeypatch, base_config, capsys):
         )
 
     fake_driver.run_turn = _budget_stop
-    assert run_headless("x", base_config, tmp_path) == EXIT_REFUSED
+    assert run_headless("x", base_config, tmp_path) == EXIT_BUDGET_EXCEEDED
 
     # Timeout
     async def _timeout(prompt, *, resume: bool = False):
@@ -893,7 +951,7 @@ async def test_resume_last(tmp_path, monkeypatch, base_config):
 
 
 def test_budget_stop_exit_code(tmp_path, monkeypatch, base_config, capsys):
-    """Budget hard-stop surfaces exit code 2 (alias for the budget branch in test_exit_codes)."""
+    """Budget hard-stop has its own stable automation exit code."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     import jarn.headless as headless_mod
     from jarn.agent.session import Event
@@ -921,10 +979,10 @@ def test_budget_stop_exit_code(tmp_path, monkeypatch, base_config, capsys):
     fake_driver.run_turn = _budget_stop
     monkeypatch.setattr(headless_mod.Controller, "make_driver", lambda self, a: fake_driver)
 
-    assert run_headless("x", base_config, tmp_path) == EXIT_REFUSED
+    assert run_headless("x", base_config, tmp_path) == EXIT_BUDGET_EXCEEDED
 
     code = run_headless("x", base_config, tmp_path, as_json=True)
-    assert code == EXIT_REFUSED
+    assert code == EXIT_BUDGET_EXCEEDED
     data = json.loads(capsys.readouterr().out)
     assert data["error"]["kind"] == "budget"
 
@@ -1051,7 +1109,7 @@ async def test_output_schema_roundtrip(tmp_path, monkeypatch, base_config):
 
 
 def test_schema_validation_failure_exit(tmp_path, monkeypatch, base_config, capsys):
-    """When the agent doesn't produce a structured response, run_headless exits 1 with kind: 'schema'."""
+    """A missing structured response uses verification exit 9 and kind schema."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
 
     import jarn.headless as headless_mod
@@ -1091,7 +1149,7 @@ def test_schema_validation_failure_exit(tmp_path, monkeypatch, base_config, caps
         response_format=response_format,
     )
 
-    assert code == EXIT_ERROR
+    assert code == EXIT_VERIFICATION_FAILED
     data = json.loads(capsys.readouterr().out)
     assert data["error"]["kind"] == "schema"
 
@@ -1421,7 +1479,7 @@ def test_pre_run_failure_still_emits_a_terminal_record(capsys, output_format):
 
     code = cli_mod._cmd_headless(prompt_arg="", output_format=output_format)
 
-    assert code == EXIT_ERROR
+    assert code == EXIT_USAGE_CONFIG
     out = capsys.readouterr().out
     if output_format == "stream-json":
         record = _parse_ndjson(out)[-1]

@@ -13,6 +13,7 @@ Decision precedence (highest first):
 from __future__ import annotations
 
 import fnmatch
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -47,6 +48,11 @@ _WRAPPER_PROGRAMS = frozenset({
 #: PATTERN, not a concrete file: it is matched textually (metacharacters preserved),
 #: never resolved as a filesystem path.
 _GLOB_METACHARS = frozenset("*?[")
+
+# Generated approvals use a typed envelope inside the existing string-list schema.
+# Hand-authored legacy glob rules remain supported, while a remembered approval can
+# no longer widen across action kind, originating tool, or another workspace.
+_SCOPED_RULE_PREFIX = "jarn-scope:v1:"
 
 #: LEXICAL backstop for jarn's own secret store. Identity matching against
 #: :func:`~jarn.config.paths.secret_store_dirs` is the primary check; these
@@ -243,7 +249,7 @@ class PermissionEngine:
         NOT covered by an allow matching that same candidate; otherwise ALLOW. Reads
         are always permitted (any mode) unless an un-allowed sensitive candidate
         forces confirmation — an allow on another candidate cannot mask it."""
-        allow = self._all_allow()
+        allow = self._applicable_patterns(action, self._all_allow())
         for cand in self._read_candidates(action):
             if self._is_sensitive_read_canonical(cand) and not self._read_candidate_matches(
                 cand, allow
@@ -263,12 +269,13 @@ class PermissionEngine:
         rule = self._rule_for(action)
         if scope is RememberScope.ONCE:
             return None
-        if rule not in self._session_allow:
-            self._session_allow.append(rule)
+        scoped_rule = self._scoped_rule_for(action, rule)
+        if scoped_rule not in self._session_allow:
+            self._session_allow.append(scoped_rule)
         if scope is RememberScope.ALWAYS:
             if self.persist is not None:
                 try:
-                    self.persist(rule)
+                    self.persist(scoped_rule)
                 except (ConfigCorruptError, OSError) as exc:
                     # The in-memory allow still applies for this session; only the
                     # cross-process persistence is skipped. ConfigCorruptError means
@@ -283,8 +290,20 @@ class PermissionEngine:
 
     def deny_session(self, action: Action) -> None:
         rule = self._rule_for(action)
-        if rule not in self._session_deny:
-            self._session_deny.append(rule)
+        scoped_rule = self._scoped_rule_for(action, rule)
+        if scoped_rule not in self._session_deny:
+            self._session_deny.append(scoped_rule)
+
+    def remember_scope_summary(self, action: Action) -> str:
+        """Human-readable scope that would be remembered for *action*."""
+        workspace = self._workspace_scope() or "no project workspace"
+        tool = action.tool or "direct action"
+        target = self._rule_for(action)
+        noun = "command prefix" if action.kind is ActionKind.SHELL else "target"
+        return (
+            f"capability {action.kind.value} via {tool}; {noun} {target!r}; "
+            f"workspace {workspace}"
+        )
 
     # -- read-result filtering (used by jarn.agent.read_filter) --------------
     #
@@ -679,17 +698,66 @@ class PermissionEngine:
         # another (relative vs absolute). COMMAND/WRITE/NETWORK matching is left
         # byte-identical — its scope/symlink gating (guard + ``_in_scope``) is
         # separate and unchanged.
+        applicable = self._applicable_patterns(action, patterns)
         if action.kind is ActionKind.READ:
             return any(
-                self._read_candidate_matches(cand, patterns)
+                self._read_candidate_matches(cand, applicable)
                 for cand in self._read_candidates(action)
             )
         candidates = {action.target, self._rule_for(action)}
-        for pattern in patterns:
+        for pattern in applicable:
             for cand in candidates:
                 if cand == pattern or fnmatch.fnmatch(cand, pattern):
                     return True
         return False
+
+    def _workspace_scope(self) -> str:
+        roots = self._scope_roots()
+        if not roots:
+            return ""
+        try:
+            return roots[0].resolve().as_posix()
+        except (OSError, RuntimeError, ValueError):
+            # An unresolved workspace is still scoped to its explicit spelling;
+            # it must never degrade to the unscoped legacy-rule behavior.
+            return roots[0].absolute().as_posix()
+
+    def _scoped_rule_for(self, action: Action, rule: str) -> str:
+        payload = {
+            "kind": action.kind.value,
+            "rule": rule,
+            "tool": action.tool or "",
+            "workspace": self._workspace_scope(),
+        }
+        return _SCOPED_RULE_PREFIX + json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+
+    def _applicable_patterns(self, action: Action, patterns: list[str]) -> list[str]:
+        """Unwrap only scoped rules whose full authority matches this action."""
+        applicable: list[str] = []
+        workspace = self._workspace_scope()
+        tool = action.tool or ""
+        for raw in patterns:
+            if not raw.startswith(_SCOPED_RULE_PREFIX):
+                applicable.append(raw)  # explicit legacy/manual config rule
+                continue
+            try:
+                payload = json.loads(raw[len(_SCOPED_RULE_PREFIX) :])
+            except (TypeError, ValueError):
+                continue  # malformed generated rule fails closed
+            if not isinstance(payload, dict):
+                continue
+            if set(payload) != {"kind", "rule", "tool", "workspace"}:
+                continue
+            if payload.get("kind") != action.kind.value:
+                continue
+            if payload.get("tool") != tool or payload.get("workspace") != workspace:
+                continue
+            rule = payload.get("rule")
+            if isinstance(rule, str) and rule:
+                applicable.append(rule)
+        return applicable
 
     # -- READ-path identity matching (relative/absolute alias unification) ---
     #

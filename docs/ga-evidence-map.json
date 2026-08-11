@@ -1,0 +1,240 @@
+{
+  "schema_version": 1,
+  "title": "J.A.R.N. GA release evidence",
+  "rules": [
+    {
+      "prefix": "AC-UX-",
+      "implementation": ["src/jarn/onboarding/", "src/jarn/cli.py", "src/jarn/tui/"],
+      "automated_tests": ["tests/test_cli.py", "tests/test_ux.py", "tests/test_tui_wizard_key_capture.py"],
+      "commands": ["uv run pytest -q tests/test_cli.py tests/test_ux.py tests/test_tui_wizard_key_capture.py"],
+      "platforms": ["Linux and macOS terminal matrix"]
+    },
+    {
+      "prefix": "AC-INSTALL-",
+      "implementation": ["install.sh"],
+      "automated_tests": ["tests/test_installer.py", "tests/test_ci.py"],
+      "commands": ["uv run pytest -q tests/test_installer.py tests/test_ci.py", "sh -n install.sh"],
+      "platforms": ["Ubuntu 20.04/22.04/24.04 x86_64; Debian 11/12 x86_64; Linux ARM64; WSL2; macOS 13+"]
+    },
+    {
+      "prefix": "AC-DEP-",
+      "implementation": ["install.sh", "src/jarn/auth/", "src/jarn/doctor/"],
+      "automated_tests": ["tests/test_installer.py", "tests/test_auth_service.py", "tests/test_ga_doctor_inventory.py"],
+      "commands": ["uv run pytest -q tests/test_installer.py tests/test_auth_service.py tests/test_ga_doctor_inventory.py"]
+    },
+    {
+      "prefix": "AC-AUTH-",
+      "implementation": ["src/jarn/auth/", "src/jarn/providers/codex_subscription.py", "src/jarn/onboarding/chatgpt.py"],
+      "automated_tests": ["tests/test_auth_service.py", "tests/test_codex_subscription.py"],
+      "commands": ["uv run pytest -q tests/test_auth_service.py tests/test_codex_subscription.py"]
+    },
+    {
+      "prefix": "AC-MODEL-",
+      "implementation": ["src/jarn/catalog/", "src/jarn/onboarding/", "src/jarn/repl/commands.py"],
+      "automated_tests": ["tests/test_model_catalog.py", "tests/test_tui_wizard_model_picker.py", "tests/test_routing.py"],
+      "commands": ["uv run pytest -q tests/test_model_catalog.py tests/test_tui_wizard_model_picker.py tests/test_routing.py"]
+    },
+    {
+      "prefix": "AC-CLI-",
+      "implementation": ["src/jarn/cli.py", "src/jarn/repl/"],
+      "automated_tests": ["tests/test_cli.py", "tests/test_repl.py", "tests/test_headless.py"],
+      "commands": ["uv run pytest -q tests/test_cli.py tests/test_repl.py tests/test_headless.py"]
+    },
+    {
+      "prefix": "AC-SAFE-",
+      "implementation": ["src/jarn/permissions/", "src/jarn/agent/os_sandbox.py", "src/jarn/agent/sandbox_backend.py"],
+      "automated_tests": ["tests/test_permissions.py", "tests/test_permission_bypass_matrix.py", "tests/test_sandbox.py"],
+      "commands": ["uv run pytest -q tests/test_permissions.py tests/test_permission_bypass_matrix.py tests/test_sandbox.py"]
+    },
+    {
+      "prefix": "AC-SESSION-",
+      "implementation": ["src/jarn/memory/sessions.py", "src/jarn/observability/"],
+      "automated_tests": ["tests/test_memory.py", "tests/test_session_stream.py", "tests/test_transcript.py"],
+      "commands": ["uv run pytest -q tests/test_memory.py tests/test_session_stream.py tests/test_transcript.py"]
+    },
+    {
+      "prefix": "AC-CONFIG-",
+      "implementation": ["src/jarn/config/"],
+      "automated_tests": ["tests/test_ga_config_migrations.py", "tests/test_config.py", "tests/test_secrets.py"],
+      "commands": ["uv run pytest -q tests/test_ga_config_migrations.py tests/test_config.py tests/test_secrets.py"]
+    },
+    {
+      "prefix": "AC-ERR-",
+      "implementation": ["src/jarn/errors.py", "src/jarn/doctor/"],
+      "automated_tests": ["tests/test_ga_errors_and_doctor.py", "tests/test_error_classification.py"],
+      "commands": ["uv run pytest -q tests/test_ga_errors_and_doctor.py tests/test_error_classification.py"]
+    },
+    {
+      "prefix": "AC-DOCTOR-",
+      "implementation": ["src/jarn/doctor/"],
+      "automated_tests": ["tests/test_ga_doctor_inventory.py", "tests/test_ga_errors_and_doctor.py"],
+      "commands": ["uv run pytest -q tests/test_ga_doctor_inventory.py tests/test_ga_errors_and_doctor.py"]
+    },
+    {
+      "prefix": "AC-UPDATE-",
+      "implementation": ["src/jarn/update.py", "src/jarn/install_state.py"],
+      "automated_tests": ["tests/test_update.py", "tests/test_update_check.py"],
+      "commands": ["uv run pytest -q tests/test_update.py tests/test_update_check.py"]
+    },
+    {
+      "prefix": "AC-UNINSTALL-",
+      "implementation": ["src/jarn/uninstall.py", "src/jarn/install_state.py"],
+      "automated_tests": ["tests/test_uninstall_ga.py"],
+      "commands": ["uv run pytest -q tests/test_uninstall_ga.py"]
+    },
+    {
+      "prefix": "AC-PERF-",
+      "implementation": ["src/jarn/cli.py", "src/jarn/repl/", "src/jarn/tui/"],
+      "automated_tests": ["tests/test_performance_harness.py"],
+      "commands": ["uv run pytest -q tests/test_performance_harness.py"]
+    },
+    {
+      "prefix": "AC-REL-",
+      "implementation": ["src/jarn/util/atomic.py", "src/jarn/repl/turn.py", "src/jarn/memory/sessions.py"],
+      "automated_tests": ["tests/test_util_atomic.py", "tests/test_turn_reentrancy.py", "tests/test_session_stream.py"],
+      "commands": ["uv run pytest -q tests/test_util_atomic.py tests/test_turn_reentrancy.py tests/test_session_stream.py"]
+    },
+    {
+      "prefix": "AC-SEC-",
+      "implementation": ["install.sh", "src/jarn/permissions/", "src/jarn/doctor/report.py"],
+      "automated_tests": ["tests/test_permission_bypass_matrix.py", "tests/test_tool_arg_redact.py", "tests/test_secrets.py", "tests/test_ci.py"],
+      "commands": ["uv run pytest -q tests/test_permission_bypass_matrix.py tests/test_tool_arg_redact.py tests/test_secrets.py tests/test_ci.py"]
+    },
+    {
+      "prefix": "AC-A11Y-",
+      "implementation": ["src/jarn/tui/", "src/jarn/repl/"],
+      "automated_tests": ["tests/test_ux.py", "tests/test_repl.py"],
+      "commands": ["NO_COLOR=1 TERM=dumb uv run pytest -q tests/test_ux.py tests/test_repl.py"],
+      "platforms": ["80x24 color and plain-text terminal matrix"]
+    },
+    {
+      "prefix": "AC-I18N-",
+      "implementation": ["src/jarn/tui/", "src/jarn/repl/"],
+      "automated_tests": ["tests/test_ux.py", "tests/test_repl_paste.py"],
+      "commands": ["LC_ALL=C.UTF-8 uv run pytest -q tests/test_ux.py tests/test_repl_paste.py"]
+    },
+    {
+      "prefix": "AC-DOC-",
+      "implementation": ["README.md", "docs/"],
+      "automated_tests": ["tests/test_doc_sync.py", "tests/test_cli.py"],
+      "commands": ["uv run pytest -q tests/test_doc_sync.py tests/test_cli.py"]
+    }
+  ],
+  "criteria": {
+    "TEST-INSTALL": {
+      "implementation": ["install.sh", ".github/workflows/release.yml"],
+      "automated_tests": ["tests/test_installer.py", "tests/test_ci.py"],
+      "commands": ["uv run pytest -q tests/test_installer.py tests/test_ci.py"]
+    },
+    "TEST-AUTH": {
+      "implementation": ["src/jarn/auth/", "tests/codex_fake_app_server.py"],
+      "automated_tests": ["tests/test_auth_service.py", "tests/test_codex_subscription.py"],
+      "commands": ["uv run pytest -q tests/test_auth_service.py tests/test_codex_subscription.py"]
+    },
+    "TEST-MODEL": {
+      "implementation": ["src/jarn/catalog/", "tests/codex_fake_app_server.py"],
+      "automated_tests": ["tests/test_model_catalog.py"],
+      "commands": ["uv run pytest -q tests/test_model_catalog.py"]
+    },
+    "TEST-CONFIG": {
+      "implementation": ["src/jarn/config/migrations.py"],
+      "automated_tests": ["tests/test_ga_config_migrations.py"],
+      "commands": ["uv run pytest -q tests/test_ga_config_migrations.py"]
+    },
+    "TEST-UI": {
+      "implementation": ["src/jarn/tui/", "src/jarn/repl/"],
+      "automated_tests": ["tests/test_ux.py", "tests/test_repl_paste.py", "tests/test_tui_wizard_key_capture.py"],
+      "commands": ["NO_COLOR=1 TERM=dumb uv run pytest -q tests/test_ux.py tests/test_repl_paste.py tests/test_tui_wizard_key_capture.py"]
+    },
+    "TEST-SECURITY": {
+      "implementation": ["src/jarn/permissions/", "src/jarn/doctor/report.py"],
+      "automated_tests": ["tests/test_permission_bypass_matrix.py", "tests/test_tool_arg_redact.py", "tests/test_secrets.py"],
+      "commands": ["uv run pytest -q tests/test_permission_bypass_matrix.py tests/test_tool_arg_redact.py tests/test_secrets.py"]
+    },
+    "TEST-RELEASE": {
+      "implementation": [".github/workflows/release.yml", "install.sh"],
+      "automated_tests": ["tests/test_ci.py", "tests/test_packaging.py", "tests/test_installer.py"],
+      "commands": ["uv run pytest -q tests/test_ci.py tests/test_packaging.py tests/test_installer.py"],
+      "platforms": ["Published artifacts; Ubuntu 20.04 oldest-glibc canary; supported platform matrix"]
+    },
+    "UAT-001": {
+      "implementation": ["scripts/uat/uat-001-ubuntu-ssh.sh"],
+      "automated_tests": ["tests/test_uat_harnesses.py"],
+      "commands": ["scripts/uat/uat-001-ubuntu-ssh.sh --host USER@HOST --execute"],
+      "platforms": ["Disposable Ubuntu 20.04/22.04/24.04 SSH account"],
+      "limitations": ["Requires protected manual live-auth observation; raw auth output must not be stored."]
+    },
+    "UAT-002": {
+      "implementation": ["scripts/uat/uat-002-legacy-collision.sh"],
+      "automated_tests": ["tests/test_uat_harnesses.py", "tests/test_installer.py", "tests/test_ga_config_migrations.py"],
+      "commands": ["scripts/uat/uat-002-legacy-collision.sh --host USER@HOST --execute"],
+      "platforms": ["Disposable Ubuntu global-npm/config-v0-v2 fixture"],
+      "limitations": ["Requires an intentionally provisioned legacy npm collision fixture."]
+    },
+    "UAT-003": {
+      "implementation": ["scripts/uat/uat-003-macos-desktop.sh", "src/jarn/auth/terminal.py", "src/jarn/onboarding/chatgpt.py", "src/jarn/catalog/"],
+      "automated_tests": ["tests/test_uat_harnesses.py", "tests/test_auth_service.py", "tests/test_model_catalog.py"],
+      "commands": ["scripts/uat/uat-003-macos-desktop.sh --host USER@MAC --execute"],
+      "platforms": ["Disposable macOS 13+ account owning an active GUI console session"],
+      "limitations": ["Browser launch, fallback URL, callback, and first prompt require protected operator observation; raw auth output is prohibited."]
+    },
+    "UAT-004": {
+      "implementation": ["scripts/uat/uat-004-anthropic.sh", "src/jarn/onboarding/wizard.py", "src/jarn/config/secrets.py", "src/jarn/catalog/"],
+      "automated_tests": ["tests/test_uat_harnesses.py", "tests/test_secrets.py", "tests/test_model_catalog.py"],
+      "commands": ["scripts/uat/uat-004-anthropic.sh --host USER@HOST --execute"],
+      "platforms": ["Disposable supported host with ANTHROPIC_API_KEY pre-provisioned in its login shell"],
+      "limitations": ["Key echo, model provenance, and billable-validation disclosure require operator observation; raw setup output is prohibited."]
+    },
+    "UAT-005": {
+      "implementation": ["scripts/uat/uat-005-ollama.sh", "src/jarn/onboarding/wizard.py", "src/jarn/catalog/", "src/jarn/providers/"],
+      "automated_tests": ["tests/test_uat_harnesses.py", "tests/test_model_catalog.py", "tests/test_local_backend.py"],
+      "commands": ["scripts/uat/uat-005-ollama.sh --host USER@HOST --execute"],
+      "platforms": ["Disposable supported host with a non-empty loopback Ollama catalog"],
+      "limitations": ["Provider/model discovery and absence of an API-key prompt include protected operator-observed checkpoints."]
+    },
+    "UAT-006": {
+      "implementation": ["scripts/uat/uat-006-network-failure.sh"],
+      "automated_tests": ["tests/test_uat_harnesses.py", "tests/test_installer.py"],
+      "commands": ["scripts/uat/uat-006-network-failure.sh --host USER@HOST --execute"],
+      "platforms": ["Disposable Ubuntu account with healthy prior install/config"],
+      "limitations": ["Uses a closed loopback port to fail only release downloads after install.sh is acquired."]
+    }
+  },
+  "supplemental_criteria": {
+    "GATE-RELEASE": {
+      "implementation": ["docs/GOAL_GENERAL_AVAILABILITY.md section R", ".github/workflows/release.yml"],
+      "automated_tests": ["All mapped automated and manual evidence"],
+      "commands": ["python3 scripts/ga_evidence.py --evidence-dir artifacts/ga-evidence --strict --output artifacts/GA_RELEASE_EVIDENCE.md"],
+      "limitations": ["This aggregate gate cannot pass while any underlying criterion is not Passed."]
+    },
+    "CONSTRAINT-IMPLEMENTATION": {
+      "implementation": ["docs/GOAL_GENERAL_AVAILABILITY.md section T"],
+      "automated_tests": ["tests/test_ci.py", "full repository test suite"],
+      "commands": ["uv run pytest -q"],
+      "limitations": ["Requires review evidence for non-mechanical implementation constraints."]
+    },
+    "MILESTONE-0": {
+      "implementation": ["install.sh", "src/jarn/install_state.py", "src/jarn/update.py"],
+      "automated_tests": ["tests/test_installer.py", "tests/test_update.py"],
+      "commands": ["uv run pytest -q tests/test_installer.py tests/test_update.py"]
+    },
+    "MILESTONE-4": {
+      "implementation": ["scripts/uat/", ".github/workflows/release.yml", "scripts/ga_evidence.py"],
+      "automated_tests": ["tests/test_uat_harnesses.py", "tests/test_ga_evidence.py", "tests/test_ci.py"],
+      "commands": ["uv run pytest -q tests/test_uat_harnesses.py tests/test_ga_evidence.py tests/test_ci.py"],
+      "limitations": ["Manual UAT and published-artifact runs remain external result evidence."]
+    },
+    "DELIVERABLES-GA": {
+      "implementation": ["docs/GOAL_GENERAL_AVAILABILITY.md section V"],
+      "automated_tests": ["full repository test suite and all UAT artifacts"],
+      "commands": ["python3 scripts/ga_evidence.py --evidence-dir artifacts/ga-evidence --strict"],
+      "limitations": ["Aggregate of all thirteen required deliverables; a file existing is not proof that it is complete."]
+    },
+    "COMPLETION-W": {
+      "implementation": ["docs/GOAL_GENERAL_AVAILABILITY.md section W"],
+      "automated_tests": ["all automated, published-canary, and manual UAT evidence"],
+      "commands": ["python3 scripts/ga_evidence.py --evidence-dir artifacts/ga-evidence --strict"],
+      "limitations": ["Must remain not Passed until no required work remains."]
+    }
+  }
+}

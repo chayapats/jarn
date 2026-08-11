@@ -134,7 +134,7 @@ class HookRunner:
 
     def _run_one(self, spec: HookSpec, env: dict[str, str]) -> HookResult:
         try:
-            proc = subprocess.run(
+            proc = subprocess.run(  # security: reviewed-shell=trusted-project-hook
                 spec.command,
                 shell=True,
                 cwd=str(self.cwd),

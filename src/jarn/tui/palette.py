@@ -28,6 +28,7 @@ class _TextualColors:
     secondary: str
     dark: bool
 
+
 _ACCENT_COLORS: dict[str, str] = {
     "cyan": "#22d3ee",
     "blue": "#5a9bf0",
@@ -216,7 +217,8 @@ def session_thinking_word() -> str:
 
 
 def no_color() -> bool:
-    return bool(os.environ.get("NO_COLOR"))
+    """Whether the terminal contract requires plain, escape-free rendering."""
+    return bool(os.environ.get("NO_COLOR")) or os.environ.get("TERM", "").lower() == "dumb"
 
 
 def toolbar_style_dict() -> dict[str, str]:
@@ -295,6 +297,8 @@ def configure_ui(*, theme: str = "dark", accent: str = "cyan") -> None:
 
 
 def mode_label(mode: str) -> str:
+    from jarn.permissions.labels import permission_mode_name
+
     color = MODE_COLOR.get(mode, ACCENT)
     glyph = MODE_GLYPH.get(mode, "◆")
-    return f"[{color}]{glyph} {mode}[/{color}]"
+    return f"[{color}]{glyph} {permission_mode_name(mode)}[/{color}]"

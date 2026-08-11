@@ -94,6 +94,47 @@ async def test_retryable_error_rotates_fallback(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_retryable_disconnect_after_tool_start_is_never_replayed(
+    tmp_path, monkeypatch
+):
+    """Once a side effect may have begun, retries cannot duplicate it."""
+
+    ctrl = _ctrl(tmp_path, monkeypatch, fallback=["openrouter/f1"])
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr(ctrl, "ensure_runtime", _noop)
+    first = _SeqDriver(
+        [
+            Event(EventKind.TOOL_START, "write_file", {"path": "result.txt"}),
+            Event(EventKind.ERROR, "connection lost", {"retryable": True}),
+        ]
+    )
+    unused_fallback = _SeqDriver([Event(EventKind.DONE)])
+    seq = [first, unused_fallback]
+    monkeypatch.setattr(ctrl, "make_driver", lambda approver: seq.pop(0))
+
+    seen: list[Event] = []
+
+    async def on_event(event: Event) -> None:
+        seen.append(event)
+
+    result = await run_agent_turn(
+        ctrl,
+        "change the file",
+        approver=lambda _r: None,  # type: ignore[arg-type]
+        on_event=on_event,
+    )
+
+    assert result.error is not None
+    assert result.error.text == "connection lost"
+    assert [event.kind for event in seen] == [EventKind.TOOL_START, EventKind.ERROR]
+    assert seq == [unused_fallback]
+    ctrl.close()
+
+
+@pytest.mark.asyncio
 async def test_image_capability_text_only_retry(tmp_path, monkeypatch):
     ctrl = _ctrl(tmp_path, monkeypatch)
     paste = tmp_path / "proj" / "img.png"

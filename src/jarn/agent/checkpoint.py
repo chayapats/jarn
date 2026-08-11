@@ -67,6 +67,24 @@ class RestoreResult:
 
 
 @dataclass(slots=True)
+class RestorePreview:
+    """Read-only preview of the next undo/redo restore.
+
+    ``current_tree`` fingerprints the exact working-tree contents represented by
+    ``files``.  Interactive callers pass it back to :meth:`undo` so an edit made
+    while the confirmation prompt is open cannot be reverted without a fresh
+    preview.
+    """
+
+    ok: bool
+    message: str = ""
+    sha: str = ""
+    files: tuple[str, ...] = ()
+    current_tree: str = ""
+    file_count: int = 0
+
+
+@dataclass(slots=True)
 class CheckpointEntry:
     """A single checkpoint in the stack."""
     sha: str
@@ -196,6 +214,14 @@ def _read_ref_message(sha: str, root: Path) -> str:
     if result.returncode != 0:
         return sha[:12]
     return result.stdout.strip()
+
+
+def _tree_sha(commit_sha: str, root: Path) -> str | None:
+    """Return the tree object for ``commit_sha``, or ``None`` on failure."""
+    result = _git(["rev-parse", f"{commit_sha}^{{tree}}"], cwd=root)
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
 
 
 def _iter_snapshot_records(root: Path) -> list[tuple[str, str]]:
@@ -672,7 +698,13 @@ class CheckpointManager:
 
         return SnapshotResult(ok=True, sha=sha, message=full_label)
 
-    def undo(self, thread_id: str | None = None) -> RestoreResult:
+    def undo(
+        self,
+        thread_id: str | None = None,
+        *,
+        expected_sha: str | None = None,
+        expected_current_tree: str | None = None,
+    ) -> RestoreResult:
         """Restore the working tree to the most recent undo snapshot.
 
         Before restoring, captures the current state as a redo-point so that
@@ -682,6 +714,11 @@ class CheckpointManager:
         **different** session (#47). Untagged (legacy) tops still undo — old
         stacks keep working. Callers that omit *thread_id* keep pre-#47
         behaviour (used by low-level tests).
+
+        Interactive callers may supply the target and current-tree fingerprints
+        from :meth:`preview_undo`.  A mismatch fails closed before either stack is
+        changed.  Both arguments are optional so internal rollback and existing
+        programmatic callers retain their original semantics.
 
         Returns a descriptive :class:`RestoreResult` for the UI.
         """
@@ -694,6 +731,15 @@ class CheckpointManager:
             undo_stack = _stack_read(_UNDO_PREFIX, self.repo_root)
             if not undo_stack:
                 return RestoreResult(ok=False, message="nothing to undo")
+
+            if expected_sha is not None and undo_stack[0] != expected_sha:
+                return RestoreResult(
+                    ok=False,
+                    message=(
+                        "checkpoint changed after preview; nothing was restored. "
+                        "Run /undo again to review the new target"
+                    ),
+                )
 
             foreign = self._foreign_owner_error(
                 undo_stack[0], thread_id, op="undo"
@@ -710,6 +756,20 @@ class CheckpointManager:
                     ok=False,
                     message=f"could not save redo point: {redo_result.message}",
                 )
+            if expected_current_tree is not None:
+                actual_tree = (
+                    _tree_sha(redo_result.sha, self.repo_root)
+                    if redo_result.sha
+                    else None
+                )
+                if actual_tree != expected_current_tree:
+                    return RestoreResult(
+                        ok=False,
+                        message=(
+                            "working tree changed after preview; nothing was restored. "
+                            "Run /undo again to review the new changes"
+                        ),
+                    )
 
             target_sha = _stack_pop(_UNDO_PREFIX, self.repo_root)
             if target_sha is None:
@@ -727,6 +787,74 @@ class CheckpointManager:
 
         label = _read_ref_message(target_sha, self.repo_root)
         return RestoreResult(ok=True, message=f"undone: {label}")
+
+    def _working_tree_diff(
+        self, target_sha: str
+    ) -> tuple[tuple[str, ...], str, int, str]:
+        """Return ``(stat, current_tree, file_count, error)`` for a restore.
+
+        Building an unreferenced snapshot commit lets the diff include untracked
+        files, which plain ``git diff <target>`` omits even though
+        :func:`_apply_snapshot` would remove them.  No checkpoint ref or stack is
+        mutated.
+        """
+        current_sha, error = _build_snapshot(
+            "jarn-checkpoint: restore preview", self.repo_root
+        )
+        if current_sha is None:
+            return (), "", 0, error
+        current_tree = _tree_sha(current_sha, self.repo_root)
+        if current_tree is None:
+            return (), "", 0, "could not fingerprint the current working tree"
+        stat = _git(
+            ["diff", "--stat", target_sha, current_sha, "--"],
+            cwd=self.repo_root,
+        )
+        if stat.returncode != 0:
+            return (), "", 0, stat.stderr.strip() or "git diff failed"
+        names = _git(
+            ["diff", "--name-only", "-z", target_sha, current_sha, "--"],
+            cwd=self.repo_root,
+        )
+        if names.returncode != 0:
+            return (), "", 0, names.stderr.strip() or "git diff failed"
+        files = tuple(line for line in stat.stdout.splitlines() if line.strip())
+        file_count = len([name for name in names.stdout.split("\0") if name])
+        return files, current_tree, file_count, ""
+
+    def preview_undo(self, thread_id: str | None = None) -> RestorePreview:
+        """Describe the exact next undo target without mutating either stack."""
+        if not self.enabled:
+            return RestorePreview(ok=False, message="autocheckpoint disabled")
+        if not self._is_repo:
+            return RestorePreview(ok=False, message="not a git repository")
+        with _checkpoint_lock(self.repo_root):
+            undo_stack = _stack_read(_UNDO_PREFIX, self.repo_root)
+            if not undo_stack:
+                return RestorePreview(ok=False, message="nothing to undo")
+            sha = undo_stack[0]
+            foreign = self._foreign_owner_error(sha, thread_id, op="undo")
+            if foreign is not None:
+                return RestorePreview(ok=False, message=foreign)
+            label = _read_ref_message(sha, self.repo_root)
+            files, current_tree, file_count, error = self._working_tree_diff(sha)
+            if error:
+                return RestorePreview(
+                    ok=False, message=f"could not build undo preview: {error}"
+                )
+        summary = (
+            f"{label}; {file_count} file(s) would change"
+            if file_count
+            else f"{label}; working tree already matches this checkpoint"
+        )
+        return RestorePreview(
+            ok=True,
+            message=summary,
+            sha=sha,
+            files=files,
+            current_tree=current_tree,
+            file_count=file_count,
+        )
 
     def redo(self, thread_id: str | None = None) -> RestoreResult:
         """Re-apply the most recent redo snapshot (inverses /undo).
@@ -886,15 +1014,15 @@ class CheckpointManager:
         return RestoreResult(ok=True, message=f"restored: {label}")
 
     def diff_stat(self, sha: str) -> list[str]:
-        """Return ``git diff --stat <sha>`` lines: the tracked files that WOULD change
+        """Return ``git diff --stat <sha>`` lines for every file that WOULD change
         if the tree were restored to ``sha``. Used by ``/rewind``'s confirm to preview
-        the revert. Empty on error / no diff / non-git dir (never raises)."""
+        the revert. The comparison includes current untracked files because restore
+        would remove those when absent from ``sha``. Empty on error / no diff /
+        non-git dir (never raises)."""
         if not self._is_repo:
             return []
-        r = _git(["diff", "--stat", sha], cwd=self.repo_root)
-        if r.returncode != 0:
-            return []
-        return [ln for ln in r.stdout.splitlines() if ln.strip()]
+        files, _tree, _count, error = self._working_tree_diff(sha)
+        return [] if error else list(files)
 
     def has_uncheckpointed_changes(self) -> bool:
         """True if the working tree differs from the most recent snapshot — edits no

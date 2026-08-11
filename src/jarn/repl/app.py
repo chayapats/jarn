@@ -111,12 +111,17 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         )
         # Derive project name once (used in OSC 2 title strings).
         self._proj_name: str = project_root.name if project_root is not None else "jarn"
-        # force_terminal so Rich still emits colour through prompt_toolkit's
-        # patch_stdout proxy (which isn't a real TTY). Cap the width to a readable
-        # measure (~100 cols) so prose/markdown wrap nicely on wide terminals
-        # instead of running long horizontal lines.
+        # Rich normally emits colour through prompt_toolkit's patch_stdout proxy
+        # (which isn't a real TTY). TERM=dumb and NO_COLOR are an explicit plain
+        # contract, so never force escapes in those environments. Cap the width to
+        # a readable measure (~100 cols) so prose/markdown wraps on wide terminals.
         width = min(shutil.get_terminal_size((100, 24)).columns, 100)
-        self.console = Console(force_terminal=True, width=width)
+        plain_terminal = palette.no_color()
+        self.console = Console(
+            force_terminal=not plain_terminal,
+            no_color=plain_terminal,
+            width=width,
+        )
         from jarn.config.paths import global_home
 
         hist = global_home() / "history"
@@ -500,7 +505,13 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 and self._stream_md_cache[2] == width):
             return self._stream_md_cache[1]
         buf = io.StringIO()
-        cap = Console(force_terminal=True, width=width, file=buf)
+        plain_terminal = palette.no_color()
+        cap = Console(
+            force_terminal=not plain_terminal,
+            no_color=plain_terminal,
+            width=width,
+            file=buf,
+        )
         cap.print(Markdown(source.strip(), code_theme=palette.CODE_THEME), end="")
         rendered = buf.getvalue().rstrip("\n")
         self._stream_md_cache = (source, rendered, width)
@@ -513,7 +524,13 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         width = _current_width()
         self.console.width = width
         buf = io.StringIO()
-        cap = Console(force_terminal=True, width=width, file=buf)
+        plain_terminal = palette.no_color()
+        cap = Console(
+            force_terminal=not plain_terminal,
+            no_color=plain_terminal,
+            width=width,
+            file=buf,
+        )
         cap.print(f"[{palette.C_DIM}]{_rich_escape(text)}[/{palette.C_DIM}]", end="")
         return buf.getvalue().rstrip("\n")
 
@@ -601,7 +618,13 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self.console.width = width
         lines = format_todos(self._live_todos, width, cap=_LIVE_TODOS_CAP)
         buf = io.StringIO()
-        cap = Console(force_terminal=True, width=width, file=buf)
+        plain_terminal = palette.no_color()
+        cap = Console(
+            force_terminal=not plain_terminal,
+            no_color=plain_terminal,
+            width=width,
+            file=buf,
+        )
         cap.print("\n".join(lines), end="")
         return buf.getvalue().rstrip("\n")
 
@@ -617,7 +640,13 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         width = _current_width()
         self.console.width = width
         buf = io.StringIO()
-        cap = Console(force_terminal=True, width=width, file=buf)
+        plain_terminal = palette.no_color()
+        cap = Console(
+            force_terminal=not plain_terminal,
+            no_color=plain_terminal,
+            width=width,
+            file=buf,
+        )
         cap.print(
             f"[{palette.C_TOOL}]{frame}[/{palette.C_TOOL}] "
             f"[{palette.C_DIM}]{_rich_escape(text)}[/{palette.C_DIM}]",
@@ -730,10 +759,29 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             self._first_token_at = time.monotonic()
         self._turn_stream_chars += len(delta)
     def _toolbar(self):
+        from jarn.config.schema import ProviderType
         from jarn.providers import strip_profile
 
         cfg = self.controller.config
-        model = strip_profile(cfg.resolved_main_model() or "unconfigured", cfg.default_profile)
+        qualified_model = cfg.resolved_main_model() or "unconfigured"
+        model = strip_profile(qualified_model, cfg.default_profile)
+        provider_name = self.controller.current_provider() or ""
+        provider_config = cfg.providers.get(provider_name) if provider_name else None
+        reasoning = ""
+        auth = ""
+        if provider_config is not None:
+            raw_effort = provider_config.extra.get("reasoning_effort")
+            reasoning = str(raw_effort) if raw_effort else ""
+            if provider_config.type is ProviderType.CODEX_SUBSCRIPTION:
+                auth = "ChatGPT"
+            elif provider_config.type in {
+                ProviderType.OLLAMA,
+                ProviderType.LMSTUDIO,
+                ProviderType.OPENAI_COMPATIBLE,
+            } and not provider_config.api_key:
+                auth = "local"
+            else:
+                auth = "API key"
         tracker = self.controller.tracker
         ctx_frac: float | None = None
         ctx = self.controller.context_status()
@@ -745,6 +793,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             mode=cfg.permission_mode.value,
             cost_line=tracker.summary_line(),
             cost_status=tracker.status(),
+            cwd=self._proj_name,
+            provider=provider_name,
+            auth=auth,
+            reasoning=reasoning,
             trusted=self.controller.project_trusted,
             queue_count=len(self._input_queue),
             context_frac=ctx_frac,

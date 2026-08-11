@@ -222,7 +222,7 @@ class ProcessManager:
         log_path = proc_dir / f"{pid}.log"
         log_file = log_path.open("wb")
         try:
-            popen = subprocess.Popen(  # noqa: S602 - LLM-controlled shell, gated upstream
+            popen = subprocess.Popen(  # noqa: S602  security: reviewed-shell=permission-engine
                 command,
                 shell=True,
                 cwd=cwd,

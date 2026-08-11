@@ -89,6 +89,11 @@ async def test_ensure_runtime_fails_closed_without_opt_in(tmp_path, monkeypatch,
     from jarn.tui.controller import Controller
 
     ctrl = Controller(base_config, root)
+    monkeypatch.setattr(
+        ctrl,
+        "validate_selected_model_catalog",
+        lambda: (True, "test catalog verified"),
+    )
     fake = GenericFakeChatModel(messages=iter([]))
     with (
         patch("jarn.providers.models.ModelFactory.build", return_value=fake),
@@ -113,6 +118,11 @@ async def test_ensure_runtime_falls_back_when_opted_in(tmp_path, monkeypatch, ba
     from jarn.tui.controller import Controller
 
     ctrl = Controller(base_config, root)
+    monkeypatch.setattr(
+        ctrl,
+        "validate_selected_model_catalog",
+        lambda: (True, "test catalog verified"),
+    )
     fake = GenericFakeChatModel(messages=iter([]))
     with patch("jarn.providers.models.ModelFactory.build", return_value=fake):
         rt = await ctrl.ensure_runtime()

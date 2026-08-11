@@ -204,7 +204,7 @@ policy:
 # Keys are referenced, never inlined:
 #   ${ENV_VAR}                -> environment variable
 #   keychain:jarn/<provider>  -> OS keychain (via `keyring`)
-# A literal key loads with a warning (or a hard error if strict_secrets: true).
+# A literal credential is rejected; use a reference in every secret field.
 #
 # Provider `type` is one of:
 #   Managed ChatGPT subscription: codex_subscription
@@ -507,8 +507,9 @@ observability:
   tracing:
     backend: langsmith     # langsmith | otel — otel needs `pip install jarn[otel]`
                            # OTel: set OTEL_EXPORTER_OTLP_ENDPOINT (default localhost:4318).
-                           # LangSmith: needs LANGSMITH_API_KEY. Neither path logs prompts
-                           # or file contents by default — traces are tool/model metadata.
+                           # LangSmith: needs LANGSMITH_API_KEY. Upstream tracing/exporters
+                           # can include prompts, model messages, tool names, and results;
+                           # review the configured destination before enabling it.
   telemetry: false         # opt-in local usage analytics, default OFF (see ROADMAP)
   log_level: info          # debug | info | warning | error
   transcript: true         # append-only JSONL session transcript under .jarn/sessions/
@@ -568,6 +569,14 @@ git:
                            # Requires a git repo with at least one commit.
   checkpoint_mode: shadow  # shadow (private refs only) | commit (reserved)
 ```
+
+Setup, `/model`, doctor, routing, and the pre-turn check share one model-catalog
+service. Set `JARN_CATALOG_TIMEOUT_SECONDS` to bound each live catalog request;
+the default is 20 seconds and values are clamped to 1–120 seconds. Invalid or
+non-finite values use the default. Interactive catalog waits show progress when
+they exceed one second. A provider-reported or fresh, credential-scoped cached
+catalog may establish availability; shipped defaults and stale caches are
+always labeled unverified.
 
 At REPL launch, `palette.configure_ui(theme, accent)` applies theme tokens to the
 shared palette (chat colors, toolbar background/foreground, cost/context colors).
@@ -793,7 +802,7 @@ trusted.
 | `${OPENROUTER_API_KEY}` | the environment variable of that name |
 | `keychain:jarn/openrouter` | `keyring.get_password("jarn", "openrouter")` |
 | `file:jarn/openrouter` | `~/.jarn/secrets/jarn/openrouter` (mode `0600`) |
-| `sk-...` (literal) | itself — **discouraged**; triggers a load warning (or a hard error when `strict_secrets: true`). Avoid committing real keys. |
+| `sk-...` or another literal credential | **Rejected.** Move it to an environment variable, keychain entry, or the mode-`0600` file store. |
 
 The wizard can store a pasted key in your OS keychain and write the
 `keychain:jarn/<provider>` reference for you. On headless Linux (e.g. Raspberry
@@ -806,28 +815,26 @@ The `codex_subscription` provider is deliberately absent from this secret flow:
 its ChatGPT credential is managed exclusively by Codex. Use `jarn codex login`
 instead of adding `api_key` to YAML or using `/key`.
 
-### Inline plaintext keys (`strict_secrets`)
+### Inline plaintext keys (`strict_secrets` compatibility field)
 
-J.A.R.N. is built around *referenced, never inlined* keys. If a provider's
-`api_key` is a literal that looks like a real secret (an `sk-…`/`Bearer …`/PEM
-block/vendor PAT, or a ≥32-char high-entropy string), the loader emits an
-`InlineSecretWarning` at startup telling you to move it to a reference. Empty
-keys and short local-server tokens (e.g. `lm-studio`) are left alone.
-
-Set `strict_secrets: true` (top-level, default `false`) to turn that warning
-into a hard `ConfigError` — useful in CI or shared environments where an inline
-key should never load at all:
+J.A.R.N. is built around *referenced, never inlined* keys. Every non-empty
+provider `api_key`, `search.api_key`, and `gateway.telegram.token` must be a
+reference. Credential-shaped provider/MCP/async-subagent header or environment
+entries must also be references. A plaintext value fails validation without
+echoing its contents. The legacy `strict_secrets` field is accepted when loading
+older files, but setting it to `false` cannot bypass this GA safety invariant.
 
 ```yaml
-strict_secrets: true
 providers:
   openrouter:
     type: openrouter
     api_key: keychain:jarn/openrouter   # reference: always fine
 ```
 
-The migration is one line per provider: replace the literal with `${ENV_VAR}`,
-`keychain:jarn/<provider>`, or `file:jarn/<provider>`.
+The migration is one line per secret: store the value outside YAML, then replace
+the literal with `${ENV_VAR}`, `keychain:jarn/<account>`, or
+`file:jarn/<account>`. `jarn config validate` identifies only the field path; it
+does not print the rejected value.
 
 ### Hardening lifecycle hooks (`hook_inherit_env`, `hook_global_require_trust`)
 
@@ -886,9 +893,17 @@ remain `{type: "error", text, data}` and are distinct from terminal run failures
 | Code | Meaning |
 |------|---------|
 | `0` | Success |
-| `1` | Generic error, persistent automatic verification failure, or `schema` — agent failed to satisfy `--output-schema` |
-| `2` | Approval refused (fail-closed in `ask`/`plan`, or danger-guard in auto modes), session budget hard-stop, or `usage` — bad/unreadable `--output-schema` file |
+| `1` | Unexpected internal error |
+| `2` | Invalid usage/configuration, including a bad or unreadable `--output-schema` file |
+| `3` | Authentication/account verification failure |
+| `4` | Selected model unavailable |
+| `5` | Permission denied or approval unavailable in non-interactive mode |
+| `6` | Network/provider failure |
+| `7` | Update/rollback failure |
+| `8` | Explicit session budget exceeded |
+| `9` | Required verification failed, including an unsatisfied output schema |
 | `124` | Timeout |
+| `130` | User cancellation |
 
 **`--output-schema FILE`** (headless-only, use with `--json`): path to a JSON Schema
 file. The agent's final answer is constrained to the schema; on success the `result`

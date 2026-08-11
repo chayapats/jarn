@@ -45,6 +45,7 @@ from jarn.agent.prompt_modules import (
 from jarn.agent.verify import ProjectCapabilities, detect_capabilities
 from jarn.config import paths
 from jarn.config.schema import Config, ProviderType
+from jarn.config.secrets import resolve_secret_mapping
 from jarn.extensibility.commands import CustomCommand, load_commands
 from jarn.extensibility.skills import Skill, load_skills
 from jarn.extensibility.subagents import CustomSubagent, load_subagents
@@ -218,7 +219,7 @@ def _async_subagent_specs(config: Config) -> list[Any]:
         if a.url:
             spec["url"] = a.url
         if a.headers:
-            spec["headers"] = a.headers
+            spec["headers"] = resolve_secret_mapping(a.headers)
         specs.append(spec)
     return specs
 

@@ -100,6 +100,7 @@ async def _run_turn(
     # this handler (as one during setup used to, when the try started only at the
     # stream loop) was therefore SILENT — the user got no feedback at all.
     had_events = False
+    turn_failed = False
     try:
         try:
             await controller.ensure_runtime()
@@ -149,6 +150,7 @@ async def _run_turn(
             return result
 
         async def on_event(event: Event) -> None:
+            nonlocal turn_failed
             if event.kind is EventKind.TEXT:
                 renderer.on_text(event.text, agent=event.data.get("agent"))
                 if token_sink is not None:
@@ -231,6 +233,7 @@ async def _run_turn(
             elif event.kind is EventKind.APPROVAL:
                 pass  # authorized tool — side effect already happened; no UI line
             elif event.kind is EventKind.ERROR:
+                turn_failed = True
                 if event.data.get("auth"):
                     provider = event.data.get("provider") or _provider_hint(controller)
                     renderer.on_notice(_friendly_auth_error(event.text, provider))
@@ -262,6 +265,8 @@ async def _run_turn(
 
     if not pending_only or had_events:
         controller.record_turn(when=time.time())
+    if not pending_only and had_events and not turn_failed:
+        controller.mark_session_complete(when=time.time())
     # Auto-compaction is handled in-graph by the summarization middleware wired in
     # build_runtime (summarizer model, context.compact_at_pct) — no controller-side
     # thread-forking trigger here. Manual /compact still forks the thread on demand.
@@ -364,7 +369,28 @@ async def _approve(
             else f"write: {a.target}" if a.kind is ActionKind.WRITE
             else f"{a.kind.value}: {a.target}")
     danger = "[red]⚠ DANGEROUS — [/red]" if request.result.dangerous else ""
-    console.print(f"\n{danger}[bold]Approve?[/bold] {what}  [{palette.C_DIM}]({request.result.reason})[/{palette.C_DIM}]")
+    console.print(
+        f"\n{danger}[bold]Approve?[/bold] {what}  "
+        f"[{palette.C_DIM}]({request.result.reason})[/{palette.C_DIM}]"
+    )
+    console.print(
+        f"[{palette.C_DIM}]working directory: "
+        f"{_rich_escape(str(controller.project_root))}[/{palette.C_DIM}]"
+    )
+    if a.kind is ActionKind.NETWORK:
+        console.print(
+            f"[{palette.C_DIM}]network destination: "
+            f"{_rich_escape(a.target)}[/{palette.C_DIM}]"
+        )
+    console.print(
+        f"[{palette.C_DIM}]Choose whether this approval applies once or to a "
+        f"scoped remembered rule.[/{palette.C_DIM}]"
+    )
+    console.print(
+        f"[{palette.C_DIM}]remembered scope: "
+        f"{_rich_escape(controller.engine.remember_scope_summary(a))}"
+        f"[/{palette.C_DIM}]"
+    )
     full_diff: Text | None = None
     over_cap = False
     if a.kind is ActionKind.WRITE:
@@ -629,7 +655,13 @@ async def _approve_suggested_skill(
     return ApprovalReply(saved, message="" if saved else message)
 
 
-def _apply_model_ref(controller: Controller, console: Console, chosen: str) -> None:
+def _apply_model_ref(
+    controller: Controller,
+    console: Console,
+    chosen: str,
+    *,
+    reasoning_effort: str | None = None,
+) -> None:
     from jarn.providers import qualify_model_ref
 
     # Treat the ref as already-qualified only when its first segment names a
@@ -640,9 +672,11 @@ def _apply_model_ref(controller: Controller, console: Console, chosen: str) -> N
     ref = chosen if first in controller.config.providers else qualify_model_ref(
         chosen, controller.config.default_profile
     )
-    controller.apply_model(ref)
+    controller.apply_model(ref, reasoning_effort=reasoning_effort)
+    effort_note = f" · reasoning {reasoning_effort}" if reasoning_effort else ""
     console.print(
-        f"[{palette.C_NOTICE}]model → {controller.config.resolved_main_model()}[/{palette.C_NOTICE}]"
+        f"[{palette.C_NOTICE}]model → {controller.config.resolved_main_model()}"
+        f"{effort_note}[/{palette.C_NOTICE}]"
     )
 
 

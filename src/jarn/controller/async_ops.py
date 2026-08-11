@@ -14,10 +14,14 @@ from jarn.config.schema import PermissionMode
 from jarn.controller.core import CommandResult
 
 if TYPE_CHECKING:
+    from jarn.agent.checkpoint import RestorePreview
     from jarn.controller.core import Controller
 
 #: Async confirm callback for yolo escalation (Telegram card, REPL `_ask`, …).
 YoloConfirm = Callable[[], Awaitable[bool]]
+#: Receives the exact read-only undo preview and returns True only after the user
+#: explicitly approves that restore.
+UndoConfirm = Callable[["RestorePreview"], Awaitable[bool]]
 
 
 def bind_turn_task(ctrl: Controller, task: asyncio.Task[Any] | None) -> None:
@@ -31,12 +35,36 @@ def turn_running(ctrl: Controller) -> bool:
     return task is not None and not task.done()
 
 
-async def undo(ctrl: Controller) -> CommandResult:
-    """Settle any in-flight snapshot, then revert the last turn's file edits."""
+async def undo(
+    ctrl: Controller,
+    *,
+    confirm: UndoConfirm | None = None,
+) -> CommandResult:
+    """Preview, confirm, then revert the last turn's file edits.
+
+    A missing or declined confirmation is a safe no-op. The confirmed restore is
+    pinned to the previewed checkpoint and current working-tree fingerprint, so
+    it also fails closed if either changes while the prompt is open.
+    """
     await ctrl.settle_snapshot()
     from jarn.controller.commands import session as session_cmds
 
-    return await asyncio.to_thread(session_cmds.cmd_undo, ctrl, "")
+    if not ctrl.checkpoint_manager.enabled:
+        return await asyncio.to_thread(session_cmds.cmd_undo, ctrl, "")
+    preview = await asyncio.to_thread(
+        ctrl.checkpoint_manager.preview_undo,
+        ctrl.thread_id,
+    )
+    if not preview.ok:
+        return CommandResult(f"Cannot undo: {preview.message}")
+    if confirm is None:
+        return CommandResult(
+            session_cmds.format_undo_preview(preview)
+            + "\nConfirmation required before restore; no files were changed."
+        )
+    if not await confirm(preview):
+        return CommandResult("Undo cancelled — no files were changed.")
+    return await asyncio.to_thread(session_cmds.cmd_undo_confirmed, ctrl, preview)
 
 
 async def redo(ctrl: Controller) -> CommandResult:

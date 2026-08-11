@@ -1,25 +1,28 @@
 # J.A.R.N. Documentation
 
-J.A.R.N. (v0.11.0, Alpha) is a local-first, permission-gated terminal agent harness built
-around [DeepAgents](https://github.com/langchain-ai/deepagents). It wraps the agent
+The current `main` branch is an unreleased J.A.R.N. General Availability candidate;
+The source is the v1.0.0 GA candidate; v0.11.0 remains the latest public Alpha
+until the protected release gates promote it. J.A.R.N. is a local-first,
+permission-gated terminal agent harness built around
+[DeepAgents](https://github.com/langchain-ai/deepagents). It wraps the agent
 loop with a configurable permission engine, 14-provider model routing (including
 managed ChatGPT subscription auth through Codex), cost
 tracking, rich extensibility surfaces (skills, custom commands, subagents, hooks,
 MCP), a `prompt_toolkit`-based terminal UI, and an optional single-operator Telegram
-gateway. Install with `pip install jarn`
-(or `npm install -g jarn-cli` for a standalone binary, no Python), then run
-`jarn setup` to get started.
+gateway. New users should follow the [verified one-command quickstart](QUICKSTART.md);
+package-manager/source installs are advanced alternatives.
 
 ## Table of contents
 
 | Document | Who it's for | What's inside |
 |---|---|---|
 | [CONFIGURATION.md](CONFIGURATION.md) | Users | Full YAML config reference: providers, routing, budgets, permissions, hooks, MCP, wiki, compat, secrets |
+| [AUTH_STATUS_SCHEMA.md](AUTH_STATUS_SCHEMA.md) | Users · Automation | Stable `jarn auth status --json` schema, states, privacy, and exit codes |
 | [PERMISSIONS.md](PERMISSIONS.md) | Users · Contributors | How every file write and shell command is authorized — modes, rules, danger-guard, OS sandbox, project trust boundary |
 | [EXTENDING.md](EXTENDING.md) | Users · Contributors | Five extension surfaces (skills, slash commands, subagents, hooks, MCP) with a working quick-start |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Contributors | System diagram, subsystem table, turn lifecycle, design rationale, and key source files |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Contributors | Dev setup, CI gates (ruff · mypy · 2466 tests), testing layers, and how-to guides for common changes |
-| [ROADMAP.md](ROADMAP.md) | Everyone | what is shipped (v0.11.0), what is planned, and known limitations |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contributors | Dev setup, CI gates (ruff · mypy · full pytest collection), testing layers, and how-to guides for common changes |
+| [ROADMAP.md](ROADMAP.md) | Everyone | what is in the v1.0.0 candidate, what is planned, and known limitations |
 | [OPEN_CORE.md](OPEN_CORE.md) | Everyone | Licensing (Apache-2.0) and the intended open-core business model — plans only, nothing commercial is shipped |
 | [WEB_UI.md](WEB_UI.md) | Contributors | Design notes for a future Web UI — **not built yet**; included so the core stays Web-UI-ready |
 | [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md) | Operators · Contributors | v0.10 setup, global config, security model, systemd deployment, and second-poller stand-down |
@@ -28,7 +31,7 @@ gateway. Install with `pip install jarn`
 
 ## Where to start
 
-- **First-time user:** run `jarn setup`, then read [CONFIGURATION.md](CONFIGURATION.md).
+- **First-time user:** follow [QUICKSTART.md](QUICKSTART.md), then read [CONFIGURATION.md](CONFIGURATION.md).
 - **Want to add skills or hooks:** [EXTENDING.md](EXTENDING.md) has a copy-paste quick-start.
 - **Adjusting what the agent is allowed to do:** [PERMISSIONS.md](PERMISSIONS.md).
 - **Running the Telegram gateway:** [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md).

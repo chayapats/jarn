@@ -1,181 +1,231 @@
-"""``jarn bug`` — assemble a redacted bug report and pre-fill a GitHub issue.
+"""Privacy-preserving ``jarn bug`` support handoff.
 
-The report includes (all lines redacted via :func:`jarn.config.secrets.redact_secrets`):
+The diagnostic file is the same strict, allowlisted JSON report produced by
+``jarn doctor --report``.  Raw doctor output and log lines are deliberately not
+read: pattern redaction is useful defence in depth, but it cannot make arbitrary
+user text, commands, or local paths safe to publish.
 
-- jarn version + platform + Python version
-- ``jarn doctor --json`` output (redacted)
-- Last 50 lines of ``~/.jarn/logs/jarn.log`` (redacted)
-
-The file is written to ``~/.jarn/bug-report.md``.  Without ``--dry-run`` the
-function also opens a pre-filled ``https://github.com/chayapats/jarn/issues/new``
-URL (body ≤ 6 000 chars, HEAD+TAIL truncated; pointer to attach the full file).
+Without ``--dry-run`` the command shows a privacy preview and asks before opening
+GitHub.  The pre-filled URL contains only a fixed issue template and the J.A.R.N.
+version; the local report is never copied into the URL automatically.
 """
 
 from __future__ import annotations
 
-import platform
 import sys
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import quote
 
 from jarn.version import __version__
 
 _GITHUB_ISSUES_URL = "https://github.com/chayapats/jarn/issues/new"
-_REPORT_FILENAME = "bug-report.md"
-_LOG_TAIL_LINES = 50
-_BODY_MAX_CHARS = 6000
+_REPORT_FILENAME = "bug-report.json"
+
+_ISSUE_BODY = """## What happened
+
+Describe the problem and the last action you took.
+
+## Expected behavior
+
+Describe what you expected J.A.R.N. to do.
+
+## Diagnostics
+
+A privacy-scanned support report was generated locally. Review it before choosing
+whether to attach it. The report is not included in this issue URL automatically.
+"""
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
+def _collect_doctor_diagnostics() -> dict[str, object]:
+    """Collect diagnostics without serialising the unsafe full doctor payload."""
+
+    # Import lazily so callers/tests can supply the same collector seam used by
+    # ``jarn doctor`` without this module retaining a second implementation.
+    import jarn.doctor.collect as doctor_collect
+
+    diagnostics: dict[str, object] = {}
+    doctor_collect.collect_doctor(diagnostics)
+    return diagnostics
 
 
-def _collect_doctor_json() -> str:
-    """Return redacted doctor diagnostics as a JSON string.
+def build_report(
+    home: Path,
+    log_path: Path | None = None,
+    *,
+    known_secrets: set[str] | None = None,
+) -> str:
+    """Return the strict support-report JSON used by :func:`run_bug_report`.
 
-    Imports ``collect_doctor`` lazily so monkeypatching in tests works — the
-    function looks up the attribute on the module object at call time.
+    ``home`` and ``log_path`` remain accepted for source compatibility with the
+    pre-GA helper. They are intentionally not read: neither filesystem paths nor
+    log content belong in an automatically shareable support artifact.
     """
-    import jarn.doctor.collect as _dc
+
+    del home, log_path
+    from jarn.doctor.report import scan_support_report, support_report_json
+    from jarn.errors import ErrorCode, JarnUserError, error_detail
+
+    diagnostics = _collect_doctor_diagnostics()
+    text = support_report_json(diagnostics, known_secrets=known_secrets)
+    findings = scan_support_report(text, known_secrets=known_secrets)
+    if findings:
+        raise JarnUserError(
+            error_detail(
+                ErrorCode.DOCTOR_REPORT_FAILED,
+                "Bug report failed its privacy scan.",
+                cause=", ".join(findings),
+                component="bug report",
+                retryable=False,
+                action="Do not share the report; run `jarn doctor` without --report.",
+            )
+        )
+    return text
+
+
+def _issue_url() -> str:
+    """Build a URL containing no local diagnostic content."""
+
+    title = f"Bug: J.A.R.N. {__version__}"
+    return f"{_GITHUB_ISSUES_URL}?title={quote(title)}&body={quote(_ISSUE_BODY)}"
+
+
+def _default_confirm_open(prompt: str) -> bool:
+    answer = input(prompt).strip().lower()
+    return answer in {"y", "yes"}
+
+
+def _render_failure(exc: BaseException, *, report_path: Path | None = None) -> int:
+    """Render one stable, centrally redacted failure and return non-success."""
+
     from jarn.config.secrets import redact_secrets
-    from jarn.doctor.render import doctor_to_json
+    from jarn.errors import ErrorCode, JarnUserError, error_detail
 
-    diag: dict = {}
-    _dc.collect_doctor(diag)
-    raw_json = doctor_to_json(diag)
-    return redact_secrets(raw_json)
+    if isinstance(exc, JarnUserError):
+        detail = exc.detail
+    else:
+        detail = error_detail(
+            ErrorCode.DOCTOR_REPORT_FAILED,
+            "The privacy-scanned bug report could not be created.",
+            cause=redact_secrets(str(exc)) or type(exc).__name__,
+            component="bug report",
+            retryable=True,
+            action="Check the J.A.R.N. home permissions and retry `jarn bug --dry-run`.",
+            report_path=report_path,
+        )
+    print(detail.render(), file=sys.stderr)
+    return 1
 
 
-def _read_log_tail(log_path: Path) -> list[str]:
-    """Return the last 50 lines of *log_path*, each passed through redact_secrets."""
+def _render_cancelled() -> int:
+    from jarn.errors import ErrorCode, error_detail
+
+    print(
+        error_detail(
+            ErrorCode.CANCELLED,
+            "GitHub issue handoff was cancelled.",
+            cause="Consent to open a remote browser page was not given.",
+            component="bug report",
+            retryable=True,
+            action=(
+                "The local privacy-scanned report was kept; run `jarn bug` again "
+                "when you want to open GitHub."
+            ),
+        ).render(),
+        file=sys.stderr,
+    )
+    return 130
+
+
+def _render_browser_failure(exc: BaseException | None = None) -> int:
     from jarn.config.secrets import redact_secrets
+    from jarn.errors import ErrorCode, error_detail
 
-    if not log_path.is_file():
-        return []
-    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    tail = lines[-_LOG_TAIL_LINES:]
-    return [redact_secrets(line) for line in tail]
+    cause = (
+        redact_secrets(str(exc))
+        if exc is not None and str(exc)
+        else "The operating system did not accept the browser-open request."
+    )
+    print(
+        error_detail(
+            ErrorCode.NETWORK_FAILED,
+            "The GitHub issue form could not be opened.",
+            cause=cause,
+            component="bug report browser handoff",
+            retryable=True,
+            action=(
+                "Open https://github.com/chayapats/jarn/issues/new manually; "
+                "review the local report before attaching it."
+            ),
+        ).render(),
+        file=sys.stderr,
+    )
+    return 6
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+def run_bug_report(
+    *,
+    dry_run: bool = False,
+    home: Path | None = None,
+    known_secrets: set[str] | None = None,
+    confirm_open: Callable[[str], bool] | None = None,
+) -> int:
+    """Create a private report and optionally open a content-free issue form.
 
-
-def build_report(home: Path, log_path: Path | None = None) -> str:
-    """Build the full bug report as a Markdown string.
-
-    Every included line passes through :func:`~jarn.config.secrets.redact_secrets`
-    so no resolved secret value can appear in the output.
-
-    Args:
-        home:     The JARN home directory (``~/.jarn`` by default).
-        log_path: Override the log file path (default: ``home/logs/jarn.log``).
+    The additive ``known_secrets`` and ``confirm_open`` seams let embedders add
+    exact-value redaction and supply their own consent UI. Existing callers that
+    pass only ``dry_run`` or ``home`` remain source-compatible.
     """
-    from jarn.config.secrets import redact_secrets
 
-    if log_path is None:
-        log_path = home / "logs" / "jarn.log"
-
-    # Header — each value individually redacted before embedding.
-    version_line = redact_secrets(f"- **jarn version:** {__version__}")
-    platform_line = redact_secrets(f"- **platform:** {platform.platform()}")
-    python_line = redact_secrets(f"- **python:** {sys.version}")
-
-    # Doctor diagnostics (collect + redact inside _collect_doctor_json).
-    doctor_json = _collect_doctor_json()
-
-    # Log tail — each line individually redacted.
-    log_lines = _read_log_tail(log_path)
-    log_section = "\n".join(log_lines) if log_lines else "(no log file found)"
-
-    return "\n".join([
-        "# jarn Bug Report",
-        "",
-        "## Environment",
-        "",
-        version_line,
-        platform_line,
-        python_line,
-        "",
-        "## Doctor Diagnostics",
-        "",
-        "```json",
-        doctor_json,
-        "```",
-        "",
-        f"## Last {_LOG_TAIL_LINES} Log Lines",
-        "",
-        "```",
-        log_section,
-        "```",
-    ])
-
-
-_ATTACH_NOTE = (
-    "\n\n---\n"
-    "📎 Please attach `~/.jarn/bug-report.md` for the full report."
-)
-_ELISION = (
-    "\n\n[...truncated — attach `~/.jarn/bug-report.md` for the full report...]\n\n"
-)
-
-
-def _truncate_body(body: str) -> str:
-    """HEAD+TAIL truncation to keep the GitHub issue body ≤ 6 000 chars.
-
-    Keeps the beginning and end of the report; elides the middle.  Always
-    appends a pointer to attach the full ``~/.jarn/bug-report.md`` file.
-    """
-    with_note = body + _ATTACH_NOTE
-    if len(with_note) <= _BODY_MAX_CHARS:
-        return with_note
-
-    available = _BODY_MAX_CHARS - len(_ATTACH_NOTE) - len(_ELISION)
-    if available <= 0:
-        # Pathological max — return just the attach note. NOTE: this must be
-        # ``<= 0``, not ``< 0``: at ``available == 0`` both head and tail are 0
-        # and ``body[-0:]`` == ``body[0:]`` returns the WHOLE body, blowing past
-        # the cap.
-        return _ATTACH_NOTE[:_BODY_MAX_CHARS]
-    head = max(0, available * 2 // 3)
-    tail = max(0, available - head)
-    return body[:head] + _ELISION + body[-tail:] + _ATTACH_NOTE
-
-
-def run_bug_report(*, dry_run: bool = False, home: Path | None = None) -> int:
-    """Write ``bug-report.md`` and (unless *dry_run*) open a prefilled issue URL.
-
-    Args:
-        dry_run: When ``True``, write the report file but do not open the browser.
-        home:    Override the JARN home directory (for tests; defaults to
-                 :func:`~jarn.config.paths.global_home`).
-
-    Returns:
-        0 on success.
-    """
     from jarn.config import paths
+    from jarn.doctor.report import write_support_report
 
     if home is None:
         home = paths.global_home()
-
-    report = build_report(home)
-
     out_path = home / _REPORT_FILENAME
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(report, encoding="utf-8")
 
-    print(f"Bug report written to {out_path}")
+    try:
+        diagnostics = _collect_doctor_diagnostics()
+        written = write_support_report(
+            diagnostics,
+            out_path,
+            known_secrets=known_secrets,
+        )
+    except Exception as exc:
+        # This boundary guarantees no browser action follows any scan/write
+        # failure. KeyboardInterrupt/SystemExit still unwind immediately, also
+        # before the consent/browser code can run.
+        return _render_failure(exc, report_path=out_path)
+
+    print(f"Privacy-scanned bug report written to {written}")
+    print(
+        "Privacy preview: includes version/platform and diagnostic states/counts; "
+        "excludes raw paths, logs, prompts, commands, file contents, and credentials."
+    )
+    print(
+        "GitHub will receive only a blank issue template and the J.A.R.N. version. "
+        "The report remains local unless you review and attach it yourself."
+    )
 
     if dry_run:
         return 0
 
-    title = f"Bug: jarn {__version__}"
-    body_text = _truncate_body(report)
-    url = f"{_GITHUB_ISSUES_URL}?title={quote(title)}&body={quote(body_text)}"
+    confirm = confirm_open or _default_confirm_open
+    try:
+        allowed = bool(confirm("Open the GitHub issue form now? [y/N]: "))
+    except (EOFError, KeyboardInterrupt):
+        allowed = False
+    if not allowed:
+        return _render_cancelled()
 
-    print("Opening GitHub issue form…")
-    webbrowser.open(url)
+    url = _issue_url()
+    try:
+        opened = webbrowser.open(url)
+    except (OSError, webbrowser.Error) as exc:
+        return _render_browser_failure(exc)
+    if not opened:
+        return _render_browser_failure()
+
+    print("Opened the GitHub issue form; no local diagnostic content was placed in the URL.")
     return 0

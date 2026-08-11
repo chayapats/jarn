@@ -70,8 +70,12 @@ _skip_on_windows = pytest.mark.skipif(
 def _pytest_collection_count() -> int:
     """Collect once per session — this shells out to a full pytest collection, and
     the discovery test below would otherwise pay for it on every file."""
+    # Reuse the interpreter that is already executing this gate. Re-entering
+    # through ``uv run`` makes collection depend on an external cache directory
+    # (and on uv being installed), even though pytest and the project are already
+    # loaded in the active environment. This stays hermetic in CI/sandboxes.
     proc = subprocess.run(
-        ["uv", "run", "pytest", "--collect-only", "-q"],
+        [sys.executable, "-m", "pytest", "--collect-only", "-q"],
         cwd=REPO,
         capture_output=True,
         text=True,
@@ -159,6 +163,50 @@ def test_release_slice_keeps_the_live_sections_and_drops_the_sign_offs() -> None
         assert heading in live, f"{heading} is live process and must stay in scope"
     # …and the frozen tables do not.
     assert "sign-off" not in live
+
+
+def test_public_headless_exit_taxonomy_matches_contract_constants() -> None:
+    """User-facing automation docs must not silently reuse legacy exit 1/2."""
+
+    from jarn.exit_codes import (
+        EXIT_BUDGET_EXCEEDED,
+        EXIT_PERMISSION_DENIED,
+        EXIT_TIMEOUT,
+        EXIT_USAGE_CONFIG,
+        EXIT_VERIFICATION_FAILED,
+    )
+
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    config_doc = (REPO / "docs" / "CONFIGURATION.md").read_text(encoding="utf-8")
+    cli_source = (REPO / "src" / "jarn" / "cli.py").read_text(encoding="utf-8")
+
+    assert f"`{EXIT_VERIFICATION_FAILED}` with `error.kind: \"schema\"`" in readme
+    assert f"exit {EXIT_VERIFICATION_FAILED} with kind 'schema'" in cli_source
+    for code in (
+        EXIT_USAGE_CONFIG,
+        EXIT_PERMISSION_DENIED,
+        EXIT_BUDGET_EXCEEDED,
+        EXIT_VERIFICATION_FAILED,
+        EXIT_TIMEOUT,
+    ):
+        assert f"| `{code}` |" in config_doc
+
+
+def test_every_emitted_stable_error_code_is_documented() -> None:
+    """Adding a user-visible code without recovery documentation fails CI."""
+
+    code_pattern = re.compile(r"JARN-[A-Z]+-[0-9]{3}")
+    emitted: set[str] = set()
+    for path in (REPO / "src" / "jarn").rglob("*.py"):
+        emitted.update(code_pattern.findall(path.read_text(encoding="utf-8")))
+    emitted.update(code_pattern.findall((REPO / "install.sh").read_text(encoding="utf-8")))
+
+    reference = (REPO / "docs" / "ERROR_CODES.md").read_text(encoding="utf-8")
+    documented = set(code_pattern.findall(reference))
+    assert emitted <= documented, (
+        "Stable error codes missing from docs/ERROR_CODES.md: "
+        f"{sorted(emitted - documented)}"
+    )
 
 
 @pytest.mark.parametrize("doc_path", CURRENT_COUNT_DOCS, ids=lambda p: p.name)

@@ -9,6 +9,7 @@ from rich.markup import escape as _escape_markup
 from jarn.controller.core import CommandResult
 
 if TYPE_CHECKING:
+    from jarn.agent.checkpoint import RestorePreview
     from jarn.controller.core import Controller
 
 
@@ -19,9 +20,12 @@ def cmd_sessions(ctrl: Controller, args: str) -> CommandResult:
     lines = ["[b]Recent sessions[/b] [dim](use /resume to pick one)[/dim]"]
     for s in sessions:
         marker = "→ " if s.thread_id == ctrl.thread_id else "  "
+        project = f"  [dim]{_escape_markup(s.project_root)}[/dim]" if s.project_root else ""
+        model = f"  [dim]{_escape_markup(s.model)}[/dim]" if s.model else ""
+        state = "complete" if s.state == "complete" else "interrupted"
         lines.append(
             f"{marker}{s.updated_human}  {_escape_markup(s.title)}  "
-            f"[dim]{s.thread_id[:8]}[/dim]"
+            f"[dim]{s.thread_id[:8]} · {state}[/dim]{project}{model}"
         )
     return CommandResult("\n".join(lines))
 
@@ -71,18 +75,57 @@ def cmd_compact(ctrl: Controller, args: str) -> CommandResult:
     )
 
 
-def cmd_undo(ctrl: Controller, args: str) -> CommandResult:
-    """Revert the last agent turn's file changes via the checkpoint stack.
+def format_undo_preview(preview: RestorePreview) -> str:
+    """Render a checkpoint preview for any user-facing command frontend."""
+    count = preview.file_count
+    noun = "file" if count == 1 else "files"
+    lines = [
+        f"Undo preview — {count} affected {noun}",
+        f"Checkpoint: {_escape_markup(preview.message)}",
+    ]
+    if preview.files:
+        lines.append("Affected changes:")
+        lines.extend(f"  {_escape_markup(line)}" for line in preview.files)
+    else:
+        lines.append("Affected changes: none (the working tree already matches).")
+    return "\n".join(lines)
 
-    Capturing the current state as a redo-point first guarantees that undo
-    is itself reversible: the user can always /redo to get back here.
+
+def _undo_unavailable(ctrl: Controller) -> CommandResult:
+    return CommandResult(
+        "No checkpoints — /undo needs autocheckpoint. "
+        "Enable it with /config (git.autocheckpoint: true) or 'jarn config'."
+    )
+
+
+def cmd_undo(ctrl: Controller, args: str) -> CommandResult:
+    """Preview `/undo` without mutating files.
+
+    The synchronous command registry cannot collect an explicit confirmation,
+    so it deliberately stops after the preview. Interactive frontends use the
+    controller's async ``undo(confirm=...)`` API to perform the confirmed
+    restore. This prevents a new frontend from silently bypassing the gate.
     """
     if not ctrl.checkpoint_manager.enabled:
-        return CommandResult(
-            "No checkpoints — /undo needs autocheckpoint. "
-            "Enable it with /config (git.autocheckpoint: true) or 'jarn config'."
-        )
-    result = ctrl.checkpoint_manager.undo(thread_id=ctrl.thread_id)
+        return _undo_unavailable(ctrl)
+    preview = ctrl.checkpoint_manager.preview_undo(thread_id=ctrl.thread_id)
+    if not preview.ok:
+        return CommandResult(f"Cannot undo: {preview.message}")
+    return CommandResult(
+        format_undo_preview(preview)
+        + "\nConfirmation required before restore; no files were changed."
+    )
+
+
+def cmd_undo_confirmed(ctrl: Controller, preview: RestorePreview) -> CommandResult:
+    """Apply the exact restore represented by a user-confirmed ``preview``."""
+    if not ctrl.checkpoint_manager.enabled:
+        return _undo_unavailable(ctrl)
+    result = ctrl.checkpoint_manager.undo(
+        thread_id=ctrl.thread_id,
+        expected_sha=preview.sha,
+        expected_current_tree=preview.current_tree or None,
+    )
     if result.ok:
         return CommandResult(f"Undone. {result.message}")
     return CommandResult(f"Cannot undo: {result.message}")

@@ -12,15 +12,17 @@ right backend and injecting ``api_key`` / ``base_url``. Built models are cached.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from jarn.config.schema import Config, ProviderConfig, ProviderType
-from jarn.config.secrets import SecretResolutionError, resolve
+from jarn.config.secrets import SecretResolutionError, resolve, resolve_secret_mapping
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +182,386 @@ def strip_profile(ref: str, profile: str) -> str:
 _DISCOVERY_TIMEOUT_SECS = 2.0
 
 
+@dataclass(frozen=True, slots=True)
+class RemoteModelRecord:
+    """One model returned by a provider's read-only catalog endpoint.
+
+    The fields intentionally describe only facts present in the response.  A
+    missing value stays ``None``/empty rather than being filled from
+    ``DEFAULT_MODELS`` and accidentally presented as live provider metadata.
+    """
+
+    model_id: str
+    display_name: str | None = None
+    description: str | None = None
+    context_window: int | None = None
+    input_modalities: tuple[str, ...] = ()
+    preview: bool = False
+    deprecated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteModelCatalog:
+    """A successful, non-billable provider model-list response."""
+
+    models: tuple[RemoteModelRecord, ...]
+    provenance_label: str
+    account_fingerprint: str
+
+
+class RemoteModelDiscoveryError(RuntimeError):
+    """A provider model list could not be obtained or safely interpreted."""
+
+
+# Provider documentation checked for these endpoints in August 2026.  DeepSeek
+# intentionally stays out: its OpenAI-compatible inference API does not publish
+# a model-list contract.  A static default is not evidence, so callers receive a
+# clearly unverified fallback instead of a fabricated live catalog.
+_CLOUD_MODEL_LIST_TYPES: frozenset[ProviderType] = frozenset(
+    {
+        ProviderType.OPENAI,
+        ProviderType.OPENROUTER,
+        ProviderType.ANTHROPIC,
+        ProviderType.GOOGLE,
+        ProviderType.MISTRAL,
+        ProviderType.GROQ,
+        ProviderType.TOGETHER,
+        ProviderType.FIREWORKS,
+        ProviderType.XAI,
+    }
+)
+_API_KEY_PROVIDER_TYPES = _CLOUD_MODEL_LIST_TYPES | {ProviderType.DEEPSEEK}
+
+
+def supports_remote_model_catalog(provider_type: ProviderType) -> bool:
+    """Whether J.A.R.N. has a read-only live-list adapter for this type."""
+
+    return provider_type in _CLOUD_MODEL_LIST_TYPES or provider_type in {
+        ProviderType.OLLAMA,
+        ProviderType.LMSTUDIO,
+        ProviderType.OPENAI_COMPATIBLE,
+    }
+
+
+def _model_catalog_base(provider: ProviderConfig) -> str:
+    if provider.base_url:
+        return provider.base_url.strip().rstrip("/")
+    defaults = {
+        ProviderType.OPENAI: "https://api.openai.com/v1",
+        ProviderType.ANTHROPIC: "https://api.anthropic.com",
+        ProviderType.GOOGLE: "https://generativelanguage.googleapis.com/v1beta",
+        ProviderType.MISTRAL: "https://api.mistral.ai/v1",
+        ProviderType.OPENROUTER: "https://openrouter.ai/api/v1",
+        ProviderType.GROQ: "https://api.groq.com/openai/v1",
+        ProviderType.DEEPSEEK: "https://api.deepseek.com",
+        ProviderType.TOGETHER: "https://api.together.xyz/v1",
+        ProviderType.FIREWORKS: "https://api.fireworks.ai/inference/v1",
+        ProviderType.XAI: "https://api.x.ai/v1",
+    }
+    return defaults.get(provider.type, "")
+
+
+def _remote_catalog_key(provider: ProviderConfig) -> str | None:
+    try:
+        key = resolve(provider.api_key) if provider.api_key else None
+    except SecretResolutionError as exc:
+        raise RemoteModelDiscoveryError(
+            f"{provider.type.value} model-list credential could not be resolved"
+        ) from exc
+    if provider.type in _API_KEY_PROVIDER_TYPES and not key:
+        raise RemoteModelDiscoveryError(
+            f"{provider.type.value} model-list requires the configured API key"
+        )
+    return key
+
+
+def _remote_scope(provider: ProviderConfig, base: str, key: str | None) -> str:
+    # The secret is one-way hashed with endpoint/type scope and is never emitted.
+    # This prevents a fresh catalog fetched with one API key from being reused by
+    # another account configured under the same profile name.
+    material = f"{provider.type.value}\0{base}\0{key or 'no-key'}".encode()
+    return hashlib.sha256(material).hexdigest()[:20]
+
+
+def remote_catalog_account_fingerprint(provider: ProviderConfig) -> str:
+    """Return the privacy-preserving identity used to bind provider caches."""
+
+    base = _model_catalog_base(provider)
+    if not base:
+        raise RemoteModelDiscoveryError(f"{provider.type.value} endpoint is not configured")
+    return _remote_scope(provider, base, _remote_catalog_key(provider))
+
+
+def _safe_get_json(
+    url: str,
+    *,
+    provider: ProviderConfig,
+    headers: dict[str, str],
+    params: dict[str, Any] | None,
+    timeout_seconds: float,
+) -> Any:
+    """GET JSON without ever copying a key-bearing URL into an exception."""
+
+    try:
+        import httpx
+
+        response = httpx.get(
+            url,
+            headers=headers or None,
+            params=params or None,
+            timeout=timeout_seconds,
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as exc:  # noqa: BLE001 - translate at the secret boundary
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        detail = f"HTTP {status}" if isinstance(status, int) else type(exc).__name__
+        raise RemoteModelDiscoveryError(
+            f"{provider.type.value} model-list request failed ({detail})"
+        ) from exc
+
+
+def _optional_text(row: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _positive_int(row: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = row.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
+
+
+def _remote_record(provider_type: ProviderType, row: dict[str, Any]) -> RemoteModelRecord | None:
+    raw_id = _optional_text(row, "id", "name")
+    if not raw_id:
+        return None
+    model_id = raw_id.removeprefix("models/") if provider_type is ProviderType.GOOGLE else raw_id
+
+    # When an endpoint exposes a capability discriminator, use it to avoid
+    # putting embedding/image-only or archived entries in a coding-agent picker.
+    row_type = row.get("type")
+    if provider_type is ProviderType.TOGETHER and row_type not in (None, "chat", "language", "code"):
+        return None
+    capabilities = row.get("capabilities")
+    if isinstance(capabilities, dict) and capabilities.get("completion_chat") is False:
+        return None
+    methods = row.get("supportedGenerationMethods") or row.get("supported_actions")
+    if (
+        provider_type is ProviderType.GOOGLE
+        and isinstance(methods, list)
+        and not any(method in {"generateContent", "generate_content"} for method in methods)
+    ):
+        return None
+    if row.get("archived") is True or row.get("active") is False:
+        return None
+
+    # The generic OpenAI/Groq model endpoints also return embedding, image,
+    # speech, moderation, and realtime-only assets.  Those are account-visible
+    # but cannot back J.A.R.N.'s text chat runtime, so keep them out of the
+    # standard picker. Manual Advanced entry remains available for new families.
+    lowered = model_id.lower()
+    non_chat_markers = (
+        "embedding",
+        "moderation",
+        "whisper",
+        "transcribe",
+        "dall-e",
+        "gpt-image",
+        "sora",
+        "tts",
+        "realtime",
+        "audio-preview",
+        "audio-transcribe",
+    )
+    if provider_type in {ProviderType.OPENAI, ProviderType.GROQ} and any(
+        marker in lowered for marker in non_chat_markers
+    ):
+        return None
+
+    modalities: tuple[str, ...] = ()
+    architecture = row.get("architecture")
+    raw_modalities = row.get("input_modalities")
+    if isinstance(architecture, dict):
+        raw_modalities = architecture.get("input_modalities", raw_modalities)
+    if isinstance(raw_modalities, list):
+        modalities = tuple(
+            dict.fromkeys(item for item in raw_modalities if isinstance(item, str) and item)
+        )
+
+    return RemoteModelRecord(
+        model_id=model_id,
+        display_name=_optional_text(row, "displayName", "display_name", "name") or model_id,
+        description=_optional_text(row, "description"),
+        context_window=_positive_int(
+            row,
+            "context_window",
+            "context_length",
+            "max_context_length",
+            "inputTokenLimit",
+            "input_token_limit",
+        ),
+        input_modalities=modalities,
+        preview="preview" in lowered,
+        deprecated=bool(row.get("deprecated", False) or row.get("deprecation_date")),
+    )
+
+
+def fetch_remote_model_catalog(
+    provider: ProviderConfig,
+    *,
+    timeout_seconds: float = _DISCOVERY_TIMEOUT_SECS,
+) -> RemoteModelCatalog:
+    """Fetch a provider's documented, non-billable live model catalog.
+
+    Unlike :func:`list_remote_models`, this strict API never silently turns a
+    failed request into an empty successful catalog.  The unified catalog layer
+    needs that distinction to label live/cache/static provenance truthfully.
+    """
+
+    if not supports_remote_model_catalog(provider.type):
+        raise RemoteModelDiscoveryError(
+            f"{provider.type.value} has no documented non-billable model-list adapter"
+        )
+    base = _model_catalog_base(provider)
+    if not base:
+        raise RemoteModelDiscoveryError(f"{provider.type.value} model-list endpoint is not configured")
+    key = _remote_catalog_key(provider)
+    deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+
+    def remaining_timeout() -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RemoteModelDiscoveryError(
+                f"{provider.type.value} model-list request exceeded its timeout"
+            )
+        return max(0.1, remaining)
+
+    headers: dict[str, str] = resolve_secret_mapping(provider.headers)
+    lower_headers = {name.lower() for name in headers}
+    if provider.type is ProviderType.ANTHROPIC:
+        if key and "x-api-key" not in lower_headers:
+            headers["x-api-key"] = key
+        if "anthropic-version" not in lower_headers:
+            headers["anthropic-version"] = "2023-06-01"
+    elif key and "authorization" not in lower_headers and provider.type is not ProviderType.GOOGLE:
+        headers["Authorization"] = f"Bearer {key}"
+
+    rows: list[dict[str, Any]] = []
+    if provider.type is ProviderType.ANTHROPIC:
+        url = f"{base}/models" if base.endswith("/v1") else f"{base}/v1/models"
+        after_id: str | None = None
+        seen: set[str] = set()
+        for _ in range(100):
+            params: dict[str, Any] = {"limit": 1000}
+            if after_id:
+                params["after_id"] = after_id
+            payload = _safe_get_json(
+                url,
+                provider=provider,
+                headers=headers,
+                params=params,
+                timeout_seconds=remaining_timeout(),
+            )
+            if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+                raise RemoteModelDiscoveryError("anthropic model-list returned malformed JSON")
+            rows.extend(item for item in payload["data"] if isinstance(item, dict))
+            if payload.get("has_more") is not True:
+                break
+            next_id = payload.get("last_id")
+            if not isinstance(next_id, str) or not next_id or next_id in seen:
+                raise RemoteModelDiscoveryError("anthropic model-list pagination was malformed")
+            seen.add(next_id)
+            after_id = next_id
+        else:
+            raise RemoteModelDiscoveryError("anthropic model-list exceeded pagination limit")
+    elif provider.type is ProviderType.GOOGLE:
+        url = f"{base}/models"
+        page_token: str | None = None
+        seen_tokens: set[str] = set()
+        for _ in range(100):
+            params = {"pageSize": 1000, "key": key}
+            if page_token:
+                params["pageToken"] = page_token
+            payload = _safe_get_json(
+                url,
+                provider=provider,
+                headers=headers,
+                params=params,
+                timeout_seconds=remaining_timeout(),
+            )
+            if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+                raise RemoteModelDiscoveryError("google model-list returned malformed JSON")
+            rows.extend(item for item in payload["models"] if isinstance(item, dict))
+            next_token = payload.get("nextPageToken")
+            if not next_token:
+                break
+            if not isinstance(next_token, str) or next_token in seen_tokens:
+                raise RemoteModelDiscoveryError("google model-list pagination was malformed")
+            seen_tokens.add(next_token)
+            page_token = next_token
+        else:
+            raise RemoteModelDiscoveryError("google model-list exceeded pagination limit")
+    else:
+        if provider.type is ProviderType.OLLAMA:
+            url = f"{base}/api/tags"
+        elif provider.type is ProviderType.XAI:
+            # Unlike /models, the documented language-model endpoint excludes
+            # image/video-only generators and carries modality metadata.
+            url = f"{base}/language-models"
+        else:
+            # Configured OpenAI-compatible/local bases conventionally carry /v1.
+            url = f"{base}/models" if base.endswith("/v1") else f"{base}/v1/models"
+        payload = _safe_get_json(
+            url,
+            provider=provider,
+            headers=headers,
+            params=None,
+            timeout_seconds=remaining_timeout(),
+        )
+        raw_rows: Any
+        if isinstance(payload, list):
+            raw_rows = payload
+        elif isinstance(payload, dict):
+            raw_rows = (
+                payload.get("models")
+                if provider.type in {ProviderType.OLLAMA, ProviderType.XAI}
+                else payload.get("data")
+            )
+        else:
+            raw_rows = None
+        if not isinstance(raw_rows, list):
+            raise RemoteModelDiscoveryError(
+                f"{provider.type.value} model-list returned malformed JSON"
+            )
+        rows.extend(item for item in raw_rows if isinstance(item, dict))
+
+    records: list[RemoteModelRecord] = []
+    seen_models: set[str] = set()
+    for row in rows:
+        if provider.type is ProviderType.OLLAMA and "id" not in row and "name" in row:
+            row = {**row, "id": row.get("name")}
+        record = _remote_record(provider.type, row)
+        if record is None or record.model_id in seen_models:
+            continue
+        seen_models.add(record.model_id)
+        records.append(record)
+    scope = _remote_scope(provider, base, key)
+    return RemoteModelCatalog(
+        models=tuple(records),
+        provenance_label=(
+            f"Live {provider.type.value} catalog from the configured provider endpoint "
+            f"({len(records)} models)"
+        ),
+        account_fingerprint=scope,
+    )
+
+
 def list_remote_models(provider: ProviderConfig) -> list[str]:
     """Query a local provider's endpoint for the model ids it serves.
 
@@ -204,8 +586,8 @@ def list_remote_models(provider: ProviderConfig) -> list[str]:
     else:
         return []
 
-    headers: dict[str, str] = dict(provider.headers)
     try:
+        headers = resolve_secret_mapping(provider.headers)
         api_key = resolve(provider.api_key) if provider.api_key else None
     except SecretResolutionError:
         return []
@@ -559,12 +941,13 @@ class ModelFactory:
     def _construct(self, ref: ModelRef, provider: ProviderConfig) -> BaseChatModel:
         from langchain.chat_models import init_chat_model
 
-        kwargs: dict[str, Any] = dict(provider.extra)
-        kwargs.setdefault("max_retries", self.default_max_retries)
-        if provider.headers:
-            kwargs.setdefault("default_headers", dict(provider.headers))
-
         try:
+            kwargs: dict[str, Any] = dict(provider.extra)
+            kwargs.setdefault("max_retries", self.default_max_retries)
+            if provider.headers:
+                kwargs.setdefault(
+                    "default_headers", resolve_secret_mapping(provider.headers)
+                )
             return self._construct_inner(ref, provider, kwargs, init_chat_model)
         except SecretResolutionError as exc:
             from jarn.config.secrets import redact_secrets

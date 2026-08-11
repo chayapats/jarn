@@ -4,9 +4,9 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.10.x  | Yes (alpha — security fixes; no SLA) |
-| 0.9.x   | Best-effort only |
-| ≤ 0.8.x | No — upgrade to the current release |
+| 0.11.x  | Yes (alpha — security fixes; no SLA) |
+| 0.10.x  | Best-effort only |
+| ≤ 0.9.x | No — upgrade to the current release |
 
 ## Reporting a vulnerability
 
@@ -26,6 +26,15 @@ We aim to acknowledge within **72 hours** and share a fix timeline when confirme
 J.A.R.N. is a **local coding agent**. It can read/write files and run shell commands
 in your project directory when you approve them (or automatically in permissive modes).
 
+### Installer supply chain
+
+Release binaries are accepted only after their SHA-256 entry in the release manifest
+matches. If the portable Python fallback needs `uv`, the installer downloads the
+version-specific upstream installer URL, verifies its J.A.R.N.-pinned SHA-256 before
+execution, and then relies on that verified upstream installer to check the selected
+platform archive. A missing checksum tool, malformed digest, or mismatch fails closed
+before the script is executed and leaves the prior J.A.R.N. installation active.
+
 ### Default posture
 
 - **Host execution:** unless a sandbox runtime is configured and available, tools run
@@ -36,12 +45,13 @@ in your project directory when you approve them (or automatically in permissive 
 - **Project trust:** a project's `.jarn/config.yaml` can declare hooks, MCP servers,
   provider overrides, and other capability keys. **Untrusted projects** have those keys
   stripped until you approve (`Trust this project's config?` or `jarn trust <path>`).
-- **Secrets:** API keys live in `~/.jarn/config.yaml` or your OS keychain. Project
-  config can reference `${ENV}` — only trust projects you would run code from.
-  Inline plaintext keys in `config.yaml` are discouraged: the loader emits an
-  `InlineSecretWarning` for any literal that looks like a real key, and rejects
-  it outright when `strict_secrets: true` (recommended for CI / shared hosts).
-  Prefer `keychain:jarn/<provider>`, `file:jarn/<provider>`, or `${ENV_VAR}`.
+- **Secrets:** API keys live in environment variables, the OS keychain, or the
+  permission-restricted J.A.R.N. file store; configuration should contain only a
+  reference. Project config can reference `${ENV}` — only trust projects you would
+  run code from.
+  Inline plaintext credentials in `config.yaml` are rejected in every mode;
+  the legacy `strict_secrets: false` setting cannot disable this invariant.
+  Use `keychain:jarn/<provider>`, `file:jarn/<provider>`, or `${ENV_VAR}`.
   The file store behind `file:<service>/<account>` — `~/.jarn/secrets/` — is a
   **hard floor for the agent's path-addressed tools**: `read_file`, `ls`, `glob`,
   `grep`, `write_file` and `edit_file` are denied on it in every mode including
@@ -52,12 +62,13 @@ in your project directory when you approve them (or automatically in permissive 
   case-insensitive filesystem (APFS, NTFS). A spelling backstop denies any path
   ending in `.jarn/secrets` wherever it sits, so a project-level
   `<repo>/.jarn/secrets/` is treated the same way. Three boundaries worth knowing:
-  - **Shell is not covered (`execute`, `run_in_background`).** A shell command
-    (`cat ~/.jarn/secrets/...`) is gated by the coarse permission mode and the
-    danger-guard like any other command — which means `yolo` runs it. Shell is a
-    general-purpose escape from every path-level control, not this one
-    specifically; run untrusted work under `execution.backend: docker` or an OS
-    sandbox.
+  - **Shell has a hard credential-store guard, but is still general-purpose.**
+    Visible shell access to `.jarn/secrets` (including `$JARN_HOME/secrets`) is
+    blocked in every mode. Other credential paths, dynamic expansion/evaluators,
+    aliases/functions, environment dumps, uploads, and remote-transfer commands
+    force an informed one-shot approval. Pattern recognition is defense in depth:
+    a sufficiently obfuscated program can still perform equivalent syscalls. Run
+    untrusted work under `execution.backend: docker` or a required OS sandbox.
   - **`~/.jarn/config.yaml` is not covered**, so an inline plaintext key there
     stays readable by the agent — another reason to prefer a secret reference
     over a literal.
@@ -89,6 +100,12 @@ in your project directory when you approve them (or automatically in permissive 
   control; `jarn doctor` warns when it is non-default.
 - **Network:** `web_fetch` / `web_search` and MCP tools are gated through the permission
   engine. `web_fetch` blocks private/loopback/metadata addresses by default.
+- **Remembered approvals:** approvals created by the UI are stored in a versioned
+  scoped envelope containing action kind, originating tool/capability, exact target
+  or safe command prefix, and resolved project workspace. They do not silently
+  become another capability or follow a project rule into a different workspace.
+  Legacy hand-authored string rules remain supported and should be reviewed as the
+  broader explicit policy they are.
 - **Pluggable search provider API keys:** `web_search` can be configured to use
   Tavily, Brave Search, or Exa instead of the keyless DuckDuckGo scraper.  Keys are
   always resolved through the existing secret-reference resolver (`${ENV_VAR}`,
@@ -220,10 +237,12 @@ privileged containers, package-manager postinstalls, mass working-tree discards,
 and applies NFKC + best-effort homoglyph normalization so a disguised verb like
 Cyrillic `rm` is still matched.
 
-It does **not** parse shell syntax. A payload can be hidden from these patterns by
-chaining through an interpreter — `eval`, `bash -c`, `python -c`, heredoc bodies,
-`$(printf …)`, or a `base64 -d | sh` indirection the net doesn't recognise. The guard
-is a defense-in-depth **net**; for code you do not trust, run it with
+It does **not** fully parse or emulate shell syntax. Known dynamic boundaries such as
+command substitution, heredocs, inline interpreters, aliases/functions, dynamic
+loaders, and decode/pipe-to-shell shapes are forced back to a one-shot approval, and
+visible catastrophic commands still receive the stronger block. A payload can be
+obfuscated beyond these patterns. The guard is a defense-in-depth **net**; for code
+you do not trust, run it with
 `execution.backend: docker` or the OS sandbox (`execution.local_sandbox: require`),
 not on the host in `yolo`. We do not claim the pattern set is complete.
 
@@ -234,12 +253,19 @@ not on the host in `yolo`. We do not claim the pattern set is complete.
 3. Stay in `ask` or `plan` mode for untrusted codebases.
 4. Set `execution.allow_local_fallback: false` if you require sandbox-or-nothing.
 5. Keep `~/.jarn` permissions tight (`chmod 700 ~/.jarn`).
-6. **To fully remove all jarn keys and state** (e.g. when leaving a machine or trial):
-   run `jarn uninstall` — it removes `~/.jarn` and deletes every `jarn/<provider>`
-   OS keychain entry after an itemized confirmation prompt.
+6. Use itemized `jarn uninstall` when leaving a machine. Only executable removal is
+   selected by default; configuration, sessions, cache/telemetry, and credentials
+   require separate choices. Codex-managed login and shared runtimes are preserved.
 
 ## Dependency security
 
 Runtime dependencies are pinned in `uv.lock` for development. PyPI installs resolve
-from `pyproject.toml` ranges. Report supply-chain concerns through the same private
-channel above.
+from `pyproject.toml` ranges. Release automation pins external actions to immutable
+commit SHAs, emits SHA-256 manifests plus SPDX and CycloneDX SBOMs, and verifies
+Sigstore/SLSA attestations before package publication when the repository supports
+GitHub attestations. The installer/updater refuse integrity mismatches and keep the
+active version until a candidate passes verification. Report supply-chain concerns
+through the same private channel above.
+
+The telemetry, tracing, support-report, and data-retention boundaries are documented
+in [docs/PRIVACY.md](docs/PRIVACY.md).

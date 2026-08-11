@@ -7,12 +7,15 @@ state (and therefore must be gated behind an interrupt).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from typing import Any
 
 from langchain.agents.middleware import InterruptOnConfig
 
 from jarn.permissions import Action, ActionKind
+
+_log = logging.getLogger("jarn")
 
 #: Tools that change the world and must be evaluated by the permission engine.
 MUTATING_TOOLS = ("write_file", "edit_file", "execute")
@@ -179,7 +182,32 @@ def tool_to_action(tool_name: str, args: dict[str, Any]) -> Action:
     if tool_name == "repo_map":
         return Action(ActionKind.READ, target=str(args.get("focus", "") or "repo"), tool=tool_name)
     # Unknown/other tools: treat as network-ish actions requiring evaluation.
+    # Keep an explicit, secret-free diagnostic trail as well: a newly-added
+    # provider/tool must never silently inherit a permissive classification.
+    # Deliberately do not log arguments (or even their keys), because tool
+    # schemas are external input and can put credentials in arbitrary fields.
+    if not _is_known_network_tool(tool_name):
+        safe_name = _safe_tool_name(tool_name)
+        _log.warning(
+            "JARN-SAFE-002 unknown tool classified as gated network action; tool=%s",
+            safe_name,
+        )
     return Action(ActionKind.NETWORK, target=_network_target(tool_name, args), tool=tool_name)
+
+
+def _is_known_network_tool(tool_name: str) -> bool:
+    """Whether a network classification is part of the declared tool contract."""
+    return (
+        tool_name in {"web_fetch", "web_search"}
+        or tool_name.startswith("mcp__")
+        or tool_name in ASYNC_SUBAGENT_TOOLS
+    )
+
+
+def _safe_tool_name(tool_name: str) -> str:
+    """Bound and single-line an untrusted tool label before diagnostics."""
+    value = str(tool_name).replace("\r", "\\r").replace("\n", "\\n")
+    return value[:125] + "..." if len(value) > 128 else value
 
 
 def _network_target(tool_name: str, args: dict[str, Any]) -> str:

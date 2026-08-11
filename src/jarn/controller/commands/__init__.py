@@ -19,6 +19,8 @@ _HANDLERS: dict[str, CommandHandler] = {
     "init": meta.cmd_init,
     "skill": meta.cmd_skill,
     "skills": meta.cmd_skills,
+    "login": meta.cmd_login,
+    "logout": meta.cmd_logout,
     # config
     "config": config.cmd_config,
     "preset": config.cmd_preset,
@@ -29,15 +31,18 @@ _HANDLERS: dict[str, CommandHandler] = {
     # session
     "sessions": session.cmd_sessions,
     "clear": session.cmd_clear,
+    "new": session.cmd_clear,
     "compact": session.cmd_compact,
     "undo": session.cmd_undo,
     "redo": session.cmd_redo,
     "quit": session.cmd_quit,
+    "exit": session.cmd_quit,
     # memory
     "memory": memory.cmd_memory,
     "wiki": memory.cmd_wiki,
     "map": memory.cmd_map,
     # diagnostics
+    "status": diagnostics.cmd_status,
     "doctor": diagnostics.cmd_doctor,
     "cost": diagnostics.cmd_cost,
     "modules": diagnostics.cmd_modules,

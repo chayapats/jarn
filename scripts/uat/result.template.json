@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "record_id": "UAT-000",
+  "uat_id": "UAT-000",
+  "criterion_ids": ["UAT-000"],
+  "status": "not_run",
+  "started_at": "2000-01-01T00:00:00Z",
+  "ended_at": "2000-01-01T00:00:00Z",
+  "duration_seconds": null,
+  "platform": {
+    "os": "unknown",
+    "version": "unknown",
+    "architecture": "unknown",
+    "libc": "unknown"
+  },
+  "command": "Reproducible command with [HOST] and $HOME placeholders",
+  "implementation": [],
+  "automated_tests": [],
+  "decisions": [],
+  "errors": [],
+  "documentation_lookups": [],
+  "result": "Not run",
+  "limitations": ["Replace this template with harness-generated evidence."],
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  }
+}

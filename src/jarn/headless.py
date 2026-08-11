@@ -45,16 +45,29 @@ from jarn.agent.session import (
 from jarn.agent.turn_runner import run_agent_turn
 from jarn.config.schema import Config, PermissionMode
 from jarn.cost import BudgetExceeded
+from jarn.errors import ErrorCode, JarnUserError, error_detail
+from jarn.exit_codes import (
+    EXIT_AUTH,
+    EXIT_BUDGET_EXCEEDED,
+    EXIT_CANCELLED,
+    EXIT_INTERNAL,
+    EXIT_MODEL_UNAVAILABLE,
+    EXIT_NETWORK_PROVIDER,
+    EXIT_PERMISSION_DENIED,
+    EXIT_SUCCESS,
+    EXIT_TIMEOUT,
+    EXIT_USAGE_CONFIG,
+    EXIT_VERIFICATION_FAILED,
+)
 from jarn.tui.controller import Controller
 
 # Auto-approving modes: the user explicitly opted in, so headless may proceed.
 _AUTO_MODES = frozenset({PermissionMode.AUTO_EDIT, PermissionMode.YOLO})
 
-# Exit codes for ``jarn -p`` (documented in CLI --help and docs/CONFIGURATION.md).
-EXIT_SUCCESS = 0
-EXIT_ERROR = 1
-EXIT_REFUSED = 2
-EXIT_TIMEOUT = 124
+# Backward-compatible import names.  The values now participate in the public
+# version-1 taxonomy in :mod:`jarn.exit_codes`.
+EXIT_ERROR = EXIT_INTERNAL
+EXIT_REFUSED = EXIT_PERMISSION_DENIED
 
 _TIMEOUT_MSG_HINTS = (
     "timed out",
@@ -134,6 +147,136 @@ def _is_timeout_message(text: str) -> bool:
     return any(hint in lowered for hint in _TIMEOUT_MSG_HINTS)
 
 
+def _looks_like_model_failure(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "model not found",
+            "model is not available",
+            "model unavailable",
+            "no main model configured",
+            "unknown model",
+            "unsupported model",
+        )
+    )
+
+
+def _looks_like_auth_failure(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "api key",
+            "no key",
+            "authentication",
+            "not signed in",
+            "login required",
+            "credential",
+            "unauthorized",
+        )
+    )
+
+
+def _public_failure_details(failure: HeadlessFailure) -> dict[str, Any]:
+    """Return the stable public error anatomy for a headless failure."""
+    existing = dict(failure.details)
+    if all(
+        key in existing
+        for key in ("code", "summary", "cause", "component", "retryable", "action")
+    ):
+        return existing
+
+    contracts: dict[str, tuple[ErrorCode, bool, str]] = {
+        "usage": (
+            ErrorCode.CLI_USAGE,
+            False,
+            "Correct the command or configuration, then run it again.",
+        ),
+        "config": (
+            ErrorCode.CONFIG_INVALID_SCHEMA,
+            False,
+            "Run `jarn config validate`, correct the reported setting, then retry.",
+        ),
+        "auth": (
+            ErrorCode.AUTH_FAILED,
+            False,
+            "Run `jarn auth status`, then `jarn auth repair` if needed.",
+        ),
+        "model": (
+            ErrorCode.MODEL_UNAVAILABLE,
+            False,
+            "Run `jarn model refresh` and select an available model.",
+        ),
+        "permission": (
+            ErrorCode.PERMISSION_DENIED,
+            False,
+            "Review the requested action and choose an appropriate permission mode.",
+        ),
+        "refusal": (
+            ErrorCode.PERMISSION_DENIED,
+            False,
+            "Review the requested action and choose an appropriate permission mode.",
+        ),
+        "provider": (
+            ErrorCode.NETWORK_FAILED,
+            True,
+            "Check provider status, network, proxy, and CA settings, then retry.",
+        ),
+        "network": (
+            ErrorCode.NETWORK_FAILED,
+            True,
+            "Check the network, proxy, and CA settings, then retry.",
+        ),
+        "timeout": (
+            ErrorCode.NETWORK_FAILED,
+            True,
+            "Check connectivity and retry; increase the timeout if appropriate.",
+        ),
+        "budget": (
+            ErrorCode.BUDGET_EXCEEDED,
+            False,
+            "Increase the explicit session budget or reduce the requested work.",
+        ),
+        "verification": (
+            ErrorCode.VERIFICATION_FAILED,
+            False,
+            "Inspect the verification result, fix the reported failure, and retry.",
+        ),
+        "cancelled": (
+            ErrorCode.CANCELLED,
+            True,
+            "Run the command again when ready.",
+        ),
+        "schema": (
+            ErrorCode.VERIFICATION_FAILED,
+            False,
+            "Correct the output schema or task, then retry.",
+        ),
+    }
+    code, retryable, action = contracts.get(
+        failure.kind,
+        (
+            ErrorCode.INTERNAL,
+            False,
+            "Run `jarn doctor --report jarn-support-report.json` and inspect the local log.",
+        ),
+    )
+    public = error_detail(
+        code,
+        failure.message,
+        cause=failure.message,
+        component="headless",
+        retryable=retryable,
+        action=action,
+        details=existing or None,
+    ).to_dict()
+    nested = public.pop("details", None)
+    if isinstance(nested, dict):
+        public.update(nested)
+    return public
+
+
 def _classify_exception(exc: BaseException) -> HeadlessFailure:
     if isinstance(exc, HeadlessRefusal):
         return HeadlessFailure(
@@ -142,15 +285,51 @@ def _classify_exception(exc: BaseException) -> HeadlessFailure:
             exit_code=exc.exit_code,
         )
     if isinstance(exc, BudgetExceeded):
-        return HeadlessFailure("budget", str(exc), exit_code=EXIT_REFUSED)
+        return HeadlessFailure("budget", str(exc), exit_code=EXIT_BUDGET_EXCEEDED)
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
         return HeadlessFailure("timeout", str(exc), exit_code=EXIT_TIMEOUT)
+    if isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError)):
+        return HeadlessFailure(
+            "cancelled",
+            "run cancelled by user",
+            exit_code=EXIT_CANCELLED,
+        )
     if isinstance(exc, HeadlessFailure):
         return exc
+    if isinstance(exc, JarnUserError):
+        code = exc.detail.code
+        if code.startswith("JARN-AUTH-"):
+            exit_code = EXIT_AUTH
+            kind = "auth"
+        elif code.startswith("JARN-MODEL-"):
+            exit_code = EXIT_MODEL_UNAVAILABLE
+            kind = "model"
+        elif code.startswith("JARN-SAFE-"):
+            exit_code = EXIT_PERMISSION_DENIED
+            kind = "permission"
+        elif code.startswith("JARN-NET-"):
+            exit_code = EXIT_NETWORK_PROVIDER
+            kind = "network"
+        elif code.startswith("JARN-CONFIG-"):
+            exit_code = EXIT_USAGE_CONFIG
+            kind = "config"
+        else:
+            exit_code = EXIT_INTERNAL
+            kind = "internal"
+        return HeadlessFailure(
+            kind,
+            exc.detail.summary,
+            exit_code=exit_code,
+            details=exc.to_dict(),
+        )
     message = str(exc)
     if _is_timeout_message(message):
         return HeadlessFailure("timeout", message, exit_code=EXIT_TIMEOUT)
-    return HeadlessFailure("error", message, exit_code=EXIT_ERROR)
+    if _looks_like_auth_failure(message):
+        return HeadlessFailure("auth", message, exit_code=EXIT_AUTH)
+    if _looks_like_model_failure(message):
+        return HeadlessFailure("model", message, exit_code=EXIT_MODEL_UNAVAILABLE)
+    return HeadlessFailure("internal", message, exit_code=EXIT_INTERNAL)
 
 
 def _error_from_event(text: str, data: dict[str, Any] | None) -> HeadlessFailure:
@@ -159,14 +338,24 @@ def _error_from_event(text: str, data: dict[str, Any] | None) -> HeadlessFailure
         return HeadlessFailure(
             "verification",
             text,
-            exit_code=EXIT_ERROR,
+            exit_code=EXIT_VERIFICATION_FAILED,
             details={"verification": payload["verification"]},
         )
     if payload.get("budget"):
-        return HeadlessFailure("budget", text, exit_code=EXIT_REFUSED)
+        return HeadlessFailure("budget", text, exit_code=EXIT_BUDGET_EXCEEDED)
     if _is_timeout_message(text):
         return HeadlessFailure("timeout", text, exit_code=EXIT_TIMEOUT)
-    return HeadlessFailure("error", text, exit_code=EXIT_ERROR)
+    if payload.get("auth"):
+        return HeadlessFailure("auth", text, exit_code=EXIT_AUTH)
+    if payload.get("permission") or payload.get("denied"):
+        return HeadlessFailure("permission", text, exit_code=EXIT_PERMISSION_DENIED)
+    if payload.get("model_unavailable") or payload.get("model") == "unavailable":
+        return HeadlessFailure("model", text, exit_code=EXIT_MODEL_UNAVAILABLE)
+    if _looks_like_model_failure(text):
+        return HeadlessFailure("model", text, exit_code=EXIT_MODEL_UNAVAILABLE)
+    if payload.get("retryable") or payload.get("network") or payload.get("provider"):
+        return HeadlessFailure("provider", text, exit_code=EXIT_NETWORK_PROVIDER)
+    return HeadlessFailure("internal", text, exit_code=EXIT_INTERNAL)
 
 
 def _emit_failure(
@@ -175,11 +364,24 @@ def _emit_failure(
     as_json: bool,
     hint: str | None = None,
 ) -> int:
+    public = _public_failure_details(failure)
     if as_json:
-        error = {"kind": failure.kind, "message": failure.message, **failure.details}
+        error = {
+            "kind": failure.kind,
+            "message": failure.message,
+            **public,
+        }
         print(_json_dumps({"error": error}))
     else:
-        print(f"error: {failure.message}", file=sys.stderr)
+        retry = "yes" if public.get("retryable") else "no"
+        print(
+            f"{public['code']}: {public['summary']}\n"
+            f"Cause: {public['cause']}\n"
+            f"Component: {public['component']} (retryable: {retry})\n"
+            f"Next: {public['action']}\n"
+            f"Log: {public['log_path']}",
+            file=sys.stderr,
+        )
         if hint:
             print(hint, file=sys.stderr)
     return failure.exit_code
@@ -247,7 +449,11 @@ def _emit_headless_failure(
     * ``json`` / ``text`` — delegates to :func:`_emit_failure` unchanged.
     """
     if output_format == "stream-json":
-        error = {"kind": failure.kind, "message": failure.message, **failure.details}
+        error = {
+            "kind": failure.kind,
+            "message": failure.message,
+            **_public_failure_details(failure),
+        }
         _emit_ndjson({"type": "run_error", "error": error})
         if hint:
             print(hint, file=sys.stderr)
@@ -281,9 +487,9 @@ def _resolve_resume_session(controller: Controller, resume_session: str) -> str:
         sessions = controller.sessions.list(limit=1)
         if not sessions:
             raise HeadlessFailure(
-                "error",
+                "usage",
                 "no sessions to resume",
-                exit_code=EXIT_ERROR,
+                exit_code=EXIT_USAGE_CONFIG,
             )
         return sessions[0].thread_id
     return resume_session
@@ -321,23 +527,23 @@ async def _run_headless(
     """
     if max_turns < 1:
         raise HeadlessFailure(
-            "error",
+            "usage",
             f"--max-turns must be >= 1, got {max_turns}",
-            exit_code=EXIT_ERROR,
+            exit_code=EXIT_USAGE_CONFIG,
         )
     if max_turns > 1:
         # Honest failure over a silent no-op: headless runs exactly one complete
         # turn (the SessionDriver already drives the full model/tool graph to
         # completion), so it cannot honour a request for more than one turn.
         raise HeadlessFailure(
-            "error",
+            "usage",
             (
                 f"--max-turns > 1 is not supported in headless mode (got {max_turns}). "
                 "A headless invocation runs exactly one complete turn — the agent's "
                 "model/tool graph already loops to completion within it. "
                 "Re-run without --max-turns (or with --max-turns 1)."
             ),
-            exit_code=EXIT_ERROR,
+            exit_code=EXIT_USAGE_CONFIG,
         )
 
     controller = Controller(
@@ -355,13 +561,30 @@ async def _run_headless(
     try:
         ok, message = controller.validate()
         if not ok:
-            raise HeadlessFailure("error", f"provider not ready: {message}")
+            failure_message = f"provider not ready: {message}"
+            if _looks_like_auth_failure(message):
+                raise HeadlessFailure("auth", failure_message, exit_code=EXIT_AUTH)
+            if _looks_like_model_failure(message):
+                raise HeadlessFailure(
+                    "model", failure_message, exit_code=EXIT_MODEL_UNAVAILABLE
+                )
+            raise HeadlessFailure(
+                "config", failure_message, exit_code=EXIT_USAGE_CONFIG
+            )
 
         await controller.ensure_runtime()
 
         if resume_session:
             thread_id = _resolve_resume_session(controller, resume_session)
             controller.resume_thread(thread_id)
+
+        # Persist the session locus before the first model step, matching the
+        # interactive path. A crash/refusal/cancellation therefore leaves an
+        # honest `incomplete` row that `jarn sessions list` can recover. On a
+        # resume, SessionIndex preserves the original title on conflict.
+        existing = controller.sessions.get(controller.thread_id)
+        title = prompt or (existing.title if existing is not None else "Resumed session")
+        controller.record_session_title(title, when=time.time())
 
         mode = config.permission_mode
         approver: Approver = _make_fail_closed_approver(mode)
@@ -448,7 +671,7 @@ async def _run_headless(
                     "schema",
                     "agent did not produce a structured response; "
                     "the schema constraint was not satisfied",
-                    exit_code=EXIT_ERROR,
+                    exit_code=EXIT_VERIFICATION_FAILED,
                 )
             result_value: Any = structured
         else:
@@ -469,6 +692,8 @@ async def _run_headless(
         # the JSONL path; None when observability.transcript is disabled).
         transcript = getattr(turn_result.driver, "transcript", None)
         transcript_path = str(transcript.path) if transcript is not None else None
+
+        controller.mark_session_complete(when=time.time())
 
         return HeadlessResult(
             result=result_value,
@@ -521,11 +746,7 @@ def run_headless(
     the legacy boolean alias for ``json``; when ``output_format`` is ``None`` it
     is derived from ``as_json`` so existing callers keep working unchanged.
 
-    Exit codes:
-        0 — success
-        1 — generic error
-        2 — approval refused or session budget hard-stop
-        124 — timeout
+    Exit codes use the stable taxonomy in :mod:`jarn.exit_codes`.
     """
     fmt = output_format if output_format is not None else ("json" if as_json else "text")
     streaming = fmt == "stream-json"
@@ -558,6 +779,11 @@ def run_headless(
                 on_event=_stream_emit if streaming else None,
             )
         )
+    except (KeyboardInterrupt, asyncio.CancelledError) as exc:
+        failure = _classify_exception(exc)
+        failure.details.setdefault("project_trusted", project_trusted)
+        failure.details.setdefault("permission_mode", config.permission_mode.value)
+        return _emit_headless_failure(failure, output_format=fmt)
     except Exception as exc:  # noqa: BLE001
         failure = _classify_exception(exc)
         # The trust locus travels with failures too, not just successes. The

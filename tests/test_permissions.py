@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from jarn.config.schema import PermissionMode, PermissionRules
@@ -472,10 +474,18 @@ def test_remember_always_invokes_persist_sink():
     persisted: list[str] = []
     eng = _engine(PermissionMode.ASK, persist=persisted.append)
     eng.remember(Action(ActionKind.SHELL, "npm run build"), RememberScope.ALWAYS)
-    assert persisted == ["npm run build"]  # exact script + persisted
+    assert len(persisted) == 1
+    assert persisted[0].startswith("jarn-scope:v1:")
+    scope = json.loads(persisted[0].removeprefix("jarn-scope:v1:"))
+    assert scope == {
+        "kind": "shell",
+        "rule": "npm run build",
+        "tool": "",
+        "workspace": "",
+    }
     # SESSION does not persist.
     eng.remember(Action(ActionKind.SHELL, "ls -la"), RememberScope.SESSION)
-    assert persisted == ["npm run build"]
+    assert len(persisted) == 1
 
 
 def test_rule_store_persists_across_instances(tmp_path):

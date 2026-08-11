@@ -7,7 +7,11 @@ import multiprocessing
 import os
 
 from jarn.config.schema import ObservabilityConfig, TracingConfig
-from jarn.observability.logging import ConcurrentRotatingFileHandler, setup_logging
+from jarn.observability.logging import (
+    ConcurrentRotatingFileHandler,
+    RedactingFilter,
+    setup_logging,
+)
 from jarn.observability.tracing import (
     configure_langsmith,
     configure_otel,
@@ -27,6 +31,37 @@ def test_setup_logging_writes_to_file(isolated_home):
     setup_logging("info")
     handlers = [h for h in logger.handlers if isinstance(h, logging.handlers.RotatingFileHandler)]
     assert len(handlers) == 1
+
+
+def test_file_log_redacts_exact_resolved_custom_credential(tmp_path, monkeypatch):
+    import jarn.config.secrets as secrets
+
+    credential = "arbitrary-provider-key-7q2"
+    path = tmp_path / "jarn.log"
+    logger = logging.getLogger(f"jarn.test.exact-redaction.{id(path)}")
+    logger.handlers.clear()
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    handler = ConcurrentRotatingFileHandler(
+        path, maxBytes=20_000, backupCount=1, encoding="utf-8"
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    handler.addFilter(RedactingFilter())
+    logger.addHandler(handler)
+    secrets._clear_resolved_secrets_for_testing()
+    try:
+        monkeypatch.setenv("CUSTOM_LOGGING_KEY", credential)
+        assert secrets.resolve("${CUSTOM_LOGGING_KEY}") == credential
+        logger.error("provider failed with %s", credential)
+        handler.close()
+
+        raw = path.read_bytes()
+        assert credential.encode() not in raw
+        assert b"[REDACTED]" in raw
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+        secrets._clear_resolved_secrets_for_testing()
 
 
 def _write_rotating_log(path: str, worker: int) -> None:

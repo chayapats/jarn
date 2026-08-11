@@ -33,6 +33,26 @@ def cmd_init(ctrl: Controller, args: str) -> CommandResult:
     return CommandResult(f"Created {path}. Edit it to give J.A.R.N. project context.")
 
 
+def cmd_login(ctrl: Controller, args: str) -> CommandResult:
+    """Map the in-session spelling to the verified terminal auth ceremony."""
+    if args.strip():
+        return CommandResult("Usage: /login")
+    return CommandResult(
+        "Run [b]jarn auth login[/b] in a terminal. It will show the browser URL "
+        "or device code and will report success only after the account is verified."
+    )
+
+
+def cmd_logout(ctrl: Controller, args: str) -> CommandResult:
+    """Map the in-session spelling to scoped Codex-managed logout."""
+    if args.strip():
+        return CommandResult("Usage: /logout")
+    return CommandResult(
+        "Run [b]jarn auth logout[/b] in a terminal. This removes only "
+        "Codex-managed ChatGPT credentials; provider API keys are preserved."
+    )
+
+
 def cmd_skill(ctrl: Controller, args: str) -> CommandResult:
     """`/skill <name>`: invoke a skill by name, injecting its body into the turn.
 

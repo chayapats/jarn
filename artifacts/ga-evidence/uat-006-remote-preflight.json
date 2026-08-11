@@ -1,0 +1,41 @@
+{
+  "automated_tests": [
+    "tests/test_uat_harnesses.py"
+  ],
+  "command": "ssh [HOST] read-only platform and prior-install inventory",
+  "criterion_ids": [
+    "UAT-006"
+  ],
+  "decisions": [
+    "prior executable and config were only inventoried"
+  ],
+  "documentation_lookups": [],
+  "duration_seconds": 1.23,
+  "ended_at": "2026-08-11T14:40:08Z",
+  "errors": [],
+  "implementation": [
+    "scripts/uat/uat-006-network-failure.sh"
+  ],
+  "limitations": [
+    "Run after an authorized draft/public candidate exists on a disposable host; compare exact pre/post fingerprints."
+  ],
+  "platform": {
+    "architecture": "x86_64",
+    "libc": "glibc 2.35",
+    "os": "Ubuntu",
+    "version": "22.04"
+  },
+  "record_id": "UAT-006",
+  "redaction": {
+    "home_path_redacted": false,
+    "host_identifier_redacted": true,
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false
+  },
+  "result": "A prior command exists, but no GA candidate has been published; injecting a failure against the old 0.11.0 artifact would not validate the current updater. No failure injection was sent.",
+  "schema_version": 1,
+  "started_at": "2026-08-11T14:20:00Z",
+  "status": "blocked",
+  "uat_id": "UAT-006"
+}

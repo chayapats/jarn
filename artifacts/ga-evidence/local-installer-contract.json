@@ -1,0 +1,60 @@
+{
+  "automated_tests": [
+    "tests/test_installer.py",
+    "tests/test_update.py",
+    "tests/test_ci.py"
+  ],
+  "command": "sh -n install.sh; bash -n install.sh; dash -n install.sh; JARN_TEST_MODE=1 .venv/bin/pytest -q tests/test_installer.py tests/test_ci.py tests/test_update.py; updater loopback E2E outside restricted sandbox",
+  "criterion_ids": [
+    "AC-INSTALL-001",
+    "AC-INSTALL-002",
+    "AC-INSTALL-005",
+    "AC-INSTALL-006",
+    "AC-INSTALL-007",
+    "AC-INSTALL-008",
+    "AC-INSTALL-009",
+    "AC-INSTALL-010",
+    "AC-INSTALL-011",
+    "AC-INSTALL-012",
+    "AC-INSTALL-013",
+    "AC-INSTALL-014",
+    "AC-INSTALL-015",
+    "AC-INSTALL-016",
+    "TEST-INSTALL",
+    "MILESTONE-0"
+  ],
+  "decisions": [
+    "This local result proves implementation contracts but does not stand in for executing the Tier-1 hosted matrix or fetching a public release."
+  ],
+  "documentation_lookups": [],
+  "duration_seconds": 129.36,
+  "ended_at": "2026-08-11T14:59:00Z",
+  "errors": [],
+  "implementation": [
+    "install.sh",
+    "src/jarn/install_state.py",
+    "src/jarn/update.py",
+    ".github/workflows/release.yml"
+  ],
+  "limitations": [
+    "AC-INSTALL-003, AC-INSTALL-004, AC-INSTALL-017, and TEST-RELEASE remain separately gated by hosted/published execution."
+  ],
+  "platform": {
+    "architecture": "arm64",
+    "libc": "n/a",
+    "os": "macOS",
+    "version": "26.5.2"
+  },
+  "record_id": "LOCAL-INSTALLER-20260811",
+  "redaction": {
+    "home_path_redacted": false,
+    "host_identifier_redacted": false,
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false
+  },
+  "result": "Installer transaction, collision, fallback, integrity, failure injection, idempotency, ARM64 asset selection, SSH/headless setup, updater ownership/preview, rollback, and release-workflow contracts passed; the exact loopback updater E2E passed after receipt-aware candidate validation.",
+  "schema_version": 1,
+  "started_at": "2026-08-11T14:39:00Z",
+  "status": "passed"
+}

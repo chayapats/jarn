@@ -8,11 +8,64 @@ from rich.markup import escape as _escape_markup
 
 from jarn.controller.core import CommandResult
 from jarn.extensibility.mcp import load_mcp_tools, run_blocking
+from jarn.permissions.labels import PERMISSION_MODE_NAMES as _PERMISSION_LABELS
 from jarn.tui import palette
 
 if TYPE_CHECKING:
     from jarn.agent.prompt_modules import PromptModuleScope
     from jarn.controller.core import Controller
+
+
+def cmd_status(ctrl: Controller, args: str) -> CommandResult:
+    """Return a concise, offline session summary for ``/status``."""
+    if args.strip():
+        return CommandResult("Usage: /status")
+    model = ctrl.config.resolved_main_model() or "not configured"
+    provider = ctrl.current_provider() or "not configured"
+    provider_config = ctrl.config.providers.get(provider)
+    reasoning = "provider default"
+    auth = "not configured"
+    if provider_config is not None:
+        from jarn.config.schema import ProviderType
+
+        raw_effort = provider_config.extra.get("reasoning_effort")
+        if raw_effort:
+            reasoning = str(raw_effort)
+        if provider_config.type is ProviderType.CODEX_SUBSCRIPTION:
+            auth = "ChatGPT subscription (Codex-managed; /login to verify)"
+        elif provider_config.type in {
+            ProviderType.OLLAMA,
+            ProviderType.LMSTUDIO,
+            ProviderType.OPENAI_COMPATIBLE,
+        } and not provider_config.api_key:
+            auth = "local endpoint (no cloud key)"
+        else:
+            auth = "API-key reference"
+    mode = ctrl.config.permission_mode.value
+    mode_label = _PERMISSION_LABELS.get(mode, mode)
+    trust = "trusted" if ctrl.project_trusted else "untrusted (read-only floor)"
+    context = ctrl.context_status()
+    context_text = (
+        f"{context[0]:,}/{context[1]:,} tokens ({context[2] * 100:.0f}%)"
+        if context is not None
+        else "not measured"
+    )
+    return CommandResult(
+        "\n".join(
+            [
+                "[b]J.A.R.N. status[/b]",
+                f"  directory: {_escape_markup(str(ctrl.project_root))}",
+                f"  model: {_escape_markup(model)}",
+                f"  provider: {_escape_markup(provider)}",
+                f"  authentication: {_escape_markup(auth)}",
+                f"  reasoning: {_escape_markup(reasoning)}",
+                f"  permissions: {_escape_markup(mode_label)} [dim]({mode})[/dim]",
+                f"  workspace: {trust}",
+                f"  context: {context_text}",
+                f"  session: {_escape_markup(ctrl.thread_id)}",
+            ]
+        )
+    )
 
 
 def cmd_doctor(ctrl: Controller, args: str) -> CommandResult:
@@ -30,6 +83,7 @@ def cmd_doctor(ctrl: Controller, args: str) -> CommandResult:
         prompt_modules=ctrl.prompt_module_diagnostics(),
     )
     return CommandResult("\n".join(doctor_lines(diag)))
+
 
 def cmd_cost(ctrl, args: str) -> CommandResult:
     t = ctrl.tracker
@@ -62,9 +116,7 @@ def cmd_modules(ctrl: Controller, args: str) -> CommandResult:
     if sub not in ("", "active"):
         return CommandResult("Usage: /modules [active]")
     statuses, assembly = ctrl.prompt_module_statuses()
-    lines = [
-        f"[b]Prompt modules[/b] — assembled prompt {assembly.token_count:,} tok"
-    ]
+    lines = [f"[b]Prompt modules[/b] — assembled prompt {assembly.token_count:,} tok"]
     for status in statuses:
         if sub == "active" and not status.active:
             continue
@@ -81,9 +133,7 @@ def cmd_modules(ctrl: Controller, args: str) -> CommandResult:
         if status.configured_budget is None:
             token_text = f"{status.token_count:,} tok"
         else:
-            token_text = (
-                f"{status.token_count:,}/{status.configured_budget:,} tok"
-            )
+            token_text = f"{status.token_count:,}/{status.configured_budget:,} tok"
         truncated = " · truncated" if status.truncated else ""
         lines.append(
             f"  {mark} [cyan]{_escape_markup(status.name)}[/cyan] · "
@@ -105,34 +155,31 @@ def cmd_module(ctrl: Controller, args: str) -> CommandResult:
     """Activate/deactivate user-loadable module bodies."""
     parts = args.split()
     if not parts:
-        return CommandResult(
-            "Usage: /module on <name> [turn|session] | /module off <name>"
-        )
+        return CommandResult("Usage: /module on <name> [turn|session] | /module off <name>")
     action = parts[0].lower()
     if action == "on" and len(parts) in (2, 3):
         scope = parts[2].lower() if len(parts) == 3 else "turn"
         if scope not in ("turn", "session"):
             return CommandResult("Module scope must be 'turn' or 'session'.")
-        return ctrl.activate_prompt_module(
-            parts[1], cast("PromptModuleScope", scope)
-        )
+        return ctrl.activate_prompt_module(parts[1], cast("PromptModuleScope", scope))
     if action == "off" and len(parts) == 2:
         return ctrl.deactivate_prompt_module(parts[1])
-    return CommandResult(
-        "Usage: /module on <name> [turn|session] | /module off <name>"
-    )
+    return CommandResult("Usage: /module on <name> [turn|session] | /module off <name>")
+
 
 def cmd_permissions(ctrl, args: str) -> CommandResult:
     r = ctrl.config.permissions
     session_allow = ctrl.engine._all_allow()[len(r.allow) :]
+    mode = ctrl.config.permission_mode.value
+    label = _PERMISSION_LABELS.get(mode, mode)
     lines = [
-        f"[b]Mode[/b]: {ctrl.config.permission_mode.value}",
+        f"[b]Mode[/b]: {label} [dim]({mode})[/dim]",
         f"[b]Allow[/b]: {', '.join(_escape_markup(p) for p in r.allow) or '(none)'}",
         f"[b]Deny[/b]: {', '.join(_escape_markup(p) for p in r.deny) or '(none)'}",
-        f"[b]Session-allow[/b]: "
-        f"{', '.join(_escape_markup(p) for p in session_allow) or '(none)'}",
+        f"[b]Session-allow[/b]: {', '.join(_escape_markup(p) for p in session_allow) or '(none)'}",
     ]
     return CommandResult("\n".join(lines))
+
 
 def cmd_mcp(ctrl, args: str) -> CommandResult:
     """Show MCP server health, and list/invoke prompts + list/read resources.
@@ -180,9 +227,7 @@ def _mcp_status(ctrl, parts: list[str]) -> CommandResult:
         # which cannot own sessions used later by the controller's main loop.
         # Probe ephemerally, then force the next runtime build to establish fresh
         # persistent sessions on the correct loop.
-        mcp = run_blocking(
-            load_mcp_tools(ctrl.config.mcp_servers, net, persistent=False)
-        )
+        mcp = run_blocking(load_mcp_tools(ctrl.config.mcp_servers, net, persistent=False))
         ctrl.mcp_health = dict(mcp.health)
         ctrl.mcp_errors = dict(mcp.errors)
         ctrl._invalidate_runtime(drop_mcp_cache=True)
@@ -285,9 +330,7 @@ def _mcp_prompt(ctrl, rest: list[str]) -> CommandResult:
     from jarn.config.secrets import redact_secrets
     from jarn.extensibility.mcp import load_mcp_prompts
 
-    res = run_blocking(
-        load_mcp_prompts(ctrl.config.mcp_servers, ctrl.config.permissions.network)
-    )
+    res = run_blocking(load_mcp_prompts(ctrl.config.mcp_servers, ctrl.config.permissions.network))
     key = f"mcp__{server}__{pname}"
     cmd = res.prompts.get(key)
     if cmd is None:
@@ -317,9 +360,7 @@ def _mcp_resources(ctrl) -> CommandResult:
     res = run_blocking(list_mcp_resources(servers, ctrl.config.permissions.network))
     lines = ["[b]MCP resources[/b]"]
     if res.resources:
-        lines.append(
-            f"[{palette.C_DIM}]read with /mcp read <server> <uri>[/{palette.C_DIM}]"
-        )
+        lines.append(f"[{palette.C_DIM}]read with /mcp read <server> <uri>[/{palette.C_DIM}]")
         for r in res.resources:
             label = _escape_markup(r.name or r.description or "")
             mime = (
@@ -329,8 +370,7 @@ def _mcp_resources(ctrl) -> CommandResult:
             )
             tail = f" — {label}" if label else ""
             lines.append(
-                f"  [cyan]{_escape_markup(r.server)}[/cyan] "
-                f"{_escape_markup(r.uri)}{mime}{tail}"
+                f"  [cyan]{_escape_markup(r.server)}[/cyan] {_escape_markup(r.uri)}{mime}{tail}"
             )
     else:
         lines.append(f"[{palette.C_DIM}]No resources available.[/{palette.C_DIM}]")
@@ -348,21 +388,17 @@ def _mcp_read(ctrl, rest: list[str]) -> CommandResult:
 
     try:
         content = run_blocking(
-            read_mcp_resource(
-                ctrl.config.mcp_servers, server, uri, ctrl.config.permissions.network
-            )
+            read_mcp_resource(ctrl.config.mcp_servers, server, uri, ctrl.config.permissions.network)
         )
     except Exception as exc:  # noqa: BLE001 - surface a clean, redacted message
-        return CommandResult(
-            redact_secrets(f"Failed to read {uri} from {server}: {exc}")
-        )
+        return CommandResult(redact_secrets(f"Failed to read {uri} from {server}: {exc}"))
     if not content.strip():
         return CommandResult(f"Resource {uri} on {server} returned no content.")
     header = (
-        f"[b]{_escape_markup(server)}[/b] "
-        f"[{palette.C_DIM}]{_escape_markup(uri)}[/{palette.C_DIM}]"
+        f"[b]{_escape_markup(server)}[/b] [{palette.C_DIM}]{_escape_markup(uri)}[/{palette.C_DIM}]"
     )
     return CommandResult(f"{header}\n{_escape_markup(content)}")
+
 
 def cmd_telemetry(ctrl, args: str) -> CommandResult:
     """Show telemetry opt-in status and local sink stats."""
@@ -388,6 +424,7 @@ def cmd_telemetry(ctrl, args: str) -> CommandResult:
         )
     return CommandResult("\n".join(lines))
 
+
 def cmd_ps(ctrl, args: str) -> CommandResult:
     """List background processes, or ``/ps kill <id>`` to stop one."""
     from jarn.agent.background import manager
@@ -407,9 +444,12 @@ def cmd_ps(ctrl, args: str) -> CommandResult:
     lines = ["[b]Background processes[/b]"]
     for p in procs:
         state = "running" if p["running"] else f"exited ({p['exit_code']})"
-        lines.append(f"  [cyan]{p['id']}[/cyan] [dim][{state}][/dim] {_escape_markup(p['command'])}")
+        lines.append(
+            f"  [cyan]{p['id']}[/cyan] [dim][{state}][/dim] {_escape_markup(p['command'])}"
+        )
     lines.append("[dim]/ps kill <id> to stop one[/dim]")
     return CommandResult("\n".join(lines))
+
 
 def cmd_checkpoints(ctrl, args: str) -> CommandResult:
     """List recent auto-checkpoints available for /undo."""
@@ -429,10 +469,9 @@ def cmd_checkpoints(ctrl, args: str) -> CommandResult:
     lines = ["[b]Checkpoints[/b] [dim](most recent first)[/dim]"]
     for i, entry in enumerate(entries):
         marker = "→ " if i == 0 else "  "
-        lines.append(
-            f"{marker}[dim]{entry.sha[:12]}[/dim] {_escape_markup(entry.label)}"
-        )
+        lines.append(f"{marker}[dim]{entry.sha[:12]}[/dim] {_escape_markup(entry.label)}")
     return CommandResult("\n".join(lines))
+
 
 def _context_injection_lines(ctrl) -> list[str]:
     """Exact active-module token sizes from the assembly source of truth."""
@@ -444,14 +483,9 @@ def _context_injection_lines(ctrl) -> list[str]:
     for status in statuses:
         if not status.active:
             continue
-        budget = (
-            f"/{status.configured_budget:,}"
-            if status.configured_budget is not None
-            else ""
-        )
+        budget = f"/{status.configured_budget:,}" if status.configured_budget is not None else ""
         truncated = " truncated" if status.truncated else ""
         lines.append(
-            f"  {status.name}: {status.token_count:,}{budget} tok · "
-            f"{status.scope}{truncated}"
+            f"  {status.name}: {status.token_count:,}{budget} tok · {status.scope}{truncated}"
         )
     return lines

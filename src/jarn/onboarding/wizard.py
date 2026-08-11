@@ -8,7 +8,15 @@ keychain — never inlined), the default model, and theme; then writes
 
 from __future__ import annotations
 
+import contextlib
+import json
 import os
+import signal
+import subprocess
+import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -29,9 +37,19 @@ from jarn.config.defaults import (
     PROVIDER_ENV_VARS,
 )
 from jarn.config.secrets import file_fallback_notice, store_secret
+from jarn.onboarding.model_catalog import (
+    load_setup_catalog,
+    recommended_setup_model,
+    selectable_setup_models,
+    setup_catalog_status,
+)
 from jarn.onboarding.oauth import LoginResult, login_openrouter
-from jarn.onboarding.providers import provider_hint
-from jarn.providers import strip_profile
+from jarn.onboarding.outcome import (
+    SetupCommandError,
+    SetupFailureKind,
+    return_or_raise_setup_failure,
+)
+from jarn.providers import qualify_model_ref, strip_profile
 from jarn.tui.logo import TAGLINE, WORDMARK
 
 console = Console()
@@ -55,16 +73,48 @@ def _detect_env_key() -> tuple[str, str] | None:
     return None
 
 
-def _recommended_provider(env_hit: tuple[str, str] | None) -> str:
+def _recommended_provider(
+    env_hit: tuple[str, str] | None,
+    *,
+    chatgpt_ready: bool = False,
+) -> str:
     """Return the provider that should be marked '★ recommended'.
 
-    Priority: env-key provider > anthropic (if ANTHROPIC_API_KEY set) > openrouter.
+    Priority: verified ChatGPT session > detected provider key > ChatGPT.
     """
+    if chatgpt_ready:
+        return "codex_subscription"
     if env_hit is not None:
         return env_hit[0]
     if os.environ.get("ANTHROPIC_API_KEY"):
         return "anthropic"
-    return "openrouter"
+    return "codex_subscription"
+
+
+def _chatgpt_session_ready(*, timeout_seconds: float = 5.0) -> bool:
+    """Best-effort existing-account detection used only by real setup entrypoints."""
+
+    from jarn.auth import CodexAuthService
+
+    return CodexAuthService(timeout_seconds=timeout_seconds).status(refresh=False).ready
+
+
+def _detect_local_providers() -> tuple[str, ...]:
+    """Return default local endpoints that currently report at least one model."""
+
+    names = ("ollama", "lmstudio")
+
+    def reachable(name: str) -> bool:
+        snapshot = load_setup_catalog(
+            name,
+            base_url=PROVIDER_BASE_URLS.get(name),
+            on_wait=lambda message: console.print(f"[dim]{message}[/dim]"),
+        )
+        return bool(selectable_setup_models(snapshot))
+
+    with ThreadPoolExecutor(max_workers=len(names)) as pool:
+        checks = dict(zip(names, pool.map(reachable, names), strict=True))
+    return tuple(name for name in names if checks[name])
 
 
 _CONFIG_HEADER = """\
@@ -118,7 +168,7 @@ def derive_routing_models(profile: str, main_model: str) -> dict[str, Any]:
     sub = defaults["subagent"]
     summ = defaults["summarizer"]
     sub_id = strip_profile(sub, profile)
-    if profile == CUSTOM_OPENAI_PROFILE or sub_id in ("your-model", ""):
+    if profile in (CUSTOM_OPENAI_PROFILE, "codex_subscription") or sub_id in ("your-model", ""):
         sub = summ = main_model
     return {
         "main": main_model,
@@ -129,22 +179,219 @@ def derive_routing_models(profile: str, main_model: str) -> dict[str, Any]:
 
 
 def confirm_overwrite(*, force: bool = False) -> bool:
-    """Ask before replacing an existing global config. Returns True to proceed."""
+    """Ask before updating an existing global config. Returns True to proceed."""
     config_path = paths.global_config_path()
     if force or not config_path.is_file():
         return True
-    if Confirm.ask(f"{config_path} exists. Overwrite?", default=False):
+    if Confirm.ask(
+        f"{config_path} exists. Update setup selections? (advanced settings will be preserved)",
+        default=False,
+    ):
         return True
     console.print("[yellow]Keeping existing config.[/yellow]")
     return False
 
 
-def run_wizard(*, force: bool = False) -> Path | None:
-    """Run the wizard and write the global config. Returns the config path."""
-    if not confirm_overwrite(force=force):
-        return paths.global_config_path()
+class _PlainBack(Exception):
+    pass
 
-    config_path = paths.global_config_path()
+
+class _PlainCancel(Exception):
+    pass
+
+
+def _plain_menu(prompt: str, choices: list[str], *, default: str) -> str:
+    value = Prompt.ask(
+        prompt,
+        choices=[*choices, "back", "cancel"],
+        default=default,
+    )
+    if value == "back":
+        raise _PlainBack
+    if value == "cancel":
+        raise _PlainCancel
+    return value
+
+
+def _plain_text(prompt: str, *, default: str = "", password: bool = False) -> str:
+    value = Prompt.ask(
+        f"{prompt} [dim](type /back or /cancel)[/dim]",
+        default=default,
+        password=password,
+    )
+    if value.strip() == "/back":
+        raise _PlainBack
+    if value.strip() == "/cancel":
+        raise _PlainCancel
+    return value
+
+
+def _plain_previous(stage: str, answers: dict[str, str]) -> str:
+    provider = answers.get("provider", "")
+    if stage == "provider":
+        return "cancel"
+    if stage == "storage":
+        return "provider"
+    if stage == "key":
+        return "storage"
+    if stage == "base_url":
+        return "storage" if provider in CLOUD_PROVIDERS else "provider"
+    if stage == "model":
+        if profile_needs_base_url(provider):
+            return "base_url"
+        return "storage" if provider in CLOUD_PROVIDERS else "provider"
+    if stage == "reasoning":
+        return "model"
+    if stage == "subagent_model":
+        return "reasoning"
+    if stage == "summarizer_model":
+        return "subagent_model"
+    if stage == "fallback_models":
+        return "summarizer_model"
+    if stage == "budget":
+        return "fallback_models"
+    if stage == "budget_warn":
+        return "budget"
+    if stage == "budget_stop":
+        return "budget_warn"
+    if stage == "permissions":
+        return "budget_stop"
+    if stage == "theme":
+        if answers.get("_provider_group") == "advanced":
+            return "permissions"
+        if provider == "codex_subscription":
+            return "provider"
+        if answers.get("_provider_group") == "advanced" or provider in ("ollama", "lmstudio"):
+            return "model"
+        return "storage" if provider in CLOUD_PROVIDERS else "provider"
+    if stage == "confirm":
+        return "theme"
+    return "provider"
+
+
+def _advanced_model_ref(value: str, provider: str) -> str:
+    """Accept an explicit profile ref or qualify a model under the selected provider."""
+
+    from jarn.providers import qualify_model_ref
+
+    cleaned = value.strip()
+    if any(cleaned.startswith(f"{profile}/") for profile in ALL_PROVIDERS):
+        return cleaned
+    return qualify_model_ref(cleaned, provider)
+
+
+def _advanced_fallback_refs(value: str, provider: str) -> str:
+    return ",".join(
+        _advanced_model_ref(item, provider) for item in value.split(",") if item.strip()
+    )
+
+
+def _plain_next_after_provider(provider: str, group: str) -> str:
+    if provider == "codex_subscription":
+        return "theme"
+    if provider in CLOUD_PROVIDERS:
+        return "storage"
+    if profile_needs_base_url(provider):
+        return "base_url"
+    return "model" if group == "advanced" else "theme"
+
+
+def _catalog_for_answers(
+    answers: dict[str, str],
+    pending_credentials: Any,
+):
+    """Fetch setup's current provider through the shared catalog abstraction."""
+
+    provider = answers["provider"]
+    credential = pending_credentials.get(provider) or answers.get("key_ref")
+    return load_setup_catalog(
+        provider,
+        credential=credential,
+        base_url=answers.get("base_url") or PROVIDER_BASE_URLS.get(provider),
+        include_hidden=answers.get("_provider_group") == "advanced",
+        on_wait=lambda message: console.print(f"[dim]{message}[/dim]"),
+    )
+
+
+def _remember_catalog_status(
+    answers: dict[str, str],
+    *,
+    provenance: str,
+    verified: bool,
+) -> None:
+    answers["_model_catalog_provenance"] = provenance
+    answers["_model_catalog_verified"] = "true" if verified else "false"
+
+
+def _apply_standard_catalog_model(
+    answers: dict[str, str],
+    pending_credentials: Any,
+) -> None:
+    """Choose a verified live/default model, or label bootstrap data honestly."""
+
+    provider = answers["provider"]
+    snapshot = _catalog_for_answers(answers, pending_credentials)
+    selected = recommended_setup_model(snapshot)
+    if selected is not None:
+        answers["model"] = selected.ref
+        _remember_catalog_status(
+            answers,
+            provenance=snapshot.provenance_label,
+            verified=True,
+        )
+        return
+
+    # Standard setup still needs an exact candidate for the explicitly
+    # consented readiness request in the completion gate.  This shipped value
+    # is a bootstrap input only; the status shown at confirmation makes clear
+    # that it has not been reported by the configured account/endpoint.
+    answers["model"] = DEFAULT_MODELS.get(provider, DEFAULT_MODELS["openrouter"])["main"]
+    _remember_catalog_status(
+        answers,
+        provenance=(
+            f"{setup_catalog_status(snapshot)}; shipped bootstrap candidate, "
+            "not proof of availability"
+        ),
+        verified=False,
+    )
+
+
+def run_wizard(
+    *,
+    force: bool = False,
+    propagate_errors: bool = False,
+    _resume: bool = False,
+    _pending_credentials: Any | None = None,
+) -> Path | None:
+    """Run resumable plain setup and commit only after every gate succeeds."""
+    from jarn.install_state import InstallStateError
+    from jarn.onboarding.credentials import PendingCredentials
+    from jarn.onboarding.flow import (
+        SetupFlowError,
+        finalize_setup,
+        mark_setup_incomplete,
+        set_setup_progress,
+    )
+    from jarn.onboarding.state import load_setup_state, save_setup_state
+
+    try:
+        proceed = confirm_overwrite(force=force)
+    except (KeyboardInterrupt, EOFError):
+        mark_setup_incomplete()
+        console.print(
+            "\n[yellow]Setup incomplete (cancelled).[/yellow] Resume with [b]jarn setup[/b]."
+        )
+        return return_or_raise_setup_failure(
+            SetupCommandError("The setup prompt was cancelled.", kind=SetupFailureKind.CANCELLED),
+            propagate_errors=propagate_errors,
+        )
+    if not proceed:
+        mark_setup_incomplete()
+        return return_or_raise_setup_failure(
+            SetupCommandError("The setup overwrite was declined.", kind=SetupFailureKind.CANCELLED),
+            propagate_errors=propagate_errors,
+        )
+
     paths.ensure_global_home()
     # Best-effort by contract, so it swallows a create failure. The wizard is
     # about to write config.yaml and must fail BEFORE the first prompt, not after
@@ -156,67 +403,535 @@ def run_wizard(*, force: bool = False) -> Path | None:
     )
     console.print("Let's get you set up. This writes [b]~/.jarn/config.yaml[/b].\n")
 
-    # -- env detection: offer to use an existing key up-front --
+    try:
+        set_setup_progress("in_progress")
+    except SetupFlowError as exc:
+        console.print(f"[red]Setup incomplete (install state):[/red] {exc}")
+        return return_or_raise_setup_failure(exc, propagate_errors=propagate_errors)
+
+    # -- probes and resumable non-secret progress -------------------------
     env_hit = _detect_env_key()
-    recommended = _recommended_provider(env_hit)
-    default_profile = recommended
-    use_env = False
-
-    if env_hit is not None:
-        env_provider, env_var = env_hit
+    chatgpt_ready = _chatgpt_session_ready()
+    local_providers = _detect_local_providers()
+    recommended = _recommended_provider(env_hit, chatgpt_ready=chatgpt_ready)
+    pending_credentials = _pending_credentials or PendingCredentials()
+    saved = load_setup_state()
+    answers: dict[str, str] = {}
+    stage = "provider"
+    try:
+        should_resume = saved is not None and (
+            _resume
+            or Confirm.ask(
+                f"Resume setup from {saved.stage} (saved {saved.updated_at})?", default=True
+            )
+        )
+    except (KeyboardInterrupt, EOFError):
+        mark_setup_incomplete()
         console.print(
-            f"[green]✓[/green] Found [b]{env_var}[/b] in your environment — use it? [Y/n]",
+            "\n[yellow]Setup incomplete (cancelled).[/yellow] Resume with [b]jarn setup[/b]."
         )
-        use_env = Confirm.ask("", default=True)
-        if use_env:
-            default_profile = env_provider
-
-    # Build the provider list with hints and recommendation tag
-    provider_choices_display: list[str] = []
-    for p in _PROFILES:
-        hint = provider_hint(p)
-        tag = " [yellow]★ recommended[/yellow]" if p == recommended else ""
-        extra = (
-            "  aggregator; needs a free openrouter.ai account"
-            if p == "openrouter" and recommended == "openrouter" and env_hit is None
-            else ""
+        return return_or_raise_setup_failure(
+            SetupCommandError("Setup resume was cancelled.", kind=SetupFailureKind.CANCELLED),
+            propagate_errors=propagate_errors,
         )
-        provider_choices_display.append(f"  {p}  ({hint}){tag}{extra}")
+    if saved is not None and should_resume:
+        answers.update(saved.answers)
+        stage = saved.stage
+        if answers.get("_credential_pending") and not pending_credentials.contains(
+            answers.get("provider", "")
+        ):
+            answers.pop("_credential_pending", None)
+            stage = "key"
+        console.print(f"[green]✓[/green] Resuming at [b]{stage}[/b].")
+    else:
+        save_setup_state("provider", answers)
 
-    console.print("Available providers:")
-    for line in provider_choices_display:
-        console.print(line)
-    console.print()
+    known_stages = {
+        "provider",
+        "storage",
+        "key",
+        "base_url",
+        "model",
+        "reasoning",
+        "subagent_model",
+        "summarizer_model",
+        "fallback_models",
+        "budget",
+        "budget_warn",
+        "budget_stop",
+        "permissions",
+        "theme",
+        "confirm",
+    }
+    if stage not in known_stages:
+        stage = "provider"
 
-    profile = Prompt.ask(
-        "Default provider profile", choices=list(_PROFILES), default=default_profile
-    )
+    try:
+        while True:
+            provider = answers.get("provider", "")
+            group = answers.get("_provider_group", "")
+            if stage == "provider":
+                default_choice = {
+                    "codex_subscription": "chatgpt",
+                    "anthropic": "anthropic",
+                    "ollama": "local",
+                    "lmstudio": "local",
+                }.get(recommended, "cloud")
+                local_note = f" — found {', '.join(local_providers)}" if local_providers else ""
+                console.print("\nChoose how to connect:")
+                console.print("  chatgpt   — Continue with ChatGPT")
+                console.print("  anthropic — Use Anthropic")
+                console.print("  cloud     — Use another cloud provider")
+                console.print(f"  local     — Use a local model{local_note}")
+                console.print(
+                    "  [dim]Advanced: choose 'advanced' for custom endpoints and the full registry.[/dim]"
+                )
+                connection = _plain_menu(
+                    "How do you want to connect?",
+                    ["chatgpt", "anthropic", "cloud", "local", "advanced"],
+                    default=default_choice,
+                )
+                if connection == "chatgpt":
+                    selected, group = "codex_subscription", "standard"
+                elif connection == "anthropic":
+                    selected, group = "anthropic", "standard"
+                elif connection == "cloud":
+                    cloud_profiles = [
+                        p
+                        for p in CLOUD_PROVIDERS
+                        if p not in ("anthropic", CUSTOM_OPENAI_PROFILE, "codex_subscription")
+                    ]
+                    try:
+                        selected = _plain_menu(
+                            "Cloud provider",
+                            cloud_profiles,
+                            default=(
+                                recommended if recommended in cloud_profiles else "openrouter"
+                            ),
+                        )
+                    except _PlainBack:
+                        save_setup_state("provider", answers)
+                        continue
+                    group = "cloud"
+                elif connection == "local":
+                    local_choices = [
+                        *local_providers,
+                        *(p for p in ("ollama", "lmstudio") if p not in local_providers),
+                    ]
+                    try:
+                        selected = _plain_menu(
+                            "Local provider", local_choices, default=local_choices[0]
+                        )
+                    except _PlainBack:
+                        save_setup_state("provider", answers)
+                        continue
+                    group = "local"
+                else:
+                    advanced_profiles = [
+                        profile for profile in _PROFILES if profile != "codex_subscription"
+                    ]
+                    console.print("Advanced providers: " + ", ".join(advanced_profiles))
+                    try:
+                        selected = _plain_menu(
+                            "Provider",
+                            advanced_profiles,
+                            default=(recommended if recommended in _PROFILES else "openrouter"),
+                        )
+                    except _PlainBack:
+                        save_setup_state("provider", answers)
+                        continue
+                    group = "advanced"
+                if selected != provider:
+                    if provider:
+                        pending_credentials.discard(provider)
+                    for key in ("storage", "key_ref", "base_url", "model", "reasoning_effort"):
+                        answers.pop(key, None)
+                    answers.pop("_model_catalog_provenance", None)
+                    answers.pop("_model_catalog_verified", None)
+                    answers.pop("_credential_pending", None)
+                answers["provider"] = selected
+                answers["_provider_group"] = group
+                provider = selected
+                stage = _plain_next_after_provider(provider, group)
+                save_setup_state(stage, answers)
+                continue
 
-    # Pass env_hit only when the user ACCEPTED it earlier AND the chosen profile
-    # matches the detected env provider — a decline must not silently reuse the key.
-    key_env_hit = env_hit if (use_env and env_hit is not None and profile == env_hit[0]) else None
-    api_key_ref = _configure_key(profile, env_hit=key_env_hit)
-    base_url = _configure_base_url(profile) if profile_needs_base_url(profile) else None
-    default_model = _prompt_model(profile)
-    theme = Prompt.ask("Theme", choices=["dark", "light", "high-contrast"], default="dark")
+            if stage == "storage":
+                env_var = PROVIDER_ENV_VARS.get(provider, f"{provider.upper()}_API_KEY")
+                if env_hit is not None and env_hit[0] == provider:
+                    console.print(
+                        f"[green]✓[/green] Using [b]${env_var}[/b] from your environment."
+                    )
+                    answers["storage"] = "env"
+                    pending_credentials.discard(provider)
+                    answers.pop("_credential_pending", None)
+                    answers["key_ref"] = f"${{{env_var}}}"
+                    stage = (
+                        "base_url"
+                        if profile_needs_base_url(provider)
+                        else ("model" if group == "advanced" else "theme")
+                    )
+                    if stage == "theme":
+                        _apply_standard_catalog_model(answers, pending_credentials)
+                    save_setup_state(stage, answers)
+                    continue
+                methods = ["env", "keychain"]
+                method = _plain_menu(
+                    f"How should J.A.R.N. read the {provider} API key?",
+                    methods,
+                    default="keychain",
+                )
+                answers["storage"] = method
+                if method == "env" and os.environ.get(env_var):
+                    pending_credentials.discard(provider)
+                    answers.pop("_credential_pending", None)
+                    answers["key_ref"] = f"${{{env_var}}}"
+                    stage = (
+                        "base_url"
+                        if profile_needs_base_url(provider)
+                        else ("model" if group == "advanced" else "theme")
+                    )
+                    if stage == "theme":
+                        _apply_standard_catalog_model(answers, pending_credentials)
+                else:
+                    if method == "env":
+                        console.print(
+                            f"[yellow]${env_var} is not set.[/yellow] Paste the key now; "
+                            "only its secure-store reference will be saved."
+                        )
+                    stage = "key"
+                save_setup_state(stage, answers)
+                continue
 
-    config = _build_config_dict(
-        profile, api_key_ref, default_model, theme, base_url_override=base_url
-    )
-    config_path.write_text(
-        _CONFIG_HEADER + yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
-    console.print(f"\n[green]✔[/green] Wrote {config_path}")
+            if stage == "key":
+                value = _plain_text(f"Paste the {provider} API key", password=True).strip()
+                if not value:
+                    console.print(
+                        "[yellow]A key is required to finish this provider setup.[/yellow]"
+                    )
+                    continue
+                pending_credentials.set(provider, value)
+                answers["storage"] = "keychain"
+                answers.pop("key_ref", None)
+                answers["_credential_pending"] = "memory"
+                stage = (
+                    "base_url"
+                    if profile_needs_base_url(provider)
+                    else ("model" if group == "advanced" else "theme")
+                )
+                if stage == "theme":
+                    _apply_standard_catalog_model(answers, pending_credentials)
+                save_setup_state(stage, answers)
+                continue
 
-    if profile in _CLOUD and Confirm.ask(
-        "Validate the API key now? (a local model may need to load — can be slow)",
-        default=True,
-    ):
-        validate_config(profile, default_model, config)
+            if stage == "base_url":
+                default_url = answers.get("base_url") or PROVIDER_BASE_URLS.get(
+                    provider, "http://localhost:8000/v1"
+                )
+                try:
+                    answers["base_url"] = normalize_base_url(
+                        provider,
+                        _plain_text(f"API base URL for {provider}", default=default_url),
+                    )
+                except ValueError as exc:
+                    console.print(f"[yellow]{exc}[/yellow]")
+                    continue
+                stage = (
+                    "model"
+                    if group == "advanced" or provider in ("ollama", "lmstudio")
+                    else "theme"
+                )
+                if stage == "theme":
+                    _apply_standard_catalog_model(answers, pending_credentials)
+                save_setup_state(stage, answers)
+                continue
 
-    console.print("\n[b cyan]All set.[/b cyan] Launch with [b]jarn[/b].")
-    return config_path
+            if stage == "model":
+                default_full = (
+                    answers.get("model")
+                    or DEFAULT_MODELS.get(provider, DEFAULT_MODELS["openrouter"])["main"]
+                )
+                snapshot = _catalog_for_answers(answers, pending_credentials)
+                discovered = selectable_setup_models(snapshot)
+                if group != "advanced" and provider in ("ollama", "lmstudio"):
+                    local_entry = recommended_setup_model(snapshot)
+                    if local_entry is not None:
+                        answers["model"] = local_entry.ref
+                        _remember_catalog_status(
+                            answers,
+                            provenance=snapshot.provenance_label,
+                            verified=True,
+                        )
+                        console.print(
+                            f"[green]✓[/green] Using model [b]{answers['model']}[/b] "
+                            "reported by the local server."
+                        )
+                        stage = "reasoning" if group == "advanced" else "theme"
+                        save_setup_state(stage, answers)
+                        continue
+                    console.print(
+                        f"[yellow]{setup_catalog_status(snapshot)}.[/yellow] "
+                        "Start/download a model, enter one manually, or go back."
+                    )
+
+                if group == "advanced" and discovered:
+                    ids = [entry.model_id for entry in discovered]
+                    console.print(
+                        f"[green]✓[/green] {snapshot.provenance_label}. "
+                        "Choose a reported model or enter one manually."
+                    )
+                    picked = _plain_menu(
+                        f"Model for {provider}",
+                        [*ids, "manual"],
+                        default=(
+                            strip_profile(default_full, provider)
+                            if strip_profile(default_full, provider) in ids
+                            else ids[0]
+                        ),
+                    )
+                    if picked != "manual":
+                        answers["model"] = qualify_model_ref(picked, provider)
+                        _remember_catalog_status(
+                            answers,
+                            provenance=snapshot.provenance_label,
+                            verified=True,
+                        )
+                        stage = "reasoning"
+                        save_setup_state(stage, answers)
+                        continue
+                elif group == "advanced":
+                    console.print(
+                        f"[yellow]{setup_catalog_status(snapshot)}.[/yellow] "
+                        "Advanced manual entry is allowed, but must pass final validation."
+                    )
+
+                default_id = strip_profile(default_full, provider)
+                raw_model = _plain_text(f"Model id for {provider}", default=default_id)
+                answers["model"] = qualify_model_ref(raw_model, provider)
+                _remember_catalog_status(
+                    answers,
+                    provenance=(
+                        "Manual model entry; availability unverified until the final "
+                        "readiness gate"
+                    ),
+                    verified=False,
+                )
+                stage = "reasoning" if group == "advanced" else "theme"
+                save_setup_state(stage, answers)
+                continue
+
+            if stage == "reasoning":
+                effort = _plain_menu(
+                    "Reasoning effort",
+                    ["default", "low", "medium", "high", "xhigh"],
+                    default=answers.get("reasoning_effort", "default"),
+                )
+                if effort == "default":
+                    answers.pop("reasoning_effort", None)
+                else:
+                    answers["reasoning_effort"] = effort
+                stage = "subagent_model"
+                save_setup_state(stage, answers)
+                continue
+
+            if stage == "subagent_model":
+                default_route = answers.get("routing_subagent") or answers["model"]
+                raw = _plain_text(
+                    "Subagent model (use profile/model for another provider)",
+                    default=default_route,
+                )
+                answers["routing_subagent"] = _advanced_model_ref(raw, provider)
+                stage = "summarizer_model"
+                save_setup_state(stage, answers)
+                continue
+
+            if stage == "summarizer_model":
+                default_route = (
+                    answers.get("routing_summarizer")
+                    or answers.get("routing_subagent")
+                    or answers["model"]
+                )
+                raw = _plain_text(
+                    "Summarizer model (use profile/model for another provider)",
+                    default=default_route,
+                )
+                answers["routing_summarizer"] = _advanced_model_ref(raw, provider)
+                stage = "fallback_models"
+                save_setup_state(stage, answers)
+                continue
+
+            if stage == "fallback_models":
+                raw = _plain_text(
+                    "Fallback models, comma-separated (blank for none)",
+                    default=answers.get("routing_fallback", ""),
+                )
+                answers["routing_fallback"] = _advanced_fallback_refs(raw, provider)
+                stage = "budget"
+                save_setup_state(stage, answers)
+                continue
+
+            if stage == "budget":
+                raw = _plain_text(
+                    "Maximum cost per session in USD",
+                    default=answers.get("budget_per_session_usd", "5.00"),
+                )
+                try:
+                    budget_value = float(raw)
+                    if not 0 <= budget_value < float("inf"):
+                        raise ValueError
+                except ValueError:
+                    console.print(
+                        "[yellow]Enter a finite number greater than or equal to 0.[/yellow]"
+                    )
+                    continue
+                answers["budget_per_session_usd"] = raw
+                stage = "budget_warn"
+                save_setup_state(stage, answers)
+                continue
+
+            if stage == "budget_warn":
+                raw = _plain_text(
+                    "Warn when this percentage of the budget is used",
+                    default=answers.get("budget_warn_at_pct", "80"),
+                )
+                try:
+                    warn_value = int(raw)
+                    if not 0 <= warn_value <= 100:
+                        raise ValueError
+                except ValueError:
+                    console.print("[yellow]Enter a whole number from 0 through 100.[/yellow]")
+                    continue
+                answers["budget_warn_at_pct"] = raw
+                stage = "budget_stop"
+                save_setup_state(stage, answers)
+                continue
+
+            if stage == "budget_stop":
+                choice = _plain_menu(
+                    "Stop automatically at the session budget?",
+                    ["yes", "no"],
+                    default="yes" if answers.get("budget_hard_stop", "true") == "true" else "no",
+                )
+                answers["budget_hard_stop"] = "true" if choice == "yes" else "false"
+                stage = "permissions"
+                save_setup_state(stage, answers)
+                continue
+
+            if stage == "permissions":
+                console.print("  review — read and plan only")
+                console.print("  ask    — ask before changes (recommended)")
+                console.print("  edit   — edit workspace; ask before commands/external actions")
+                console.print("  full   — skip routine prompts; hard safety blocks remain")
+                reverse = {"plan": "review", "ask": "ask", "auto-edit": "edit", "yolo": "full"}
+                selected = _plain_menu(
+                    "Permission profile",
+                    ["review", "ask", "edit", "full"],
+                    default=reverse.get(answers.get("permission_mode", "ask"), "ask"),
+                )
+                answers["permission_mode"] = {
+                    "review": "plan",
+                    "ask": "ask",
+                    "edit": "auto-edit",
+                    "full": "yolo",
+                }[selected]
+                stage = "theme"
+                save_setup_state(stage, answers)
+                continue
+
+            if stage == "theme":
+                answers["theme"] = _plain_menu(
+                    "Theme",
+                    ["dark", "light", "high-contrast"],
+                    default=answers.get("theme", "dark"),
+                )
+                stage = "confirm"
+                save_setup_state(stage, answers)
+                continue
+
+            console.print("\nReady to finish:")
+            console.print(
+                f"  Provider: [b]{'ChatGPT' if provider == 'codex_subscription' else provider}[/b]"
+            )
+            console.print(f"  Model: [b]{answers.get('model', 'account default')}[/b]")
+            if answers.get("_model_catalog_provenance"):
+                status = (
+                    "verified"
+                    if answers.get("_model_catalog_verified") == "true"
+                    else "unverified"
+                )
+                console.print(
+                    f"  Catalog: [b]{status}[/b] — {answers['_model_catalog_provenance']}"
+                )
+            console.print(f"  Theme: [b]{answers.get('theme', 'dark')}[/b]")
+            if group == "advanced":
+                console.print(f"  Subagent: [b]{answers.get('routing_subagent')}[/b]")
+                console.print(f"  Summarizer: [b]{answers.get('routing_summarizer')}[/b]")
+                console.print(f"  Fallbacks: [b]{answers.get('routing_fallback') or '(none)'}[/b]")
+                console.print(
+                    "  Budget: [b]$"
+                    f"{answers.get('budget_per_session_usd', '5.00')}[/b] "
+                    f"(warn {answers.get('budget_warn_at_pct', '80')}%, "
+                    f"hard stop {answers.get('budget_hard_stop', 'true')})"
+                )
+                from jarn.permissions.labels import permission_mode_name
+
+                console.print(
+                    "  Permissions: [b]"
+                    f"{permission_mode_name(answers.get('permission_mode', 'ask'))}[/b]"
+                )
+            choice = _plain_menu("Finish setup?", ["save"], default="save")
+            if choice == "save":
+                return finalize_setup(
+                    answers,
+                    console=console,
+                    pending_credentials=pending_credentials,
+                )
+    except _PlainBack:
+        previous = _plain_previous(stage, answers)
+        if previous == "cancel":
+            mark_setup_incomplete()
+            console.print(
+                "\n[yellow]Setup incomplete (cancelled).[/yellow] Resume with [b]jarn setup[/b]."
+            )
+            return return_or_raise_setup_failure(
+                SetupCommandError(
+                    "Back was selected on the first setup step.",
+                    kind=SetupFailureKind.CANCELLED,
+                ),
+                propagate_errors=propagate_errors,
+            )
+        save_setup_state(previous, answers)
+        # Continue in a new invocation-safe loop by recursively resuming the
+        # just-persisted boundary; Prompt state itself contains no secret.
+        return run_wizard(
+            force=True,
+            propagate_errors=propagate_errors,
+            _resume=True,
+            _pending_credentials=pending_credentials,
+        )
+    except (_PlainCancel, KeyboardInterrupt, EOFError):
+        save_setup_state(stage, answers)
+        mark_setup_incomplete()
+        console.print(
+            "\n[yellow]Setup incomplete (cancelled).[/yellow] Resume with [b]jarn setup[/b]."
+        )
+        return return_or_raise_setup_failure(
+            SetupCommandError("Setup was cancelled by the user.", kind=SetupFailureKind.CANCELLED),
+            propagate_errors=propagate_errors,
+        )
+    except (SetupFlowError, InstallStateError, OSError) as exc:
+        save_setup_state(stage, answers)
+        mark_setup_incomplete()
+        console.print(f"\n[red]Setup incomplete at {stage}:[/red] {exc}")
+        console.print("No configuration was changed. Retry with [b]jarn setup[/b].")
+        failure: SetupCommandError
+        if isinstance(exc, SetupCommandError):
+            failure = exc
+        elif isinstance(exc, InstallStateError):
+            failure = SetupCommandError(str(exc), kind=SetupFailureKind.VERIFICATION)
+        else:
+            failure = SetupCommandError(str(exc), kind=SetupFailureKind.CONFIG)
+        return return_or_raise_setup_failure(failure, propagate_errors=propagate_errors)
 
 
 def _prompt_model(profile: str) -> str:
@@ -249,34 +964,9 @@ def _configure_key(
     without prompting — keeping the key out of the config verbatim.
     """
     if profile == "codex_subscription":
-        from jarn.providers.codex_subscription import (
-            CodexSubscriptionError,
-            codex_subscription_account,
-            run_codex_login,
-        )
-
-        try:
-            account = codex_subscription_account(timeout_seconds=10)
-        except CodexSubscriptionError:
-            account = None
-        if (account or {}).get("type") == "chatgpt":
-            console.print(
-                f"[green]✓[/green] Codex is connected to ChatGPT plan "
-                f"[b]{(account or {}).get('planType') or 'unknown'}[/b]."
-            )
-            return None
         console.print(
             "[dim]codex_subscription uses Codex-managed ChatGPT login — no API key.[/dim]"
         )
-        if Confirm.ask("Sign in to ChatGPT with Codex now?", default=True):
-            try:
-                if run_codex_login() != 0:
-                    console.print(
-                        "[yellow]![/yellow] Login was not completed; run "
-                        "[b]jarn codex login[/b] before the first turn."
-                    )
-            except CodexSubscriptionError as exc:
-                console.print(f"[yellow]![/yellow] {exc}")
         return None
 
     if profile not in _CLOUD:
@@ -357,6 +1047,7 @@ def _build_config_dict(
     *,
     mode: str = "ask",
     base_url_override: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     providers: dict[str, Any] = {}
     for name in _PROFILES:
@@ -372,6 +1063,8 @@ def _build_config_dict(
                 entry["base_url"] = base_url_override
             else:
                 entry["base_url"] = PROVIDER_BASE_URLS[name]
+        if name == profile == "codex_subscription" and reasoning_effort:
+            entry["reasoning_effort"] = reasoning_effort
         providers[name] = entry
 
     return {
@@ -389,30 +1082,303 @@ def _build_config_dict(
     }
 
 
-def _ping_with_timeout(chat: Any, timeout: float) -> Any:
-    """Run a blocking ``chat.invoke('ping')`` but stop waiting after ``timeout``.
+def write_config_atomic(path: Path, config: dict[str, Any]) -> None:
+    """Atomically replace ``path`` with a private, fully serialized config."""
 
-    Uses a daemon thread so a slow/cold model (or a black-holed endpoint) can't
-    hang setup forever and never blocks process exit — the request finishes (or
-    dies) in the background. Raises ``TimeoutError`` if no response in time."""
-    import threading
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, raw_tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    tmp = Path(raw_tmp)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(_CONFIG_HEADER)
+            yaml.safe_dump(config, handle, sort_keys=False, allow_unicode=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
 
-    box: dict[str, Any] = {}
 
-    def _run() -> None:
+_VALIDATION_WORKER_SELECTOR = "__jarn_internal_validation_worker__"
+_VALIDATION_WORKER_CODE = (
+    "from jarn.onboarding.wizard import _validation_worker_main; "
+    "raise SystemExit(_validation_worker_main())"
+)
+_VALIDATION_REQUEST_MAX_BYTES = 1024 * 1024
+_VALIDATION_RESPONSE_MAX_BYTES = 16 * 1024
+
+
+class ValidationWorkerError(RuntimeError):
+    """The isolated model-validation worker failed safely."""
+
+
+def _validation_worker_command() -> list[str]:
+    """Return a source- or PyInstaller-compatible private worker command."""
+
+    if getattr(sys, "frozen", False):
+        return [sys.executable, _VALIDATION_WORKER_SELECTOR]
+    return [sys.executable, "-c", _VALIDATION_WORKER_CODE]
+
+
+def _validation_worker_main() -> int:
+    """Read one validation request from stdin and emit one redacted response."""
+
+    from jarn.config.secrets import redact_secrets
+
+    credential: str | None = None
+    response: dict[str, Any]
+    try:
+        payload = sys.stdin.buffer.read(_VALIDATION_REQUEST_MAX_BYTES + 1)
+        if len(payload) > _VALIDATION_REQUEST_MAX_BYTES:
+            raise ValueError("validation request is too large")
+        request = json.loads(payload)
+        if not isinstance(request, dict):
+            raise ValueError("validation request must be an object")
+        profile = request.get("profile")
+        model = request.get("model")
+        raw_config = request.get("config")
+        raw_credential = request.get("credential")
+        if not isinstance(profile, str) or not profile:
+            raise ValueError("validation profile is missing")
+        if not isinstance(model, str) or not model:
+            raise ValueError("validation model is missing")
+        if not isinstance(raw_config, dict):
+            raise ValueError("validation config must be an object")
+        if raw_credential is not None and not isinstance(raw_credential, str):
+            raise ValueError("validation credential has an invalid type")
+        credential = raw_credential
+
+        # Provider libraries sometimes print request diagnostics directly. Keep
+        # them out of the IPC response and parent logs; only our bounded JSON is
+        # written after this context exits.
+        with (
+            open(os.devnull, "w", encoding="utf-8") as sink,
+            contextlib.redirect_stdout(sink),
+            contextlib.redirect_stderr(sink),
+        ):
+            from jarn.config.loader import _build_config
+            from jarn.providers import ModelFactory
+
+            cfg = _build_config(raw_config)
+            provider = cfg.providers.get(profile)
+            if provider is None:
+                raise ValueError("selected validation provider is not configured")
+            # The parent resolves the selected reference and sends its value
+            # only through stdin. ModelFactory therefore never needs to read
+            # a provider credential from argv or the worker environment.
+            provider.api_key = credential
+            chat = ModelFactory(cfg).build(model)
+            result = chat.invoke("ping")
+            content = getattr(result, "content", result)
+            response_chars = len(str(content))
+        response = {"ok": True, "response_chars": response_chars}
+    except BaseException as exc:
+        known = {credential} if credential else None
+        message = redact_secrets(str(exc), known=known)
+        response = {
+            "ok": False,
+            "error_type": type(exc).__name__[:120],
+            "message": message[:1000],
+        }
+    sys.stdout.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")))
+    sys.stdout.flush()
+    return 0
+
+
+def _kill_validation_worker(process: subprocess.Popen[bytes]) -> None:
+    """Kill the validation process group and synchronously reap its leader."""
+
+    if process.poll() is None:
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                process.kill()
+        else:  # pragma: no cover - native Windows is not a supported runtime
+            process.kill()
+    process.communicate()
+
+
+def _validation_worker_env(secret_env_var: str | None) -> dict[str, str]:
+    """Copy a bounded validation environment without credentials or tracing.
+
+    First-run validation must never inherit an operator's LangSmith/LangChain
+    tracing session: doing so can export the setup ping and can leave the worker
+    waiting for a background trace flush after it has already produced a result.
+    """
+
+    env = os.environ.copy()
+    for variable in PROVIDER_ENV_VARS.values():
+        env.pop(variable, None)
+    if secret_env_var:
+        env.pop(secret_env_var, None)
+    for variable in (
+        "LANGSMITH_API_KEY",
+        "LANGSMITH_ENDPOINT",
+        "LANGSMITH_PROJECT",
+        "LANGCHAIN_API_KEY",
+        "LANGCHAIN_ENDPOINT",
+        "LANGCHAIN_PROJECT",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_HEADERS",
+    ):
+        env.pop(variable, None)
+    env["LANGSMITH_TRACING"] = "false"
+    env["LANGCHAIN_TRACING_V2"] = "false"
+    return env
+
+
+def _run_validation_request(
+    profile: str,
+    model: str,
+    config: dict[str, Any],
+    *,
+    timeout: float,
+) -> int:
+    """Construct and ping a model in a bounded, killable isolated process."""
+
+    from jarn.config.secrets import redact_secrets, resolve
+
+    if timeout <= 0:
+        raise ValueError("validation timeout must be greater than zero")
+    request_config = deepcopy(config)
+    providers = request_config.get("providers")
+    selected = providers.get(profile) if isinstance(providers, dict) else None
+    reference = selected.get("api_key") if isinstance(selected, dict) else None
+    if reference is not None and not isinstance(reference, str):
+        raise ValidationWorkerError("selected provider credential reference is invalid")
+    credential = resolve(reference) if isinstance(reference, str) and reference else None
+    secret_env_var: str | None = None
+    if isinstance(reference, str) and reference.startswith("${") and reference.endswith("}"):
+        secret_env_var = reference[2:-1]
+    if isinstance(selected, dict):
+        selected["api_key"] = None
+
+    request = json.dumps(
+        {
+            "profile": profile,
+            "model": model,
+            "config": request_config,
+            "credential": credential,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(request) > _VALIDATION_REQUEST_MAX_BYTES:
+        raise ValidationWorkerError("model validation request is too large")
+    process = subprocess.Popen(  # noqa: S603 - fixed interpreter/private selector
+        _validation_worker_command(),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_validation_worker_env(secret_env_var),
+        start_new_session=os.name == "posix",
+    )
+    try:
+        stdout, _stderr = process.communicate(input=request, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        _kill_validation_worker(process)
+        raise TimeoutError(f"no response within {timeout:.0f}s") from exc
+    except BaseException:
+        _kill_validation_worker(process)
+        raise
+
+    if process.returncode != 0:
+        raise ValidationWorkerError(
+            f"model validation worker exited with status {process.returncode}"
+        )
+    if len(stdout) > _VALIDATION_RESPONSE_MAX_BYTES:
+        raise ValidationWorkerError("model validation worker returned an oversized response")
+    try:
+        response = json.loads(stdout)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValidationWorkerError("model validation worker returned an invalid response") from exc
+    if not isinstance(response, dict):
+        raise ValidationWorkerError("model validation worker returned an invalid response")
+    if not response.get("ok"):
+        raw_error_type = str(response.get("error_type") or "validation error")[:120]
+        error_type = "".join(
+            char for char in raw_error_type if char.isalnum() or char in "._- "
+        ).strip() or "validation error"
+        message = redact_secrets(
+            str(response.get("message") or "model validation failed"),
+            known={credential} if credential else None,
+        )[:1000]
+        message = "".join(char for char in message if ord(char) >= 32).strip()
+        raise ValidationWorkerError(f"{error_type}: {message}")
+    response_chars = response.get("response_chars")
+    if not isinstance(response_chars, int) or isinstance(response_chars, bool):
+        raise ValidationWorkerError("model validation worker returned an invalid result")
+    if response_chars < 0:
+        raise ValidationWorkerError("model validation worker returned an invalid result")
+    return response_chars
+
+
+def _direct_ping_worker(chat: Any, sender: Any) -> None:
+    """Compatibility worker for callers that already constructed a test model."""
+
+    if os.name == "posix":
+        with contextlib.suppress(OSError):
+            os.setsid()
+    try:
+        sender.send(("ok", chat.invoke("ping")))
+    except BaseException as exc:
         try:
-            box["resp"] = chat.invoke("ping")
-        except Exception as exc:  # noqa: BLE001
-            box["err"] = exc
+            sender.send(("error", exc))
+        except BaseException:
+            sender.send(("error_text", type(exc).__name__, str(exc)))
+    finally:
+        sender.close()
 
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    t.join(timeout)
-    if t.is_alive():
-        raise TimeoutError(f"no response within {timeout:.0f}s")
-    if "err" in box:
-        raise box["err"]
-    return box["resp"]
+
+def _ping_with_timeout(chat: Any, timeout: float) -> Any:
+    """Invoke an already-built test model in a killable and reaped process.
+
+    Production validation uses :func:`_run_validation_request` so the model is
+    constructed inside the source/frozen-compatible worker. This compatibility
+    seam retains the historical private helper without leaving a daemon thread.
+    """
+
+    if timeout <= 0:
+        raise ValueError("validation timeout must be greater than zero")
+    if os.name != "posix":  # pragma: no cover - native Windows is unsupported
+        raise RuntimeError("isolated validation requires a POSIX runtime")
+    import multiprocessing
+
+    context = multiprocessing.get_context("fork")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(target=_direct_ping_worker, args=(chat, sender))
+    process.start()
+    worker_pid = process.pid
+    if worker_pid is None:  # pragma: no cover - start either assigns it or raises
+        process.close()
+        raise RuntimeError("validation worker did not start")
+    sender.close()
+    try:
+        if not receiver.poll(timeout):
+            if process.is_alive():
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(worker_pid, signal.SIGKILL)
+            process.join()
+            raise TimeoutError(f"no response within {timeout:.0f}s")
+        payload = receiver.recv()
+        process.join()
+    finally:
+        receiver.close()
+        if process.is_alive():
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(worker_pid, signal.SIGKILL)
+            process.join()
+        process.close()
+    if payload[0] == "ok":
+        return payload[1]
+    if payload[0] == "error":
+        raise payload[1]
+    raise RuntimeError(f"{payload[1]}: {payload[2]}")
 
 
 def validate_config(
@@ -423,34 +1389,40 @@ def validate_config(
     Shows a spinner while waiting — a local or remote model can need to cold-load,
     which may take ~1 min — and gives up after ``timeout`` so a stuck endpoint
     can't hang setup. Ctrl+C skips the wait."""
-    from jarn.config.loader import _build_config
-    from jarn.providers import ModelFactory
+    from jarn.config.secrets import redact_secrets
 
     try:
-        cfg = _build_config(config)
-        factory = ModelFactory(cfg)
-        chat = factory.build(model)
         with console.status(
             "[cyan]validating[/cyan] — the model may need to load first "
             "(can take ~1 min); Ctrl+C to skip"
         ):
-            resp = _ping_with_timeout(chat, timeout)
-        console.print(f"  [green]✔[/green] model responded ({len(str(resp.content))} chars)")
+            response_chars = _run_validation_request(
+                profile,
+                model,
+                config,
+                timeout=timeout,
+            )
+        console.print(f"  [green]✔[/green] model responded ({response_chars} chars)")
         return True
     except KeyboardInterrupt:
         console.print(
-            "  [dim]skipped — the model is still loading in the background; "
-            "it'll work once warm.[/dim]"
+            "  [dim]skipped — the isolated validation worker was stopped; "
+            "retry setup when ready.[/dim]"
         )
         return False
     except TimeoutError:
         console.print(
             f"  [yellow]![/yellow] validation timed out after {timeout:.0f}s — the "
-            "model may still be loading; it should work once it's warm."
+            "isolated request was stopped and can be retried safely."
         )
         console.print("  [dim]Adjust the key/model later in ~/.jarn/config.yaml if needed.[/dim]")
         return False
     except Exception as exc:  # noqa: BLE001
-        console.print(f"  [yellow]![/yellow] validation failed: {exc}")
+        provider_raw = config.get("providers", {}).get(profile, {})
+        raw_key = provider_raw.get("api_key") if isinstance(provider_raw, dict) else None
+        known = {raw_key} if isinstance(raw_key, str) and raw_key else None
+        console.print(
+            f"  [yellow]![/yellow] validation failed: {redact_secrets(str(exc), known=known)}"
+        )
         console.print("  [dim]You can fix the key/model later in ~/.jarn/config.yaml.[/dim]")
         return False

@@ -61,7 +61,10 @@ def _terminate_windows(pid: int) -> None:
             ["taskkill", "/F", "/T", "/PID", str(pid)],
             check=False,
             capture_output=True,
-            timeout=5,
+            # Cancellation is a user-facing latency boundary. Keep the tree
+            # kill bounded below one second; if taskkill itself stalls, the
+            # single-process fallback below still gets a chance to run.
+            timeout=0.75,
         )
         return
     except (OSError, subprocess.SubprocessError):

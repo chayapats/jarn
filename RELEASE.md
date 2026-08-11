@@ -1,9 +1,9 @@
-# Release process — v0.11.0 alpha
+# Release process — General Availability candidate
 
-Checklist for publishing J.A.R.N. to PyPI, npm, and GitHub Releases.
-
-Still **alpha** (`Development Status :: 3 - Alpha`) — v1.0.0 is not yet earned;
-see CHANGELOG §0.3.0 for the remaining road-to-1.0 work.
+Fail-closed checklist for promoting one identical J.A.R.N. candidate to GitHub,
+PyPI, and npm. v0.11.0 remains the latest published Alpha until the v1.0.0 draft
+passes every criterion, UAT, and published-artifact gate. A tag push cannot promote
+the draft by itself.
 
 ## Automated gates (must pass)
 
@@ -11,8 +11,11 @@ see CHANGELOG §0.3.0 for the remaining road-to-1.0 work.
 uv sync --extra dev --extra telegram
 uv run ruff check src tests scripts
 uv run mypy src/
-uv run pytest -q                    # 2466 tests
+uv run pytest -q                    # 3030 tests
 uv run pytest tests/test_packaging.py -q
+uv run pytest tests/test_installer.py tests/test_ci.py tests/test_update.py -q
+uv run python scripts/benchmark_startup.py --output artifacts/startup.json
+uv run python scripts/ga_evidence.py --strict
 uv build
 ```
 
@@ -22,25 +25,24 @@ uv build
 - wheel contains `repl.py`, `cli.py`, and entry points
 - clean venv install → `jarn --version` + `jarn doctor --json`
 
-## Manual QA (pre-tag)
+## Manual QA
 
-Run on a **fresh machine or clean venv** with a real API key. Record date + result.
+### UAT evidence (pre-promotion)
 
-| Step | Command / action | Pass? |
-|------|------------------|-------|
-| 1 | `uv tool install jarn` or `pip install jarn==0.11.0` (or `npm install -g jarn-cli`) | ☐ |
-| 2 | `jarn --version` → `jarn 0.11.0` | ☐ |
-| 3 | `jarn setup` — wizard completes, `~/.jarn/config.yaml` created | ☐ |
-| 4 | `jarn doctor` — providers OK, extensions section renders | ☐ |
-| 5 | `cd <project>` → `jarn` — REPL launches, splash visible | ☐ |
-| 6 | `/help` — no Rich markup crash; usage hints visible | ☐ |
-| 7 | `/` + Tab — command menu with descriptions | ☐ |
-| 8 | One chat turn with real model — streams response | ☐ |
-| 9 | Untrusted repo with hooks in `.jarn/config.yaml` — trust prompt; decline → safe | ☐ |
-| 10 | `jarn trust <path>` → project hooks honoured after approval | ☐ |
-| 11 | Untrusted repo → launch shows the untrusted notice; `/trust` lifts the floor | ☐ |
-| 12 | `/mcp status` — lists configured MCP servers (or "no MCP servers configured") | ☐ |
-| 13 | **Optional demo refresh** — if publishing a new GIF, run `./scripts/record-demo.sh`, keep `docs/assets/demo.gif` < 3 MB, then add the README embeds | ☐ optional |
+Run each harness with its explicit `--execute` guard on a disposable target and save
+only the validated/redacted JSON result. Dry-run output is never Pass evidence.
+
+| Scenario | Harness | Required evidence |
+|---|---|---|
+| Ubuntu 22.04/glibc 2.35 over SSH | `scripts/uat/uat-001-ubuntu-ssh.sh` | clean one-line install, visible auth, live catalog, first prompt |
+| Legacy npm/Python collision | `scripts/uat/uat-002-legacy-collision.sh` | correct resolution, retained prior, config migration backup |
+| macOS desktop ChatGPT | `scripts/uat/uat-003-macos-desktop.sh` | browser/fallback challenge and verified account/model |
+| Anthropic API-key path | `scripts/uat/uat-004-anthropic.sh` | reference-only secret, disclosure, verified turn |
+| Ollama local/offline | `scripts/uat/uat-005-ollama.sh` | local live catalog/turn and missing-model remediation |
+| Network failure/retry | `scripts/uat/uat-006-network-failure.sh` | no false Done, retry action, prior hashes unchanged |
+
+The evidence report must map every MUST/TEST/UAT criterion and contain zero P0
+failures, zero secret/path leaks, and no invented Pass rows.
 
 Optional binary smoke (maintainer):
 
@@ -58,30 +60,34 @@ Optional binary smoke (maintainer):
    live in the workflow.
 2. Bump the version in `pyproject.toml` + `src/jarn/version.py`, run `uv lock`,
    update `CHANGELOG.md`, and merge to `main`.
-3. Tag and push (the tag drives the whole release):
+3. Tag and push (the tag creates a **draft**, not a public release):
 
 ```bash
-git tag v0.11.0
-git push origin v0.11.0
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
-4. GitHub Actions `Release` workflow then, from that tag:
-   - publishes the PyPI sdist + wheel (`skip-existing`, so re-runs are no-ops);
-   - builds the three standalone binaries (linux-x64, linux-arm64, macos-arm64)
-     and attaches them to the GitHub Release;
-   - publishes `checksums.txt` for the one-command installer;
-   - assembles and publishes the npm packages — `jarn-cli` + the three
-     `jarn-cli-<platform>` binary packages — via the `npm` job.
-
-> npm publish runs **without `--provenance`** while the repo is private; re-enable
-> it (and `id-token: write`) once the repo is public. Intel macOS (`macos-13`) is
-> intentionally not built — its GitHub runner is deprecated.
+4. GitHub Actions builds binaries/packages plus the exact tagged `install.sh`, creates
+   sorted checksums, SPDX and CycloneDX SBOMs, and provenance/attestations where the
+   repository supports them. Ubuntu 20.04 executes every Linux artifact.
+5. The workflow attaches assets to a draft and runs authenticated clean-install,
+   glibc/npm-shadow, historical two-version update, real `jarn update`, rollback,
+   itemized uninstall, reinstall, data-preservation, and integrity canaries.
+6. The tag workflow intentionally stops at a verified draft unless the repository
+   variable `JARN_GA_PROMOTE_TAG` equals the exact immutable tag. Run all protected
+   UAT harnesses, commit the redacted evidence, and require
+   `python scripts/ga_evidence.py --strict` to pass before setting that variable.
+7. Rerun the same tag workflow only after the strict evidence gate. Only
+   `promote_release` may make the draft public; PyPI/npm consume the already verified
+   internal artifacts after the anonymous public-URL canary passes. Clear
+   `JARN_GA_PROMOTE_TAG` immediately afterward. A failed or skipped gate leaves a
+   draft and publishes no package-registry artifact.
 
 ## Post-release
 
-- Verify `pip install jarn` / `uv tool install jarn` from PyPI
-- Verify `npm install -g jarn-cli` → `jarn --version`
-- Open GitHub Release notes (copy from the latest CHANGELOG section)
+- Fetch the public tagged installer/checksum/assets and repeat the published URL canary.
+- Verify fresh PyPI and npm installs report the identical promoted version/digests.
+- Attach the validated GA evidence report; record any rollback/yank decision.
 
 ## v0.10.0 sign-off (2026-08-08) — RELEASED ✅
 

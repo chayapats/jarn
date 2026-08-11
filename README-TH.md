@@ -23,8 +23,11 @@ J.A.R.N. คือ terminal coding agent ที่ออกแบบในแน
 
 รันทั้งหมดใน terminal ของคุณ (Web UI อยู่ใน roadmap หลัง launch) ความสามารถเด่นได้แก่: **AGENTS.md / CLAUDE.md interop** (ทำงานร่วมกับ agent อื่นได้ทันที), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcript**, **`!` shell escape** (output ถูกส่งเข้า context ของ agent turn ถัดไปโดยอัตโนมัติ), **OS-level execution sandbox** (macOS `sandbox-exec` / Linux `bwrap`) และ **Docker container backend** (`execution.backend: docker`), **presets** (`/preset`, `jarn --preset`) ที่ตั้ง mode + sandbox พร้อมกันในคำสั่งเดียวพร้อม untrusted floor, **auto-checkpoint + `/undo` / `/redo`**, **repo map** (`/map`), **wiki knowledge base** (`/wiki`), **`/config` settings panel** (UI แบบ tab โต้ตอบได้ เซฟลง `~/.jarn/config.yaml`), และ **MCP health** ราย server (`/mcp status`)
 
-> **สถานะ:** v0.11.0 (Alpha) — อยู่บน PyPI (`pip install jarn`) และ npm
-> (`npm install -g jarn-cli` — binary สำเร็จรูป ไม่ต้องมี Python) v0.10 เพิ่ม
+> **สถานะ:** โค้ดบน `main` เป็น GA candidate ที่ยังไม่ publish ส่วนแพ็กเกจล่าสุด
+> source ชุดนี้คือ candidate v1.0.0; workflow จะเก็บ release เป็น draft จน automated
+> gate, protected UAT และ strict evidence ผ่านครบ ระหว่างนั้น v0.11.0 บน PyPI/npm
+> ยังเป็น Alpha และยังไม่ใช่ GA artifact
+> ตามเอกสารชุดนี้ v0.10 เพิ่ม
 > **Telegram gateway สำหรับ operator คนเดียว**: ควบคุมผ่าน DM แบบ long-poll,
 > แยก worker ตาม project root, approval card ที่คงอยู่หลัง restart, รับไฟล์/รูป,
 > ตั้งงานตามเวลา และ deploy บน VPS ด้วย systemd ได้ Release ก่อนหน้านี้เพิ่ม
@@ -56,14 +59,15 @@ J.A.R.N. คือ terminal coding agent ที่ออกแบบในแน
 **แนะนำ — ติดตั้งครบด้วยคำสั่งเดียว:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chayapats/jarn/main/install.sh | sh
+jarn_installer_tmp=$(mktemp "${TMPDIR:-/tmp}/jarn-install.XXXXXX") && trap '[ -z "${jarn_installer_tmp:-}" ] || rm -f "$jarn_installer_tmp"' 0 HUP INT TERM && curl -fsSL 'https://raw.githubusercontent.com/chayapats/jarn/main/install.sh' -o "$jarn_installer_tmp" && sh "$jarn_installer_tmp"; jarn_install_rc=$?; [ -z "${jarn_installer_tmp:-}" ] || rm -f "$jarn_installer_tmp"; trap - 0 HUP INT TERM; if [ "$jarn_install_rc" -eq 0 ] || [ "$jarn_install_rc" -eq 10 ]; then exec "$SHELL" -l; else (exit "$jarn_install_rc"); fi
 ```
 
-ตัวติดตั้งจะตรวจ OS, สถาปัตยกรรม CPU และ libc บน Linux แล้วดาวน์โหลด binary จาก
-GitHub Release ให้ตรงกับเครื่อง ตรวจสอบ SHA-256 ติดตั้งไว้ที่ `~/.local/bin`
-และเปิดขั้นตอน setup ครั้งแรกให้อัตโนมัติ หาก binary ใช้กับเครื่องไม่ได้ เช่น
-GLIBC เก่าเกินไป ตัวติดตั้งจะลง Python 3.12 แบบ managed และ J.A.R.N. เวอร์ชัน
-เดียวกันผ่าน `uv` ให้เอง รันคำสั่งเดิมซ้ำเมื่อต้องการอัปเดต
+คำสั่งนี้ดาวน์โหลดลงไฟล์ชั่วคราวแบบ private ก่อน จึงไม่รัน shell ถ้า `curl` ล้มเหลว
+จากนั้นตัวติดตั้งจะสำรวจ `jarn` เก่าทุกตำแหน่ง ตรวจ OS/CPU/libc, ตรวจ SHA-256,
+stage และ smoke-test candidate, activate แบบ transaction และตรวจว่าคำสั่งใน login
+shell ชี้มาที่ตัวใหม่จริง หาก native binary ใช้ไม่ได้ เช่น GLIBC เก่า จะใช้ Python
+แบบ isolated ที่จัดการให้เอง ส่วน `exec "$SHELL" -l` ท้ายคำสั่งแก้ข้อจำกัดที่ child
+shell ไม่สามารถเปลี่ยน PATH ของ parent shell ได้
 
 **ผ่าน npm** — เป็น binary สำเร็จรูป **ไม่ต้องมี Python**:
 
@@ -95,7 +99,7 @@ uv run jarn
 ```bash
 git clone <repo-url> && cd jarn
 uv sync --extra dev --extra telegram
-uv run jarn setup          # ทำครั้งเดียวต่อเครื่อง — เก็บ API key ใน ~/.jarn
+uv run jarn setup          # ทำครั้งเดียวต่อเครื่อง — config เก็บแค่ reference ไป keychain/env/file
 cd your-project
 jarn doctor                # ตรวจสอบ config, provider, และ extension ที่โหลดอยู่
 jarn                       # จะถามให้ trust ถ้าโปรเจกต์ประกาศ hook/MCP
@@ -106,24 +110,26 @@ jarn trust .               # pre-approve repo ที่คุณควบคุ�
 
 ## ถอนการติดตั้ง (Uninstall)
 
-หากต้องการลบ state ทั้งหมดของ J.A.R.N. (config, secrets, trust store, sessions) และ keychain entries ในระบบ:
+ถอนแบบแยกหมวดและเก็บข้อมูลผู้ใช้ไว้เป็นค่าเริ่มต้น:
 
 ```bash
-jarn uninstall          # แสดงรายการสิ่งที่จะถูกลบ แล้วถามยืนยัน
-jarn uninstall --yes    # ข้ามการถามยืนยัน
+jarn uninstall                         # เลือกหมวดทีละรายการ
+jarn uninstall --yes                   # ลบเฉพาะ executable ที่ J.A.R.N. จัดการ
+jarn uninstall --sessions --cache      # ยืนยันเฉพาะ session และ cache
+jarn uninstall --credentials --yes     # ลบ credential ของ J.A.R.N. อย่างชัดเจน
 ```
 
-`jarn uninstall` ลบเฉพาะ `~/.jarn` (global state) เท่านั้น — ไม่แตะ `.jarn/` ระดับโปรเจกต์เลย หลังลบเสร็จจะแสดงคำสั่ง package-manager สำหรับถอนตัว jarn เอง (`npm uninstall -g jarn-cli` หรือ `pip uninstall jarn`)
+ไม่ลบ Node, Python, uv หรือ Codex ที่ใช้ร่วมกับโปรแกรมอื่น และไม่แตะ `.jarn/`
+ระดับโปรเจกต์ ดูรายละเอียดใน [Update/rollback/uninstall](docs/UPDATE_ROLLBACK.md)
 
 ## เริ่มใช้งาน (Quick Start)
 
 **ด้วย ChatGPT/Codex subscription (ไม่คิดค่า OpenAI API key แยก):**
 
 ```bash
-# ติดตั้ง Codex CLI ทางการแยกต่างหาก และให้คำสั่ง `codex` อยู่บน PATH
-jarn codex login          # login ChatGPT โดย Codex เป็นผู้จัดการ credential
-jarn codex status         # ตรวจ auth mode + plan โดยไม่แสดง token
-jarn setup                # เลือก provider: codex_subscription
+jarn setup                # เลือก “Continue with ChatGPT”
+# setup จะเสนอ Codex dependency ที่ตรวจสอบแล้วและแสดงขั้นตอน login ให้เอง
+jarn auth status          # ตรวจ dependency, auth mode, plan/workspace โดยไม่แสดง token
 cd your-project && jarn
 ```
 
@@ -133,7 +139,7 @@ provider นี้ปิด execution tool ภายใน Codex แล้วแ
 usage จะแสดง token โดยมี API cost เป็น `$0` แต่ยังใช้ quota/credits ของ ChatGPT plan
 สำหรับ CI ที่ใช้ร่วมกันควรใช้ provider แบบ API key แทน
 
-**ด้วย OpenRouter (แนะนำ — คลิกเดียวในเบราว์เซอร์ ไม่ต้อง paste key เอง):**
+**ด้วย OpenRouter OAuth (คำสั่ง credential แยกใน Advanced):**
 
 ```bash
 jarn login        # เปิดเบราว์เซอร์ → อนุญาต → เก็บ key ใน OS keychain อัตโนมัติ
@@ -149,7 +155,7 @@ cd your-project
 jarn init         # สร้างไฟล์ JARN.md สำหรับ project context (ไม่บังคับ แต่แนะนำ)
 jarn              # เปิด TUI
 jarn doctor       # ตรวจสอบ config / provider / key / extension ได้ตลอดเวลา
-jarn bug          # รวมรายงาน bug แบบ redacted + เปิดฟอร์ม GitHub issue แบบกรอกข้อมูลล่วงหน้า
+jarn bug          # เขียนรายงานที่สแกน privacy แล้ว และถามก่อนเปิด GitHub
 ```
 
 **Shell completions (tab-complete subcommand และ flag):**
@@ -168,7 +174,8 @@ jarn completions fish > ~/.config/fish/completions/jarn.fish
 ```
 
 ถ้ายังไม่มี config เลย J.A.R.N. จะรัน setup wizard ให้อัตโนมัติในการเปิดครั้งแรก
-ใน wizard ตัวเลือก OpenRouter จะมีปุ่ม "Log in with browser" ให้ด้วย
+เพื่อให้ setup ย้อนกลับได้อย่างปลอดภัย OpenRouter OAuth ไม่เขียน credential ระหว่าง
+wizard; เลือก OpenRouter ใน Advanced แล้วรัน `jarn login` แยกหลัง setup เสร็จ
 
 ### Telegram gateway (ไม่บังคับ)
 
@@ -386,7 +393,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                 # 2466 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 3030 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)

@@ -2,17 +2,78 @@
 
 from __future__ import annotations
 
+import os
+import runpy
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
 from jarn.config.secrets import (
     SecretResolutionError,
+    SecretStorageError,
     is_reference,
     redact_secrets,
     resolve,
     store_secret,
 )
+
+
+def test_resolved_custom_secret_is_registered_for_all_sink_redaction(
+    monkeypatch,
+) -> None:
+    import jarn.config.secrets as secrets
+
+    credential = "arbitrary-provider-key-7q2"
+    secrets._clear_resolved_secrets_for_testing()
+    try:
+        monkeypatch.setenv("CUSTOM_PROVIDER_KEY", credential)
+        assert resolve("${CUSTOM_PROVIDER_KEY}") == credential
+        assert redact_secrets(f"provider replied with {credential}") == (
+            "provider replied with [REDACTED]"
+        )
+
+        # Local/test literals that are not credential-shaped must not become
+        # global replacement strings merely because resolve() returned them.
+        assert resolve("lm-studio") == "lm-studio"
+        assert redact_secrets("use lm-studio locally") == "use lm-studio locally"
+    finally:
+        secrets._clear_resolved_secrets_for_testing()
+
+
+def test_resolved_secret_registry_keeps_rotated_values_and_is_thread_safe(
+    monkeypatch,
+) -> None:
+    import jarn.config.secrets as secrets
+
+    old = "opaque-old-provider-credential"
+    new = "opaque-new-provider-credential"
+    secrets._clear_resolved_secrets_for_testing()
+    try:
+        monkeypatch.setenv("ROTATING_PROVIDER_KEY", old)
+        assert resolve("${ROTATING_PROVIDER_KEY}") == old
+        monkeypatch.setenv("ROTATING_PROVIDER_KEY", new)
+        assert resolve("${ROTATING_PROVIDER_KEY}") == new
+
+        values = [f"opaque-concurrent-credential-{index:03d}" for index in range(32)]
+        for index, value in enumerate(values):
+            monkeypatch.setenv(f"CONCURRENT_KEY_{index}", value)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            resolved = list(
+                pool.map(
+                    lambda index: resolve(f"${{CONCURRENT_KEY_{index}}}"),
+                    range(len(values)),
+                )
+            )
+        assert resolved == values
+
+        message = " ".join([old, new, *values])
+        output = redact_secrets(message)
+        assert all(value not in output for value in [old, new, *values])
+    finally:
+        secrets._clear_resolved_secrets_for_testing()
 
 
 def test_is_reference_includes_file():
@@ -46,20 +107,159 @@ def test_store_secret_uses_keychain_when_available(monkeypatch, tmp_path):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Unix file permission bits")
-def test_store_secret_falls_back_to_file_on_keychain_timeout(monkeypatch, tmp_path):
+def test_store_secret_timeout_fails_closed_without_file_fallback(monkeypatch, tmp_path):
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
 
     def _hang(*_a, **_k):
         raise TimeoutError("no dbus")
 
     monkeypatch.setattr("jarn.config.secrets._keyring_call", _hang)
-    stored = store_secret("jarn", "openai_compatible", "sk-pi")
-    assert stored.backend == "file"
-    assert stored.reference == "file:jarn/openai_compatible"
-    assert resolve(stored.reference) == "sk-pi"
+    with pytest.raises(SecretStorageError, match="completion state is unknown"):
+        store_secret("jarn", "openai_compatible", "sk-pi")
     secret_path = tmp_path / "home" / "secrets" / "jarn" / "openai_compatible"
-    assert secret_path.is_file()
-    assert oct(secret_path.stat().st_mode & 0o777) == oct(0o600)
+    assert not secret_path.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX worker lifecycle contract")
+@pytest.mark.parametrize(
+    ("operation", "value"),
+    [("set", "never-in-argv"), ("delete", None), ("metadata", None)],
+)
+def test_keyring_timeout_kills_and_reaps_worker_before_return(
+    monkeypatch, tmp_path, operation, value
+):
+    """A timed-out keyring process cannot perform a late external mutation."""
+
+    import jarn.config.secrets as secrets
+
+    pid_path = tmp_path / "worker.pid"
+    late_path = tmp_path / "late-write"
+    worker = f"""
+import json
+import os
+import pathlib
+import sys
+import time
+
+json.load(sys.stdin)
+pathlib.Path({str(pid_path)!r}).write_text(str(os.getpid()))
+time.sleep(5)
+pathlib.Path({str(late_path)!r}).write_text("mutated")
+"""
+    monkeypatch.setattr(secrets, "_KEYRING_WORKER_CODE", worker)
+
+    with pytest.raises(TimeoutError, match="did not respond"):
+        secrets._keyring_call(operation, "jarn", "openrouter", value, timeout=0.5)
+
+    pid = int(pid_path.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+    time.sleep(0.1)
+    assert not late_path.exists()
+
+
+def test_keyring_secret_is_sent_only_over_stdin(monkeypatch):
+    import jarn.config.secrets as secrets
+
+    credential = "raw-secret-never-in-process-arguments"
+    observed: dict[str, object] = {}
+
+    class FakeProcess:
+        returncode = 0
+        pid = 12345
+
+        def __init__(self, args, **kwargs):
+            observed["args"] = args
+            observed["kwargs"] = kwargs
+
+        def communicate(self, input=None, timeout=None):
+            observed["input"] = input
+            observed["timeout"] = timeout
+            return b'{"ok": true, "result": true}', b""
+
+        def poll(self):
+            return self.returncode
+
+    monkeypatch.setattr(secrets.subprocess, "Popen", FakeProcess)
+
+    assert secrets._keyring_call("set", "jarn", "openrouter", credential, timeout=1.0)
+    assert all(credential not in str(arg) for arg in observed["args"])
+    assert credential.encode() in observed["input"]
+    assert observed["kwargs"]["stderr"] is secrets.subprocess.PIPE
+
+
+def test_keyring_backend_metadata_never_requests_a_credential(monkeypatch):
+    import jarn.config.secrets as secrets
+
+    request: dict[str, object] = {}
+
+    def _metadata(op, service, account, value=None, *, timeout):
+        request.update(
+            op=op,
+            service=service,
+            account=account,
+            value=value,
+            timeout=timeout,
+        )
+        return {
+            "available": True,
+            "backend": "keyring.backends.test.Keyring",
+            "priority": 1,
+        }
+
+    monkeypatch.setattr(secrets, "_keyring_call", _metadata)
+
+    result = secrets.keyring_backend_metadata(timeout=0.25)
+
+    assert request == {
+        "op": "metadata",
+        "service": "jarn",
+        "account": "doctor",
+        "value": None,
+        "timeout": 0.25,
+    }
+    assert result["credentials_read"] is False
+
+
+def test_frozen_keyring_worker_command_has_only_non_secret_selector(monkeypatch):
+    import jarn.config.secrets as secrets
+
+    monkeypatch.setattr(secrets.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(secrets.sys, "executable", "/opt/jarn/bin/jarn")
+    assert secrets._keyring_worker_command() == [
+        "/opt/jarn/bin/jarn",
+        secrets._KEYRING_WORKER_SELECTOR,
+    ]
+
+
+def test_frozen_entry_dispatches_worker_without_cli_recursion(monkeypatch):
+    import jarn.config.secrets as secrets
+
+    calls: list[str] = []
+
+    def _worker() -> int:
+        calls.append("worker")
+        return 37
+
+    def _unexpected_cli() -> int:
+        pytest.fail("internal keyring worker recursed into the user-facing CLI")
+
+    monkeypatch.setattr(secrets, "_keyring_worker_main", _worker)
+    monkeypatch.setattr("jarn.cli.main", _unexpected_cli)
+    monkeypatch.setattr(sys, "argv", ["jarn", secrets._KEYRING_WORKER_SELECTOR])
+
+    entry = Path(__file__).parents[1] / "packaging" / "entry.py"
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(entry), run_name="__main__")
+    assert exit_info.value.code == 37
+    assert calls == ["worker"]
+
+
+def test_internal_keyring_worker_is_not_advertised_in_help():
+    import jarn.config.secrets as secrets
+    from jarn.cli import build_parser
+
+    assert secrets._KEYRING_WORKER_SELECTOR not in build_parser().format_help()
 
 
 def test_store_secret_falls_back_to_file_on_keyring_error(monkeypatch, tmp_path):
@@ -248,10 +448,10 @@ def test_secret_tree_permissions(tmp_path, monkeypatch):
     secrets.chmod(0o755)
     (home / "secrets").chmod(0o755)
 
-    def _timeout(*_a, **_k):
-        raise TimeoutError("no keychain")
+    def _unavailable(*_a, **_k):
+        raise RuntimeError("no keychain")
 
-    monkeypatch.setattr("jarn.config.secrets._keyring_call", _timeout)
+    monkeypatch.setattr("jarn.config.secrets._keyring_call", _unavailable)
     store_secret("jarn", "openrouter", "sk-test")
 
     secret_file = home / "secrets" / "jarn" / "openrouter"

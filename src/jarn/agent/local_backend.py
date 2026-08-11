@@ -26,6 +26,7 @@ import contextlib
 import io
 import locale
 import logging
+import os
 import queue
 import subprocess
 import threading
@@ -59,6 +60,24 @@ _DEFAULT_POLL_SECS = 0.2
 #: *bytes* (not lines) so no-newline output surfaces live; the size only bounds a
 #: single syscall's payload, not latency (``read1`` returns whatever is available).
 _READ_CHUNK_BYTES = 65536
+
+
+class LocaleOutputError(UnicodeDecodeError):
+    """Child-process output cannot be decoded under the active locale."""
+
+    def __str__(self) -> str:
+        active = (
+            os.environ.get("LC_ALL")
+            or os.environ.get("LC_CTYPE")
+            or os.environ.get("LANG")
+            or locale.getpreferredencoding(False)
+        )
+        return (
+            f"JARN-I18N-001: command output is not valid {self.encoding} under "
+            f"locale {active!r}. Configure a UTF-8 locale such as C.UTF-8, or make "
+            "the command emit valid text, then retry. "
+            f"Decoder detail: {super().__str__()}"
+        )
 
 
 def _make_text_decoder() -> io.IncrementalNewlineDecoder:
@@ -311,10 +330,19 @@ class CancellableLocalShellBackend(LocalShellBackend):
         with self._live_lock:
             self._live.add(proc)
         try:
-            if streaming:
-                outcome = self._communicate_streaming(proc, command, effective_timeout)
-            else:
-                outcome = self._communicate_blocking(proc, effective_timeout)
+            try:
+                if streaming:
+                    outcome = self._communicate_streaming(proc, command, effective_timeout)
+                else:
+                    outcome = self._communicate_blocking(proc, effective_timeout)
+            except UnicodeDecodeError as exc:
+                raise LocaleOutputError(
+                    exc.encoding,
+                    exc.object,
+                    exc.start,
+                    exc.end,
+                    exc.reason,
+                ) from exc
         finally:
             with self._live_lock:
                 self._live.discard(proc)
@@ -350,7 +378,7 @@ class CancellableLocalShellBackend(LocalShellBackend):
                 cwd=str(self.cwd),
                 start_new_session=True,  # own process group → whole tree is killable
             )
-        return subprocess.Popen(  # noqa: S602
+        return subprocess.Popen(  # noqa: S602  security: reviewed-shell=permission-engine
             command,
             shell=True,  # parity with the base backend (LLM-controlled shell)
             stdout=subprocess.PIPE,

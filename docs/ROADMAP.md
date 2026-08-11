@@ -4,7 +4,8 @@
 > choosing where to contribute. Items marked `[x]` are implemented and in the
 > current release; `[ ]` items are scaffolded or documented but not yet shipped.
 
-Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-09** (v0.11.0 released on PyPI + npm, Alpha).
+Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-11** (the source is the
+v1.0.0 GA candidate; v0.11.0 remains the latest public Alpha until promotion).
 
 ## v1 — implemented
 
@@ -61,7 +62,7 @@ Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-09** (v0.11.0 release
 - [x] `jarn` / `setup` / `init` / `doctor` (`--json`) CLI
 - [x] Strict config validation (typed bools, numeric ranges, unknown top-level keys rejected)
 - [x] Local rotating logs, opt-in LangSmith tracing
-- [x] `uv`/PyPI packaging, 2466 tests (+ packaging gate), clean lint + `mypy` CI
+- [x] `uv`/PyPI packaging, full pytest suite (+ packaging gate), clean lint + `mypy` CI
 - [x] Optional single-operator Telegram gateway — long-poll DM bot, per-root
   workers, durable approvals, inbound media, scheduler, and systemd deployment;
   operator guide: [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md)

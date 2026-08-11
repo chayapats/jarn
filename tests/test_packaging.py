@@ -36,11 +36,19 @@ def _run(
 def built_artifacts(tmp_path_factory) -> dict[str, Path]:
     """Build sdist + wheel once per module into a temp dist directory."""
     out = tmp_path_factory.mktemp("dist")
-    _run(["uv", "build", "--out-dir", str(out)], cwd=ROOT)
+    uv_cache = tmp_path_factory.mktemp("uv-cache")
+    build_env = os.environ.copy()
+    build_env["UV_CACHE_DIR"] = str(uv_cache)
+    _run(["uv", "build", "--out-dir", str(out)], cwd=ROOT, env=build_env)
     wheels = sorted(out.glob("*.whl"))
     sdists = sorted(out.glob("*.tar.gz"))
     assert wheels and sdists, f"uv build produced no artifacts in {out}"
-    return {"wheel": wheels[-1], "sdist": sdists[-1], "dist_dir": out}
+    return {
+        "wheel": wheels[-1],
+        "sdist": sdists[-1],
+        "dist_dir": out,
+        "uv_cache": uv_cache,
+    }
 
 
 def test_sdist_excludes_runtime_artifacts(built_artifacts):
@@ -66,19 +74,22 @@ def test_wheel_contains_repl_entrypoints(built_artifacts):
 def test_wheel_install_smoke(built_artifacts, tmp_path):
     """Install the built wheel in a clean venv and run CLI smoke commands."""
     venv = tmp_path / "venv"
-    _run(["uv", "venv", str(venv)], cwd=ROOT)
+    isolated = os.environ.copy()
+    isolated["UV_CACHE_DIR"] = str(built_artifacts["uv_cache"])
+    _run(["uv", "venv", str(venv)], cwd=ROOT, env=isolated)
     py = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     jarn = venv / ("Scripts/jarn.exe" if sys.platform == "win32" else "bin/jarn")
     wheel = built_artifacts["wheel"]
     jarn_home = tmp_path / "jarn-home"
     jarn_home.mkdir()
     (jarn_home / "config.yaml").write_text(
-        "providers:\n  openrouter:\n    type: openrouter\n    api_key: sk-test\n"
+        "providers:\n  openrouter:\n    type: openrouter\n"
+        "    api_key: ${OPENROUTER_API_KEY}\n"
         "    base_url: https://openrouter.ai/api/v1\n",
         encoding="utf-8",
     )
-    isolated = os.environ.copy()
     isolated["JARN_HOME"] = str(jarn_home)
+    isolated["OPENROUTER_API_KEY"] = "test-openrouter-key"
     _run(
         ["uv", "pip", "install", "--python", str(py), str(wheel)],
         cwd=ROOT,

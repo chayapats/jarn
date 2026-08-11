@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -84,13 +85,27 @@ def project_dangerous(raw: dict[str, Any]) -> dict[str, Any]:
     re-trigger a trust prompt.
     """
     from jarn.config.loader import _GLOBAL_ONLY_KEYS
+    from jarn.config.pydantic_schema import ConfigValidationError, migrate_config
+
+    # Fingerprint the effective current-schema meaning, not obsolete bytes. This
+    # keeps a trusted project trusted when the loader transactionally adds only
+    # schema metadata or removes a retired setting. Invalid/future versions fall
+    # back to their literal input and therefore remain fail-closed.
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            effective = migrate_config(raw)
+    except ConfigValidationError:
+        effective = raw
 
     danger: dict[str, Any] = {
-        k: raw[k]
-        for k in raw
-        if k not in SAFE_PROJECT_KEYS and k not in _GLOBAL_ONLY_KEYS
+        k: effective[k]
+        for k in effective
+        if k not in SAFE_PROJECT_KEYS
+        and k not in _GLOBAL_ONLY_KEYS
+        and k != "config_version"
     }
-    perms = raw.get("permissions")
+    perms = effective.get("permissions")
     if not isinstance(perms, dict):
         # A malformed ``permissions`` block (scalar/list) is untrusted raw input we
         # can't safely introspect — surface it as trust-relevant (fail safe) rather

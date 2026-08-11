@@ -13,12 +13,73 @@ from __future__ import annotations
 
 import pytest
 
-from jarn.config.defaults import ALL_PROVIDERS, PROVIDER_ENV_VARS
+from jarn.catalog import CatalogSource, ModelCatalogEntry, ModelCatalogSnapshot
+from jarn.config.defaults import CLOUD_PROVIDERS, PROVIDER_ENV_VARS
+
+
+@pytest.fixture(autouse=True)
+def _catalog_fixture(monkeypatch):
+    def load(provider: str, **_kwargs):
+        model = {
+            "anthropic": "claude-live",
+            "openai": "gpt-live",
+            "google": "gemini-live",
+        }.get(provider, "provider-live-model")
+        return ModelCatalogSnapshot(
+            provider_profile=provider,
+            provider_type=provider,
+            source=CatalogSource.PROVIDER_LIVE,
+            retrieved_at="2026-08-09T00:00:00Z",
+            ttl_seconds=3600,
+            expires_at="2026-08-09T01:00:00Z",
+            stale=False,
+            account_fingerprint="fixture",
+            models=(
+                ModelCatalogEntry(
+                    provider_profile=provider,
+                    model_id=model,
+                    ref=f"{provider}/{model}",
+                    display_name=model,
+                    is_default=True,
+                    account_available=True,
+                ),
+            ),
+            availability_verified=True,
+            provenance_label=f"Live {provider} fixture catalog",
+        )
+
+    monkeypatch.setattr("jarn.onboarding.tui_wizard.load_setup_catalog", load)
 
 
 def _clear_provider_env(monkeypatch) -> None:
     for ev in PROVIDER_ENV_VARS.values():
         monkeypatch.delenv(ev, raising=False)
+
+
+async def _choose_provider(pilot, app, provider: str) -> None:
+    """Navigate the simple first screen and, when needed, its detail screen."""
+
+    top = app.query_one("#step-list")
+    if provider == "anthropic":
+        top.highlighted = 1
+        await pilot.press("enter")
+        await pilot.pause()
+        return
+    if provider in ("ollama", "lmstudio"):
+        top.highlighted = 3
+    elif provider in CLOUD_PROVIDERS and provider != "openai_compatible":
+        top.highlighted = 2
+    else:
+        top.highlighted = 4
+    await pilot.press("enter")
+    await pilot.pause()
+    assert app.step == "provider_detail"
+    detail = app.query_one("#step-list")
+    detail.highlighted = next(
+        idx for idx, option in enumerate(detail._options) if option.id == f"opt:{provider}"
+    )
+    await pilot.press("enter")
+    await pilot.pause()
 
 
 # ---------------------------------------------------------------------------
@@ -42,25 +103,21 @@ async def test_recommended_provider_is_default_highlighted_when_anthropic_key_se
     async with app.run_test(size=(90, 40)) as pilot:
         await pilot.pause()
         assert app.step == "provider"
-        anthropic_idx = list(ALL_PROVIDERS).index("anthropic")
         ol = app.query_one("#step-list")
-        assert ol.highlighted == anthropic_idx
+        assert ol.highlighted == 1
         # The recommended tag is rendered somewhere in the option list.
         rendered = "\n".join(str(opt.prompt) for opt in ol._options)
         assert "recommended" in rendered
 
 
 @pytest.mark.asyncio
-async def test_choosing_detected_anthropic_stores_env_reference_not_secret(
-    tmp_path, monkeypatch
-):
+async def test_choosing_detected_anthropic_stores_env_reference_not_secret(tmp_path, monkeypatch):
     """Selecting the detected provider stores ``${ANTHROPIC_API_KEY}`` (a
     reference) and never inlines the secret — and skips straight past key entry."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     _clear_provider_env(monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-detected-secret")
     from jarn.config import paths
-    from jarn.config.loader import load_config
     from jarn.onboarding.tui_wizard import SetupApp
 
     app = SetupApp()
@@ -79,12 +136,11 @@ async def test_choosing_detected_anthropic_stores_env_reference_not_secret(
         await pilot.press("enter")  # save
         await pilot.pause()
 
-    cfg = load_config()
-    assert cfg.default_profile == "anthropic"
-    assert cfg.providers["anthropic"].api_key == "${ANTHROPIC_API_KEY}"
-    # The literal secret must never be written to disk.
-    written = paths.global_config_path().read_text(encoding="utf-8")
-    assert "sk-ant-detected-secret" not in written
+    # The Textual surface only stages; the shared outer completion gate commits.
+    assert app._saved_config["default_profile"] == "anthropic"
+    assert app._saved_config["providers"]["anthropic"]["api_key"] == "${ANTHROPIC_API_KEY}"
+    assert not paths.global_config_path().exists()
+    assert "sk-ant-detected-secret" not in repr(app._saved_config)
 
 
 # ---------------------------------------------------------------------------
@@ -93,39 +149,20 @@ async def test_choosing_detected_anthropic_stores_env_reference_not_secret(
 
 
 @pytest.mark.asyncio
-async def test_cloud_provider_without_key_prompts_before_confirm(
-    tmp_path, monkeypatch
-):
+async def test_cloud_provider_without_key_prompts_before_confirm(tmp_path, monkeypatch):
     """Choosing a cloud provider whose env var is unset and selecting the env
     storage option must NOT reach confirm with an unresolvable key — the wizard
     routes to the key-paste step first."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     _clear_provider_env(monkeypatch)
-    stored: dict[tuple[str, str], str] = {}
-
-    def _fake_store(service: str, account: str, value: str):
-        from jarn.config.secrets import StoredSecret
-
-        stored[(service, account)] = value
-        return StoredSecret(reference=f"keychain:{service}/{account}", backend="keychain")
-
-    monkeypatch.setattr(
-        "jarn.onboarding.tui_wizard.store_secret",
-        _fake_store,
-    )
     from jarn.config import paths
-    from jarn.config.loader import load_config
     from jarn.onboarding.tui_wizard import SetupApp
 
     app = SetupApp()
     async with app.run_test(size=(90, 40)) as pilot:
         await pilot.pause()
         # Pick openai (cloud, no env key set).
-        openai_idx = list(ALL_PROVIDERS).index("openai")
-        ol = app.query_one("#step-list")
-        ol.highlighted = openai_idx
-        await pilot.press("enter")  # provider → storage
-        await pilot.pause()
+        await _choose_provider(pilot, app, "openai")
         assert app.step == "storage"
         await pilot.press("enter")  # env (first) → should detect missing key
         await pilot.pause()
@@ -136,7 +173,8 @@ async def test_cloud_provider_without_key_prompts_before_confirm(
         inp.value = "sk-openai-pasted"
         await pilot.press("enter")
         await pilot.pause()
-        assert app.answers["key_ref"] == "keychain:jarn/openai"
+        assert app.pending_credentials.contains("openai")
+        assert app.answers["_credential_pending"] == "memory"
         # Continue to the end.
         while app.step != "confirm":
             await pilot.press("enter")
@@ -144,11 +182,10 @@ async def test_cloud_provider_without_key_prompts_before_confirm(
         await pilot.press("enter")  # save
         await pilot.pause()
 
-    assert stored[("jarn", "openai")] == "sk-openai-pasted"
-    cfg = load_config()
-    assert cfg.providers["openai"].api_key == "keychain:jarn/openai"
-    written = paths.global_config_path().read_text(encoding="utf-8")
-    assert "sk-openai-pasted" not in written
+    assert app.pending_credentials.get("openai") == "sk-openai-pasted"
+    assert not paths.global_config_path().exists()
+    state_text = (paths.global_home() / "setup-state.json").read_text(encoding="utf-8")
+    assert "sk-openai-pasted" not in state_text
 
 
 @pytest.mark.asyncio
@@ -163,11 +200,7 @@ async def test_cloud_provider_with_env_key_does_not_prompt(tmp_path, monkeypatch
     app = SetupApp()
     async with app.run_test(size=(90, 40)) as pilot:
         await pilot.pause()
-        openai_idx = list(ALL_PROVIDERS).index("openai")
-        ol = app.query_one("#step-list")
-        ol.highlighted = openai_idx
-        await pilot.press("enter")  # provider: openai (env key detected)
-        await pilot.pause()
+        await _choose_provider(pilot, app, "openai")
         # Detected env key → storage prompt is skipped; reference already set.
         assert app.step != "key"
         assert app.step != "storage"
@@ -175,9 +208,7 @@ async def test_cloud_provider_with_env_key_does_not_prompt(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_non_detected_cloud_provider_with_env_key_keeps_reference(
-    tmp_path, monkeypatch
-):
+async def test_non_detected_cloud_provider_with_env_key_keeps_reference(tmp_path, monkeypatch):
     """A cloud provider whose env var is set but that was NOT the top
     auto-detected hit still resolves its ${ENV} reference and skips key entry."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
@@ -191,11 +222,7 @@ async def test_non_detected_cloud_provider_with_env_key_keeps_reference(
     assert app.env_hit == ("anthropic", "ANTHROPIC_API_KEY")
     async with app.run_test(size=(90, 40)) as pilot:
         await pilot.pause()
-        google_idx = list(ALL_PROVIDERS).index("google")
-        ol = app.query_one("#step-list")
-        ol.highlighted = google_idx
-        await pilot.press("enter")  # provider → storage (not the detected hit)
-        await pilot.pause()
+        await _choose_provider(pilot, app, "google")
         assert app.step == "storage"
         await pilot.press("enter")  # env → GOOGLE_API_KEY resolves, skip key step
         await pilot.pause()
@@ -213,37 +240,23 @@ async def test_local_provider_never_prompts_for_key(tmp_path, monkeypatch):
     app = SetupApp()
     async with app.run_test(size=(90, 40)) as pilot:
         await pilot.pause()
-        ollama_idx = list(ALL_PROVIDERS).index("ollama")
-        ol = app.query_one("#step-list")
-        ol.highlighted = ollama_idx
-        await pilot.press("enter")
-        await pilot.pause()
+        await _choose_provider(pilot, app, "ollama")
         assert app.step == "base_url"
         assert "key_ref" not in app.answers
 
 
 @pytest.mark.asyncio
-async def test_tui_shows_file_fallback_notice_after_key_paste(tmp_path, monkeypatch):
-    """When keychain fails, the next setup step should explain what happened."""
+async def test_tui_defers_secret_storage_until_shared_commit_gate(tmp_path, monkeypatch):
+    """Paste stays in process memory; no keychain/file mutation happens in the TUI."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     _clear_provider_env(monkeypatch)
 
-    from jarn.config.secrets import StoredSecret
     from jarn.onboarding.tui_wizard import SetupApp
-
-    def _fake_store(service: str, account: str, value: str) -> StoredSecret:
-        return StoredSecret(reference=f"file:{service}/{account}", backend="file")
-
-    monkeypatch.setattr("jarn.onboarding.tui_wizard.store_secret", _fake_store)
 
     app = SetupApp()
     async with app.run_test(size=(90, 40)) as pilot:
         await pilot.pause()
-        idx = list(ALL_PROVIDERS).index("openai_compatible")
-        ol = app.query_one("#step-list")
-        ol.highlighted = idx
-        await pilot.press("enter")  # provider
-        await pilot.pause()
+        await _choose_provider(pilot, app, "openai_compatible")
         await pilot.press("enter")  # storage: env → missing key → key step
         await pilot.pause()
         assert app.step == "key"
@@ -251,11 +264,6 @@ async def test_tui_shows_file_fallback_notice_after_key_paste(tmp_path, monkeypa
         inp.value = "sk-pi"
         await pilot.press("enter")
         await pilot.pause()
-        from textual.widgets import Static
-
-        notice_widgets = [
-            w for w in app.query("#step Static").results(Static)
-            if "What to do next" in str(w.render())
-        ]
-        assert notice_widgets, "expected a file-fallback notice on the next step"
-        assert "Continue setup" in str(notice_widgets[0].render())
+        assert app.pending_credentials.get("openai_compatible") == "sk-pi"
+        assert app.answers["_credential_pending"] == "memory"
+        assert not (tmp_path / "home" / "secrets").exists()

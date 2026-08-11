@@ -18,8 +18,10 @@ import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
+from jarn.errors import ErrorCode, ErrorDetail, error_detail
+from jarn.exit_codes import EXIT_INTERNAL, EXIT_USAGE_CONFIG
 from jarn.telegram import require_aiogram
 
 _log = logging.getLogger("jarn.telegram.cli")
@@ -43,6 +45,36 @@ class GatewaySettings:
     fake_backend: bool
 
 
+def _gateway_detail(
+    code: ErrorCode,
+    summary: str,
+    *,
+    cause: str,
+    retryable: bool,
+    action: str,
+    component: str = "Telegram gateway",
+) -> ErrorDetail:
+    """Build the shared, centrally-redacted blocking error contract."""
+
+    return error_detail(
+        code,
+        summary,
+        cause=cause,
+        component=component,
+        retryable=retryable,
+        action=action,
+    )
+
+
+def _print_gateway_error(detail: ErrorDetail) -> None:
+    print(detail.render(), file=sys.stderr)
+
+
+def _raise_gateway_error(detail: ErrorDetail) -> NoReturn:
+    _print_gateway_error(detail)
+    raise SystemExit(EXIT_USAGE_CONFIG)
+
+
 def load_gateway_settings(
     *,
     fake_backend: bool = False,
@@ -51,17 +83,28 @@ def load_gateway_settings(
 ) -> GatewaySettings:
     """Load config and validate gateway prerequisites.
 
-    Raises :class:`SystemExit` with code 2 on configuration / extra errors
-    (messages written to stderr). Prefer calling :func:`run_gateway_cli` from
-    operators; this helper is exposed for tests.
+    Raises :class:`SystemExit` with code 2 on configuration / extra errors after
+    rendering the same stable error anatomy as the top-level CLI. Prefer calling
+    :func:`run_gateway_cli` from operators; this helper is exposed for tests.
     """
     environ = os.environ if env is None else env
 
     try:
         require_aiogram()
     except ImportError as exc:
-        print(str(exc), file=sys.stderr)
-        raise SystemExit(2) from exc
+        _raise_gateway_error(
+            _gateway_detail(
+                ErrorCode.GATEWAY_DEPENDENCY_MISSING,
+                "The Telegram gateway dependency is not installed.",
+                cause=str(exc),
+                retryable=False,
+                action=(
+                    "Install the matching optional extra with "
+                    "`pip install 'jarn[telegram]'`, then rerun `jarn gateway`."
+                ),
+                component="Telegram dependency",
+            )
+        )
 
     token = (environ.get("JARN_TELEGRAM_BOT_TOKEN") or "").strip()
     allowed: list[int] = []
@@ -73,11 +116,19 @@ def load_gateway_settings(
                 try:
                     allowed.append(int(part))
                 except ValueError:
-                    print(
-                        f"Invalid user id in JARN_TELEGRAM_ALLOWED_USER_IDS: {part!r}",
-                        file=sys.stderr,
+                    _raise_gateway_error(
+                        _gateway_detail(
+                            ErrorCode.GATEWAY_ALLOWLIST_INVALID,
+                            "The Telegram operator allowlist is invalid.",
+                            cause=("JARN_TELEGRAM_ALLOWED_USER_IDS contains a non-integer entry."),
+                            retryable=False,
+                            action=(
+                                "Set JARN_TELEGRAM_ALLOWED_USER_IDS to a "
+                                "comma-separated list of numeric Telegram user IDs."
+                            ),
+                            component="Telegram allowlist",
+                        )
                     )
-                    raise SystemExit(2) from None
 
     from jarn.config.loader import load_config
     from jarn.config.secrets import SecretResolutionError, resolve
@@ -86,17 +137,36 @@ def load_gateway_settings(
         try:
             cfg = load_config()
         except Exception as exc:  # noqa: BLE001
-            print(f"Failed to load config: {exc}", file=sys.stderr)
-            raise SystemExit(2) from exc
+            _raise_gateway_error(
+                _gateway_detail(
+                    ErrorCode.GATEWAY_CONFIG_INVALID,
+                    "Failed to load the Telegram gateway configuration.",
+                    cause=str(exc),
+                    retryable=False,
+                    action=(
+                        "Run `jarn config validate`, repair the reported file, "
+                        "then rerun `jarn gateway`."
+                    ),
+                    component="gateway configuration",
+                )
+            )
     else:
         cfg = config
 
     if not cfg.gateway.enabled:
-        print(
-            "gateway.enabled is false — enable it in ~/.jarn/config.yaml",
-            file=sys.stderr,
+        _raise_gateway_error(
+            _gateway_detail(
+                ErrorCode.GATEWAY_CONFIG_INVALID,
+                "The Telegram gateway is disabled.",
+                cause="gateway.enabled is false in the effective configuration.",
+                retryable=False,
+                action=(
+                    "Set gateway.enabled to true in the global config, run "
+                    "`jarn config validate`, then rerun `jarn gateway`."
+                ),
+                component="gateway configuration",
+            )
         )
-        raise SystemExit(2)
 
     tg = cfg.gateway.telegram
     if not token:
@@ -105,29 +175,57 @@ def load_gateway_settings(
             try:
                 resolved = resolve(ref)
             except SecretResolutionError as exc:
-                print(
-                    f"Failed to resolve gateway.telegram.token: {exc}",
-                    file=sys.stderr,
+                _raise_gateway_error(
+                    _gateway_detail(
+                        ErrorCode.GATEWAY_CREDENTIAL_INVALID,
+                        "Failed to resolve gateway.telegram.token.",
+                        cause=str(exc),
+                        retryable=False,
+                        action=(
+                            "Repair the configured keychain/environment/file "
+                            "reference, then rerun `jarn gateway`."
+                        ),
+                        component="Telegram credential",
+                    )
                 )
-                raise SystemExit(2) from exc
             token = (resolved or "").strip()
     if not allowed:
         allowed = list(tg.allowed_user_ids)
 
     if not token:
-        print(
-            "Missing bot token. Set gateway.telegram.token or "
-            "JARN_TELEGRAM_BOT_TOKEN.",
-            file=sys.stderr,
+        _raise_gateway_error(
+            _gateway_detail(
+                ErrorCode.GATEWAY_CREDENTIAL_INVALID,
+                "Missing bot token.",
+                cause=(
+                    "Neither gateway.telegram.token nor "
+                    "JARN_TELEGRAM_BOT_TOKEN resolved to a value."
+                ),
+                retryable=False,
+                action=(
+                    "Store the token through a supported secret reference or set "
+                    "JARN_TELEGRAM_BOT_TOKEN, then rerun `jarn gateway`."
+                ),
+                component="Telegram credential",
+            )
         )
-        raise SystemExit(2)
     if not allowed:
-        print(
-            "gateway.telegram.allowed_user_ids is empty — deny-by-default; "
-            "refusing to start.",
-            file=sys.stderr,
+        _raise_gateway_error(
+            _gateway_detail(
+                ErrorCode.GATEWAY_ALLOWLIST_INVALID,
+                "The Telegram operator allowlist is empty.",
+                cause=(
+                    "gateway.telegram.allowed_user_ids is empty; the gateway "
+                    "fails closed instead of accepting arbitrary users."
+                ),
+                retryable=False,
+                action=(
+                    "Add at least one numeric operator ID to "
+                    "gateway.telegram.allowed_user_ids, validate config, and retry."
+                ),
+                component="Telegram allowlist",
+            )
         )
-        raise SystemExit(2)
 
     env_fake = environ.get("JARN_TELEGRAM_FAKE_BACKEND", "").strip() == "1"
     return GatewaySettings(
@@ -184,41 +282,116 @@ def run_gateway_cli(
         cfg = load_config()
         setup_logging(cfg.observability.log_level)
     except Exception as exc:  # noqa: BLE001
-        print(f"Failed to load config: {exc}", file=sys.stderr)
-        return 2
+        _print_gateway_error(
+            _gateway_detail(
+                ErrorCode.GATEWAY_CONFIG_INVALID,
+                "Failed to load the Telegram gateway configuration.",
+                cause=str(exc),
+                retryable=False,
+                action=(
+                    "Run `jarn config validate`, repair the reported file, then "
+                    "rerun `jarn gateway`."
+                ),
+                component="gateway configuration",
+            )
+        )
+        return EXIT_USAGE_CONFIG
 
     try:
-        settings = load_gateway_settings(
-            fake_backend=fake_backend, env=env, config=cfg
-        )
+        settings = load_gateway_settings(fake_backend=fake_backend, env=env, config=cfg)
     except SystemExit as exc:
         return int(exc.code or 2)
 
-    backend, supervisor = build_backend(
-        fake_backend=settings.fake_backend,
-        repos=settings.repos,
-    )
-    if settings.fake_backend:
-        _log.warning(
-            "Using InMemoryGatewayBackend (dry-run) — no workers will run"
+    try:
+        backend, supervisor = build_backend(
+            fake_backend=settings.fake_backend,
+            repos=settings.repos,
         )
+    except Exception as exc:  # noqa: BLE001 - stable CLI boundary
+        _print_gateway_error(
+            _gateway_detail(
+                ErrorCode.GATEWAY_RUNTIME_FAILED,
+                "The Telegram gateway backend could not start.",
+                cause=str(exc),
+                retryable=True,
+                action="Run `jarn doctor --report`, correct the reported cause, and retry.",
+                component="gateway backend",
+            )
+        )
+        return EXIT_INTERNAL
+    if settings.fake_backend:
+        _log.warning("Using InMemoryGatewayBackend (dry-run) — no workers will run")
     else:
         _log.info(
-            "Gateway starting with DaemonSupervisor + SessionRouter "
-            "(allowlist=%s)",
+            "Gateway starting with DaemonSupervisor + SessionRouter (allowlist=%s)",
             settings.allowed_user_ids,
         )
 
     from jarn.telegram.bot import run_gateway_bot
 
     try:
-        return asyncio.run(
+        result = asyncio.run(
             run_gateway_bot(
                 token=settings.token,
                 allowed_user_ids=settings.allowed_user_ids,
                 backend=backend,
             )
         )
+        if result != 0:
+            from jarn.telegram.bot import (
+                EXIT_CONFLICT,
+                EXIT_LOCK_HELD,
+                EXIT_UNAUTHORIZED,
+            )
+
+            if result == EXIT_CONFLICT:
+                detail = _gateway_detail(
+                    ErrorCode.GATEWAY_RUNTIME_FAILED,
+                    "Another Telegram poller took this bot token.",
+                    cause="Telegram returned a getUpdates conflict (409).",
+                    retryable=False,
+                    action="Stop the other poller, then rerun `jarn gateway` once.",
+                    component="Telegram polling",
+                )
+            elif result == EXIT_LOCK_HELD:
+                detail = _gateway_detail(
+                    ErrorCode.GATEWAY_RUNTIME_FAILED,
+                    "Another local gateway process is already active.",
+                    cause="The gateway process lock is currently held.",
+                    retryable=True,
+                    action="Stop or inspect the active gateway process before retrying.",
+                    component="gateway process lock",
+                )
+            elif result == EXIT_UNAUTHORIZED:
+                detail = _gateway_detail(
+                    ErrorCode.GATEWAY_CREDENTIAL_INVALID,
+                    "Telegram rejected the configured bot token.",
+                    cause="Token syntax or Telegram authentication failed.",
+                    retryable=False,
+                    action="Replace the token reference with a valid bot token and retry.",
+                    component="Telegram credential",
+                )
+            else:
+                detail = _gateway_detail(
+                    ErrorCode.GATEWAY_RUNTIME_FAILED,
+                    "The Telegram gateway stopped with an error.",
+                    cause=f"The gateway returned process status {result}.",
+                    retryable=True,
+                    action="Run `jarn doctor --report`, inspect the gateway log, and retry.",
+                )
+            _print_gateway_error(detail)
+        return result
+    except Exception as exc:  # noqa: BLE001 - stable CLI boundary
+        _print_gateway_error(
+            _gateway_detail(
+                ErrorCode.GATEWAY_RUNTIME_FAILED,
+                "The Telegram gateway stopped unexpectedly.",
+                cause=str(exc),
+                retryable=True,
+                action="Run `jarn doctor --report`, inspect the gateway log, and retry.",
+            )
+        )
+        return EXIT_INTERNAL
     finally:
         if supervisor is not None:
             with contextlib.suppress(Exception):

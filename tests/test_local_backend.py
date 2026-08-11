@@ -197,12 +197,12 @@ def test_execute_streaming_pumps_bytes_partial_and_bad_utf8(tmp_path):
 
     # (b) invalid UTF-8 must be surfaced, matching the blocking path's raise.
     blocking = CancellableLocalShellBackend(root_dir=str(tmp_path), virtual_mode=True)
-    with pytest.raises(UnicodeDecodeError):
+    with pytest.raises(UnicodeDecodeError, match="JARN-I18N-001.*UTF-8"):
         blocking.execute(r"printf '\377'")
 
     sink: list[ToolProgress] = []
     streaming = CancellableLocalShellBackend(
         root_dir=str(tmp_path), virtual_mode=True, progress_sink=sink.append,
     )
-    with pytest.raises(UnicodeDecodeError):
+    with pytest.raises(UnicodeDecodeError, match="JARN-I18N-001.*UTF-8"):
         streaming.execute(r"printf '\377'")

@@ -10,7 +10,9 @@ from pathlib import Path
 from rich.markdown import Markdown
 from rich.markup import escape as _rich_escape
 
+from jarn.agent.checkpoint import RestorePreview
 from jarn.agent.local_backend import CancellableLocalShellBackend
+from jarn.controller.commands.session import format_undo_preview
 from jarn.repl import turn as repl_turn
 from jarn.repl.turn import _apply_model_ref
 from jarn.tui import palette
@@ -194,7 +196,7 @@ class CommandMixin:
         if name in ("undo", "redo"):
             # Async APIs embed settle_snapshot — one path for REPL and remote.
             result = (
-                await self.controller.undo()
+                await self.controller.undo(confirm=self._confirm_undo)
                 if name == "undo"
                 else await self.controller.redo()
             )
@@ -229,6 +231,21 @@ class CommandMixin:
             self.controller._invalidate_runtime()
         if result.quit and self.app is not None:
             self.app.exit()
+
+    async def _confirm_undo(self, preview: RestorePreview) -> bool:
+        """Show the exact restore scope, then require an explicit yes."""
+        self.console.print(format_undo_preview(preview), highlight=False)
+        self.console.print(
+            f"[{palette.C_WARN}]Current content in the affected files will be "
+            f"restored to this checkpoint.[/{palette.C_WARN}] "
+            f"[{palette.C_DIM}]/redo can recover the current state.[/{palette.C_DIM}]",
+            highlight=False,
+        )
+        answer = await self._ask(
+            "Restore these file changes? Type 'y' to confirm; "
+            "anything else cancels [y/N]: "
+        )
+        return answer.strip().lower() in ("y", "yes")
 
     async def _cmd_git_seed(self, which: str) -> None:
         """`/commit` and `/review`: gather the diff and seed an agent turn.
@@ -664,6 +681,28 @@ class CommandMixin:
     async def _pick_model_or_mode(self, what: str) -> None:
         c = self.console
         if what == "model":
+            if self.controller.model_catalog_supported():
+                c.print(
+                    f"[{palette.C_DIM}]Checking live model catalogs…"
+                    f"[/{palette.C_DIM}]"
+                )
+                snapshot = await asyncio.to_thread(self.controller.refresh_model_catalog)
+                if (
+                    self.controller.model_catalog_requires_verification()
+                    and not snapshot.availability_verified
+                ):
+                    detail = snapshot.error.message if snapshot.error else snapshot.provenance_label
+                    c.print(
+                        f"[{palette.C_WARN}]active-provider catalog unverified: "
+                        f"{_rich_escape(detail)}[/{palette.C_WARN}]  "
+                        f"[{palette.C_DIM}]· verified models from other configured providers "
+                        f"remain selectable[/{palette.C_DIM}]"
+                    )
+                else:
+                    c.print(
+                        f"[{palette.C_DIM}]{_rich_escape(snapshot.provenance_label)}"
+                        f"[/{palette.C_DIM}]"
+                    )
             choices = self.controller.model_choices()
             options: list[tuple[str, str | None]] = [
                 (f"{key}  ({hint})", key) for key, hint in choices
@@ -686,7 +725,9 @@ class CommandMixin:
                 return
             chosen = custom
         if what == "model":
-            _apply_model_ref(self.controller, c, str(chosen))
+            ref = str(chosen)
+            effort = await self._pick_reasoning_effort(ref)
+            _apply_model_ref(self.controller, c, ref, reasoning_effort=effort)
         else:
             result = await self.controller.set_permission_mode(
                 str(chosen),
@@ -707,35 +748,80 @@ class CommandMixin:
                 c.print(result.text)
 
     async def _refresh_models(self) -> None:
-        """Re-query local endpoints (Ollama / LM Studio) and pick from the result.
-
-        Degrades to manual entry with a note when no endpoint answers, so it never
-        leaves the user stuck.
-        """
+        """Refresh every configured provider and pick only verified entries."""
         c = self.console
-        # Probing can block briefly on the network; keep the event loop live.
-        discovered = await asyncio.to_thread(self.controller.discover_models)
-        if not discovered:
+        if self.controller.model_catalog_supported():
             c.print(
-                f"[{palette.C_DIM}]No local models found — is Ollama/LM Studio running? "
-                f"Use /model to pick a configured model or paste a ref.[/{palette.C_DIM}]"
+                f"[{palette.C_DIM}]Refreshing live model catalogs…"
+                f"[/{palette.C_DIM}]"
             )
-            custom = (await self._ask("Paste model ref (blank to cancel): ")).strip()
-            if custom:
-                _apply_model_ref(self.controller, c, custom)
-            return
-        options: list[tuple[str, str | None]] = [
-            (f"{ref}  ({profile})", ref) for ref, profile in discovered
-        ]
-        options.append(("Cancel", None))
-        chosen = await self._pick_menu(
-            options,
-            header="Pick model · ↑/↓ · Enter · Esc cancel",
-            cancel_returns=None,
+            snapshot = await asyncio.to_thread(self.controller.refresh_model_catalog)
+            c.print(
+                f"[{palette.C_DIM}]{_rich_escape(snapshot.provenance_label)}"
+                f"[/{palette.C_DIM}]"
+            )
+            if (
+                self.controller.model_catalog_requires_verification()
+                and not snapshot.availability_verified
+            ):
+                detail = snapshot.error.message if snapshot.error else snapshot.provenance_label
+                c.print(
+                    f"[{palette.C_WARN}]Could not verify the active provider: "
+                    f"{_rich_escape(detail)}[/{palette.C_WARN}]  "
+                    f"[{palette.C_DIM}]· checking other configured providers[/{palette.C_DIM}]"
+                )
+            entries = self.controller.verified_catalog_models()
+            if entries:
+                options: list[tuple[str, str | None]] = []
+                for entry in entries:
+                    markers: list[str] = []
+                    if entry.is_default:
+                        markers.append("account default")
+                    if entry.default_reasoning_effort:
+                        markers.append(f"reasoning {entry.default_reasoning_effort}")
+                    suffix = f"  ({', '.join(markers)})" if markers else ""
+                    options.append((f"{entry.display_name}{suffix}", entry.ref))
+                options.append(("Cancel", None))
+                chosen = await self._pick_menu(
+                    options,
+                    header="Pick model · ↑/↓ · Enter · Esc cancel",
+                    cancel_returns=None,
+                )
+                if chosen is None:
+                    return
+                ref = str(chosen)
+                effort = await self._pick_reasoning_effort(ref)
+                _apply_model_ref(self.controller, c, ref, reasoning_effort=effort)
+                return
+
+        c.print(
+            f"[{palette.C_DIM}]No verified models were reported by the configured providers. "
+            f"Check credentials/endpoints, or use Advanced manual entry.[/{palette.C_DIM}]"
         )
-        if chosen is None:
-            return
-        _apply_model_ref(self.controller, c, str(chosen))
+        custom = (await self._ask("Paste model ref (blank to cancel): ")).strip()
+        if custom:
+            _apply_model_ref(self.controller, c, custom)
+
+    async def _pick_reasoning_effort(self, model_ref: str) -> str | None:
+        """Pick only efforts the selected live catalog entry supports."""
+
+        choices = self.controller.reasoning_choices(model_ref)
+        default = self.controller.default_reasoning_effort(model_ref)
+        if not choices:
+            return default
+        if len(choices) == 1:
+            return choices[0][0]
+        options: list[tuple[str, str | None]] = []
+        for value, description in choices:
+            marker = " · default" if value == default else ""
+            detail = f" — {description}" if description else ""
+            options.append((f"{value}{marker}{detail}", value))
+        options.append(("Cancel", None))
+        return await self._pick_menu(
+            options,
+            header="Reasoning effort · ↑/↓ · Enter · Esc cancel",
+            cancel_returns=default,
+        )
 
     async def _replay_transcript(self) -> None:
         try:

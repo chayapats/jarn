@@ -1,0 +1,70 @@
+{
+  "automated_tests": [
+    "tests/test_ga_errors_and_doctor.py",
+    "tests/test_ga_doctor_inventory.py",
+    "tests/test_update.py",
+    "tests/test_uninstall_ga.py",
+    "tests/test_turn_runner.py"
+  ],
+  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q tests/test_ga_errors_and_doctor.py tests/test_ga_doctor_inventory.py tests/test_exit_codes.py tests/test_update.py tests/test_uninstall_ga.py tests/test_turn_runner.py tests/test_codex_subscription.py tests/test_local_backend.py tests/test_background.py tests/test_model_catalog.py tests/test_auth_service.py; updater loopback E2E outside restricted sandbox",
+  "criterion_ids": [
+    "AC-ERR-001",
+    "AC-ERR-002",
+    "AC-ERR-003",
+    "AC-ERR-004",
+    "AC-ERR-005",
+    "AC-ERR-006",
+    "AC-DOCTOR-001",
+    "AC-DOCTOR-002",
+    "AC-DOCTOR-003",
+    "AC-UPDATE-001",
+    "AC-UPDATE-002",
+    "AC-UPDATE-003",
+    "AC-UPDATE-004",
+    "AC-UPDATE-005",
+    "AC-UPDATE-006",
+    "AC-UPDATE-007",
+    "AC-UNINSTALL-001",
+    "AC-UNINSTALL-002",
+    "AC-PERF-004",
+    "AC-REL-001",
+    "AC-REL-002",
+    "AC-REL-003",
+    "AC-REL-004"
+  ],
+  "decisions": [
+    "Timeout and cancellation tests include kill/reap and no-late-mutation assertions; update E2E used a credential-free loopback release fixture."
+  ],
+  "documentation_lookups": [],
+  "duration_seconds": 305.0,
+  "ended_at": "2026-08-11T14:59:30Z",
+  "errors": [],
+  "implementation": [
+    "src/jarn/errors.py",
+    "src/jarn/doctor",
+    "src/jarn/update.py",
+    "src/jarn/uninstall.py",
+    "src/jarn/agent"
+  ],
+  "limitations": [
+    "A public release update and real network outage remain TEST-RELEASE/UAT-006 evidence."
+  ],
+  "platform": {
+    "architecture": "arm64",
+    "libc": "n/a",
+    "os": "macOS",
+    "version": "26.5.2"
+  },
+  "record_id": "LOCAL-RELIABILITY-ADMIN-20260811",
+  "redaction": {
+    "home_path_redacted": false,
+    "host_identifier_redacted": false,
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false
+  },
+  "result": "Stable error anatomy/taxonomy, comprehensive bounded doctor and safe repair/report, install-aware update preview/activation/rollback, atomic itemized uninstall, visible bounded network waits, child cleanup, malformed protocol control, and no-side-effect replay contracts passed.",
+  "schema_version": 1,
+  "started_at": "2026-08-11T14:34:18Z",
+  "status": "passed"
+}

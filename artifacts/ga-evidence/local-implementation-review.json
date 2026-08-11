@@ -1,0 +1,48 @@
+{
+  "automated_tests": [
+    "tests/test_subprocess_security_audit.py",
+    "tests/test_auth_service.py",
+    "tests/test_model_catalog.py",
+    "tests/test_installer.py",
+    "tests/test_util_atomic.py"
+  ],
+  "command": "git diff --check; .venv/bin/ruff check .; .venv/bin/mypy src/jarn; full 3029-test accounting; manual constraint review against section T",
+  "criterion_ids": [
+    "CONSTRAINT-IMPLEMENTATION"
+  ],
+  "decisions": [
+    "The dirty worktree was treated as user/shared-agent work and unrelated changes were preserved.",
+    "Publishing and tagging remain intentionally unauthorized and unperformed."
+  ],
+  "documentation_lookups": [],
+  "duration_seconds": 1722.0,
+  "ended_at": "2026-08-11T15:03:00Z",
+  "errors": [],
+  "implementation": [
+    "docs/GOAL_GENERAL_AVAILABILITY.md",
+    "src/jarn",
+    "install.sh",
+    "tests"
+  ],
+  "limitations": [
+    "This review does not promote aggregate GA completion; external platform, published-artifact, and manual UAT gates remain open."
+  ],
+  "platform": {
+    "architecture": "arm64",
+    "libc": "n/a",
+    "os": "macOS",
+    "version": "26.5.2"
+  },
+  "record_id": "LOCAL-IMPLEMENTATION-REVIEW-20260811",
+  "redaction": {
+    "home_path_redacted": false,
+    "host_identifier_redacted": false,
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false
+  },
+  "result": "Section T review passed: compatibility aliases and advanced providers remain; auth/catalog/redaction are shared; state changes are atomic/recoverable; subprocess audit passes; regression assertions remain strict; entitlement/auth/install success are verified rather than inferred; standard install is user-space; cleanup is explicit; no tag, release, publish, or unauthorized remote mutation occurred.",
+  "schema_version": 1,
+  "started_at": "2026-08-11T14:34:18Z",
+  "status": "passed"
+}

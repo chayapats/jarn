@@ -25,6 +25,28 @@ def test_publishes_content(tmp_path):
     assert target.read_text(encoding="utf-8") == "hello"
 
 
+def test_fsyncs_content_before_rename_and_parent_after(tmp_path, monkeypatch):
+    calls: list[str] = []
+    real_replace = os.replace
+    real_fsync = os.fsync
+
+    def fsync(fd):
+        calls.append("fsync")
+        return real_fsync(fd)
+
+    def replace(src, dst):
+        calls.append("replace")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(os, "replace", replace)
+    atomic_write_text(tmp_path / "durable.txt", "ready")
+
+    assert calls[0:2] == ["fsync", "replace"]
+    if os.name != "nt":
+        assert calls == ["fsync", "replace", "fsync"]
+
+
 def test_creates_missing_parents(tmp_path):
     target = tmp_path / "a" / "b" / "out.txt"
     atomic_write_text(target, "x")
@@ -35,14 +57,15 @@ def test_temp_name_is_unique_per_call(tmp_path, monkeypatch):
     """A FIXED `<path>.tmp` is the defect: two writers renamed each other's
     half-written file over the target and raised FileNotFoundError."""
     seen: list[str] = []
-    real = Path.write_text
+    real = os.open
 
-    def spy(self, *a, **kw):
-        if self.name.endswith(".tmp"):
-            seen.append(self.name)
-        return real(self, *a, **kw)
+    def spy(path, flags, *args, **kwargs):
+        candidate = Path(path)
+        if candidate.name.endswith(".tmp"):
+            seen.append(candidate.name)
+        return real(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "write_text", spy)
+    monkeypatch.setattr(os, "open", spy)
     target = tmp_path / "out.txt"
     for _ in range(5):
         atomic_write_text(target, "x")
@@ -55,17 +78,25 @@ def test_temp_name_is_unique_per_call(tmp_path, monkeypatch):
 def test_mode_is_applied_before_the_rename(tmp_path, monkeypatch):
     """A secret written then chmod'ed is world-readable in between. The mode must
     be on the temp file, so the published file is never briefly at the umask."""
-    observed: list[int] = []
-    real = os.replace
+    observed_before_write: list[int] = []
+    observed_at_rename: list[int] = []
+    real_fdopen = os.fdopen
+    real_replace = os.replace
+
+    def fdopen_spy(fd, *args, **kwargs):
+        observed_before_write.append(os.fstat(fd).st_mode & 0o777)
+        return real_fdopen(fd, *args, **kwargs)
 
     def spy(src, dst):
-        observed.append(Path(src).stat().st_mode & 0o777)
-        return real(src, dst)
+        observed_at_rename.append(Path(src).stat().st_mode & 0o777)
+        return real_replace(src, dst)
 
+    monkeypatch.setattr(os, "fdopen", fdopen_spy)
     monkeypatch.setattr(os, "replace", spy)
     target = tmp_path / "key"
     atomic_write_text(target, "gsk_secret", mode=0o600)
-    assert observed == [0o600]
+    assert observed_before_write == [0o600]
+    assert observed_at_rename == [0o600]
     assert target.stat().st_mode & 0o777 == 0o600
 
 

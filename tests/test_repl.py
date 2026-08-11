@@ -186,6 +186,12 @@ async def test_write_approval_shows_diff(tmp_path, monkeypatch):
     await repl._approve(console, ctrl, request, ask=_ask_returning("r"))
     out = console.file.getvalue()
     assert "a brand new line" in out  # diff body shown before the prompt
+    assert "working directory:" in out
+    assert str(ctrl.project_root) in out.replace("\n", "")
+    assert "applies once or to a scoped remembered rule" in out
+    assert "remembered scope:" in out
+    assert "capability write" in out
+    assert "target 'notes.txt'" in out
     ctrl.close()
 
 
@@ -503,6 +509,11 @@ async def test_fallback_retry_no_duplicate_human_message(tmp_path, monkeypatch):
         routing=RoutingConfig(main="openrouter/m", fallback=["openrouter/f1"]),
     )
     ctrl = Controller(cfg, root)
+    monkeypatch.setattr(
+        ctrl,
+        "validate_selected_model_catalog",
+        lambda: (True, "test catalog verified"),
+    )
 
     fake = _Flaky(messages=iter([AIMessage(content="recovered answer"),
                                  AIMessage(content="unused")]))
@@ -2625,6 +2636,80 @@ def _git_repo_with_commit(root):
     g("commit", "-m", "init")
 
 
+def _undo_app(tmp_path, monkeypatch):
+    """Inline app with a real checkpointed edit ready for `/undo`."""
+    from jarn import repl
+    from jarn.config.schema import GitConfig
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    _git_repo_with_commit(root)
+    (root / ".jarn").mkdir(parents=True, exist_ok=True)
+    cfg = Config(
+        default_profile="openrouter",
+        providers={
+            "openrouter": ProviderConfig(type=ProviderType.OPENROUTER, api_key="x")
+        },
+        routing=RoutingConfig(main="openrouter/m"),
+        git=GitConfig(autocheckpoint=True),
+    )
+    app = repl.InlineApp(cfg, root)
+    app.console = Console(file=StringIO(), width=100)
+    tracked = root / "file.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    assert app.controller.checkpoint_manager.snapshot("test-turn").ok
+    tracked.write_text("after\n", encoding="utf-8")
+    return app, tracked
+
+
+@pytest.mark.asyncio
+async def test_command_undo_previews_and_requires_explicit_yes(tmp_path, monkeypatch):
+    app, tracked = _undo_app(tmp_path, monkeypatch)
+
+    async def _noop_extensions():
+        return None
+
+    prompts: list[str] = []
+
+    async def _confirm(prompt: str) -> str:
+        prompts.append(prompt)
+        return "yes"
+
+    monkeypatch.setattr(app, "_ensure_extensions", _noop_extensions)
+    monkeypatch.setattr(app, "_ask", _confirm)
+
+    await app._command("undo", "")
+
+    output = app.console.file.getvalue()
+    assert "Undo preview" in output
+    assert "file.txt" in output
+    assert "Affected changes" in output
+    assert "/redo can recover" in output
+    assert prompts and "Type 'y' to confirm" in prompts[0]
+    assert tracked.read_text(encoding="utf-8") == "before\n"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_command_undo_cancel_leaves_files_untouched(tmp_path, monkeypatch):
+    app, tracked = _undo_app(tmp_path, monkeypatch)
+
+    async def _noop_extensions():
+        return None
+
+    monkeypatch.setattr(app, "_ensure_extensions", _noop_extensions)
+    monkeypatch.setattr(app, "_ask", _ask_returning(""))
+
+    await app._command("undo", "")
+
+    output = app.console.file.getvalue()
+    assert "Undo preview" in output
+    assert "cancelled" in output.lower()
+    assert "no files were changed" in output.lower()
+    assert tracked.read_text(encoding="utf-8") == "after\n"
+    app.controller.close()
+
+
 @pytest.mark.asyncio
 async def test_abort_cancels_running_turn_and_rolls_back(tmp_path, monkeypatch):
     """/abort stops the in-flight turn AND reverts its edits in one action."""
@@ -3182,8 +3267,13 @@ async def test_confirm_and_cycle_yolo_declined_keeps_mode(tmp_path, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_command_model_refresh_picks_discovered_model(tmp_path, monkeypatch):
-    """`/model refresh` re-queries local endpoints and applies the picked model."""
+    """`/model refresh` applies a model from a verified local catalog."""
     app = _make_inline_app(tmp_path, monkeypatch)
+    from jarn.catalog import ModelCatalogCache, ModelCatalogService
+
+    app.controller._model_catalog_service = ModelCatalogService(
+        cache=ModelCatalogCache(tmp_path / "catalog-cache")
+    )
     # An ollama provider must be configured for the discovered ref to be
     # recognised as already-qualified (otherwise it'd reroute to the default).
     app.controller.config.providers["ollama"] = ProviderConfig(
@@ -3193,48 +3283,81 @@ async def test_command_model_refresh_picks_discovered_model(tmp_path, monkeypatc
     async def _noop_ext() -> None:
         return None
     monkeypatch.setattr(app, "_ensure_extensions", _noop_ext)
-    # discover_models is mocked → no real network.
-    monkeypatch.setattr(
-        app.controller,
-        "discover_models",
-        lambda: [("ollama/qwen3-coder:30b", "ollama"), ("ollama/llama3:8b", "ollama")],
+    from jarn.providers import (
+        RemoteModelCatalog,
+        RemoteModelDiscoveryError,
+        RemoteModelRecord,
     )
 
-    task = asyncio.create_task(app._command("model", "refresh"))
-    # Wait until the picker registers its options, then select the first model.
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if app._menu_future is not None and app._menu_options:
-            break
-    assert app._menu_options[0][1] == "ollama/qwen3-coder:30b"
-    app._menu_future.set_result(app._menu_options[0][1])
-    await task
+    # Both provider probes are deterministic: active OpenRouter is unavailable,
+    # while Ollama reports two models through the unified catalog service.
+    def remote(provider, **_kwargs):
+        if provider.type is ProviderType.OLLAMA:
+            return RemoteModelCatalog(
+                (
+                    RemoteModelRecord("qwen3-coder:30b"),
+                    RemoteModelRecord("llama3:8b"),
+                ),
+                "live local fixture",
+                "local-scope",
+            )
+        raise RemoteModelDiscoveryError("offline")
 
-    assert app.controller.config.resolved_main_model() == "ollama/qwen3-coder:30b"
-    app.controller.close()
+    monkeypatch.setattr("jarn.catalog.service.fetch_remote_model_catalog", remote)
+
+    task = asyncio.create_task(app._command("model", "refresh"))
+    try:
+        # Wait until the picker registers its options, then select the first model.
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if app._menu_future is not None and app._menu_options:
+                break
+        assert app._menu_options[0][1] == "ollama/qwen3-coder:30b"
+        app._menu_future.set_result(app._menu_options[0][1])
+        await task
+
+        assert app.controller.config.resolved_main_model() == "ollama/qwen3-coder:30b"
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        app.controller.close()
 
 
 @pytest.mark.asyncio
 async def test_command_model_refresh_degrades_to_manual_when_unreachable(tmp_path, monkeypatch):
-    """`/model refresh` with no reachable endpoint prints a note + offers manual entry."""
+    """No verified catalog prints an honest note and offers Advanced manual entry."""
     app = _make_inline_app(tmp_path, monkeypatch)
+    from jarn.catalog import ModelCatalogCache, ModelCatalogService
+
+    app.controller._model_catalog_service = ModelCatalogService(
+        cache=ModelCatalogCache(tmp_path / "catalog-cache")
+    )
 
     async def _noop_ext() -> None:
         return None
     monkeypatch.setattr(app, "_ensure_extensions", _noop_ext)
-    monkeypatch.setattr(app.controller, "discover_models", lambda: [])
+    from jarn.providers import RemoteModelDiscoveryError
+
+    monkeypatch.setattr(
+        "jarn.catalog.service.fetch_remote_model_catalog",
+        lambda *_a, **_k: (_ for _ in ()).throw(RemoteModelDiscoveryError("offline")),
+    )
 
     async def _fake_ask(prompt: str) -> str:
         return "openrouter/manual-model"
     monkeypatch.setattr(app, "_ask", _fake_ask)
 
-    await app._command("model", "refresh")
+    try:
+        await asyncio.wait_for(app._command("model", "refresh"), timeout=5)
 
-    out = app.console.file.getvalue()
-    assert "No local models found" in out
-    # The manually-entered ref is applied (never blocks the user).
-    assert app.controller.config.resolved_main_model() == "openrouter/manual-model"
-    app.controller.close()
+        out = app.console.file.getvalue()
+        assert "No verified models were reported" in out
+        # The manually-entered ref is applied (never blocks the user).
+        assert app.controller.config.resolved_main_model() == "openrouter/manual-model"
+    finally:
+        app.controller.close()
 
 
 # -- review follow-up fixes (P4.C /abort, P3.B hint, P3.A clamp display) ----

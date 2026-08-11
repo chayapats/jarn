@@ -19,7 +19,8 @@ not touching the Telegram transport).
 
 ### Team onboarding
 
-Each developer runs `jarn setup` once (stores their API key under `~/.jarn`).
+Each developer runs `jarn setup` once. Config stores only a keychain,
+environment, or private-file reference; it never embeds the API key itself.
 When working in a project that declares hooks, MCP servers, or other capability
 keys in `.jarn/config.yaml`, either approve the launch-time trust prompt or run
 `jarn trust <project-root>` after reviewing the repo. `jarn doctor` lists every
@@ -37,7 +38,7 @@ uv run mypy src/                   # type-check (must report 0 errors)
 ```
 
 Before pushing, run all three gates locally — `ruff check src tests scripts`, `mypy src/`, and
-`pytest` (currently **2466** tests) after `uv sync --extra dev --extra telegram`. CI runs
+`pytest` (currently **3030** tests) after `uv sync --extra dev --extra telegram`. CI runs
 exactly these on every push/PR (lint → type-check → test, with the telegram extra) across
 Linux/macOS/Windows and Python 3.12/3.13, plus a `packaging` job and an `npm` job that runs
 the Node launcher + assembly tests (`node --test npm/jarn-cli/test/launcher.test.js` and

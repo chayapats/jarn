@@ -23,11 +23,29 @@ class CommandSpec:
 COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("help", "Show available commands and shortcuts.", "core", group="Daily"),
     CommandSpec(
+        "status",
+        "Show the active directory, model, permissions, provider, and session state.",
+        "core",
+        group="Daily",
+    ),
+    CommandSpec(
         "model",
         "Show or switch the active model; /model refresh re-queries local endpoints.",
         "both",
         usage="[/ref|refresh]",
         group="Daily",
+    ),
+    CommandSpec(
+        "login",
+        "Sign in or re-verify ChatGPT authentication (maps to `jarn auth login`).",
+        "core",
+        group="Setup",
+    ),
+    CommandSpec(
+        "logout",
+        "Sign out of ChatGPT authentication (maps to `jarn auth logout`).",
+        "core",
+        group="Setup",
     ),
     CommandSpec(
         "mode",
@@ -99,6 +117,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         group="Daily",
     ),
     CommandSpec("clear", "Clear the conversation and start a fresh thread.", "core", group="Daily"),
+    CommandSpec(
+        "new",
+        "Start a fresh conversation (alias for /clear).",
+        "core",
+        group="Daily",
+    ),
     CommandSpec(
         "config",
         "View or edit settings: /config, /config get <key>, /config set <key> <value> (persists).",
@@ -208,6 +232,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         group="Session",
     ),
     CommandSpec("quit", "Exit J.A.R.N.", "core", group="Session"),
+    CommandSpec("exit", "Exit J.A.R.N. (alias for /quit).", "core", group="Session"),
 )
 
 # Keyed by the normalized (hyphen→underscore) name so hyphenated commands like

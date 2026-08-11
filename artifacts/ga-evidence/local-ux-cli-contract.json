@@ -1,0 +1,73 @@
+{
+  "automated_tests": [
+    "tests/test_ux.py",
+    "tests/test_plain_onboarding.py",
+    "tests/test_onboarding_resume.py",
+    "tests/test_terminal_contract.py",
+    "tests/test_controller.py",
+    "tests/test_headless.py"
+  ],
+  "command": "JARN_TEST_MODE=1 .venv/bin/pytest -q tests/test_ux.py tests/test_plain_onboarding.py tests/test_onboarding_resume.py tests/test_tui_wizard_key_capture.py tests/test_tui_wizard_model_picker.py tests/test_terminal_contract.py tests/test_phase3.py tests/test_controller.py tests/test_completion.py tests/test_headless.py tests/test_exit_codes.py",
+  "criterion_ids": [
+    "AC-UX-001",
+    "AC-UX-002",
+    "AC-UX-003",
+    "AC-UX-004",
+    "AC-UX-005",
+    "AC-UX-006",
+    "AC-UX-007",
+    "AC-UX-008",
+    "AC-UX-009",
+    "AC-UX-010",
+    "AC-UX-012",
+    "AC-UX-013",
+    "AC-UX-014",
+    "AC-UX-015",
+    "AC-CLI-001",
+    "AC-CLI-002",
+    "AC-CLI-003",
+    "AC-CLI-004",
+    "AC-CLI-005",
+    "AC-CLI-006",
+    "AC-CLI-007",
+    "AC-CLI-008",
+    "AC-A11Y-001",
+    "AC-A11Y-002",
+    "AC-A11Y-003",
+    "AC-A11Y-004"
+  ],
+  "decisions": [
+    "The one-line activation design is exercised locally; immediate usability from the public URL remains a separate published-artifact/UAT observation."
+  ],
+  "documentation_lookups": [],
+  "duration_seconds": 303.06,
+  "ended_at": "2026-08-11T14:56:19Z",
+  "errors": [],
+  "implementation": [
+    "src/jarn/onboarding",
+    "src/jarn/cli.py",
+    "src/jarn/repl",
+    "src/jarn/tui"
+  ],
+  "limitations": [
+    "AC-UX-011 and the five-minute live quickstart are not inferred from local UI contracts."
+  ],
+  "platform": {
+    "architecture": "arm64",
+    "libc": "n/a",
+    "os": "macOS",
+    "version": "26.5.2"
+  },
+  "record_id": "LOCAL-UX-CLI-20260811",
+  "redaction": {
+    "home_path_redacted": false,
+    "host_identifier_redacted": false,
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false
+  },
+  "result": "Simple/Advanced onboarding, staged cancel/resume, verified completion, plain/TUI parity, 80x24/resize/Thai/color contracts, session header, slash discovery/suggestions, cancellation, exec JSON, and exit taxonomy passed.",
+  "schema_version": 1,
+  "started_at": "2026-08-11T14:34:18Z",
+  "status": "passed"
+}

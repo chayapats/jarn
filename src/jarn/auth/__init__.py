@@ -1,0 +1,67 @@
+"""Unified authentication APIs."""
+
+from jarn.auth.models import (
+    AUTH_CHALLENGE_SCHEMA_VERSION,
+    AUTH_STATUS_SCHEMA_VERSION,
+    AuthError,
+    AuthState,
+    AuthStatus,
+    DependencyState,
+    DependencyStatus,
+    LoginChallenge,
+    LoginMethod,
+    WorkspaceStatus,
+)
+from jarn.auth.service import (
+    AUTH_TIMEOUT_ENV,
+    DEFAULT_AUTH_TIMEOUT_SECONDS,
+    MAX_AUTH_TIMEOUT_SECONDS,
+    MIN_AUTH_TIMEOUT_SECONDS,
+    AuthServiceError,
+    CodexAuthService,
+    CodexLoginSession,
+    inspect_codex_dependency,
+    resolve_auth_timeout_seconds,
+)
+from jarn.auth.terminal import detect_login_method, login_interactive, render_login_challenge
+from jarn.codex_dependency import (
+    CODEX_MINIMUM_VERSION,
+    CODEX_OFFICIAL_INSTALL_COMMAND,
+    CodexDependencyInstaller,
+    CodexDependencyInstallError,
+    CodexInstallPlan,
+    CodexInstallResult,
+    managed_codex_executable,
+)
+
+__all__ = [
+    "AUTH_CHALLENGE_SCHEMA_VERSION",
+    "AUTH_STATUS_SCHEMA_VERSION",
+    "AUTH_TIMEOUT_ENV",
+    "AuthError",
+    "AuthServiceError",
+    "AuthState",
+    "AuthStatus",
+    "CodexAuthService",
+    "CodexDependencyInstallError",
+    "CodexDependencyInstaller",
+    "CodexInstallPlan",
+    "CodexInstallResult",
+    "CodexLoginSession",
+    "CODEX_MINIMUM_VERSION",
+    "CODEX_OFFICIAL_INSTALL_COMMAND",
+    "DependencyState",
+    "DependencyStatus",
+    "DEFAULT_AUTH_TIMEOUT_SECONDS",
+    "LoginChallenge",
+    "LoginMethod",
+    "MAX_AUTH_TIMEOUT_SECONDS",
+    "MIN_AUTH_TIMEOUT_SECONDS",
+    "WorkspaceStatus",
+    "detect_login_method",
+    "inspect_codex_dependency",
+    "login_interactive",
+    "managed_codex_executable",
+    "render_login_challenge",
+    "resolve_auth_timeout_seconds",
+]

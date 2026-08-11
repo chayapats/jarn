@@ -102,6 +102,41 @@ def test_write_assistant_redacts_secret_shaped_text(tmp_path: Path) -> None:
     assert "[REDACTED]" in body
 
 
+def test_transcript_redacts_exact_resolved_custom_secret(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Provider-specific keys are scrubbed even when no heuristic recognises them."""
+
+    import jarn.config.secrets as secrets
+
+    credential = "arbitrary-provider-key-7q2"
+    secrets._clear_resolved_secrets_for_testing()
+    try:
+        monkeypatch.setenv("CUSTOM_PROVIDER_KEY", credential)
+        assert secrets.resolve("${CUSTOM_PROVIDER_KEY}") == credential
+
+        w = TranscriptWriter("resolved-secret", sessions_dir=tmp_path)
+        w.write_user(f"user pasted {credential}", ts=1.0)
+        w.write_assistant(f"assistant repeated {credential}", ts=2.0)
+        w.write_tool(
+            "custom_provider",
+            ts=3.0,
+            args={"nested": {"credential": credential}},
+        )
+        w.write_tool(
+            "custom_provider",
+            ts=4.0,
+            result=f"provider failure contained {credential}",
+        )
+        w.close()
+
+        raw = w.path.read_bytes()
+        assert credential.encode() not in raw
+        assert raw.count(b"[REDACTED]") >= 4
+    finally:
+        secrets._clear_resolved_secrets_for_testing()
+
+
 def test_write_tool_start_event(tmp_path: Path) -> None:
     """A tool-start event records name and args but no result."""
     w = TranscriptWriter("t", sessions_dir=tmp_path)
@@ -162,6 +197,54 @@ def test_incremental_flush(tmp_path: Path) -> None:
     content = w.path.read_text(encoding="utf-8")
     assert "first" in content
     w.close()
+
+
+def test_writer_repairs_only_a_crash_truncated_final_record(tmp_path: Path) -> None:
+    path = tmp_path / "crash.jsonl"
+    first = json.dumps({"type": "user", "text": "kept"})
+    path.write_text(first + "\n" + '{"type":"assistant","text":"part', encoding="utf-8")
+
+    w = TranscriptWriter("crash", sessions_dir=tmp_path)
+    w.append({"type": "assistant", "text": "recovered"})
+    w.close()
+
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert rows == [
+        {"type": "user", "text": "kept"},
+        {"type": "assistant", "text": "recovered"},
+    ]
+
+
+def test_writer_preserves_valid_final_record_missing_only_newline(tmp_path: Path) -> None:
+    path = tmp_path / "valid.jsonl"
+    original = {"type": "user", "text": "kept"}
+    path.write_text(json.dumps(original), encoding="utf-8")
+
+    writer = TranscriptWriter("valid", sessions_dir=tmp_path)
+    writer.append({"type": "assistant", "text": "next"})
+    writer.close()
+
+    assert [json.loads(line) for line in path.read_text().splitlines()] == [
+        original,
+        {"type": "assistant", "text": "next"},
+    ]
+
+
+def test_writer_refuses_path_traversal_and_symlink_target(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unsafe path"):
+        TranscriptWriter("../outside", sessions_dir=tmp_path)
+    target = tmp_path / "outside"
+    target.write_text("keep", encoding="utf-8")
+    link = tmp_path / "linked.jsonl"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    writer = TranscriptWriter("linked", sessions_dir=tmp_path)
+    with pytest.raises(OSError, match="symbolic link"):
+        writer.append({"type": "user", "text": "must not follow"})
+    assert target.read_text(encoding="utf-8") == "keep"
 
 
 def test_make_transcript_writer_uses_project_sessions_dir(tmp_path: Path) -> None:

@@ -12,17 +12,23 @@ def _esc(value: object) -> str:
     """Escape a value for Rich markup; ``None`` becomes empty."""
     if value is None:
         return ""
-    return _escape(str(value))
+    from jarn.config.secrets import redact_secrets
+
+    return _escape(redact_secrets(str(value)))
 
 
 def doctor_to_json(diag: dict) -> str:
     """Serialize doctor diagnostics to a JSON string."""
-    return json.dumps(diag)
+    from jarn.config.secrets import redact_structure
+
+    return json.dumps(redact_structure(diag))
 
 
 def doctor_lines(diag: dict) -> list[str]:
     """Return Rich-markup lines for doctor diagnostics."""
     lines: list[str] = ["[b]jarn doctor[/b]"]
+
+    append_inventory_lines(lines, diag)
 
     gpath = diag.get("global_config", "")
     present = diag.get("global_config_present", False)
@@ -52,6 +58,7 @@ def doctor_lines(diag: dict) -> list[str]:
 
     if not present:
         lines.append("\n[yellow]No config — run [b]jarn setup[/b].[/yellow]")
+        append_error_lines(lines, diag.get("errors") or [])
         return lines
 
     lines.append(f"default profile: {_esc(diag.get('default_profile', ''))}")
@@ -140,6 +147,8 @@ def doctor_lines(diag: dict) -> list[str]:
 
     append_extension_lines(lines, diag.get("extensions") or {})
 
+    append_error_lines(lines, diag.get("errors") or [])
+
     for warning in diag.get("warnings") or []:
         lines.append(f"[yellow]⚠ {_esc(warning)}[/yellow]")
 
@@ -148,6 +157,148 @@ def doctor_lines(diag: dict) -> list[str]:
         f"\n{'[green]All good.[/green]' if ok else '[yellow]Issues found above.[/yellow]'}"
     )
     return lines
+
+
+def append_inventory_lines(lines: list[str], diag: dict) -> None:
+    """Append concise human output for the machine-readable host inventory."""
+    jarn = diag.get("jarn") or {}
+    if jarn:
+        install = jarn.get("install") or {}
+        active = jarn.get("active_executable")
+        lines.append(
+            f"version/install: {_esc(jarn.get('version') or 'unknown')} · "
+            f"{_esc(install.get('method') or 'unknown')}"
+        )
+        lines.append(
+            "active executable: "
+            + (f"[green]found[/green] {_esc(active)}" if active else "[red]missing[/red]")
+        )
+        for shadow in jarn.get("shadowed") or []:
+            lines.append(f"  [yellow]shadowing candidate:[/yellow] {_esc(shadow)}")
+        for candidate in jarn.get("candidate_inventory") or []:
+            if not isinstance(candidate, dict) or candidate.get("active") or candidate.get("on_path"):
+                continue
+            sources = ", ".join(str(value) for value in candidate.get("sources") or [])
+            lines.append(
+                "  [yellow]other installation (off PATH):[/yellow] "
+                f"{_esc(candidate.get('path'))} · {_esc(sources or 'unknown owner')}"
+            )
+        if install.get("canonical_record_error"):
+            lines.append(
+                "  [red]install record invalid:[/red] "
+                f"{_esc(install['canonical_record_error'])}"
+            )
+        if install.get("active_matches_record") is False:
+            lines.append(
+                "  [red]activation mismatch:[/red] active executable differs from metadata"
+            )
+
+    host = diag.get("platform") or {}
+    if host:
+        libc = host.get("libc") or {}
+        python = host.get("python") or {}
+        lines.append(
+            "host: "
+            f"{_esc(host.get('system'))} {_esc(host.get('release'))} · "
+            f"{_esc(host.get('architecture'))} · "
+            f"{_esc(libc.get('name'))} {_esc(libc.get('version') or 'unknown')} · "
+            f"Python {_esc(python.get('version') or 'unknown')}"
+        )
+
+    shell = diag.get("shell") or {}
+    if shell:
+        profile_state = "present" if shell.get("profile_present") else "missing"
+        lines.append(
+            f"shell/profile: {_esc(shell.get('name') or 'unknown')} · "
+            f"{profile_state} {_esc(shell.get('profile') or '')}"
+        )
+
+    installation = diag.get("installation") or {}
+    if installation:
+        writable = installation.get("writable")
+        write_state = "writable" if writable else "not writable"
+        free = installation.get("free_bytes")
+        free_text = (
+            f"{int(free) // (1024 * 1024 * 1024):,} GiB free"
+            if free is not None
+            else "free space unknown"
+        )
+        lines.append(
+            f"install directory: {write_state} · mode "
+            f"{_esc(installation.get('directory_mode') or 'unknown')} · {free_text}"
+        )
+
+    dependencies = diag.get("dependencies") or {}
+    if dependencies:
+        for name in ("uv", "codex"):
+            item = dependencies.get(name) or {}
+            state = "[green]ok[/green]" if item.get("ok") else "[red]unavailable[/red]"
+            lines.append(
+                f"{name}: {state} · {_esc(item.get('version') or 'version unknown')} · "
+                f"{_esc(item.get('path') or 'not on PATH')}"
+            )
+        protocol = (dependencies.get("codex") or {}).get("protocol") or {}
+        compatible = protocol.get("compatible")
+        state = "compatible" if compatible else "incompatible or unavailable"
+        lines.append(f"Codex app-server protocol: {state}")
+
+    configuration = diag.get("configuration") or {}
+    if configuration:
+        for tier in ("global", "project"):
+            item = configuration.get(tier)
+            if item:
+                lines.append(
+                    f"{tier} config schema: {_esc(item.get('status') or 'unknown')} "
+                    f"({_esc(item.get('source_version'))} → "
+                    f"{_esc(item.get('target_version'))})"
+                )
+
+    store = diag.get("secrets") or {}
+    if store:
+        issue_count = len(store.get("permission_issues") or [])
+        state = "secure" if issue_count == 0 else f"{issue_count} permission issue(s)"
+        lines.append(f"local secret store: {state}")
+
+    catalog = diag.get("catalog") or {}
+    if catalog:
+        lines.append(
+            f"model catalog: {_esc(catalog.get('source') or 'unknown')} · "
+            f"{_esc(catalog.get('freshness') or 'unknown')}"
+        )
+
+    update = diag.get("update") or {}
+    if update:
+        enabled = "enabled" if update.get("checks_enabled") else "disabled"
+        lines.append(
+            f"updates: {_esc(update.get('channel') or 'unknown')} channel · checks {enabled}"
+        )
+
+    network = diag.get("network") or {}
+    if network.get("checked"):
+        checks = network.get("checks") or []
+        reachable = sum(bool(item.get("reachable")) for item in checks)
+        lines.append(f"provider reachability: checked {len(checks)} · reachable {reachable}")
+
+
+def append_error_lines(lines: list[str], errors: list[dict]) -> None:
+    """Render stable error anatomy without exposing a Python traceback."""
+    if not errors:
+        return
+    lines.append("\n[b]Actionable errors[/b]")
+    for item in errors:
+        lines.append(
+            f"  [red]✗ {_esc(item.get('code') or 'JARN-INTERNAL-001')}:[/red] "
+            f"{_esc(item.get('summary') or 'Check failed.')}"
+        )
+        lines.append(f"    cause: {_esc(item.get('cause') or 'unknown')}")
+        lines.append(
+            f"    component: {_esc(item.get('component') or 'unknown')} · "
+            f"retryable: {'yes' if item.get('retryable') else 'no'}"
+        )
+        lines.append(f"    next: {_esc(item.get('action') or 'Run jarn doctor again.')}")
+        lines.append(
+            f"    log/report: {_esc(item.get('report_path') or item.get('log_path') or '')}"
+        )
 
 
 def append_extension_lines(lines: list[str], ext: dict) -> None:

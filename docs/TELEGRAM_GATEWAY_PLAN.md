@@ -69,7 +69,7 @@ Destination of map [#26](https://github.com/chayapats/jarn/issues/26). Binding d
 
 `_GLOBAL_ONLY_KEYS` includes `gateway`. The project tier strips `gateway:` and warns
 (trusted and untrusted are identical). Tokens resolve through `config/secrets.py` via
-`keychain:` / `${ENV}` / `file:`; `strict_secrets` does not catch inline bot tokens
+`keychain:` / `${ENV}` / `file:`; GA validation rejects inline bot tokens
 today, so prefer a non-inline reference.
 
 Implemented shape:

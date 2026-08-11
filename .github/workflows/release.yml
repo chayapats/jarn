@@ -4,16 +4,17 @@ on:
   push:
     tags: ["v*"]
 
+# Jobs opt in to write/OIDC privileges only at the point that needs them.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  # Re-run CI gates before any publish step — no release without a green preflight.
+  # Re-run the ordinary quality gates on the exact tagged commit.
   preflight:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v9.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
           save-cache: false
@@ -23,37 +24,79 @@ jobs:
       - run: uv run pytest -q
       - run: uv run pytest tests/test_packaging.py -q
 
-  # Build and publish the PyPI artifacts (sdist + wheel) via Trusted Publishing.
-  pypi:
-    needs: preflight
+  # Security is an independent early gate, not a post-publish report.
+  security:
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/jarn
     permissions:
-      id-token: write   # OIDC token for PyPI Trusted Publishing (no API token needed)
       contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v9.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          save-cache: false
+      - run: uv sync --extra dev --extra telegram
+      - name: Dependency audit
+        run: |
+          uv pip install pip-audit==2.9.0
+          uv run pip-audit
+      - name: Permission and subprocess-policy contracts
+        run: >-
+          uv run pytest -q
+          tests/test_permissions.py
+          tests/test_permission_bypass_matrix.py
+          tests/test_approval_contract.py
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # These fixture tests execute the same transaction boundaries used by the
+  # release canaries. ubuntu-22.04 is the exact glibc 2.35 regression host.
+  contracts:
+    needs: [preflight, security]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          save-cache: false
+      - run: uv sync --extra dev
+      - name: Assert exact regression libc
+        run: test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.35"
+      - name: Execute local release transaction fixtures
+        run: >-
+          uv run pytest -q
+          tests/test_installer.py::test_exact_npm_shadow_plus_glibc_regression_is_not_false_success
+          tests/test_installer.py::test_upgrade_retains_prior_binary_as_rollback_candidate
+          tests/test_installer.py::test_post_activation_smoke_failure_automatically_restores_prior
+          tests/test_update.py
+          tests/test_uninstall_ga.py
+          tests/test_ga_config_migrations.py
+
+  # Build immutable package inputs, but do not publish them yet.
+  python_dist:
+    name: Build Python distributions
+    needs: contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
           save-cache: false
       - run: uv build
-      - name: Publish to PyPI (Trusted Publishing)
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          skip-existing: true   # re-runs for an already-published version are no-ops, not failures
-      - uses: actions/upload-artifact@v7
-        with:
-          name: dist-pypi
+          name: python-dist
           path: dist/*
+          if-no-files-found: error
 
-  # Build standalone binaries per OS/arch. Each one is both attached to the
-  # GitHub Release and uploaded as a `binary-<target>` workflow artifact that the
-  # npm job repackages.
   binaries:
-    needs: preflight
+    needs: contracts
     strategy:
       fail-fast: false
       matrix:
@@ -64,110 +107,1112 @@ jobs:
           - os: ubuntu-22.04-arm
             target: linux-arm64
             gh_asset: jarn-linux-arm64
-          - os: macos-latest
+          - os: macos-15
             target: darwin-arm64
             gh_asset: jarn-macos-arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v9.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
           save-cache: false
-      - run: uv sync --extra dev --extra build
-      - run: ./scripts/build-binary.sh
+      - name: Build Linux binary on the oldest supported glibc
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          install -m 0755 "$(command -v uv)" "$RUNNER_TEMP/uv"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$RUNNER_TEMP/uv:/usr/local/bin/uv:ro" \
+            -w /workspace \
+            -e HOME=/tmp/jarn-build-home \
+            -e UV_CACHE_DIR=/tmp/uv-cache \
+            -e UV_LINK_MODE=copy \
+            ubuntu:20.04 /bin/bash -c \
+              'apt-get update && apt-get install -y --no-install-recommends binutils ca-certificates && ./scripts/build-binary.sh'
+      - name: Build macOS binary on the oldest Tier-1 image
+        if: runner.os == 'macOS'
+        run: ./scripts/build-binary.sh
       - name: Smoke-test binary
         run: |
           ./dist/jarn --version
-          # Fresh CI runners have no ~/.jarn/config.yaml — doctor reports ok:false
-          # (exit 1) but must still emit valid JSON without crashing.
           json=$(./dist/jarn doctor --json || true)
           echo "$json" | python -c "import json,sys; d=json.load(sys.stdin); assert 'ok' in d"
-      - name: Upload binary artifact (for the npm job)
-        uses: actions/upload-artifact@v7
+      - name: Run Linux artifact on oldest supported glibc
+        if: runner.os == 'Linux'
+        run: >-
+          docker run --rm
+          -v "$PWD/dist/jarn:/jarn:ro"
+          ubuntu:20.04
+          /jarn --version
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: binary-${{ matrix.target }}
           path: dist/jarn
           if-no-files-found: error
-      - name: Rename asset
-        run: mv dist/jarn "dist/${{ matrix.gh_asset }}"
-      - name: Attach to release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: dist/${{ matrix.gh_asset }}
 
-  # Publish a checksum manifest consumed by install.sh. The installer refuses
-  # unverified binaries and falls back to the PyPI distribution when needed.
-  checksums:
-    needs: [preflight, binaries]
+  npm_build:
+    name: Build npm package tarballs
+    needs: binaries
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: binary-*
-          path: binaries
-      - name: Build SHA-256 manifest
-        run: |
-          mkdir release-assets
-          cp binaries/binary-linux-x64/jarn release-assets/jarn-linux-x86_64
-          cp binaries/binary-linux-arm64/jarn release-assets/jarn-linux-arm64
-          cp binaries/binary-darwin-arm64/jarn release-assets/jarn-macos-arm64
-          cd release-assets
-          sha256sum jarn-* > checksums.txt
-      - name: Attach checksums to release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: release-assets/checksums.txt
-
-  # Assemble and publish the npm packages: one `jarn-cli-<target>` per platform
-  # (each carrying its prebuilt binary) plus the `jarn-cli` launcher package whose
-  # optionalDependencies pin those three to this exact version.
-  npm:
-    needs: [preflight, binaries]
-    runs-on: ubuntu-latest
-    environment: NPM_TOKEN   # the NPM_TOKEN secret lives in this environment (mirrors the pypi job)
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
-      - name: Download all platform binaries
-        uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: binary-*
           path: binaries
-      - name: Run launcher + assembly tests
+      - name: Run launcher and assembly tests
         run: |
           node --test npm/jarn-cli/test/launcher.test.js
           node --test npm/test/build.test.mjs
       - name: Assemble npm packages
-        run: node npm/build-packages.mjs --version "${GITHUB_REF_NAME#v}" --binaries binaries --out npm/dist
+        run: >-
+          node npm/build-packages.mjs
+          --version "${GITHUB_REF_NAME#v}"
+          --binaries binaries
+          --out npm/dist
       - name: Smoke-test assembled npm binary
         run: |
           chmod +x npm/dist/jarn-cli-linux-x64/bin/jarn
           npm/dist/jarn-cli-linux-x64/bin/jarn --version
-      # NOTE: no --provenance — npm provenance requires a PUBLIC source repo, and
-      # this repo is private (open-core: public at launch). Re-add --provenance
-      # (and id-token: write above) once the repo is public.
+      - name: Pack exact npm publication subjects
+        run: |
+          set -euo pipefail
+          mkdir -p npm/tarballs
+          : > npm/tarballs/publish-order.txt
+          while IFS= read -r dir; do
+            [ -n "$dir" ] || continue
+            name=$(node -p "require('./$dir/package.json').name")
+            version=$(node -p "require('./$dir/package.json').version")
+            pack_json=$(npm pack "$dir" --pack-destination npm/tarballs --json)
+            filename=$(printf '%s' "$pack_json" | node -e \
+              "let s=''; process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s)[0].filename))")
+            printf '%s|%s|%s\n' "$filename" "$name" "$version" \
+              >> npm/tarballs/publish-order.txt
+          done < npm/dist/publish-order.txt
+          test "$(find npm/tarballs -maxdepth 1 -name '*.tgz' | wc -l)" -eq 4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: npm-tarballs
+          path: npm/tarballs/*
+          if-no-files-found: error
+
+  # Build one checksum manifest for every distributable subject. install.sh is
+  # included because `jarn update` verifies the tagged script against this file.
+  checksums:
+    needs: [python_dist, binaries, npm_build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: binary-*
+          path: binaries
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: python-dist
+          path: python-dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: npm-tarballs
+          path: npm-tarballs
+      - name: Assemble and verify canonical subjects
+        run: |
+          set -euo pipefail
+          mkdir release-subjects
+          install -m 0755 binaries/binary-linux-x64/jarn release-subjects/jarn-linux-x86_64
+          install -m 0755 binaries/binary-linux-arm64/jarn release-subjects/jarn-linux-arm64
+          install -m 0755 binaries/binary-darwin-arm64/jarn release-subjects/jarn-macos-arm64
+          install -m 0755 install.sh release-subjects/install.sh
+          cp python-dist/* release-subjects/
+          cp npm-tarballs/*.tgz release-subjects/
+          (
+            cd release-subjects
+            for artifact in *; do
+              [ -f "$artifact" ] || continue
+              [ "$artifact" = checksums.txt ] && continue
+              printf '%s\n' "$artifact"
+            done | LC_ALL=C sort | while IFS= read -r artifact; do
+              sha256sum "$artifact"
+            done > checksums.txt
+            sha256sum -c checksums.txt
+            test "$(awk '$2 == "install.sh" || $2 == "*install.sh" {n++} END {print n + 0}' checksums.txt)" -eq 1
+          )
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-subjects
+          path: release-subjects/*
+          if-no-files-found: error
+
+  # Generate and validate supply-chain evidence before any release asset or
+  # registry package is made public.
+  supply_chain:
+    name: SBOM and provenance
+    needs: checksums
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-subjects
+          path: release-subjects
+      - name: Verify canonical subject checksums
+        run: cd release-subjects && sha256sum -c checksums.txt
+      - name: Write deterministic build-provenance statement
+        env:
+          PROVENANCE_REPOSITORY: ${{ github.repository }}
+          PROVENANCE_REF: ${{ github.ref }}
+          PROVENANCE_SHA: ${{ github.sha }}
+          PROVENANCE_RUN_ID: ${{ github.run_id }}
+          PROVENANCE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          mkdir supply-chain
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          subjects = []
+          for line in Path("release-subjects/checksums.txt").read_text().splitlines():
+              digest, marked_name = line.split(maxsplit=1)
+              subjects.append({"name": marked_name.lstrip("* "), "digest": {"sha256": digest}})
+          repository = os.environ["PROVENANCE_REPOSITORY"]
+          ref = os.environ["PROVENANCE_REF"]
+          statement = {
+              "_type": "https://in-toto.io/Statement/v1",
+              "subject": subjects,
+              "predicateType": "https://slsa.dev/provenance/v1",
+              "predicate": {
+                  "buildDefinition": {
+                      "buildType": f"https://github.com/{repository}/.github/workflows/release.yml@v1",
+                      "externalParameters": {"ref": ref},
+                      "internalParameters": {},
+                      "resolvedDependencies": [{
+                          "uri": f"git+https://github.com/{repository}@{ref}",
+                          "digest": {"sha1": os.environ["PROVENANCE_SHA"]},
+                      }],
+                  },
+                  "runDetails": {
+                      "builder": {"id": f"https://github.com/{repository}/actions/runs/{os.environ['PROVENANCE_RUN_ID']}"},
+                      "metadata": {"invocationId": os.environ["PROVENANCE_RUN_ATTEMPT"]},
+                  },
+              },
+          }
+          Path("supply-chain/provenance.intoto.json").write_text(
+              json.dumps(statement, sort_keys=True, separators=(",", ":")) + "\n"
+          )
+          PY
+      - name: Generate SPDX JSON SBOM
+        uses: anchore/sbom-action@61119d458adab75f756bc0b9e4bde25725f86a7a # v0.20.0
+        with:
+          path: release-subjects
+          format: spdx-json
+          output-file: supply-chain/jarn-${{ github.ref_name }}.spdx.json
+          syft-version: v1.11.1
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Generate CycloneDX JSON SBOM
+        uses: anchore/sbom-action@61119d458adab75f756bc0b9e4bde25725f86a7a # v0.20.0
+        with:
+          path: release-subjects
+          format: cyclonedx-json
+          output-file: supply-chain/jarn-${{ github.ref_name }}.cdx.json
+          syft-version: v1.11.1
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Validate provenance and both SBOM documents
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          files = list(Path("supply-chain").glob("*.json"))
+          assert len(files) == 3, files
+          for path in files:
+              value = json.loads(path.read_text())
+              assert isinstance(value, dict) and value, path
+          PY
+      - name: Attest SLSA build provenance
+        if: ${{ !github.event.repository.private }}
+        id: provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-checksums: release-subjects/checksums.txt
+      - name: Attest SPDX SBOM
+        if: ${{ !github.event.repository.private }}
+        id: spdx_attestation
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-checksums: release-subjects/checksums.txt
+          sbom-path: supply-chain/jarn-${{ github.ref_name }}.spdx.json
+      - name: Attest CycloneDX SBOM
+        if: ${{ !github.event.repository.private }}
+        id: cyclonedx_attestation
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-checksums: release-subjects/checksums.txt
+          sbom-path: supply-chain/jarn-${{ github.ref_name }}.cdx.json
+      - name: Preserve signed attestation bundles
+        if: ${{ !github.event.repository.private }}
+        run: |
+          cp "${{ steps.provenance.outputs.bundle-path }}" supply-chain/provenance.sigstore.json
+          cp "${{ steps.spdx_attestation.outputs.bundle-path }}" supply-chain/spdx.sigstore.json
+          cp "${{ steps.cyclonedx_attestation.outputs.bundle-path }}" supply-chain/cyclonedx.sigstore.json
+      - name: Verify signed release subjects
+        if: ${{ !github.event.repository.private }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for artifact in release-subjects/*; do
+            [ "$(basename "$artifact")" = checksums.txt ] && continue
+            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY"
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: supply-chain
+          path: supply-chain/*
+          if-no-files-found: error
+
+  # Create a draft release only. Canary jobs authenticate to fetch its exact
+  # assets; nothing becomes public until the explicit post-gate promotion job.
+  release_assets:
+    name: Stage authenticated draft release assets
+    needs: [checksums, supply_chain]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-subjects
+          path: release-subjects
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: supply-chain
+          path: supply-chain
+      - run: cd release-subjects && sha256sum -c checksums.txt
+      - name: Attach verified assets and supply-chain evidence
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
+        with:
+          draft: true
+          prerelease: false
+          make_latest: false
+          fail_on_unmatched_files: true
+          files: |
+            release-subjects/jarn-linux-x86_64
+            release-subjects/jarn-linux-arm64
+            release-subjects/jarn-macos-arm64
+            release-subjects/install.sh
+            release-subjects/checksums.txt
+            supply-chain/*
+      - name: Fail closed unless the staged release is still draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          state=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+          test "$state" = true
+
+  # Authenticated draft downloads exercise the exact assets without exposing a
+  # broken release. This tests a clean account and a real npm /usr/local shadow.
+  draft_canary:
+    name: Draft artifact + glibc/npm-shadow canary
+    needs: release_assets
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          save-cache: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+      - run: uv sync --extra dev
+      - name: Fetch and verify authenticated draft subjects
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.35"
+          mkdir canary
+          state=$(gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+          test "$state" = true
+          for asset in checksums.txt install.sh jarn-linux-x86_64; do
+            gh release download "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" \
+              --dir canary --pattern "$asset"
+          done
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          rows = {}
+          for line in Path("canary/checksums.txt").read_text().splitlines():
+              digest, marked_name = line.split(maxsplit=1)
+              rows.setdefault(marked_name.lstrip("* "), []).append(digest.lower())
+          for name, path in {
+              "install.sh": Path("canary/install.sh"),
+              "jarn-linux-x86_64": Path("canary/jarn-linux-x86_64"),
+          }.items():
+              assert len(rows.get(name, [])) == 1, (name, rows.get(name))
+              assert hashlib.sha256(path.read_bytes()).hexdigest() == rows[name][0]
+          PY
+          chmod 755 canary/install.sh canary/jarn-linux-x86_64
+          test "$(canary/jarn-linux-x86_64 --version)" = "jarn ${RELEASE_VERSION#v}"
+          canary/jarn-linux-x86_64 --help >/dev/null
+          docker run --rm -v "$PWD/canary/jarn-linux-x86_64:/jarn:ro" ubuntu:20.04 /jarn --version
+          fixture="canary/draft-origin/$GITHUB_REPOSITORY/releases/download/$RELEASE_VERSION"
+          mkdir -p "$fixture"
+          cp canary/checksums.txt canary/jarn-linux-x86_64 "$fixture/"
+      - name: Clean install from authenticated draft artifacts
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          clean_home=$(mktemp -d)
+          set +e
+          HOME="$clean_home" PATH="/usr/bin:/bin" SHELL=/bin/bash \
+            JARN_GITHUB_BASE="file://$GITHUB_WORKSPACE/canary/draft-origin" \
+            JARN_GITHUB_REPO="$GITHUB_REPOSITORY" JARN_RUN_SETUP=never \
+            sh canary/install.sh --version "${RELEASE_VERSION#v}" --method binary --no-setup --yes \
+            >canary/clean.stdout 2>canary/clean.stderr
+          rc=$?
+          set -e
+          [ "$rc" -eq 10 ]
+          ! grep -Eq '(^|[^[:alpha:]])(Done|Ready)([^[:alpha:]]|$)' canary/clean.stdout
+          test "$("$clean_home/.local/bin/jarn" --version)" = "jarn ${RELEASE_VERSION#v}"
+          "$clean_home/.local/bin/jarn" --help >/dev/null
+          CLEAN_HOME="$clean_home" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          home = Path(os.environ["CLEAN_HOME"])
+          record = json.loads((home / ".local/state/jarn/install.json").read_text())
+          assert record["method"] == "binary"
+          assert Path(record["active_path"]) == home / ".local/bin/jarn"
+          PY
+      - name: Draft npm-shadow path remains safe and user-visible
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          legacy_pkg=$(mktemp -d)
+          mkdir "$legacy_pkg/bin"
+          cat > "$legacy_pkg/package.json" <<'JSON'
+          {"name":"jarn-cli-legacy-fixture","version":"0.10.0","bin":{"jarn":"bin/jarn"}}
+          JSON
+          cat > "$legacy_pkg/bin/jarn" <<'SH'
+          #!/bin/sh
+          echo "old npm/PyInstaller: GLIBC_2.38 not found" >&2
+          exit 1
+          SH
+          chmod 755 "$legacy_pkg/bin/jarn"
+          test ! -e /usr/local/bin/jarn
+          npm_path=$(command -v npm)
+          sudo env "PATH=$PATH" "$npm_path" install --global --prefix /usr/local "$legacy_pkg"
+          trap 'sudo env "PATH=$PATH" "$npm_path" uninstall --global --prefix /usr/local jarn-cli-legacy-fixture >/dev/null 2>&1 || true' EXIT
+          test -e /usr/local/bin/jarn
+          legacy_home=$(mktemp -d)
+          set +e
+          HOME="$legacy_home" PATH="/usr/local/bin:/usr/bin:/bin" SHELL=/bin/bash \
+            JARN_GITHUB_BASE="file://$GITHUB_WORKSPACE/canary/draft-origin" \
+            JARN_GITHUB_REPO="$GITHUB_REPOSITORY" JARN_RUN_SETUP=never \
+            sh canary/install.sh --version "${RELEASE_VERSION#v}" --method binary --no-setup --yes \
+            >canary/legacy.stdout 2>canary/legacy.stderr
+          rc=$?
+          set -e
+          [ "$rc" -eq 10 ]
+          test -e /usr/local/bin/jarn
+          ! grep -Eq '(^|[^[:alpha:]])(Done|Ready)([^[:alpha:]]|$)' canary/legacy.stdout
+          grep -F "Activation required" canary/legacy.stderr
+          test "$("$legacy_home/.local/bin/jarn" --version)" = "jarn ${RELEASE_VERSION#v}"
+          resolution=$(HOME="$legacy_home" PATH="/usr/local/bin:/usr/bin:/bin" SHELL=/bin/bash \
+            /bin/bash -lic 'command -v jarn; jarn --version')
+          printf '%s\n' "$resolution" | grep -F "$legacy_home/.local/bin/jarn"
+          printf '%s\n' "$resolution" | grep -F "jarn ${RELEASE_VERSION#v}"
+      - name: Execute exact fallback regression against draft install.sh
+        env:
+          JARN_INSTALLER_UNDER_TEST: ${{ github.workspace }}/canary/install.sh
+        run: >-
+          uv run pytest -q
+          tests/test_installer.py::test_exact_npm_shadow_plus_glibc_regression_is_not_false_success
+
+  # Every Linux platform advertised as Tier 1 runs the same exact candidate
+  # through clean install, upgrade, rollback/roll-forward, uninstall, and
+  # reinstall. Native ARM64 runners avoid emulation hiding architecture bugs.
+  tier1_linux_lifecycle:
+    name: Tier-1 ${{ matrix.platform }} ${{ matrix.arch }} lifecycle
+    needs: release_assets
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-20.04
+            image: ubuntu:20.04
+            runner: ubuntu-22.04
+            arch: x86_64
+            docker_arch: amd64
+            asset: jarn-linux-x86_64
+          - platform: ubuntu-22.04
+            image: ubuntu:22.04
+            runner: ubuntu-22.04
+            arch: x86_64
+            docker_arch: amd64
+            asset: jarn-linux-x86_64
+          - platform: ubuntu-24.04
+            image: ubuntu:24.04
+            runner: ubuntu-22.04
+            arch: x86_64
+            docker_arch: amd64
+            asset: jarn-linux-x86_64
+          - platform: debian-11
+            image: debian:11
+            runner: ubuntu-22.04
+            arch: x86_64
+            docker_arch: amd64
+            asset: jarn-linux-x86_64
+          - platform: debian-12
+            image: debian:12
+            runner: ubuntu-22.04
+            arch: x86_64
+            docker_arch: amd64
+            asset: jarn-linux-x86_64
+          - platform: ubuntu-20.04
+            image: ubuntu:20.04
+            runner: ubuntu-22.04-arm
+            arch: arm64
+            docker_arch: arm64
+            asset: jarn-linux-arm64
+          - platform: ubuntu-22.04
+            image: ubuntu:22.04
+            runner: ubuntu-22.04-arm
+            arch: arm64
+            docker_arch: arm64
+            asset: jarn-linux-arm64
+          - platform: ubuntu-24.04
+            image: ubuntu:24.04
+            runner: ubuntu-22.04-arm
+            arch: arm64
+            docker_arch: arm64
+            asset: jarn-linux-arm64
+          - platform: debian-11
+            image: debian:11
+            runner: ubuntu-22.04-arm
+            arch: arm64
+            docker_arch: arm64
+            asset: jarn-linux-arm64
+          - platform: debian-12
+            image: debian:12
+            runner: ubuntu-22.04-arm
+            arch: arm64
+            docker_arch: arm64
+            asset: jarn-linux-arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-subjects
+          path: release-subjects
+      - name: Assert native runner architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          actual=$(uname -m)
+          case "$EXPECTED_ARCH:$actual" in
+            x86_64:x86_64|arm64:aarch64|arm64:arm64) ;;
+            *) echo "expected $EXPECTED_ARCH runner, got $actual" >&2; exit 1 ;;
+          esac
+      - name: Run exact lifecycle in distribution container
+        env:
+          DISTRO_IMAGE: ${{ matrix.image }}
+          DOCKER_ARCH: ${{ matrix.docker_arch }}
+          RELEASE_ASSET: ${{ matrix.asset }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          docker pull --platform "linux/$DOCKER_ARCH" "$DISTRO_IMAGE"
+          docker run --rm --platform "linux/$DOCKER_ARCH" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -e DEBIAN_FRONTEND=noninteractive \
+            -e JARN_CANARY_SUBJECTS=/workspace/release-subjects \
+            -e "JARN_CANARY_VERSION=${RELEASE_VERSION#v}" \
+            -e "JARN_CANARY_REPO=$GITHUB_REPOSITORY" \
+            -e JARN_CANARY_METHOD=binary \
+            -e JARN_CANARY_EXPECT_METHOD=binary \
+            -e "JARN_CANARY_ASSET=$RELEASE_ASSET" \
+            "$DISTRO_IMAGE" /bin/bash -c \
+              'apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && /workspace/scripts/release_lifecycle_canary.sh'
+
+  # Hosted macOS 15 runners cover both architectures. Apple Silicon exercises
+  # the native release asset; Intel exercises the documented managed-Python
+  # fallback against the exact candidate wheel before PyPI publication.
+  tier1_macos_lifecycle:
+    name: Tier-1 ${{ matrix.platform }} ${{ matrix.arch }} lifecycle
+    needs: release_assets
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: macos-15
+            arch: arm64
+            method: binary
+            expected_method: binary
+            asset: jarn-macos-arm64
+          - runner: macos-15-intel
+            platform: macos-15
+            arch: x86_64
+            method: auto
+            expected_method: python
+            asset: ""
+          - runner: macos-26
+            platform: macos-26
+            arch: arm64
+            method: binary
+            expected_method: binary
+            asset: jarn-macos-arm64
+          - runner: macos-26-intel
+            platform: macos-26
+            arch: x86_64
+            method: auto
+            expected_method: python
+            asset: ""
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          save-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-subjects
+          path: release-subjects
+      - name: Run exact native/fallback lifecycle
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+          RELEASE_ASSET: ${{ matrix.asset }}
+          RELEASE_METHOD: ${{ matrix.method }}
+          EXPECTED_METHOD: ${{ matrix.expected_method }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "$EXPECTED_ARCH"
+          case "$(sw_vers -productVersion | cut -d. -f1)" in
+            15|26) ;;
+            *) echo "unexpected macOS release image" >&2; exit 1 ;;
+          esac
+          export JARN_CANARY_SUBJECTS="$GITHUB_WORKSPACE/release-subjects"
+          export JARN_CANARY_VERSION="${RELEASE_VERSION#v}"
+          export JARN_CANARY_REPO="$GITHUB_REPOSITORY"
+          export JARN_CANARY_METHOD="$RELEASE_METHOD"
+          export JARN_CANARY_EXPECT_METHOD="$EXPECTED_METHOD"
+          export JARN_CANARY_ASSET="$RELEASE_ASSET"
+          export JARN_CANARY_UV_BIN="$(command -v uv)"
+          scripts/release_lifecycle_canary.sh
+
+  # Resolve two usable, already-published stable versions. Fewer than two is a
+  # hard release blocker rather than a skipped migration matrix.
+  release_history:
+    name: Resolve two prior releases
+    needs: release_assets
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.prior.outputs.versions }}
+    steps:
+      - id: prior
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
+          versions=$(python3 - "$GITHUB_REF_NAME" <<'PY'
+          import json
+          import re
+          import sys
+
+          current = sys.argv[1]
+          selected = []
+          for release in json.load(open("releases.json", encoding="utf-8")):
+              tag = release.get("tag_name", "")
+              assets = {item.get("name") for item in release.get("assets", [])}
+              if release.get("draft") or release.get("prerelease") or tag == current:
+                  continue
+              if not re.fullmatch(r"v[0-9A-Za-z._-]+", tag):
+                  continue
+              if {"jarn-linux-x86_64", "checksums.txt", "install.sh"}.issubset(assets):
+                  selected.append(tag[1:])
+              if len(selected) == 2:
+                  break
+          if len(selected) != 2:
+              raise SystemExit(
+                  "release gate requires two prior stable releases with binary/checksum/installer assets"
+              )
+          print(json.dumps(selected, separators=(",", ":")))
+          PY
+          )
+          printf 'versions=%s\n' "$versions" >> "$GITHUB_OUTPUT"
+
+  # Each matrix leg starts with that release's historical installer and state,
+  # then invokes the current candidate's real `jarn update` command against an
+  # authenticated-draft fixture before rollback/uninstall/reinstall checks.
+  upgrade_canary:
+    name: Upgrade lifecycle from ${{ matrix.prior }}
+    needs: [release_assets, release_history]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        prior: ${{ fromJSON(needs.release_history.outputs.versions) }}
+    steps:
+      - name: Historical install, actual update, rollback, uninstall, and reinstall
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_VERSION: ${{ github.ref_name }}
+          PRIOR_VERSION: ${{ matrix.prior }}
+        run: |
+          set -euo pipefail
+          test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.35"
+          work=$(mktemp -d)
+          server_pid=""
+          cleanup_upgrade() {
+            [ -z "$server_pid" ] || kill "$server_pid" 2>/dev/null || true
+          }
+          trap cleanup_upgrade EXIT
+          current_dir="$work/current"
+          prior_dir="$work/prior"
+          mkdir -p "$current_dir" "$prior_dir"
+
+          state=$(gh release view "$CURRENT_VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+          test "$state" = true
+          download_assets() {
+            download_tag=$1
+            download_dir=$2
+            shift 2
+            for download_name in "$@"; do
+              gh release download "$download_tag" --repo "$GITHUB_REPOSITORY" \
+                --dir "$download_dir" --pattern "$download_name"
+            done
+          }
+          download_assets "$CURRENT_VERSION" "$current_dir" \
+            checksums.txt install.sh jarn-linux-x86_64
+          download_assets "v$PRIOR_VERSION" "$prior_dir" \
+            checksums.txt install.sh jarn-linux-x86_64
+          # Draft authentication is no longer needed beyond this point; the
+          # updater receives only credential-free loopback fixture URLs.
+          unset GH_TOKEN
+
+          CURRENT_ROOT="$current_dir" PRIOR_ROOT="$prior_dir" python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          for variable in ("CURRENT_ROOT", "PRIOR_ROOT"):
+              root = Path(os.environ[variable])
+              rows: dict[str, list[str]] = {}
+              for line in (root / "checksums.txt").read_text().splitlines():
+                  digest, marked_name = line.split(maxsplit=1)
+                  rows.setdefault(marked_name.lstrip("* "), []).append(digest.lower())
+              for name in ("install.sh", "jarn-linux-x86_64"):
+                  assert len(rows.get(name, [])) == 1, (variable, name, rows.get(name))
+                  actual = hashlib.sha256((root / name).read_bytes()).hexdigest()
+                  assert actual == rows[name][0], (variable, name)
+          PY
+          chmod 700 "$current_dir/install.sh" "$current_dir/jarn-linux-x86_64" \
+            "$prior_dir/install.sh" "$prior_dir/jarn-linux-x86_64"
+          test "$("$current_dir/jarn-linux-x86_64" --version)" = "jarn ${CURRENT_VERSION#v}"
+          test "$("$prior_dir/jarn-linux-x86_64" --version)" = "jarn $PRIOR_VERSION"
+          prior_fixture="$work/prior-origin/$GITHUB_REPOSITORY/releases/download/v$PRIOR_VERSION"
+          mkdir -p "$prior_fixture"
+          cp "$prior_dir/checksums.txt" "$prior_dir/jarn-linux-x86_64" "$prior_fixture/"
+
+          export HOME="$work/home"
+          export PATH="$HOME/.local/bin:/usr/bin:/bin"
+          export SHELL=/bin/bash
+          export JARN_GITHUB_REPO="$GITHUB_REPOSITORY"
+          export JARN_RUN_SETUP=never
+          mkdir -p "$HOME"
+          run_historical_install() {
+            set +e
+            JARN_GITHUB_BASE="file://$work/prior-origin" \
+              sh "$prior_dir/install.sh" --version "$PRIOR_VERSION" \
+                --method binary --no-setup --yes
+            rc=$?
+            set -e
+            [ "$rc" -eq 10 ]
+          }
+
+          run_historical_install
+          active="$HOME/.local/bin/jarn"
+          manifest="$HOME/.local/state/jarn/install.json"
+          test "$("$active" --version)" = "jarn $PRIOR_VERSION"
+          MANIFEST="$manifest" PRIOR="$PRIOR_VERSION" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          record = json.loads(Path(os.environ["MANIFEST"]).read_text())
+          assert record["version"] == os.environ["PRIOR"]
+          assert Path(record["active_path"]) == Path(os.environ["HOME"]) / ".local/bin/jarn"
+          PY
+
+          mkdir -p "$HOME/.jarn/sessions" "$HOME/.jarn/memory" "$HOME/.jarn/skills" \
+            "$HOME/.jarn/cache" "$HOME/.jarn/secrets"
+          printf '%s\n' 'default_profile: preserved-canary' > "$HOME/.jarn/config.yaml"
+          printf '%s\n' 'preserve-session' > "$HOME/.jarn/sessions/canary"
+          printf '%s\n' 'preserve-memory' > "$HOME/.jarn/memory/canary"
+          printf '%s\n' 'preserve-extension' > "$HOME/.jarn/skills/canary"
+          printf '%s\n' 'preserve-cache' > "$HOME/.jarn/cache/canary"
+          printf '%s\n' 'non-secret-credential-sentinel' > "$HOME/.jarn/secrets/canary"
+
+          origin="$work/origin"
+          current_number=${CURRENT_VERSION#v}
+          mkdir -p "$origin/raw/v$current_number" "$origin/download/v$current_number" \
+            "$origin/github/$GITHUB_REPOSITORY/releases/download/$CURRENT_VERSION"
+          cp "$current_dir/install.sh" "$origin/raw/v$current_number/install.sh"
+          cp "$current_dir/checksums.txt" "$origin/download/v$current_number/checksums.txt"
+          cp "$current_dir/checksums.txt" "$current_dir/jarn-linux-x86_64" \
+            "$origin/github/$GITHUB_REPOSITORY/releases/download/$CURRENT_VERSION/"
+          CURRENT_TAG="$CURRENT_VERSION" ORIGIN="$origin" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = [{"tag_name": os.environ["CURRENT_TAG"], "draft": False, "prerelease": False}]
+          Path(os.environ["ORIGIN"], "releases.json").write_text(json.dumps(payload))
+          PY
+          port_file="$work/http-port"
+          python3 - "$origin" "$port_file" <<'PY' &
+          import functools
+          import http.server
+          import sys
+          from pathlib import Path
+
+          root, port_file = sys.argv[1:]
+          handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=root)
+          server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+          Path(port_file).write_text(str(server.server_port))
+          server.serve_forever()
+          PY
+          server_pid=$!
+          for _ in $(seq 1 100); do
+            [ ! -s "$port_file" ] || break
+            sleep 0.1
+          done
+          test -s "$port_file"
+          fixture_base="http://127.0.0.1:$(cat "$port_file")"
+          export CI=true
+          export JARN_UPDATE_CANARY_MODE=1
+          export JARN_UPDATE_CANARY_RELEASES_API="$fixture_base/releases.json"
+          export JARN_UPDATE_CANARY_RAW_BASE="$fixture_base/raw"
+          export JARN_UPDATE_CANARY_DOWNLOAD_BASE="$fixture_base/download"
+          export JARN_GITHUB_BASE="$fixture_base/github"
+
+          set +e
+          "$current_dir/jarn-linux-x86_64" update --version "$current_number" \
+            > "$work/update.stdout" 2> "$work/update.stderr"
+          update_rc=$?
+          set -e
+          if [ "$update_rc" -ne 10 ]; then
+            cat "$work/update.stdout" "$work/update.stderr" >&2
+            exit 1
+          fi
+          grep -F "Updating from verified source: $fixture_base/raw/v$current_number/install.sh" \
+            "$work/update.stdout"
+          test "$("$active" --version)" = "jarn ${CURRENT_VERSION#v}"
+          retained=$(MANIFEST="$manifest" PRIOR="$PRIOR_VERSION" python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          record = json.loads(Path(os.environ["MANIFEST"]).read_text())
+          previous = Path(record["previous_path"])
+          assert previous.is_file()
+          version = subprocess.check_output([previous, "--version"], text=True).strip()
+          assert version == f"jarn {os.environ['PRIOR']}"
+          print(previous)
+          PY
+          )
+
+          "$active" rollback --json > "$work/rollback.json"
+          test "$("$active" --version)" = "jarn $PRIOR_VERSION"
+          "$retained" rollback --json > "$work/roll-forward.json"
+          test "$("$active" --version)" = "jarn ${CURRENT_VERSION#v}"
+
+          node_before=$(command -v node || true)
+          python_before=$(command -v python3)
+          "$active" uninstall --yes --executable --dependencies > "$work/uninstall.txt"
+          for category in executable dependencies config sessions cache credentials; do
+            grep -F "[$category]" "$work/uninstall.txt"
+          done
+          grep -F "Preserved: config, sessions, cache, credentials." "$work/uninstall.txt"
+          test ! -e "$active"
+          test ! -e "$manifest"
+          test "$(command -v node || true)" = "$node_before"
+          test "$(command -v python3)" = "$python_before"
+
+          test "$(cat "$HOME/.jarn/config.yaml")" = 'default_profile: preserved-canary'
+          test "$(cat "$HOME/.jarn/sessions/canary")" = preserve-session
+          test "$(cat "$HOME/.jarn/memory/canary")" = preserve-memory
+          test "$(cat "$HOME/.jarn/skills/canary")" = preserve-extension
+          test "$(cat "$HOME/.jarn/cache/canary")" = preserve-cache
+          test "$(cat "$HOME/.jarn/secrets/canary")" = non-secret-credential-sentinel
+
+          set +e
+          sh "$current_dir/install.sh" --version "$current_number" \
+            --method binary --no-setup --yes
+          reinstall_rc=$?
+          set -e
+          [ "$reinstall_rc" -eq 10 ]
+          test "$("$active" --version)" = "jarn ${CURRENT_VERSION#v}"
+          test "$(cat "$HOME/.jarn/config.yaml")" = 'default_profile: preserved-canary'
+          test "$(cat "$HOME/.jarn/sessions/canary")" = preserve-session
+          test "$(cat "$HOME/.jarn/memory/canary")" = preserve-memory
+          test "$(cat "$HOME/.jarn/skills/canary")" = preserve-extension
+          test "$(cat "$HOME/.jarn/cache/canary")" = preserve-cache
+          test "$(cat "$HOME/.jarn/secrets/canary")" = non-secret-credential-sentinel
+
+  # A single explicit barrier prevents both public release promotion and package
+  # registry publication until every authenticated draft canary has passed.
+  release_gate:
+    name: Required release canaries passed
+    needs:
+      - security
+      - contracts
+      - supply_chain
+      - draft_canary
+      - tier1_linux_lifecycle
+      - tier1_macos_lifecycle
+      - upgrade_canary
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "All required pre-publish release gates passed."
+
+  promote_release:
+    name: Promote verified draft release
+    needs: release_gate
+    # A tag push may stage and exercise a draft, but cannot publish it. The
+    # maintainer sets this exact-tag repository variable only after protected
+    # UAT artifacts make scripts/ga_evidence.py --strict pass, then reruns this
+    # workflow. A missing or different value leaves the release safely draft.
+    if: ${{ vars.JARN_GA_PROMOTE_TAG == github.ref_name }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Fail closed and publish the verified draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          before=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+          test "$before" = true
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
+          after=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+          test "$after" = false
+
+  # Promotion is not sufficient proof that anonymous users can fetch GitHub's
+  # public/raw surfaces. Exercise those exact URLs before either registry can
+  # start. No GitHub token is exposed to curl or the installed candidate.
+  public_release_canary:
+    name: Public URL and canonical installer canary
+    needs: promote_release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - name: Fetch and execute credential-free public release
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          unset GH_TOKEN GITHUB_TOKEN
+          printf '%s\n' "$RELEASE_VERSION" | grep -Eq '^v[0-9A-Za-z][0-9A-Za-z._-]*$'
+          printf '%s\n' "$GITHUB_REPOSITORY" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+
+          work=$(mktemp -d "${TMPDIR:-/tmp}/jarn-public-release.XXXXXX")
+          cleanup_public_canary() {
+            chmod -R u+w "$work" 2>/dev/null || true
+            rm -rf "$work"
+          }
+          trap cleanup_public_canary EXIT HUP INT TERM
+          raw_main_url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/install.sh"
+          raw_tag_url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$RELEASE_VERSION/install.sh"
+          asset_base="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_VERSION"
+
+          fetch_public() {
+            public_url=$1
+            public_output=$2
+            curl --proto '=https' --tlsv1.2 -fsSL \
+              --connect-timeout 10 --max-time 180 \
+              --retry 8 --retry-delay 3 --retry-all-errors \
+              -o "$public_output" "$public_url"
+          }
+
+          fetch_public "$raw_main_url" "$work/install-main.sh"
+          fetch_public "$raw_tag_url" "$work/install-tagged.sh"
+          for asset in checksums.txt install.sh jarn-linux-x86_64 jarn-linux-arm64 jarn-macos-arm64; do
+            fetch_public "$asset_base/$asset" "$work/release-$asset"
+          done
+
+          CANARY_ROOT="$work" python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["CANARY_ROOT"])
+          rows: dict[str, list[str]] = {}
+          for line in (root / "release-checksums.txt").read_text(encoding="utf-8").splitlines():
+              digest, marked_name = line.split(maxsplit=1)
+              rows.setdefault(marked_name.lstrip("* "), []).append(digest.lower())
+          paths = {
+              "install.sh": [
+                  root / "install-tagged.sh",
+                  root / "release-install.sh",
+              ],
+              "jarn-linux-x86_64": [root / "release-jarn-linux-x86_64"],
+              "jarn-linux-arm64": [root / "release-jarn-linux-arm64"],
+              "jarn-macos-arm64": [root / "release-jarn-macos-arm64"],
+          }
+          for name, candidates in paths.items():
+              assert len(rows.get(name, [])) == 1, (name, rows.get(name))
+              for candidate in candidates:
+                  actual = hashlib.sha256(candidate.read_bytes()).hexdigest()
+                  assert actual == rows[name][0], (name, candidate, actual)
+          # `main` is intentionally mutable and is not a release-checksum
+          # subject. Its end-to-end install below is the canonical contract;
+          # the immutable tagged/raw and attached copies must match the digest.
+          main_installer = (root / "install-main.sh").read_bytes()
+          assert main_installer.startswith(b"#!/bin/sh\n")
+          PY
+
+          chmod 755 "$work/install-main.sh" "$work/install-tagged.sh" \
+            "$work/release-install.sh" "$work/release-jarn-linux-x86_64"
+          test "$("$work/release-jarn-linux-x86_64" --version)" = \
+            "jarn ${RELEASE_VERSION#v}"
+          "$work/release-jarn-linux-x86_64" --help >/dev/null
+
+          # Fetch main again into a fresh temporary path before executing it,
+          # matching the safe canonical curl workflow rather than `curl | sh`.
+          canonical_installer=$(mktemp "$work/canonical-install.XXXXXX")
+          fetch_public "$raw_main_url" "$canonical_installer"
+          public_home="$work/home"
+          mkdir -p "$public_home"
+          set +e
+          HOME="$public_home" PATH="/usr/bin:/bin" SHELL=/bin/bash \
+            JARN_GITHUB_REPO="$GITHUB_REPOSITORY" JARN_RUN_SETUP=never \
+            sh "$canonical_installer" --version "${RELEASE_VERSION#v}" \
+              --method binary --no-setup --yes \
+              >"$work/install.stdout" 2>"$work/install.stderr"
+          install_rc=$?
+          set -e
+          if [ "$install_rc" -ne 10 ]; then
+            sed -n '1,200p' "$work/install.stdout" >&2
+            sed -n '1,200p' "$work/install.stderr" >&2
+            exit 1
+          fi
+          test "$("$public_home/.local/bin/jarn" --version)" = \
+            "jarn ${RELEASE_VERSION#v}"
+          "$public_home/.local/bin/jarn" --help >/dev/null
+          grep -F "\"version\": \"${RELEASE_VERSION#v}\"" \
+            "$public_home/.local/state/jarn/install.json"
+      - name: Record rollback and yank guidance
+        if: ${{ failure() }}
+        run: |
+          {
+            echo '## Public release canary failed — registries are blocked'
+            echo
+            echo 'Do not rerun PyPI or npm publication until anonymous raw and release downloads pass.'
+            echo 'If an artifact is invalid, move the GitHub release back to draft using the UI, clear latest, and preserve the failed run evidence.'
+            echo 'Never replace an asset under the same public tag; correct it and cut a new version/tag.'
+            echo 'If a manual or partial rerun reached a registry, yank the exact PyPI release and deprecate the exact npm versions before publishing a corrected version.'
+          } | tee -a "$GITHUB_STEP_SUMMARY" >&2
+
+  pypi:
+    needs: public_release_canary
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/jarn
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-subjects
+          path: release-subjects
+      - name: Verify and select exact attested Python subjects
+        run: |
+          set -euo pipefail
+          (cd release-subjects && sha256sum -c checksums.txt)
+          mkdir dist
+          cp release-subjects/*.whl release-subjects/*.tar.gz dist/
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 2
+      - name: Publish to PyPI with Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
+
+  npm:
+    needs: public_release_canary
+    runs-on: ubuntu-latest
+    environment: NPM_TOKEN
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-subjects
+          path: release-subjects
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: npm-tarballs
+          path: npm-tarballs
+      - run: cd release-subjects && sha256sum -c checksums.txt
       - name: Verify npm auth
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm whoami
-      - name: Publish to npm (platform packages first, then the launcher)
+      - name: Publish exact attested npm tarballs
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
         run: |
-          while read -r dir; do
-            [ -n "$dir" ] || continue
-            name=$(node -p "require('./$dir/package.json').name")
-            version=$(node -p "require('./$dir/package.json').version")
+          set -euo pipefail
+          publish_args=(--access public)
+          if [ "$REPOSITORY_PRIVATE" = false ]; then
+            publish_args+=(--provenance)
+          fi
+          while IFS='|' read -r filename name version; do
+            [ -n "$filename" ] || continue
+            test -f "release-subjects/$filename"
             if npm view "${name}@${version}" version >/dev/null 2>&1; then
               echo "==> skip ${name}@${version} (already published)"
               continue
             fi
-            echo "==> npm publish $dir"
-            npm publish "$dir" --access public
-          done < npm/dist/publish-order.txt
+            npm publish "release-subjects/$filename" "${publish_args[@]}"
+          done < npm-tarballs/publish-order.txt
