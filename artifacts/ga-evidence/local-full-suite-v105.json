@@ -1,0 +1,51 @@
+{
+  "schema_version": 2,
+  "record_id": "LOCAL-FULL-20260813-V105",
+  "candidate_version": "1.0.5",
+  "candidate_commit": "75561149c1e84c27a5bfbbce71847d54c8244e73",
+  "criterion_ids": [
+    "TEST-AUTH",
+    "TEST-MODEL",
+    "TEST-CONFIG",
+    "TEST-UI",
+    "TEST-SECURITY"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-13T14:25:54Z",
+  "ended_at": "2026-08-13T14:30:48Z",
+  "duration_seconds": 294.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.5.2",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "JARN_TEST_MODE=1 uv run pytest -q on the exact v1.0.5 candidate worktree",
+  "implementation": [
+    "src/jarn",
+    "install.sh",
+    ".github/workflows"
+  ],
+  "automated_tests": [
+    "complete 3054-test repository collection"
+  ],
+  "decisions": [
+    "The exact candidate suite accounted for all 3054 collected tests: 3053 passed, 1 intentional platform fixture skipped, and zero failed or errored in one clean run.",
+    "The immutable candidate commit subsequently passed all 11 ordinary CI jobs, including Ubuntu, macOS, and the single final Windows 3.12/3.13 matrix run.",
+    "Catalog and authentication unit tests use isolated cache roots and fake protocol fixtures; live-account truth remains in separate protected UAT evidence."
+  ],
+  "errors": [],
+  "documentation_lookups": [],
+  "result": "All 3054 collected tests on candidate v1.0.5 were accounted for with zero failures or errors; exact-commit CI run 31711183070 also passed all 11 jobs.",
+  "limitations": [
+    "This record covers the observed full-suite interval and exact-commit CI result; lint, typing, audit, packaging, performance, release binaries, remote platforms, and live accounts are separate evidence.",
+    "Windows CI was run once on the frozen source candidate and was not repeated during evidence-only work."
+  ],
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  }
+}

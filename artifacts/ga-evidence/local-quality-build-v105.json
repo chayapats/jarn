@@ -1,0 +1,56 @@
+{
+  "schema_version": 2,
+  "record_id": "LOCAL-QUALITY-BUILD-20260813-V105",
+  "candidate_version": "1.0.5",
+  "candidate_commit": "75561149c1e84c27a5bfbbce71847d54c8244e73",
+  "criterion_ids": [
+    "AC-SEC-002",
+    "AC-SEC-003",
+    "CONSTRAINT-IMPLEMENTATION"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-13T15:17:25Z",
+  "ended_at": "2026-08-13T15:18:51Z",
+  "duration_seconds": 86.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.5.2",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "uv lock --check; Ruff; mypy; packaging tests; pip-audit; subprocess audit; two SOURCE_DATE_EPOCH builds; clean Python 3.12 wheel install and offline CLI smoke",
+  "implementation": [
+    "pyproject.toml",
+    "uv.lock",
+    "src/jarn",
+    "tests/test_packaging.py"
+  ],
+  "automated_tests": [
+    "uv run ruff check src tests scripts",
+    "uv run mypy src/",
+    "uv run pytest -q tests/test_packaging.py",
+    "uv run pip-audit",
+    "uv run python scripts/audit_subprocesses.py"
+  ],
+  "decisions": [
+    "uv lock --check resolved the pinned lock; Ruff passed and mypy passed all 178 source files.",
+    "All 4 packaging tests passed in the observed interval.",
+    "pip-audit found no known dependency vulnerabilities; unpublished local jarn 1.0.5 was explicitly reported as absent from PyPI rather than silently audited.",
+    "The subprocess boundary audit passed after the frozen-runtime external-environment repair.",
+    "Two independent SOURCE_DATE_EPOCH builds were byte-identical: wheel SHA-256 bd304904368d3ef1abac6416d18139c7ccc3cb6faca71805e94f0bc61e78adf3 and sdist SHA-256 a9761e30ff78874fda6671a79b5fdc1c84018a308d960d66a77cc454d2837477.",
+    "A clean Python 3.12 installation of that exact wheel reported jarn 1.0.5; offline help succeeded and doctor emitted schema-v1 JSON with network.checked=false."
+  ],
+  "errors": [],
+  "documentation_lookups": [],
+  "result": "The immutable v1.0.5 candidate passed lock, lint, typing, dependency-audit, subprocess-audit, packaging, deterministic-build, and exact-wheel clean-install smoke gates.",
+  "limitations": [
+    "Release-runner SBOM, provenance, signatures, binaries, and Tier-1 lifecycle execution are separate tagged-workflow evidence."
+  ],
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  }
+}

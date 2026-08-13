@@ -1,0 +1,60 @@
+{
+  "schema_version": 2,
+  "record_id": "RELEASE-DRAFT-CANARIES-V105",
+  "candidate_version": "1.0.5",
+  "candidate_commit": "75561149c1e84c27a5bfbbce71847d54c8244e73",
+  "criterion_ids": [
+    "AC-INSTALL-003",
+    "AC-INSTALL-004",
+    "AC-INSTALL-005",
+    "AC-SEC-001"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-13T14:52:09Z",
+  "ended_at": "2026-08-13T15:06:05Z",
+  "duration_seconds": 836.0,
+  "platform": {
+    "os": "GitHub Actions Tier-1 matrix",
+    "version": "Ubuntu 20.04/22.04/24.04; Debian 11/12; macOS 15/26",
+    "architecture": "x86_64 and arm64",
+    "libc": "glibc 2.31 baseline and native matrix runtimes"
+  },
+  "command": "GitHub Actions release workflow run 31712316548 for immutable annotated tag v1.0.5",
+  "implementation": [
+    ".github/workflows/release.yml",
+    "scripts/release_lifecycle_canary.sh",
+    "install.sh"
+  ],
+  "automated_tests": [
+    "release preflight, security, contracts, packaging, checksum, SBOM, provenance, and attestation-verification jobs",
+    "Tier-1 lifecycle matrix on 10 native Linux and 4 native macOS targets",
+    "authenticated draft glibc/npm-shadow canary",
+    "real 0.11.0 to 1.0.5 update, rollback, forward-rollback, uninstall, and reinstall canary"
+  ],
+  "decisions": [
+    "All 29 required pre-publication jobs and all 14 Tier-1 lifecycle legs completed successfully on immutable tagged commit 75561149c1e84c27a5bfbbce71847d54c8244e73.",
+    "Linux artifacts were built against the Ubuntu 20.04 glibc 2.31 baseline and executed in the oldest supported target; x86_64 and arm64 lifecycle legs passed on Ubuntu 20.04, 22.04, 24.04 and Debian 11, 12.",
+    "Native macOS lifecycle legs passed on macOS 15 and 26 for Apple Silicon and Intel; WSL2 and older macOS releases remain explicitly documented compatibility-tier targets.",
+    "Every staged release subject had a canonical SHA-256 digest; SPDX and CycloneDX SBOMs, SLSA provenance, Sigstore attestations, and attestation verification completed successfully.",
+    "The authenticated draft canary exercised the glibc fallback and npm-shadow regression; the historical lifecycle used the immutable 0.11.0 binary and completed update, both rollback directions, uninstall, data preservation, and reinstall.",
+    "The GitHub release remained a private draft; public-URL canary, promotion, PyPI, and npm were intentionally skipped because protected promotion was not enabled."
+  ],
+  "errors": [],
+  "documentation_lookups": [
+    "docs/SUPPORTED_PLATFORMS.md",
+    "docs/GA_RELEASE_EVIDENCE_TEMPLATE.md"
+  ],
+  "result": "The exact v1.0.5 tag passed every required private pre-publication release, integrity, oldest-runtime, Tier-1 lifecycle, npm-shadow, fallback, and historical-upgrade gate; all release assets remain draft-only.",
+  "limitations": [
+    "This record does not claim AC-INSTALL-017 or TEST-RELEASE because anonymous published-URL canaries cannot run before an explicitly authorized promotion.",
+    "This record does not claim WSL2 execution; the support contract documents WSL2 as compatibility tier.",
+    "Live ChatGPT and Anthropic account UATs are not inferred from release automation."
+  ],
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "schema_version": 2,
+  "record_id": "PERF-MACOS-20260813-V105",
+  "candidate_version": "1.0.5",
+  "candidate_commit": "75561149c1e84c27a5bfbbce71847d54c8244e73",
+  "criterion_ids": [
+    "AC-PERF-001",
+    "AC-PERF-002",
+    "AC-PERF-003",
+    "AC-PERF-005"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-13T15:15:45Z",
+  "ended_at": "2026-08-13T15:16:50Z",
+  "duration_seconds": 65.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.5.2",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "python scripts/benchmark_startup.py --executable <exact-v1.0.5-wheel-venv>/bin/jarn --runs 10 --warmups 2 --output performance.json",
+  "implementation": [
+    "scripts/benchmark_startup.py",
+    "src/jarn/repl/app.py",
+    "src/jarn/repl/completer.py"
+  ],
+  "automated_tests": [
+    "tests/test_performance_harness.py"
+  ],
+  "decisions": [
+    "Measured the exact reproducible v1.0.5 wheel in 10 fresh-process or PTY samples after 2 warmups; every unchanged product threshold passed.",
+    "Keystroke rendering remained below the 50 ms threshold without weakening the gate."
+  ],
+  "errors": [],
+  "documentation_lookups": [],
+  "result": "Exact-wheel p95: version 25.011 ms, help 26.649 ms, 80x24 PTY prompt-ready 1031.298 ms, keystroke render 2.182 ms, offline doctor 3026.953 ms; every threshold passed.",
+  "limitations": [
+    "Reference observation is macOS ARM64; exact-commit CI independently repeated the performance contract on Ubuntu."
+  ],
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  }
+}

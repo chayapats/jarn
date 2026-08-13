@@ -1,0 +1,64 @@
+{
+  "schema_version": 2,
+  "record_id": "REMOTE-UBUNTU-FRESH-20260813-V105",
+  "candidate_version": "1.0.5",
+  "candidate_commit": "75561149c1e84c27a5bfbbce71847d54c8244e73",
+  "criterion_ids": [
+    "AC-INSTALL-006",
+    "AC-INSTALL-007",
+    "AC-INSTALL-008",
+    "AC-INSTALL-009",
+    "TEST-INSTALL"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-13T15:06:15Z",
+  "ended_at": "2026-08-13T15:13:08Z",
+  "duration_seconds": 413.0,
+  "platform": {
+    "os": "Ubuntu",
+    "version": "22.04",
+    "architecture": "x86_64",
+    "libc": "glibc 2.35"
+  },
+  "command": "SSH inventory; remove the user-owned uv-tool installation; verify exact private-draft checksums; fresh binary install through a loopback-only release fixture; verify receipt, shell resolution, doctor manager probes, and preserved config",
+  "implementation": [
+    "install.sh",
+    "src/jarn/util/process_env.py",
+    "src/jarn/doctor/inventory.py",
+    "src/jarn/install_state.py"
+  ],
+  "automated_tests": [
+    "tests/test_installer.py",
+    "tests/test_process_env.py",
+    "tests/test_ga_doctor_inventory.py"
+  ],
+  "decisions": [
+    "The user-owned prior uv-tool installation was removed before the fresh installation; configuration and sessions were preserved.",
+    "A root-owned global npm 0.11.0 command was discovered and retained because non-interactive sudo correctly refused removal without a password.",
+    "The exact draft Linux x86_64 binary was verified on both machines with SHA-256 6a6dc0e5a209629a1e53dfc23612c4b1912b9b6335fe80d17cc073d5d67ea46a before activation.",
+    "The installer returned documented status 10 because the invoking SSH parent still resolved the root npm command, while fresh login and interactive shells resolved the verified user binary.",
+    "The installed canonical receipt recorded binary method, v1.0.5, Ubuntu 22.04, glibc 2.35, active-path match, skipped setup, and the exact activation state.",
+    "Offline doctor completed without the prior frozen-runtime GLIBCXX failure; npm-prefix and npm-root external manager probes returned ok, the new command was active, and the root npm path was reported as shadowed.",
+    "The existing configuration SHA-256 remained byte-identical before and after installation. Doctor exit 1 was an honest readiness result because Codex CLI/auth and the selected model route were not configured, not an installation failure."
+  ],
+  "errors": [
+    "The root-owned global npm installation could not be removed with sudo -n because the host requires an interactive administrator password; it was left unchanged and reported as a collision."
+  ],
+  "documentation_lookups": [
+    "docs/TROUBLESHOOTING.md",
+    "docs/SUPPORTED_PLATFORMS.md"
+  ],
+  "result": "The exact v1.0.5 draft binary fresh-installed transactionally on Ubuntu 22.04/glibc 2.35 after removing the user-owned prior version, preserved user data, resolved first in fresh shells, and safely diagnosed the remaining root npm collision plus incomplete auth/model readiness.",
+  "limitations": [
+    "The authenticated private-draft files were served from a loopback-only fixture because draft release URLs are not anonymously accessible before promotion.",
+    "The root-owned npm 0.11.0 command remains until the operator runs sudo npm uninstall -g jarn-cli interactively.",
+    "First-time ChatGPT authentication and live model selection were not run, so this record does not claim UAT-001 or auth/model readiness."
+  ],
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  }
+}
