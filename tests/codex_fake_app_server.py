@@ -230,6 +230,28 @@ for line in sys.stdin:
                 }
             )
             continue
+        if mode in {"model_service_tier_objects", "model_bad_service_tier"}:
+            entry = catalog_entry("gpt-tiered", default=True)
+            if mode == "model_service_tier_objects":
+                entry["serviceTiers"] = [
+                    {
+                        "id": "priority",
+                        "name": "Priority",
+                        "description": "Fixture priority service",
+                    },
+                    {"id": "flex", "name": "Flex", "description": "Fixture flex"},
+                ]
+            else:
+                entry["serviceTiers"] = [
+                    {"id": "priority", "name": ["not", "a", "string"]}
+                ]
+            send(
+                {
+                    "id": request_id,
+                    "result": {"data": [entry], "nextCursor": None},
+                }
+            )
+            continue
         if mode == "model_retired":
             retired = catalog_entry("gpt-old", default=True)
             retired["deprecated"] = True

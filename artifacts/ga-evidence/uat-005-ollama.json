@@ -1,5 +1,6 @@
 {
   "candidate_version": "1.0.3",
+  "candidate_commit": "5b002730566918958d9dbb3c8014d83f4ceeda90",
   "automated_tests": [
     "tests/test_model_catalog.py",
     "tests/test_local_backend.py",
@@ -35,7 +36,7 @@
   ],
   "limitations": [
     "This is a truthful local equivalent of the SSH-first harness on the current macOS host; scripts/uat/uat-005-ollama.sh --execute was not invoked because it requires a separate disposable SSH target.",
-    "Artifact installation is covered by separate installer/release evidence; this provider UAT used a clean install of the exact candidate wheel."
+    "Artifact installation is covered by separate installer/release evidence; this provider UAT used a clean install of the exact candidate wheel whose SHA-256 is byte-identical to the immutable tag workflow artifact for commit 5b002730566918958d9dbb3c8014d83f4ceeda90."
   ],
   "platform": {
     "architecture": "arm64",

@@ -115,6 +115,42 @@ def test_redacted_result_can_mark_only_its_criterion_passed(tmp_path: Path) -> N
     _assert_missing_candidate_is_rejected(tmp_path / "missing-binding")
 
 
+def test_stale_failed_or_blocked_result_cannot_classify_new_candidate(
+    tmp_path: Path,
+) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    for status in ("failed", "blocked"):
+        record = _result("UAT-006", status=status)
+        record["candidate_version"] = "0.11.0"
+        record["record_id"] = f"STALE-{status.upper()}"
+        record["ended_at"] = f"2026-08-09T00:00:0{1 if status == 'failed' else 2}Z"
+        (evidence_dir / f"{status}.json").write_text(
+            json.dumps(record), encoding="utf-8"
+        )
+
+    result = subprocess.run(
+        [
+            "python3",
+            str(GENERATOR),
+            "--evidence-dir",
+            str(evidence_dir),
+            "--candidate-version",
+            CURRENT_VERSION,
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "| UAT-006 | Not run |" in result.stdout
+    assert "| UAT-006 | Failed |" not in result.stdout
+    assert "| UAT-006 | Blocked |" not in result.stdout
+    assert "declares candidate 0.11.0" in result.stdout
+
+
 def test_strict_mode_fails_with_any_gap_and_passes_complete_small_goal(
     tmp_path: Path,
 ) -> None:

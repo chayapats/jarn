@@ -1112,6 +1112,34 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out the immutable tag implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          path: tagged-candidate
+          persist-credentials: false
+      - name: Check out protected evidence from main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+          path: evidence-main
+          persist-credentials: false
+      - name: Fail closed unless exact-tag GA evidence is complete
+        run: |
+          set -euo pipefail
+          tag_commit=$(git -C tagged-candidate rev-parse 'HEAD^{commit}')
+          test "$tag_commit" = "$GITHUB_SHA"
+          git -C evidence-main merge-base --is-ancestor "$tag_commit" HEAD
+          python3 tagged-candidate/scripts/ga_evidence.py \
+            --goal tagged-candidate/docs/GOAL_GENERAL_AVAILABILITY.md \
+            --map tagged-candidate/docs/ga-evidence-map.json \
+            --evidence-dir evidence-main/artifacts/ga-evidence \
+            --candidate-version "${GITHUB_REF_NAME#v}" \
+            --candidate-commit "$tag_commit" \
+            --strict \
+            --output "$RUNNER_TEMP/GA_RELEASE_EVIDENCE.md"
+          sed -n '1,12p' "$RUNNER_TEMP/GA_RELEASE_EVIDENCE.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Fail closed and publish the verified draft
         env:
           GH_TOKEN: ${{ github.token }}

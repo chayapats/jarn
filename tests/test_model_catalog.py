@@ -160,6 +160,28 @@ def test_codex_entry_carries_reasoning_and_capability_metadata(tmp_path):
     assert entry.billing_mode == "chatgpt_subscription"
 
 
+def test_codex_catalog_accepts_current_service_tier_objects(monkeypatch, tmp_path):
+    monkeypatch.setenv("JARN_CODEX_FAKE_MODE", "model_service_tier_objects")
+
+    snapshot = get_codex(catalog_service(tmp_path, [START]))
+
+    assert snapshot.source is CatalogSource.CODEX_LIVE
+    assert snapshot.availability_verified is True
+    assert snapshot.models[0].service_tiers == ("Priority", "Flex")
+    assert snapshot.to_dict()["models"][0]["service_tiers"] == ["Priority", "Flex"]
+
+
+def test_codex_catalog_rejects_malformed_service_tier_object(monkeypatch, tmp_path):
+    monkeypatch.setenv("JARN_CODEX_FAKE_MODE", "model_bad_service_tier")
+
+    snapshot = get_codex(catalog_service(tmp_path, [START]))
+
+    assert snapshot.source is CatalogSource.STATIC_FALLBACK
+    assert snapshot.availability_verified is False
+    assert snapshot.error is not None
+    assert "service tier name must be a string" in snapshot.error.message
+
+
 def test_live_empty_catalog_is_honest_not_replaced_by_static(monkeypatch, tmp_path):
     monkeypatch.setenv("JARN_CODEX_FAKE_MODE", "model_empty")
     now = [START]

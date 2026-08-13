@@ -1,0 +1,59 @@
+{
+  "candidate_version": "1.0.4",
+  "automated_tests": [
+    "tests/test_model_catalog.py",
+    "tests/test_local_backend.py",
+    "tests/test_tui_wizard_model_picker.py"
+  ],
+  "command": "Isolated disposable macOS HOME using the exact reproducible v1.0.4 wheel; plain interactive setup and two headless local turns with every cloud proxy directed to closed loopback port 9",
+  "criterion_ids": [
+    "UAT-005"
+  ],
+  "decisions": [
+    "Setup visibly discovered loopback Ollama and reported 1 installed and 1 tool-capable model; it did not request credentials and config contains no credential field.",
+    "Standard setup auto-selected the sole live tool-capable model and routed main, subagent, and summarizer to it without manual config editing.",
+    "Completion verified the exact v1.0.4 wheel entrypoint on PATH; config schema 3 and mode 0600 were verified and resumable setup state was absent.",
+    "With cloud proxies closed, the harmless local turn returned exact UAT_OK with exit 0, one turn, and zero tool calls.",
+    "A deliberately unavailable model returned exit 4 and JARN-MODEL-001 with /model refresh, Ollama pull, /api/show, and tools-capability remediation; no Done or Ready success text was emitted.",
+    "Offline doctor returned ok=true, version 1.0.4, current config schema, a fresh cache whose origin_source is local_live, one verified model, and every selected route available.",
+    "Exact wheel SHA-256: 5589a97a2a41136068458c6d4c6797ac81c62a004e1aabf9ad0846900951a24d."
+  ],
+  "documentation_lookups": [
+    "No external documentation lookup was required; setup selected the model from live capability metadata without model-ID entry."
+  ],
+  "duration_seconds": 82.0,
+  "ended_at": "2026-08-13T12:21:22Z",
+  "errors": [],
+  "implementation": [
+    "src/jarn/providers/models.py",
+    "src/jarn/catalog/service.py",
+    "src/jarn/onboarding/model_catalog.py",
+    "src/jarn/onboarding/wizard.py",
+    "src/jarn/onboarding/completion.py",
+    "src/jarn/controller/core.py"
+  ],
+  "limitations": [
+    "This is a truthful local equivalent of the SSH-first harness on the current macOS host; the protected SSH harness itself requires a separate disposable target.",
+    "No candidate commit is recorded before the v1.0.4 source is committed; strict tagged evidence must require a matching immutable commit before promotion.",
+    "Installer and public-release URL behavior are covered by separate criteria and are not inferred from this exact-wheel provider UAT."
+  ],
+  "platform": {
+    "architecture": "arm64",
+    "libc": "n/a",
+    "os": "macOS",
+    "version": "26.5.2"
+  },
+  "record_id": "UAT-005-V104",
+  "redaction": {
+    "home_path_redacted": true,
+    "host_identifier_redacted": true,
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false
+  },
+  "result": "The exact v1.0.4 wheel discovered the loopback Ollama endpoint, selected its sole tool-capable model without credentials, completed a cloud-offline local turn, and rejected an unavailable model with stable actionable remediation.",
+  "schema_version": 2,
+  "started_at": "2026-08-13T12:20:00Z",
+  "status": "passed",
+  "uat_id": "UAT-005"
+}

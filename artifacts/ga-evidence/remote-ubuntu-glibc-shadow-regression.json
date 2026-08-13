@@ -4,6 +4,7 @@
     "tests/test_installer.py npm-shadow and glibc fallback contracts"
   ],
   "candidate_version": "1.0.3",
+  "candidate_commit": "5b002730566918958d9dbb3c8014d83f4ceeda90",
   "command": "SSH isolated-home install on a redacted Ubuntu 22.04 fixture with the real old global-npm command first on PATH, a checksum-verified GLIBC_2.38-incompatible release-binary fixture, and the exact final v1.0.3 wheel as the managed-Python fallback",
   "criterion_ids": [
     "AC-INSTALL-005",
@@ -27,7 +28,8 @@
     "tests/test_installer.py"
   ],
   "limitations": [
-    "This final source/wheel fixture is not a public release URL canary, oldest-glibc execution, fresh-user login UAT, or proof of the complete Tier-1 matrix.",
+    "This final source/wheel fixture is not a public release URL canary, oldest-glibc execution, fresh-user login UAT, or proof of the complete Tier-1 matrix; those platform/runtime claims require separate tagged-workflow evidence.",
+    "The tested wheel SHA-256 is byte-identical to the wheel produced by immutable tag workflow run 31686783472 for commit 5b002730566918958d9dbb3c8014d83f4ceeda90.",
     "Setup was intentionally disabled so this record contains no authentication ceremony or provider output."
   ],
   "platform": {

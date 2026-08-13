@@ -167,7 +167,7 @@ def _strings(value: Any, *, field: str) -> list[str]:
 
 
 def effective_mapping(mapping: dict[str, Any], criterion_id: str) -> dict[str, list[str]]:
-    merged = {
+    merged: dict[str, list[str]] = {
         "implementation": [],
         "automated_tests": [],
         "commands": [],
@@ -264,14 +264,13 @@ def load_evidence(
             enriched["_sort_key"] = sort_key
             for criterion_id in record["criterion_ids"]:
                 mismatch: str | None = None
-                if record["status"] == "passed" and record["candidate_version"] != candidate_version:
+                if record["candidate_version"] != candidate_version:
                     mismatch = (
                         f"{enriched['_source']} declares candidate "
                         f"{record['candidate_version']}, expected {candidate_version}"
                     )
                 elif (
-                    record["status"] == "passed"
-                    and candidate_commit is not None
+                    candidate_commit is not None
                     and record.get("candidate_commit") != candidate_commit
                 ):
                     declared = record.get("candidate_commit") or "no commit"

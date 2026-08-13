@@ -1,0 +1,53 @@
+{
+  "schema_version": 2,
+  "record_id": "UAT-003-V104-LIVE-ARTIFACT-PARTIAL",
+  "candidate_version": "1.0.4",
+  "uat_id": "UAT-003",
+  "criterion_ids": [
+    "UAT-003"
+  ],
+  "status": "blocked",
+  "started_at": "2026-08-13T11:44:00Z",
+  "ended_at": "2026-08-13T12:02:06Z",
+  "duration_seconds": 1086.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.5.2",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "Clean install of reproducible v1.0.4 wheel, isolated verified ChatGPT catalog/setup/first prompt, then a second fresh CODEX_HOME browser-login attempt",
+  "implementation": [
+    "src/jarn/auth/",
+    "src/jarn/catalog/service.py",
+    "src/jarn/onboarding/"
+  ],
+  "automated_tests": [
+    "tests/test_model_catalog.py::test_codex_catalog_accepts_current_service_tier_objects",
+    "tests/test_model_catalog.py::test_codex_catalog_rejects_malformed_service_tier_object",
+    "tests/test_chatgpt_onboarding.py"
+  ],
+  "decisions": [
+    "Three v1.0.4 builds were byte-identical; the clean wheel SHA-256 was 5589a97a2a41136068458c6d4c6797ac81c62a004e1aabf9ad0846900951a24d.",
+    "Using an isolated verified account state, the exact wheel loaded a non-empty codex_live catalog, normalized current service-tier objects, selected a live default, completed setup atomically, removed resumable state, and wrote valid config.",
+    "The exact wheel completed a harmless first prompt with exit 0, exact UAT_OK result, one turn, and zero tool calls.",
+    "A second new CODEX_HOME rendered the browser challenge but the operator did not complete the fresh callback before the bounded timeout; status remained signed_out and no success was inferred."
+  ],
+  "errors": [
+    "JARN-AUTH-008 on the final fresh-browser-login attempt; account remained signed_out"
+  ],
+  "documentation_lookups": [],
+  "result": "The v1.0.4 artifact fixes the live catalog/setup/first-prompt defect, but UAT-003 remains Blocked until a fresh browser callback is operator-completed on the final artifact and the result is bound to an immutable commit.",
+  "limitations": [
+    "The successful catalog/setup/prompt used isolated account state created while diagnosing v1.0.3; it proves artifact compatibility but not the complete fresh v1.0.4 browser ceremony.",
+    "No candidate commit is recorded before the v1.0.4 source is committed/tagged; strict tagged evidence must ignore this record when commit binding is enforced.",
+    "Raw login URL, callback payload, account data, model names, prompt, and terminal output are prohibited evidence and were not persisted."
+  ],
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  }
+}

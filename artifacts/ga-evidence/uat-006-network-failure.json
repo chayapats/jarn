@@ -1,5 +1,6 @@
 {
   "candidate_version": "1.0.3",
+  "candidate_commit": "5b002730566918958d9dbb3c8014d83f4ceeda90",
   "automated_tests": [
     "tests/test_installer.py"
   ],
@@ -23,7 +24,7 @@
     "src/jarn/doctor/collect.py"
   ],
   "limitations": [
-    "This final-candidate UAT transferred the exact v1.0.3 installer source and reproducible wheel into an isolated remote /tmp fixture; the tagged public-URL canary remains a separate release gate."
+    "This final-candidate UAT transferred the exact v1.0.3 installer source and reproducible wheel into an isolated remote /tmp fixture; the wheel SHA-256 is byte-identical to the immutable tag workflow artifact for commit 5b002730566918958d9dbb3c8014d83f4ceeda90, while the public-URL canary remains a separate release gate."
   ],
   "platform": {
     "architecture": "x86_64",

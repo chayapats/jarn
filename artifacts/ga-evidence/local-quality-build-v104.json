@@ -1,0 +1,54 @@
+{
+  "schema_version": 2,
+  "record_id": "LOCAL-QUALITY-BUILD-20260813-V104",
+  "candidate_version": "1.0.4",
+  "criterion_ids": [
+    "AC-SEC-002",
+    "AC-SEC-003",
+    "CONSTRAINT-IMPLEMENTATION"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-13T12:35:59Z",
+  "ended_at": "2026-08-13T12:37:45Z",
+  "duration_seconds": 106.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.5.2",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "uv lock --check; Ruff; mypy; packaging tests; pip-audit; three SOURCE_DATE_EPOCH builds; clean Python 3.12 wheel install and offline CLI smoke",
+  "implementation": [
+    "pyproject.toml",
+    "uv.lock",
+    "src/jarn",
+    "tests/test_packaging.py"
+  ],
+  "automated_tests": [
+    "uv run ruff check src tests scripts",
+    "uv run mypy src/",
+    "uv run pytest -q tests/test_packaging.py",
+    "uv run pip-audit"
+  ],
+  "decisions": [
+    "uv lock --check resolved the pinned lock successfully; Ruff passed all selected source/test/script files and mypy passed 177 source files.",
+    "Packaging completed 4 tests successfully in a network-enabled isolated build environment.",
+    "pip-audit 2.9.0 found no known dependency vulnerabilities; the unpublished local jarn 1.0.4 package was explicitly reported as absent from PyPI rather than silently audited.",
+    "Three independent SOURCE_DATE_EPOCH builds were byte-identical: wheel SHA-256 8d13872b9243b0ef9960e11f6d7dc733a63ce7edf166b6d3595ba58ed603b5b0 and sdist SHA-256 c17d0b02d10c1b8f4d83f4ea746530de7533b96b34a7320ddcb660f976cb1277.",
+    "A clean Python 3.12 install of that exact wheel reported jarn 1.0.4; offline help succeeded and doctor returned schema-v1 JSON with network.checked=false."
+  ],
+  "errors": [],
+  "documentation_lookups": [],
+  "result": "The v1.0.4 candidate passed lock, lint, typing, dependency-audit, packaging, deterministic-build, and exact-wheel clean-install smoke gates.",
+  "limitations": [
+    "Release-runner SBOM, provenance, signatures, binaries, and Tier-1 lifecycle execution remain separate tagged workflow evidence.",
+    "No candidate commit is recorded before the v1.0.4 source is committed/tagged."
+  ],
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  }
+}

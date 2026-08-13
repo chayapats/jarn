@@ -1,0 +1,59 @@
+{
+  "schema_version": 2,
+  "record_id": "TAGGED-PREFLIGHT-SECURITY-V103",
+  "candidate_version": "1.0.3",
+  "candidate_commit": "5b002730566918958d9dbb3c8014d83f4ceeda90",
+  "criterion_ids": [
+    "TEST-AUTH",
+    "TEST-MODEL",
+    "TEST-CONFIG",
+    "TEST-UI",
+    "TEST-SECURITY",
+    "CONSTRAINT-IMPLEMENTATION"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-13T09:29:03Z",
+  "ended_at": "2026-08-13T09:34:38Z",
+  "duration_seconds": 335.0,
+  "platform": {
+    "os": "Ubuntu",
+    "version": "22.04 GitHub-hosted runner",
+    "architecture": "x86_64",
+    "libc": "glibc"
+  },
+  "command": "GitHub Actions release workflow run 31686783472 preflight and security jobs for immutable annotated tag v1.0.3",
+  "implementation": [
+    "src/jarn/",
+    ".github/workflows/release.yml"
+  ],
+  "automated_tests": [
+    "uv run ruff check src tests scripts",
+    "uv run mypy src/",
+    "uv run pytest -q",
+    "uv run pytest tests/test_packaging.py -q",
+    "uv run pip-audit",
+    "uv run pytest -q tests/test_permissions.py tests/test_permission_bypass_matrix.py tests/test_approval_contract.py",
+    "gitleaks 8.24.3"
+  ],
+  "decisions": [
+    "Tag, pyproject, and source versions matched exactly at 1.0.3.",
+    "Ruff completed with all checks passed and mypy completed successfully on the tagged source.",
+    "The exact tagged suite completed with 3042 passed, 2 intentional platform/fixture skips, 1 controlled unresolved-host warning, and zero failures in 280.26 seconds; packaging added 4 passing tests.",
+    "pip-audit 2.9.0 found no known dependency vulnerabilities; the unpublished local jarn 1.0.3 package itself was correctly reported as not present on PyPI rather than silently audited.",
+    "The focused permission/bypass/approval security suite completed with 120 passed, and the pinned gitleaks job completed successfully."
+  ],
+  "errors": [],
+  "documentation_lookups": [],
+  "result": "The immutable v1.0.3 tag passed version parity, lint, typing, the complete repository suite available in the release runner, packaging, dependency audit, permission-bypass tests, and secret scanning before any release assets were staged.",
+  "limitations": [
+    "Live provider-account UAT is deliberately outside the public credential-free preflight and is tracked by UAT-specific evidence.",
+    "This record does not infer published-artifact behavior from source tests."
+  ],
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  }
+}

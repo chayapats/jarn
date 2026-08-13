@@ -143,6 +143,51 @@ def _string_tuple(raw: Any, field: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(raw))
 
 
+def _service_tiers(raw: Any) -> tuple[str, ...]:
+    """Normalize both shipped Codex service-tier protocol shapes.
+
+    Older app-server versions returned tier identifiers as strings.  Codex
+    0.147.0 returns objects with ``id``, ``name``, and ``description``.  Keep
+    the catalog's versioned public/cache representation string-only by using
+    the human-readable name when present and the stable id otherwise.  Unknown
+    object fields are forward-compatible metadata, but known fields must keep
+    their documented scalar types and every object must identify a tier.
+    """
+
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise CodexProtocolError("model/list serviceTiers must be an array")
+    values: list[str] = []
+    for item in raw:
+        value: str | None
+        if isinstance(item, str):
+            value = item
+        elif isinstance(item, dict):
+            tier_id = item.get("id")
+            name = item.get("name")
+            description = item.get("description")
+            if tier_id is not None and not isinstance(tier_id, str):
+                raise CodexProtocolError("model/list service tier id must be a string")
+            if name is not None and not isinstance(name, str):
+                raise CodexProtocolError("model/list service tier name must be a string")
+            if description is not None and not isinstance(description, str):
+                raise CodexProtocolError(
+                    "model/list service tier description must be a string"
+                )
+            value = name or tier_id
+        else:
+            raise CodexProtocolError(
+                "model/list service tier must be a string or object"
+            )
+        if not isinstance(value, str) or not value.strip():
+            raise CodexProtocolError("model/list service tier has no id or name")
+        normalized = value.strip()
+        if normalized not in values:
+            values.append(normalized)
+    return tuple(values)
+
+
 def _codex_entry(
     provider_profile: str,
     raw: dict[str, Any],
@@ -209,7 +254,7 @@ def _codex_entry(
         deprecated=bool_fields["deprecated"],
         replacement_ref=(qualify_model_ref(replacement, provider_profile) if replacement else None),
         context_window=context_window,
-        service_tiers=_string_tuple(raw.get("serviceTiers"), "serviceTiers"),
+        service_tiers=_service_tiers(raw.get("serviceTiers")),
         billing_mode="chatgpt_subscription",
         availability_label="Available for this ChatGPT account",
     )

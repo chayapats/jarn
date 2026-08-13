@@ -5,6 +5,20 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-08-13
+
+### Fixed
+
+- Accept the current Codex app-server `model/list.serviceTiers` object shape
+  (`id`, `name`, and `description`) while retaining compatibility with legacy
+  string tiers and strict rejection of malformed metadata. A protected live
+  ChatGPT UAT found this drift after all v1.0.3 draft canaries had passed: the
+  account verified, but setup correctly refused to save because its live model
+  catalog could not be parsed. The fixed source completed live catalog
+  discovery, resumable setup, and a first prompt. The immutable v1.0.3 tag and
+  GitHub Release remain an unpublished private draft; PyPI and npm were never
+  mutated.
+
 ## [1.0.3] - 2026-08-12
 
 ### Fixed
@@ -1409,6 +1423,7 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
 [1.0.3]: https://github.com/chayapats/jarn/releases/tag/v1.0.3
+[1.0.4]: https://github.com/chayapats/jarn/releases/tag/v1.0.4
 [1.0.2]: https://github.com/chayapats/jarn/releases/tag/v1.0.2
 [1.0.1]: https://github.com/chayapats/jarn/releases/tag/v1.0.1
 [1.0.0]: https://github.com/chayapats/jarn/releases/tag/v1.0.0

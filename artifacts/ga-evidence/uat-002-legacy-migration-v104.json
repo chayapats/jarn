@@ -1,0 +1,49 @@
+{
+  "schema_version": 2,
+  "record_id": "UAT-002-V104-PARTIAL",
+  "candidate_version": "1.0.4",
+  "uat_id": "UAT-002",
+  "criterion_ids": [
+    "UAT-002",
+    "AC-UX-011"
+  ],
+  "status": "blocked",
+  "started_at": "2026-08-13T12:29:30Z",
+  "ended_at": "2026-08-13T12:31:30Z",
+  "duration_seconds": 120.0,
+  "platform": {
+    "os": "Ubuntu",
+    "version": "22.04",
+    "architecture": "x86_64",
+    "libc": "glibc 2.35"
+  },
+  "command": "SSH isolated-/tmp exact v1.0.4 wheel with a customized schema-0 config; offline doctor migration and command-inventory preservation checks",
+  "implementation": [
+    "install.sh",
+    "src/jarn/config/migrations.py",
+    "src/jarn/doctor/collect.py"
+  ],
+  "automated_tests": [
+    "tests/test_installer.py",
+    "tests/test_ga_config_migrations.py"
+  ],
+  "decisions": [
+    "The exact v1.0.4 wheel ran successfully from an isolated user-space tool root while the host real legacy command inventory remained present and byte-identical.",
+    "The first non-billable doctor run migrated a customized schema-0 config to schema 3 and created one byte-identical backup; a second run reported current schema and offline diagnostics.",
+    "Operator comment, custom header, timeout, routing, permission, theme, and log level were preserved."
+  ],
+  "errors": [],
+  "documentation_lookups": [],
+  "result": "The migration and coexistence portions of UAT-002 passed on the exact v1.0.4 wheel, but the criterion remains Blocked until the immutable tagged installer itself performs activation over the real legacy resolution and the result is commit-bound.",
+  "limitations": [
+    "The protected installer flow was not invoked before an immutable v1.0.4 tag/release binary existed, so PATH activation and installer cleanup guidance are not claimed.",
+    "No candidate commit is recorded before the v1.0.4 source is committed/tagged."
+  ],
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  }
+}

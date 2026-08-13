@@ -1,0 +1,50 @@
+{
+  "schema_version": 2,
+  "record_id": "LOCAL-FULL-20260813-V104",
+  "candidate_version": "1.0.4",
+  "criterion_ids": [
+    "TEST-AUTH",
+    "TEST-MODEL",
+    "TEST-CONFIG",
+    "TEST-UI",
+    "TEST-SECURITY"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-13T11:48:33Z",
+  "ended_at": "2026-08-13T11:53:18Z",
+  "duration_seconds": 285.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.5.2",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "JARN_TEST_MODE=1 uv run pytest -q on the exact v1.0.4 candidate worktree",
+  "implementation": [
+    "src/jarn",
+    "install.sh",
+    ".github/workflows"
+  ],
+  "automated_tests": [
+    "complete 3047-test repository collection"
+  ],
+  "decisions": [
+    "The exact candidate suite accounted for all 3047 collected tests: 3046 passed, 1 intentional platform fixture skipped, and zero failed or errored in 282.76 seconds.",
+    "The only warning was the intentional unresolved mcp.example fixture host; it did not contact an external provider.",
+    "Catalog tests use isolated cache roots and fake protocol fixtures; live-account truth remains in separate protected UAT evidence."
+  ],
+  "errors": [],
+  "documentation_lookups": [],
+  "result": "All 3047 collected tests on candidate v1.0.4 were accounted for in one clean run with zero failures or errors.",
+  "limitations": [
+    "This record contains only the observed full-suite interval; lint, typing, audit, packaging, reproducible builds, remote platforms, and live accounts are separate evidence.",
+    "No candidate commit is recorded before the v1.0.4 source is committed/tagged."
+  ],
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  }
+}

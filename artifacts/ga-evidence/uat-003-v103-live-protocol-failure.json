@@ -1,0 +1,55 @@
+{
+  "schema_version": 2,
+  "record_id": "UAT-003-V103-LIVE-PROTOCOL-FAILURE",
+  "candidate_version": "1.0.3",
+  "candidate_commit": "5b002730566918958d9dbb3c8014d83f4ceeda90",
+  "uat_id": "UAT-003",
+  "criterion_ids": [
+    "UAT-003"
+  ],
+  "status": "failed",
+  "started_at": "2026-08-13T11:25:00Z",
+  "ended_at": "2026-08-13T11:37:55Z",
+  "duration_seconds": 775.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.5.2",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "Exact v1.0.3 wheel in isolated HOME/JARN_HOME/CODEX_HOME: browser login, refreshed auth status, then plain-text ChatGPT setup",
+  "implementation": [
+    "src/jarn/auth/",
+    "src/jarn/catalog/service.py",
+    "src/jarn/onboarding/"
+  ],
+  "automated_tests": [
+    "tests/test_auth_service.py",
+    "tests/test_model_catalog.py",
+    "tests/test_chatgpt_onboarding.py"
+  ],
+  "decisions": [
+    "The exact v1.0.3 wheel and an isolated fresh Codex state rendered a browser challenge; raw URL, callback, account, model, and terminal output were not persisted as evidence.",
+    "The browser command timed out with JARN-AUTH-008 before a late callback was reflected, but a subsequent refreshed status verified authenticated_chatgpt and ready=true.",
+    "Setup loaded the live account catalog but rejected Codex 0.147.0 serviceTiers objects because v1.0.3 accepted string arrays only.",
+    "Setup returned exit 4 with JARN-MODEL-001, wrote no config, retained resumable state, and emitted no Setup complete/Ready false success."
+  ],
+  "errors": [
+    "JARN-MODEL-001: model/list serviceTiers must be an array of strings"
+  ],
+  "documentation_lookups": [
+    "Official OpenAI model documentation does not publish this private app-server field schema; a redacted live schema-only probe was required."
+  ],
+  "result": "Failed safely: authentication verified, but v1.0.3 could not parse the current live Codex service-tier metadata, so setup refused to activate configuration. The private draft was not promoted and no package registry was mutated.",
+  "limitations": [
+    "The protected browser/account observations were deliberately reduced to stage, stable code, and readiness booleans.",
+    "This failed-candidate record must never certify a later version; v1.0.4 requires new artifact and UAT evidence."
+  ],
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  }
+}

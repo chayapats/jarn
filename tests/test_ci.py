@@ -618,6 +618,12 @@ def test_release_promotion_is_a_fail_closed_post_canary_step() -> None:
     assert promote["if"] == "${{ vars.JARN_GA_PROMOTE_TAG == github.ref_name }}"
     assert promote["permissions"] == {"contents": "write"}
     joined = "\n".join(_run_lines(RELEASE_YML, "promote_release"))
+    assert "scripts/ga_evidence.py" in joined
+    assert "--candidate-version" in joined
+    assert "--candidate-commit" in joined
+    assert "--strict" in joined
+    assert "merge-base --is-ancestor" in joined
+    assert joined.index("scripts/ga_evidence.py") < joined.index("gh release edit")
     assert 'test "$before" = true' in joined
     assert 'gh release edit "$GITHUB_REF_NAME"' in joined
     assert "--draft=false" in joined
@@ -630,6 +636,18 @@ def test_release_promotion_is_a_fail_closed_post_canary_step() -> None:
         if any("gh release edit" in step.get("run", "") for step in job.get("steps", []))
     ]
     assert public_mutators == ["promote_release"]
+
+    checkouts = [
+        step
+        for step in promote["steps"]
+        if str(step.get("uses", "")).startswith("actions/checkout@")
+    ]
+    assert [step["with"]["path"] for step in checkouts] == [
+        "tagged-candidate",
+        "evidence-main",
+    ]
+    assert checkouts[1]["with"]["ref"] == "main"
+    assert all(step["with"]["persist-credentials"] is False for step in checkouts)
 
 
 @_POSIX_RELEASE_SCRIPT_TEST

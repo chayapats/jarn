@@ -1,0 +1,47 @@
+{
+  "candidate_version": "1.0.4",
+  "automated_tests": [
+    "tests/test_performance_harness.py"
+  ],
+  "command": "python scripts/benchmark_startup.py --executable <exact-v1.0.4-wheel-venv>/bin/jarn --runs 10 --warmups 2 --output performance.json",
+  "criterion_ids": [
+    "AC-PERF-001",
+    "AC-PERF-002",
+    "AC-PERF-003",
+    "AC-PERF-005"
+  ],
+  "decisions": [
+    "Measured the exact reproducible v1.0.4 wheel in 10 fresh-process or PTY samples after 2 warmups; every unchanged product threshold passed.",
+    "Keystroke rendering stayed below the 50 ms threshold without weakening the gate."
+  ],
+  "documentation_lookups": [],
+  "duration_seconds": 59.7,
+  "ended_at": "2026-08-13T12:09:31.710425Z",
+  "errors": [],
+  "implementation": [
+    "scripts/benchmark_startup.py",
+    "src/jarn/repl/app.py",
+    "src/jarn/repl/completer.py"
+  ],
+  "limitations": [
+    "Reference observation is macOS ARM64; the release workflow independently repeats the benchmark contract on Ubuntu before promotion."
+  ],
+  "platform": {
+    "architecture": "arm64",
+    "libc": "n/a",
+    "os": "macOS",
+    "version": "26.5.2"
+  },
+  "record_id": "PERF-MACOS-20260813-V104",
+  "redaction": {
+    "home_path_redacted": true,
+    "host_identifier_redacted": true,
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false
+  },
+  "result": "Exact-wheel p95: version 35.704 ms, help 37.335 ms, 80x24 PTY prompt-ready 1083.561 ms, keystroke render 2.234 ms, offline doctor 3146.219 ms; every threshold passed.",
+  "schema_version": 2,
+  "started_at": "2026-08-13T12:08:32Z",
+  "status": "passed"
+}

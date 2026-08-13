@@ -1,6 +1,6 @@
 # J.A.R.N. Documentation
 
-The current source line targets J.A.R.N. v1.0.3 General Availability; protected
+The current source line targets J.A.R.N. v1.0.4 General Availability; protected
 release gates control publication, and GitHub Releases, PyPI, and npm are the
 authoritative sources for the currently published version. J.A.R.N. is a local-first,
 permission-gated terminal agent harness built around
@@ -22,7 +22,7 @@ package-manager/source installs are advanced alternatives.
 | [EXTENDING.md](EXTENDING.md) | Users · Contributors | Five extension surfaces (skills, slash commands, subagents, hooks, MCP) with a working quick-start |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Contributors | System diagram, subsystem table, turn lifecycle, design rationale, and key source files |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contributors | Dev setup, CI gates (ruff · mypy · full pytest collection), testing layers, and how-to guides for common changes |
-| [ROADMAP.md](ROADMAP.md) | Everyone | what is in the v1.0.3 candidate, what is planned, and known limitations |
+| [ROADMAP.md](ROADMAP.md) | Everyone | what is in the v1.0.4 candidate, what is planned, and known limitations |
 | [OPEN_CORE.md](OPEN_CORE.md) | Everyone | Licensing (Apache-2.0) and the intended open-core business model — plans only, nothing commercial is shipped |
 | [WEB_UI.md](WEB_UI.md) | Contributors | Design notes for a future Web UI — **not built yet**; included so the core stays Web-UI-ready |
 | [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md) | Operators · Contributors | v0.10 setup, global config, security model, systemd deployment, and second-poller stand-down |

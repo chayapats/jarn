@@ -1,0 +1,54 @@
+{
+  "schema_version": 2,
+  "record_id": "REMOTE-UBUNTU-WHEEL-20260813-V104",
+  "candidate_version": "1.0.4",
+  "criterion_ids": [
+    "AC-INSTALL-005",
+    "AC-INSTALL-006",
+    "AC-INSTALL-007",
+    "TEST-INSTALL"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-13T12:28:30Z",
+  "ended_at": "2026-08-13T12:32:46Z",
+  "duration_seconds": 256.0,
+  "platform": {
+    "os": "Ubuntu",
+    "version": "22.04",
+    "architecture": "x86_64",
+    "libc": "glibc 2.35"
+  },
+  "command": "SSH isolated-/tmp exact-wheel install and diagnostics on Ubuntu 22.04 with the host real npm/Python command inventory retained",
+  "implementation": [
+    "install.sh",
+    "src/jarn/config/migrations.py",
+    "src/jarn/doctor/collect.py"
+  ],
+  "automated_tests": [
+    "tests/test_installer.py",
+    "tests/test_ga_config_migrations.py",
+    "tests/test_ga_doctor_inventory.py"
+  ],
+  "decisions": [
+    "The transferred exact wheel SHA-256 was verified as 5589a97a2a41136068458c6d4c6797ac81c62a004e1aabf9ad0846900951a24d before local installation.",
+    "The wheel was installed with uv into an isolated /tmp tool root and reported jarn 1.0.4 on Ubuntu 22.04/glibc 2.35.",
+    "A customized schema-0 config in the isolated HOME migrated to schema 3 with one byte-identical backup, preserved its operator comment, custom header, timeout, routing, permission, theme, and log level, and remained current on a second offline doctor run.",
+    "The host inventory retained its real user-space, nvm/npm, and global commands; the real user config and both fingerprinted executable paths remained byte-identical after the isolated UAT.",
+    "Doctor output stayed machine-readable and network.checked=false; no authentication ceremony or provider request was run."
+  ],
+  "errors": [],
+  "documentation_lookups": [],
+  "result": "The exact v1.0.4 wheel ran on Ubuntu 22.04/glibc 2.35 in an isolated tool root, migrated a customized legacy config transactionally, produced bounded offline diagnostics, and left every real host command/config fingerprint unchanged.",
+  "limitations": [
+    "This is exact-wheel and source-installer evidence before an immutable v1.0.4 tag exists; it does not claim a public release URL, release binary, or candidate commit.",
+    "Binary glibc-fallback and shell-activation behavior remains covered by exact v1.0.4 source tests and must be repeated by the protected tagged release workflow before promotion.",
+    "The UAT used an existing disposable SSH account with an isolated /tmp HOME rather than provisioning a new operating-system user."
+  ],
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  }
+}
