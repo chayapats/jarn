@@ -21,8 +21,9 @@ from jarn.util.atomic import LOCK_SUFFIX, atomic_write_text, file_lock, lock_pat
 
 def test_publishes_content(tmp_path):
     target = tmp_path / "out.txt"
-    atomic_write_text(target, "hello")
-    assert target.read_text(encoding="utf-8") == "hello"
+    atomic_write_text(target, "first\nsecond\n")
+    assert target.read_text(encoding="utf-8") == "first\nsecond\n"
+    assert target.read_bytes() == b"first\nsecond\n"
 
 
 def test_fsyncs_content_before_rename_and_parent_after(tmp_path, monkeypatch):

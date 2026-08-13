@@ -216,8 +216,12 @@ def stage_setup_config(
     if source_exists and not target.is_file():
         raise SetupConfigError(f"Configuration path is not a regular file: {target}")
     try:
-        source_text = target.read_text(encoding="utf-8") if source_exists else ""
-    except OSError as exc:
+        # Path.read_text performs universal-newline translation.  That would
+        # make an otherwise byte-exact rollback silently rewrite a CRLF config
+        # as LF on every platform.  Decode the original bytes directly so the
+        # staged rollback payload remains identical to the user's file.
+        source_text = target.read_bytes().decode("utf-8") if source_exists else ""
+    except (OSError, UnicodeDecodeError) as exc:
         raise SetupConfigError(f"Could not read existing configuration {target}: {exc}") from exc
     source_mode: int | None = None
     if source_exists and os.name != "nt":
@@ -305,8 +309,8 @@ def commit_staged_config(
             raise SetupConfigError("Could not acquire the configuration write lock.")
         current_exists = path.exists()
         try:
-            current_text = path.read_text(encoding="utf-8") if current_exists else ""
-        except OSError as exc:
+            current_text = path.read_bytes().decode("utf-8") if current_exists else ""
+        except (OSError, UnicodeDecodeError) as exc:
             raise SetupConfigError(f"Could not re-read configuration before commit: {exc}") from exc
         if (
             current_exists != staged.source_exists
@@ -320,7 +324,12 @@ def commit_staged_config(
             if staged.source_exists:
                 backup = _timestamped_backup(path, now=now)
                 shutil.copy2(path, backup)
-                with backup.open("rb") as handle:
+                # Windows' FlushFileBuffers (used by os.fsync) requires a
+                # writable handle; fsync on an ``rb`` descriptor returns EBADF.
+                # POSIX must retain ``rb`` because copy2 preserves a legitimate
+                # read-only source mode such as 0400 on the backup.
+                backup_mode = "r+b" if os.name == "nt" else "rb"
+                with backup.open(backup_mode) as handle:
                     os.fsync(handle.fileno())
             atomic_write_text(
                 path,
@@ -357,8 +366,8 @@ def rollback_setup_commit(result: SetupCommitResult) -> None:
         if not locked:
             raise SetupConfigError("Could not lock configuration for setup rollback.")
         try:
-            active_text = staged.path.read_text(encoding="utf-8")
-        except OSError as exc:
+            active_text = staged.path.read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
             raise SetupConfigError(
                 f"Could not read configuration for setup rollback: {exc}"
             ) from exc
@@ -374,7 +383,9 @@ def rollback_setup_commit(result: SetupCommitResult) -> None:
             )
         else:
             staged.path.unlink(missing_ok=True)
-        restored = staged.path.read_text(encoding="utf-8") if staged.source_exists else ""
+        restored = (
+            staged.path.read_bytes().decode("utf-8") if staged.source_exists else ""
+        )
         if restored != staged.source_text:
             raise SetupConfigError("Setup rollback verification failed.")
 

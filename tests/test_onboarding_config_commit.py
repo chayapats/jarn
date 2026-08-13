@@ -69,6 +69,7 @@ ui:
 """
 
 
+@pytest.mark.skipif(os.name == "nt", reason="J.A.R.N. supports Windows through WSL2")
 def test_completion_identity_smokes_the_user_visible_unmanaged_command(tmp_path, monkeypatch):
     from jarn.version import __version__
 
@@ -87,6 +88,7 @@ def test_completion_identity_smokes_the_user_visible_unmanaged_command(tmp_path,
     )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="J.A.R.N. supports Windows through WSL2")
 def test_completion_refuses_unmanaged_entrypoint_shadowed_on_path(tmp_path, monkeypatch):
     from jarn.version import __version__
 
@@ -104,6 +106,7 @@ def test_completion_refuses_unmanaged_entrypoint_shadowed_on_path(tmp_path, monk
         verify_install_identity()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="J.A.R.N. supports Windows through WSL2")
 def test_completion_refuses_unmanaged_command_from_another_version(tmp_path, monkeypatch):
     shadow = tmp_path / "legacy" / "jarn"
     shadow.parent.mkdir(parents=True)
@@ -126,6 +129,7 @@ def test_completion_identity_does_not_ignore_unsafe_managed_record(tmp_path, mon
         verify_install_identity(manifest_path=manifest)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="J.A.R.N. supports Windows through WSL2")
 def test_completion_refuses_healthy_managed_binary_shadowed_on_path(tmp_path, monkeypatch):
     state = tmp_path / "state" / "jarn"
     active = tmp_path / "bin" / "jarn"
@@ -158,7 +162,8 @@ def test_completion_refuses_healthy_managed_binary_shadowed_on_path(tmp_path, mo
 def test_rerun_deep_merges_and_creates_exact_timestamped_backup(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text(_EXISTING, encoding="utf-8")
-    path.chmod(0o640)
+    source_mode = 0o600 if os.name == "nt" else 0o400
+    path.chmod(source_mode)
 
     staged = stage_setup_config(
         path,
@@ -175,7 +180,13 @@ def test_rerun_deep_merges_and_creates_exact_timestamped_backup(tmp_path):
     assert result.backup_path is not None
     assert result.backup_path.name == "config.yaml.bak.20260809T010203.456789Z"
     assert result.backup_path.read_text(encoding="utf-8") == _EXISTING
-    assert os.stat(path).st_mode & 0o777 == 0o640
+    if os.name == "nt":
+        # Native Windows has no POSIX owner-only mode; Python maps a writable
+        # file to the platform's 0666-style permission bits.
+        assert os.stat(path).st_mode & 0o222
+    else:
+        assert os.stat(path).st_mode & 0o777 == source_mode
+        assert os.stat(result.backup_path).st_mode & 0o777 == source_mode
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert raw["config_version"] == 3
     assert raw["default_profile"] == "anthropic"
@@ -262,7 +273,8 @@ def test_concurrent_edit_is_not_overwritten(tmp_path):
 
 def test_explicit_rollback_restores_previous_bytes(tmp_path):
     path = tmp_path / "config.yaml"
-    path.write_text(_EXISTING, encoding="utf-8")
+    original = _EXISTING.replace("\n", "\r\n").encode("utf-8")
+    path.write_bytes(original)
     staged = stage_setup_config(
         path,
         provider="ollama",
@@ -272,11 +284,11 @@ def test_explicit_rollback_restores_previous_bytes(tmp_path):
         base_url="http://localhost:11434",
     )
     committed = commit_staged_config(staged)
-    assert path.read_text(encoding="utf-8") != _EXISTING
+    assert path.read_bytes() != original
 
     rollback_setup_commit(committed)
 
-    assert path.read_text(encoding="utf-8") == _EXISTING
+    assert path.read_bytes() == original
 
 
 def test_finalize_discloses_billable_validation_and_clears_state_only_on_success(

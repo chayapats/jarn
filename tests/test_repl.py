@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import subprocess
 from io import StringIO
 
@@ -2444,6 +2445,7 @@ async def test_skills_available_after_ensure_extensions(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="J.A.R.N. supports Windows through WSL2")
 async def test_first_prompt_precedes_provider_and_extension_warmup(tmp_path, monkeypatch):
     """Cold provider/runtime construction must not block the editable prompt."""
     import jarn.repl.app as repl_app_module

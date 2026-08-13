@@ -16,6 +16,14 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 
+_POSIX_COMMAND_TEST = pytest.mark.skipif(
+    os.name == "nt",
+    reason=(
+        "managed update/rollback executable fixtures require POSIX; native Windows is "
+        "unsupported (use WSL2)"
+    ),
+)
+
 _V0_CONFIG = """\
 # keep this operator comment
 default_profile: custom
@@ -193,6 +201,7 @@ def test_check_update_beta_includes_prerelease() -> None:
     assert result.latest_version == "2.1.0b1"
 
 
+@_POSIX_COMMAND_TEST
 def test_update_current_is_idempotent_and_does_not_download(capsys, tmp_path: Path) -> None:
     from jarn.update import run_update
     from jarn.version import __version__
@@ -404,6 +413,7 @@ def test_downloaded_installer_checksum_mismatch_is_never_published(tmp_path: Pat
     assert not target.exists()
 
 
+@_POSIX_COMMAND_TEST
 def test_update_delegates_to_canonical_installer_and_preserves_exit_10(tmp_path, capsys) -> None:
     from jarn.update import run_update
 
@@ -549,6 +559,7 @@ def test_actual_update_command_uses_loopback_canary_and_retains_historical_comma
     assert subprocess.check_output([previous, "--version"], text=True).strip() == "jarn 0.10.0"
 
 
+@_POSIX_COMMAND_TEST
 def test_update_json_captures_installer_noise(tmp_path: Path, capsys) -> None:
     from jarn.update import run_update
 
@@ -631,6 +642,7 @@ def test_update_refuses_to_switch_shared_manager_ownership(
     assert mutations == []
 
 
+@_POSIX_COMMAND_TEST
 @pytest.mark.parametrize("method", ["binary", "python"])
 def test_curl_managed_update_reuses_exact_installer_method(
     tmp_path: Path,
@@ -753,6 +765,7 @@ def test_invalid_action_record_refuses_before_download_or_execution(
     assert mutations == []
 
 
+@_POSIX_COMMAND_TEST
 def test_release_and_config_preview_is_bounded_redacted_and_precedes_download(
     tmp_path: Path,
     capsys,
@@ -807,6 +820,7 @@ def test_release_and_config_preview_is_bounded_redacted_and_precedes_download(
     assert not list(tmp_path.glob("config.yaml.bak.*"))
 
 
+@_POSIX_COMMAND_TEST
 def test_json_preview_contains_bounded_primary_release_and_migration_plan(
     tmp_path: Path,
     capsys,
@@ -884,6 +898,7 @@ def test_explicit_version_must_exist_in_primary_release_catalog(
     assert "primary stable release catalog" in payload["error"]["message"]
 
 
+@_POSIX_COMMAND_TEST
 def test_rollback_swaps_verified_commands_and_manifest(tmp_path: Path, capsys) -> None:
     from jarn.install_state import load_install_record
     from jarn.update import run_rollback
@@ -905,6 +920,7 @@ def test_rollback_swaps_verified_commands_and_manifest(tmp_path: Path, capsys) -
     assert "retained for a forward rollback" in capsys.readouterr().out
 
 
+@_POSIX_COMMAND_TEST
 def test_rollback_resets_pyinstaller_environment_for_swapped_binary(
     tmp_path: Path,
 ) -> None:
@@ -938,6 +954,7 @@ def test_rollback_resets_pyinstaller_environment_for_swapped_binary(
     assert updated.active_path == active
 
 
+@_POSIX_COMMAND_TEST
 def test_rollback_rejects_broken_candidate_without_touching_active(tmp_path: Path) -> None:
     from jarn.update import run_rollback
 
@@ -953,6 +970,7 @@ def test_rollback_rejects_broken_candidate_without_touching_active(tmp_path: Pat
     assert subprocess.check_output([str(active), "--version"], text=True).strip() == "jarn 2.0.0"
 
 
+@_POSIX_COMMAND_TEST
 def test_rollback_post_activation_failure_restores_original(tmp_path: Path) -> None:
     from jarn.update import run_rollback
 

@@ -34,6 +34,14 @@ PYPROJECT = REPO / "pyproject.toml"
 SUPPORTED_PLATFORMS = REPO / "docs" / "SUPPORTED_PLATFORMS.md"
 RELEASE_LIFECYCLE = REPO / "scripts" / "release_lifecycle_canary.sh"
 
+_POSIX_RELEASE_SCRIPT_TEST = pytest.mark.skipif(
+    os.name == "nt",
+    reason=(
+        "release shell execution fixtures require a POSIX userland; native Windows is "
+        "unsupported (use WSL2)"
+    ),
+)
+
 
 def _run_lines(workflow_path: Path, job: str) -> list[str]:
     workflow = yaml.safe_load(workflow_path.read_text())
@@ -285,6 +293,7 @@ def test_release_publishes_binary_checksums() -> None:
     assert attach["with"]["make_latest"] is False
 
 
+@_POSIX_RELEASE_SCRIPT_TEST
 def test_release_checksum_and_provenance_steps_execute_on_local_fixtures(
     tmp_path: Path,
 ) -> None:
@@ -623,6 +632,7 @@ def test_release_promotion_is_a_fail_closed_post_canary_step() -> None:
     assert public_mutators == ["promote_release"]
 
 
+@_POSIX_RELEASE_SCRIPT_TEST
 def test_release_promotion_script_refuses_non_draft_fixture(tmp_path: Path) -> None:
     workflow = yaml.safe_load(RELEASE_YML.read_text())
     script = next(
@@ -724,6 +734,7 @@ def test_public_release_canary_blocks_registries_and_uses_anonymous_urls() -> No
     assert "deprecate the exact npm versions" in joined
 
 
+@_POSIX_RELEASE_SCRIPT_TEST
 @pytest.mark.parametrize("corrupt_asset", [False, True])
 def test_public_release_canary_script_executes_and_fails_closed(
     tmp_path: Path,
@@ -910,6 +921,7 @@ def test_release_bootstraps_real_prior_upgrade_lifecycles_with_preserved_data() 
         assert sentinel in joined
 
 
+@_POSIX_RELEASE_SCRIPT_TEST
 def test_release_history_step_executes_and_fails_closed_with_fixtures(
     tmp_path: Path,
 ) -> None:
@@ -1003,6 +1015,7 @@ def test_release_history_step_executes_and_fails_closed_with_fixtures(
     assert not output.exists()
 
 
+@_POSIX_RELEASE_SCRIPT_TEST
 def test_release_run_blocks_are_locally_bash_syntax_checked() -> None:
     workflow = yaml.safe_load(RELEASE_YML.read_text())
     failures: list[str] = []

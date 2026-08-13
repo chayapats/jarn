@@ -28,7 +28,13 @@ def _run(
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        cmd, cwd=cwd, capture_output=True, text=True, check=True, env=env
+        cmd,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+        timeout=300,
     )
 
 
@@ -75,7 +81,6 @@ def test_wheel_install_smoke(built_artifacts, tmp_path):
     """Install the built wheel in a clean venv and run CLI smoke commands."""
     venv = tmp_path / "venv"
     isolated = os.environ.copy()
-    isolated["UV_CACHE_DIR"] = str(built_artifacts["uv_cache"])
     _run(["uv", "venv", str(venv)], cwd=ROOT, env=isolated)
     py = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     jarn = venv / ("Scripts/jarn.exe" if sys.platform == "win32" else "bin/jarn")
@@ -90,6 +95,10 @@ def test_wheel_install_smoke(built_artifacts, tmp_path):
     )
     isolated["JARN_HOME"] = str(jarn_home)
     isolated["OPENROUTER_API_KEY"] = "test-openrouter-key"
+    # The virtualenv is the isolation boundary. Reuse the runner's ordinary uv
+    # download cache instead of forcing all transitive dependencies through the
+    # fresh build-backend cache on every full-suite run. The exact local wheel is
+    # still installed into an empty environment and then smoke-tested.
     _run(
         ["uv", "pip", "install", "--python", str(py), str(wheel)],
         cwd=ROOT,

@@ -21,6 +21,14 @@ CURRENT_VERSION = re.search(
     re.MULTILINE,
 ).group(1)
 
+_POSIX_UAT_HARNESS_TEST = pytest.mark.skipif(
+    os.name == "nt",
+    reason=(
+        "UAT harnesses execute POSIX shell/SSH fixtures; native Windows is unsupported "
+        "(use WSL2)"
+    ),
+)
+
 
 def test_all_six_goal_uats_have_reproducible_harnesses() -> None:
     assert [path.name for path in HARNESSES] == [
@@ -33,6 +41,7 @@ def test_all_six_goal_uats_have_reproducible_harnesses() -> None:
     ]
 
 
+@_POSIX_UAT_HARNESS_TEST
 @pytest.mark.parametrize("harness", HARNESSES, ids=lambda path: path.stem)
 def test_default_mode_is_local_dry_run_and_never_invokes_ssh(
     tmp_path: Path, harness: Path
@@ -64,6 +73,7 @@ def test_default_mode_is_local_dry_run_and_never_invokes_ssh(
     assert not marker.exists()
 
 
+@_POSIX_UAT_HARNESS_TEST
 @pytest.mark.parametrize("harness", HARNESSES, ids=lambda path: path.stem)
 def test_dry_run_can_write_explicit_not_run_evidence(
     tmp_path: Path, harness: Path
@@ -186,6 +196,7 @@ def test_result_writer_supports_non_uat_release_gate_evidence(tmp_path: Path) ->
     assert record["criterion_ids"] == ["GATE-RELEASE", "COMPLETION-W"]
 
 
+@_POSIX_UAT_HARNESS_TEST
 @pytest.mark.parametrize("harness", HARNESSES, ids=lambda path: path.stem)
 def test_execute_requires_a_host_before_any_ssh_call(
     tmp_path: Path, harness: Path
@@ -216,6 +227,7 @@ def test_execute_requires_a_host_before_any_ssh_call(
     assert not marker.exists()
 
 
+@_POSIX_UAT_HARNESS_TEST
 @pytest.mark.parametrize(
     "endpoint",
     ["http://192.168.1.20:11434", "http://localhost:70000", "https://localhost:11434"],
@@ -257,6 +269,7 @@ def test_ollama_rejects_unsafe_endpoint_before_ssh(
     assert not marker.exists()
 
 
+@_POSIX_UAT_HARNESS_TEST
 def test_anthropic_harness_never_accepts_api_key_argument() -> None:
     secret = "sk-ant-test-secret-value"
     result = subprocess.run(
@@ -342,6 +355,7 @@ esac
     path.chmod(0o755)
 
 
+@_POSIX_UAT_HARNESS_TEST
 def test_uat001_blocked_preflight_redacts_remote_home(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -383,6 +397,7 @@ def test_uat001_blocked_preflight_redacts_remote_home(tmp_path: Path) -> None:
     assert (tmp_path / "ssh-count").read_text(encoding="utf-8").strip() == "2"
 
 
+@_POSIX_UAT_HARNESS_TEST
 @pytest.mark.parametrize(
     ("scenario", "script", "manual_answers"),
     [
@@ -440,6 +455,7 @@ def test_new_uat_execute_orchestration_can_pass_only_complete_fixture_evidence(
     assert (tmp_path / "ssh-count").read_text(encoding="utf-8").strip() == "4"
 
 
+@_POSIX_UAT_HARNESS_TEST
 @pytest.mark.parametrize(
     ("scenario", "script"),
     [
@@ -490,6 +506,7 @@ def test_new_uat_refuses_mutation_when_exact_host_confirmation_does_not_match(
     assert (tmp_path / "ssh-count").read_text(encoding="utf-8").strip() == "2"
 
 
+@_POSIX_UAT_HARNESS_TEST
 def test_operator_observation_failure_cannot_fake_pass(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

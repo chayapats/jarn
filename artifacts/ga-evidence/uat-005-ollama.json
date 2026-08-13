@@ -17,13 +17,13 @@
     "passed: With cloud proxies closed, the harmless local turn returned UAT_OK with exit 0 and zero tool calls.",
     "passed: Missing model returned exit 4, JARN-MODEL-001, /model refresh plus Ollama pull/tool-capability remediation, and no Done or Ready success text.",
     "passed: Offline doctor returned ok=true with version 1.0.3, current schema, fresh local-live catalog evidence, and all selected routes available.",
-    "Exact wheel SHA-256: b72aaa106ce1f28b9ea4ac3d90b2579eeb77fe1cee6b20c9827502ddefd1763a."
+    "Exact wheel SHA-256: 68a340ce6af9acadadd1621905f8849a965fa3f8caab0e82ead8077ccc2601d4."
   ],
   "documentation_lookups": [
     "No external documentation lookup was required during this exact rerun; setup selected the fixture from live capability metadata without model-ID entry."
   ],
-  "duration_seconds": 125.0,
-  "ended_at": "2026-08-11T21:48:00Z",
+  "duration_seconds": 118.0,
+  "ended_at": "2026-08-12T00:54:03Z",
   "errors": [],
   "implementation": [
     "src/jarn/providers/models.py",
@@ -53,7 +53,7 @@
   },
   "result": "Exact v1.0.3 wheel discovered the loopback Ollama endpoint, selected the sole tool-capable model without an API-key [REDACTED_SECRET], completed a cloud-offline local turn, and rejected an unavailable model with stable actionable remediation.",
   "schema_version": 2,
-  "started_at": "2026-08-11T21:45:55Z",
+  "started_at": "2026-08-12T00:52:05Z",
   "status": "passed",
   "uat_id": "UAT-005"
 }

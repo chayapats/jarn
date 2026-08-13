@@ -351,7 +351,9 @@ def test_host_inventory_contains_ga_resolution_sandbox_secret_and_update_contrac
 
     assert "candidate_inventory" in result["jarn"]
     assert "discovery_checks" in result["jarn"]
-    assert result["shell"]["resolution"]["checked"] is True
+    # Native Windows is intentionally unsupported (the product contract is
+    # WSL2); there is no POSIX login shell for the doctor to interrogate.
+    assert result["shell"]["resolution"]["checked"] is (os.name != "nt")
     assert "hash_cache_action" in result["shell"]["resolution"]
     assert "parent_shell_limitation" in result["shell"]
     assert {"native_available", "docker_available"} <= result["sandbox"].keys()

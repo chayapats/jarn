@@ -300,7 +300,10 @@ def test_config_reset_is_confirmed_backed_up_atomic_and_owner_only(
     home = tmp_path / "home"
     path = _write_current_config(home)
     original = path.read_bytes()
-    path.write_text(path.read_text(encoding="utf-8") + "\nunknown_extension: keep-before-reset\n")
+    path.write_text(
+        path.read_text(encoding="utf-8") + "\nunknown_extension: keep-before-reset\n",
+        encoding="utf-8",
+    )
     reset_source = path.read_bytes()
     monkeypatch.setenv("JARN_HOME", str(home))
 

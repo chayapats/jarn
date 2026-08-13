@@ -265,7 +265,12 @@ def atomic_write_text(
                 os.fchmod(descriptor, mode)
             else:  # pragma: no cover - Windows has no descriptor chmod.
                 os.chmod(tmp, mode)
-        with os.fdopen(descriptor, "w", encoding=encoding) as handle:
+        # ``newline=""`` is a data-integrity boundary, not merely formatting.
+        # With the platform default, Windows rewrites every LF to CRLF after a
+        # caller has already validated or hashed the UTF-8 payload.  It also
+        # prevents byte-exact rollback of an LF configuration.  Publish the
+        # encoded text exactly as supplied on every platform.
+        with os.fdopen(descriptor, "w", encoding=encoding, newline="") as handle:
             descriptor = None  # fdopen owns and closes it from here.
             handle.write(text)
             handle.flush()
