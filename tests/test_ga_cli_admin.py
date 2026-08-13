@@ -22,7 +22,10 @@ def _write_current_config(home: Path, *, secret: str | None = None) -> Path:
     data = cli._template_config_mapping(project=False, path=path)
     if secret is not None:
         data["providers"]["openai"]["api_key"] = secret
-    path.write_text(cli._render_config_mapping(data), encoding="utf-8")
+    # Keep the fixture byte-identical to J.A.R.N.'s atomic publisher on every
+    # platform.  Path.write_text() performs LF -> CRLF translation on native
+    # Windows, while the product intentionally publishes canonical UTF-8/LF.
+    path.write_bytes(cli._render_config_mapping(data).encode("utf-8"))
     return path
 
 

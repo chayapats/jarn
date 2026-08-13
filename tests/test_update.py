@@ -239,7 +239,8 @@ def test_downloaded_installer_requires_matching_release_checksum(tmp_path: Path)
     _download_installer("9.9.9", target, _fetch=fetch)
 
     assert target.read_bytes() == script
-    assert target.stat().st_mode & 0o777 == 0o700
+    if os.name != "nt":
+        assert target.stat().st_mode & 0o777 == 0o700
     assert seen == [
         "https://raw.githubusercontent.com/chayapats/jarn/v9.9.9/install.sh",
         "https://github.com/chayapats/jarn/releases/download/v9.9.9/checksums.txt",

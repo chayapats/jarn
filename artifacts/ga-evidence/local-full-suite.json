@@ -14,15 +14,15 @@
     "TEST-SECURITY"
   ],
   "decisions": [
-    "Exact candidate v1.0.3 full suite passed with loopback access enabled for OAuth, Docker, packaging, and local integration fixtures: 3043 passed and 1 skipped in 312.55 seconds on the final worktree.",
+    "Exact candidate v1.0.3 full suite passed with loopback access enabled for OAuth, Docker, packaging, and local integration fixtures: 3043 passed and 1 skipped in 293.51 seconds on the final worktree.",
     "Ruff passed all src/tests/scripts; mypy passed 177 source files; pip-audit 2.9.0 found no known vulnerabilities.",
     "Three independent builds were byte-identical: wheel SHA-256 68a340ce6af9acadadd1621905f8849a965fa3f8caab0e82ead8077ccc2601d4; sdist SHA-256 fefd209853dc8028eb36e38ff0cf0ef168f1368694a6803eaa0993067d47c85d.",
     "Clean Python 3.12 wheel install reported jarn 1.0.3; offline help and schema-v1 doctor JSON were parseable and bounded.",
     "Catalog tests use per-test cache roots and cannot read the operator real catalog cache; the separate UAT records live Ollama observations."
   ],
   "documentation_lookups": [],
-  "duration_seconds": 114414.0,
-  "ended_at": "2026-08-13T08:26:23Z",
+  "duration_seconds": 115686.0,
+  "ended_at": "2026-08-13T08:47:35Z",
   "errors": [],
   "implementation": [
     "src/jarn"
