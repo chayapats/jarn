@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from jarn.util.atomic import file_lock
+from jarn.util.process_env import external_command_env
 
 #: Full snapshot ref suffix — avoids prefix collisions on large repos.
 _SNAP_REF_LEN = 40
@@ -151,7 +152,7 @@ def _git(
     capture: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     """Run a git command in ``cwd``.  Never raises; caller checks returncode."""
-    base_env = os.environ.copy()
+    base_env = external_command_env()
     if env:
         base_env.update(env)
     return subprocess.run(

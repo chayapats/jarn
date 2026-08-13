@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -26,6 +27,26 @@ def test_execute_reports_nonzero_exit(tmp_path):
     else:
         res = backend.execute("sh -c 'exit 3'")
     assert res.exit_code == 3
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX loader-path contract")
+def test_execute_does_not_inherit_frozen_bundle_libraries(monkeypatch, tmp_path):
+    from jarn.util import process_env
+
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/_MEI-jarn")
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "")
+    monkeypatch.setattr(process_env.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(process_env.sys, "platform", "linux")
+    backend = CancellableLocalShellBackend(
+        root_dir=str(tmp_path), virtual_mode=True, inherit_env=True
+    )
+
+    result = backend.execute("env")
+
+    assert result.exit_code == 0
+    assert "PYINSTALLER_RESET_ENVIRONMENT=1" in result.output
+    assert "LD_LIBRARY_PATH=/tmp/_MEI-jarn" not in result.output
+    assert "LD_LIBRARY_PATH_ORIG=" not in result.output
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")

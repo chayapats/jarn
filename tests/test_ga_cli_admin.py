@@ -369,8 +369,9 @@ def test_config_edit_validates_before_commit_and_refuses_concurrent_overwrite(
     original = path.read_bytes()
     monkeypatch.setenv("JARN_HOME", str(home))
 
-    def valid_editor(argv: list[str], *, check: bool):
+    def valid_editor(argv: list[str], *, check: bool, env: dict[str, str]):
         assert check is False
+        assert env["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
         temporary = Path(argv[-1])
         text = temporary.read_text(encoding="utf-8")
         temporary.write_text(text.replace("telemetry: false", "telemetry: true"), encoding="utf-8")
@@ -384,8 +385,9 @@ def test_config_edit_validates_before_commit_and_refuses_concurrent_overwrite(
 
     reviewed = path.read_bytes()
 
-    def racing_editor(argv: list[str], *, check: bool):
+    def racing_editor(argv: list[str], *, check: bool, env: dict[str, str]):
         assert check is False
+        assert env["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
         temporary = Path(argv[-1])
         temporary.write_text(
             temporary.read_text(encoding="utf-8").replace("telemetry: true", "telemetry: false"),

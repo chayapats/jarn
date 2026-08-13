@@ -16,6 +16,8 @@ from collections.abc import Callable
 from subprocess import DEVNULL
 from typing import TYPE_CHECKING, Any, Literal
 
+from jarn.util.process_env import external_command_env
+
 if TYPE_CHECKING:
     from jarn.config.schema import UIConfig
 
@@ -145,6 +147,7 @@ def _desktop_notify(
                     ],
                     stdout=DEVNULL,
                     stderr=DEVNULL,
+                    env=external_command_env(),
                 )
     else:
         if shutil.which("notify-send"):
@@ -153,4 +156,5 @@ def _desktop_notify(
                     ["notify-send", "--expire-time", "2000", title, body],
                     stdout=DEVNULL,
                     stderr=DEVNULL,
+                    env=external_command_env(),
                 )

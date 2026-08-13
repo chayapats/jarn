@@ -20,6 +20,7 @@ from jarn.install_state import (
     load_actionable_install_record,
 )
 from jarn.permissions.labels import permission_mode_summary
+from jarn.util.process_env import external_command_env
 from jarn.version import __version__
 
 _VERSION_RE = re.compile(r"(?<!\d)(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)")
@@ -63,6 +64,7 @@ def _smoke_version(path: Path) -> str:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            env=external_command_env(),
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError) as exc:

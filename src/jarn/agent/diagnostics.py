@@ -27,6 +27,8 @@ import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
+from jarn.util.process_env import external_command_env
+
 __all__ = ["Diag", "collect_diagnostics", "format_diagnostics"]
 
 
@@ -59,6 +61,7 @@ def _run_ruff(paths: list[Path]) -> list[Diag]:
             [ruff, "check", "--output-format", "json", *str_paths],
             capture_output=True,
             text=True,
+            env=external_command_env(),
             timeout=28,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -118,6 +121,7 @@ def _run_pyright(paths: list[Path], project_root: Path) -> list[Diag]:
             [pyright, "--outputjson", *str_paths],
             capture_output=True,
             text=True,
+            env=external_command_env(),
             timeout=28,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -203,6 +207,7 @@ def _run_tsc(paths: list[Path], project_root: Path) -> list[Diag]:
             cwd=str(project_root),
             capture_output=True,
             text=True,
+            env=external_command_env(),
             timeout=28,
         )
     except (OSError, subprocess.TimeoutExpired):

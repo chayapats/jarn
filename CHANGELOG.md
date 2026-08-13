@@ -5,6 +5,24 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-08-13
+
+### Security
+
+- Require `setuptools>=83.0.0` in the standalone-binary build environment,
+  which contains the fix for `PYSEC-2026-3447` detected by the protected
+  dependency-audit gate.
+
+### Fixed
+
+- Restore the host dynamic-library environment before launching independent
+  programs from a frozen J.A.R.N. binary. This prevents Node/npm, Codex, Git,
+  Docker, editors, hooks, diagnostics, clipboard helpers, and shell tools from
+  loading incompatible libraries out of PyInstaller's temporary `_MEI`
+  directory. The immutable v1.0.4 tag exposed this issue in the protected
+  Ubuntu glibc/npm-shadow canary and remains an unpublished private draft;
+  GitHub Releases, PyPI, and npm were never promoted.
+
 ## [1.0.4] - 2026-08-13
 
 ### Fixed
@@ -1422,8 +1440,9 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Windows: use WSL; native Windows terminal is unsupported
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
-[1.0.3]: https://github.com/chayapats/jarn/releases/tag/v1.0.3
+[1.0.5]: https://github.com/chayapats/jarn/releases/tag/v1.0.5
 [1.0.4]: https://github.com/chayapats/jarn/releases/tag/v1.0.4
+[1.0.3]: https://github.com/chayapats/jarn/releases/tag/v1.0.3
 [1.0.2]: https://github.com/chayapats/jarn/releases/tag/v1.0.2
 [1.0.1]: https://github.com/chayapats/jarn/releases/tag/v1.0.1
 [1.0.0]: https://github.com/chayapats/jarn/releases/tag/v1.0.0

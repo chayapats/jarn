@@ -44,6 +44,7 @@ from pathlib import Path
 
 from jarn.config import paths
 from jarn.memory.tokens import count_tokens
+from jarn.util.process_env import external_command_env
 
 logger = logging.getLogger("jarn.repomap")
 
@@ -217,6 +218,7 @@ def _discover_files(root: Path) -> list[Path]:
             cwd=root,
             capture_output=True,
             text=True,
+            env=external_command_env(),
             timeout=10,
         )
         if result.returncode == 0:
@@ -379,6 +381,7 @@ def _git_tree_signature(root: Path) -> str:
             cwd=root,
             capture_output=True,
             text=True,
+            env=external_command_env(),
             timeout=5,
         )
         if result.returncode == 0:

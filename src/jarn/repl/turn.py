@@ -27,6 +27,7 @@ from jarn.repl_renderer import TurnRenderer
 from jarn.tui import palette
 from jarn.tui.controller import Controller
 from jarn.tui.notify import notify
+from jarn.util.process_env import external_command_env
 
 if TYPE_CHECKING:
     from rich.text import Text
@@ -303,7 +304,11 @@ def _edit_text_in_editor(text: str, *, suffix: str = ".txt") -> str | None:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
         try:
-            proc = subprocess.run([*shlex.split(editor), path], check=False)
+            proc = subprocess.run(
+                [*shlex.split(editor), path],
+                check=False,
+                env=external_command_env(),
+            )
         except (OSError, ValueError):
             # Editor missing or unparseable $EDITOR → treat as abort.
             return None

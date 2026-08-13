@@ -1,5 +1,6 @@
 {
   "candidate_version": "1.0.4",
+  "candidate_commit": "abdfef46af21d35011ad7cbfb8a890a17757e59a",
   "automated_tests": [
     "tests/test_performance_harness.py"
   ],

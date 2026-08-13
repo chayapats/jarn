@@ -2,6 +2,7 @@
   "schema_version": 2,
   "record_id": "UAT-006-V104",
   "candidate_version": "1.0.4",
+  "candidate_commit": "abdfef46af21d35011ad7cbfb8a890a17757e59a",
   "uat_id": "UAT-006",
   "criterion_ids": [
     "UAT-006"
@@ -37,7 +38,7 @@
   "result": "On Ubuntu 22.04/glibc 2.35, an injected v1.0.4 release-asset failure returned nonzero with actionable anatomy, emitted no false success, preserved every isolated installation/config byte, and left offline doctor diagnostics valid.",
   "limitations": [
     "This source-installer UAT predates an immutable v1.0.4 tag and public release asset; it validates failure safety, not published-URL integrity.",
-    "No candidate commit is recorded before the v1.0.4 source is committed/tagged."
+    "This fault-injection UAT is bound to the immutable v1.0.4 commit; published-network evidence remains separate."
   ],
   "redaction": {
     "raw_auth_output_persisted": false,

@@ -38,6 +38,7 @@ from jarn.install_state import (
     load_actionable_install_record,
 )
 from jarn.util.atomic import atomic_write_text, file_lock
+from jarn.util.process_env import external_command_env
 from jarn.version import __version__
 
 _RELEASES_API = "https://api.github.com/repos/chayapats/jarn/releases?per_page=30"
@@ -55,7 +56,6 @@ _CANARY_SOURCE_ENVS = {
     "raw_base": "JARN_UPDATE_CANARY_RAW_BASE",
     "download_base": "JARN_UPDATE_CANARY_DOWNLOAD_BASE",
 }
-_PYINSTALLER_RESET_ENV = "PYINSTALLER_RESET_ENVIRONMENT"
 
 
 class UpdateError(RuntimeError):
@@ -72,9 +72,7 @@ def _independent_executable_env() -> dict[str, str]:
     makes the child unpack and own a fresh runtime; non-frozen commands ignore
     it.
     """
-    env = os.environ.copy()
-    env[_PYINSTALLER_RESET_ENV] = "1"
-    return env
+    return external_command_env()
 
 
 @dataclass(frozen=True)

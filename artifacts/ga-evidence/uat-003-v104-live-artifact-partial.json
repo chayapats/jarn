@@ -2,6 +2,7 @@
   "schema_version": 2,
   "record_id": "UAT-003-V104-LIVE-ARTIFACT-PARTIAL",
   "candidate_version": "1.0.4",
+  "candidate_commit": "abdfef46af21d35011ad7cbfb8a890a17757e59a",
   "uat_id": "UAT-003",
   "criterion_ids": [
     "UAT-003"
@@ -40,7 +41,7 @@
   "result": "The v1.0.4 artifact fixes the live catalog/setup/first-prompt defect, but UAT-003 remains Blocked until a fresh browser callback is operator-completed on the final artifact and the result is bound to an immutable commit.",
   "limitations": [
     "The successful catalog/setup/prompt used isolated account state created while diagnosing v1.0.3; it proves artifact compatibility but not the complete fresh v1.0.4 browser ceremony.",
-    "No candidate commit is recorded before the v1.0.4 source is committed/tagged; strict tagged evidence must ignore this record when commit binding is enforced.",
+    "This partial UAT is bound to the immutable v1.0.4 commit but remains blocked by its explicitly recorded incomplete scenario.",
     "Raw login URL, callback payload, account data, model names, prompt, and terminal output are prohibited evidence and were not persisted."
   ],
   "redaction": {

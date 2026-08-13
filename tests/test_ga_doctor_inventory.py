@@ -137,6 +137,40 @@ def test_command_inventory_discovers_off_path_package_manager_commands(
     assert npm_check["jarn_package_present"] is True
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX loader-path contract")
+def test_package_manager_runs_outside_frozen_library_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A frozen doctor must not make Node/npm load bundled C++ libraries."""
+
+    manager = tmp_path / "manager"
+    manager.write_text(
+        "#!/bin/sh\n"
+        'test "${PYINSTALLER_RESET_ENVIRONMENT:-}" = 1 || exit 91\n'
+        'test "${LD_LIBRARY_PATH:-}" = /system/libs || exit 92\n'
+        'test -z "${LD_LIBRARY_PATH_ORIG+x}" || exit 93\n'
+        "printf '%s\\n' /tmp/manager-prefix\n",
+        encoding="utf-8",
+    )
+    manager.chmod(0o755)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/_MEI-test")
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/system/libs")
+    monkeypatch.setattr(inventory.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(inventory.sys, "platform", "linux")
+
+    checks: list[dict] = []
+    result = inventory._manager_directory(
+        str(manager), [], manager="frozen-env", timeout=2.0, checks=checks
+    )
+
+    assert result == Path("/tmp/manager-prefix")
+    assert checks[0]["ok"] is True
+    # The parent stays untouched; only the child receives the clean boundary.
+    assert os.environ["LD_LIBRARY_PATH"] == "/tmp/_MEI-test"
+    assert os.environ["LD_LIBRARY_PATH_ORIG"] == "/system/libs"
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX executable fixtures")
 def test_package_manager_inventory_timeout_is_bounded_and_nonfatal(monkeypatch, tmp_path):
     manager_bin = tmp_path / "manager-bin"

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -63,6 +65,34 @@ def test_command_normalization_is_argv_not_shell_split():
 def test_account_read_reports_managed_chatgpt(tmp_path):
     account = codex_subscription_account(command=FAKE_COMMAND, cwd=tmp_path, timeout_seconds=5)
     assert account == {"type": "chatgpt", "planType": "plus"}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX loader-path contract")
+def test_app_server_does_not_inherit_frozen_bundle_libraries(monkeypatch, tmp_path):
+    """Codex/Node must not load shared libraries from J.A.R.N.'s _MEI dir."""
+
+    from jarn.util import process_env
+
+    wrapper = tmp_path / "codex-env-wrapper"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        'test "${PYINSTALLER_RESET_ENVIRONMENT:-}" = 1 || exit 91\n'
+        'test -z "${LD_LIBRARY_PATH:-}" || exit 92\n'
+        'test -z "${LD_LIBRARY_PATH_ORIG+x}" || exit 93\n'
+        f"exec {shlex.quote(sys.executable)} {shlex.quote(str(FAKE_SERVER))} \"$@\"\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/_MEI-jarn")
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "")
+    monkeypatch.setattr(process_env.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(process_env.sys, "platform", "linux")
+
+    account = codex_subscription_account(command=(str(wrapper),), cwd=tmp_path)
+
+    assert account == {"type": "chatgpt", "planType": "plus"}
+    assert os.environ["LD_LIBRARY_PATH"] == "/tmp/_MEI-jarn"
+    assert os.environ["LD_LIBRARY_PATH_ORIG"] == ""
 
 
 def test_wedged_app_server_is_reaped_within_cancellation_budget(monkeypatch, tmp_path):

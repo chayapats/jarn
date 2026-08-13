@@ -15,6 +15,8 @@ from pathlib import Path
 
 import platformdirs
 
+from jarn.util.process_env import external_command_env
+
 #: Name of the per-project config directory committed alongside a repo.
 PROJECT_DIR_NAME = ".jarn"
 #: Name of the per-project context file whose bounded excerpt enters the prompt.
@@ -280,6 +282,7 @@ def ensure_personal_root() -> Path:
             cwd=root,
             check=True,
             capture_output=True,
+            env=external_command_env(),
             text=True,
         )
     ensure_project_gitignore(root)

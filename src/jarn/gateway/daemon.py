@@ -50,6 +50,7 @@ from jarn.gateway.protocol import (
     decode_outbound_line,
     encode_line,
 )
+from jarn.util.process_env import external_command_env
 
 _log = logging.getLogger("jarn.gateway.daemon")
 
@@ -317,6 +318,7 @@ class DaemonSupervisor:
         if self._env is not None:
             env.update(self._env)
         env["JARN_GATEWAY_ROOT"] = str(root)
+        env = external_command_env(env)
 
         try:
             popen = subprocess.Popen(  # noqa: S603 - argv is caller-controlled

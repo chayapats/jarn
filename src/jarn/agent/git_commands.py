@@ -14,6 +14,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from jarn.util.process_env import external_command_env
+
 #: Cap the diff text embedded into a seeded prompt so a huge change set doesn't
 #: blow the context window. The agent can always read more with its own tools.
 _MAX_DIFF_CHARS = 24_000
@@ -53,6 +55,7 @@ def _run_git(root: Path, *args: str) -> tuple[int, str, str]:
             cwd=str(root),
             capture_output=True,
             text=True,
+            env=external_command_env(),
             timeout=15,
         )
     except (OSError, subprocess.SubprocessError):

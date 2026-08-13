@@ -1,6 +1,6 @@
 [project]
 name = "jarn"
-version = "1.0.4"
+version = "1.0.5"
 description = "J.A.R.N. — Just A Reliable Nerd. A TUI-first coding agent harness built on DeepAgents."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -62,6 +62,7 @@ dev = [
 ]
 build = [
     "pyinstaller==6.21.0",
+    "setuptools>=83.0.0",
 ]
 
 [project.scripts]

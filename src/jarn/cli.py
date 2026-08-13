@@ -29,6 +29,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Never
 
+from jarn.util.process_env import external_command_env
 from jarn.version import __version__
 
 
@@ -1881,6 +1882,7 @@ def _cmd_config(
             completed = subprocess.run(  # noqa: S603 - explicit user-selected editor argv
                 [*editor_argv, str(temp_path)],
                 check=False,
+                env=external_command_env(),
             )
             if completed.returncode != 0:
                 raise _config_user_error(

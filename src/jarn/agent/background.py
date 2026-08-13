@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from jarn.agent.process_util import terminate_process_group
+from jarn.util.process_env import external_command_env
 
 _log = logging.getLogger("jarn.background")
 
@@ -229,6 +230,7 @@ class ProcessManager:
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
+                env=external_command_env(),
                 start_new_session=True,
             )
         except Exception:

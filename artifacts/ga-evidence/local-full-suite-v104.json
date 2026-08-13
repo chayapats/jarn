@@ -2,6 +2,7 @@
   "schema_version": 2,
   "record_id": "LOCAL-FULL-20260813-V104",
   "candidate_version": "1.0.4",
+  "candidate_commit": "abdfef46af21d35011ad7cbfb8a890a17757e59a",
   "criterion_ids": [
     "TEST-AUTH",
     "TEST-MODEL",
@@ -37,8 +38,7 @@
   "documentation_lookups": [],
   "result": "All 3047 collected tests on candidate v1.0.4 were accounted for in one clean run with zero failures or errors.",
   "limitations": [
-    "This record contains only the observed full-suite interval; lint, typing, audit, packaging, reproducible builds, remote platforms, and live accounts are separate evidence.",
-    "No candidate commit is recorded before the v1.0.4 source is committed/tagged."
+    "This record contains only the observed full-suite interval; lint, typing, audit, packaging, reproducible builds, remote platforms, and live accounts are separate evidence."
   ],
   "redaction": {
     "raw_auth_output_persisted": false,

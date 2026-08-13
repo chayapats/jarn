@@ -40,6 +40,7 @@ from jarn.providers.codex_subscription import (
     CodexUnavailableError,
     normalize_codex_command,
 )
+from jarn.util.process_env import external_command_env
 
 _VERSION_RE = re.compile(r"(?<!\d)(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)")
 AUTH_TIMEOUT_ENV = "JARN_AUTH_TIMEOUT_SECONDS"
@@ -119,6 +120,7 @@ def inspect_codex_dependency(
             capture_output=True,
             text=True,
             encoding="utf-8",
+            env=external_command_env(),
             timeout=max(0.1, float(timeout_seconds)),
         )
     except FileNotFoundError as exc:

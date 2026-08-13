@@ -28,6 +28,7 @@ from typing import Any
 
 from jarn.config.secrets import redact_secrets
 from jarn.util.atomic import file_lock
+from jarn.util.process_env import external_command_env
 from jarn.version import __version__
 
 CODEX_MINIMUM_VERSION = "0.100.0"
@@ -451,6 +452,7 @@ class CodexDependencyInstaller:
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
+                    env=external_command_env(),
                     timeout=10,
                 )
             except (OSError, subprocess.SubprocessError) as exc:
@@ -517,6 +519,7 @@ class CodexDependencyInstaller:
                 check=False,
                 capture_output=True,
                 text=True,
+                env=external_command_env(),
                 timeout=5,
             )
         except (OSError, subprocess.SubprocessError):

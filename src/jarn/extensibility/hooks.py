@@ -17,6 +17,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from jarn.config.schema import HookSpec
+from jarn.util.process_env import external_command_env
 
 _log = logging.getLogger("jarn")
 
@@ -124,6 +125,7 @@ class HookRunner:
             env["JARN_HOOK_TARGET"] = target
         if extra_env:
             env.update(extra_env)
+        env = external_command_env(env)
 
         for spec in self.for_event(event, target=target):
             result = self._run_one(spec, env)

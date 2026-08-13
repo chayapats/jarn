@@ -42,6 +42,7 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import Field, PrivateAttr
 
 from jarn.agent.process_util import terminate_process_group
+from jarn.util.process_env import external_command_env
 from jarn.version import __version__
 
 
@@ -194,6 +195,7 @@ class CodexAppServer:
                     text=True,
                     encoding="utf-8",
                     bufsize=1,
+                    env=external_command_env(),
                     # Codex can acquire descendants of its own. A dedicated
                     # process group lets cancellation reap the whole tree.
                     start_new_session=os.name == "posix",
@@ -516,7 +518,9 @@ def run_codex_login(*, command: str | Sequence[str] | None = None, device: bool 
     if device:
         argv.append("--device-auth")
     try:
-        return subprocess.run(argv, check=False).returncode  # noqa: S603
+        return subprocess.run(  # noqa: S603
+            argv, check=False, env=external_command_env()
+        ).returncode
     except OSError as exc:
         raise CodexUnavailableError(f"Could not run Codex login: {exc}") from exc
 
@@ -526,7 +530,9 @@ def run_codex_logout(*, command: str | Sequence[str] | None = None) -> int:
 
     try:
         return subprocess.run(  # noqa: S603
-            [*normalize_codex_command(command), "logout"], check=False
+            [*normalize_codex_command(command), "logout"],
+            check=False,
+            env=external_command_env(),
         ).returncode
     except OSError as exc:
         raise CodexUnavailableError(f"Could not run Codex logout: {exc}") from exc

@@ -27,6 +27,7 @@ from urllib.parse import urlparse
 
 from jarn.config.migrations import diagnose_config_file
 from jarn.config.secrets import keyring_backend_metadata, redact_secrets
+from jarn.util.process_env import external_command_env
 from jarn.version import __version__
 
 _COMMAND_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -56,6 +57,7 @@ def _manager_directory(
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=external_command_env(),
             start_new_session=os.name == "posix",
         )
     except OSError as exc:
@@ -334,6 +336,7 @@ def _shell_resolution(shell: str) -> dict[str, Any]:
             check=False,
             capture_output=True,
             text=True,
+            env=external_command_env(),
             timeout=2,
         )
     except subprocess.TimeoutExpired:
@@ -450,6 +453,7 @@ def _run_version(argv: list[str], *, timeout: float = 2.0) -> dict[str, Any]:
             check=False,
             capture_output=True,
             text=True,
+            env=external_command_env(),
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:

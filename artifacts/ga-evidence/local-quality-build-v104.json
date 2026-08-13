@@ -2,6 +2,7 @@
   "schema_version": 2,
   "record_id": "LOCAL-QUALITY-BUILD-20260813-V104",
   "candidate_version": "1.0.4",
+  "candidate_commit": "abdfef46af21d35011ad7cbfb8a890a17757e59a",
   "criterion_ids": [
     "AC-SEC-002",
     "AC-SEC-003",
@@ -41,8 +42,7 @@
   "documentation_lookups": [],
   "result": "The v1.0.4 candidate passed lock, lint, typing, dependency-audit, packaging, deterministic-build, and exact-wheel clean-install smoke gates.",
   "limitations": [
-    "Release-runner SBOM, provenance, signatures, binaries, and Tier-1 lifecycle execution remain separate tagged workflow evidence.",
-    "No candidate commit is recorded before the v1.0.4 source is committed/tagged."
+    "Release-runner SBOM, provenance, signatures, binaries, and Tier-1 lifecycle execution remain separate tagged workflow evidence."
   ],
   "redaction": {
     "raw_auth_output_persisted": false,

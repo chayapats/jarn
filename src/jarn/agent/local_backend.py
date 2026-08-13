@@ -42,6 +42,7 @@ from deepagents.backends.protocol import ExecuteResponse
 
 from jarn.agent.events import ToolProgress
 from jarn.agent.process_util import terminate_process_group
+from jarn.util.process_env import external_command_env
 
 logger = logging.getLogger("jarn.agent.local_backend")
 
@@ -208,6 +209,7 @@ class CancellableLocalShellBackend(LocalShellBackend):
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
+        self._env = external_command_env(self._env)
         self._live: set[subprocess.Popen] = set()
         self._live_lock = threading.Lock()
         self._sandbox_mode = sandbox_mode

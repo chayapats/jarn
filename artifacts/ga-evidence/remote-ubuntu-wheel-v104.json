@@ -2,6 +2,7 @@
   "schema_version": 2,
   "record_id": "REMOTE-UBUNTU-WHEEL-20260813-V104",
   "candidate_version": "1.0.4",
+  "candidate_commit": "abdfef46af21d35011ad7cbfb8a890a17757e59a",
   "criterion_ids": [
     "AC-INSTALL-005",
     "AC-INSTALL-006",
@@ -40,7 +41,7 @@
   "documentation_lookups": [],
   "result": "The exact v1.0.4 wheel ran on Ubuntu 22.04/glibc 2.35 in an isolated tool root, migrated a customized legacy config transactionally, produced bounded offline diagnostics, and left every real host command/config fingerprint unchanged.",
   "limitations": [
-    "This is exact-wheel and source-installer evidence before an immutable v1.0.4 tag exists; it does not claim a public release URL, release binary, or candidate commit.",
+    "This exact-wheel and source-installer evidence is bound to the immutable v1.0.4 commit; it does not claim a public release URL or release binary.",
     "Binary glibc-fallback and shell-activation behavior remains covered by exact v1.0.4 source tests and must be repeated by the protected tagged release workflow before promotion.",
     "The UAT used an existing disposable SSH account with an isolated /tmp HOME rather than provisioning a new operating-system user."
   ],

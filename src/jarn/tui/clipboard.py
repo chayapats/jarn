@@ -23,6 +23,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from jarn.util.process_env import external_command_env
+
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB
 _MAX_IMAGE_MB = _MAX_IMAGE_BYTES // (1024 * 1024)
 
@@ -98,7 +100,10 @@ def _within_size_limit(dest: Path) -> bool:
 def _grab_via_pngpaste(dest: Path) -> bool:
     try:
         proc = subprocess.run(
-            ["pngpaste", str(dest)], capture_output=True, timeout=5
+            ["pngpaste", str(dest)],
+            capture_output=True,
+            env=external_command_env(),
+            timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -110,6 +115,7 @@ def _grab_via_osascript(dest: Path, script: str) -> bool:
         proc = subprocess.run(
             ["osascript", "-e", script.format(path=dest)],
             capture_output=True,
+            env=external_command_env(),
             text=True,
             timeout=8,
         )
@@ -123,6 +129,7 @@ def _grab_via_wl_paste(dest: Path) -> bool:
         proc = subprocess.run(
             ["wl-paste", "-t", "image/png"],
             capture_output=True,
+            env=external_command_env(),
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
@@ -138,6 +145,7 @@ def _grab_via_xclip(dest: Path) -> bool:
         proc = subprocess.run(
             ["xclip", "-selection", "clipboard", "-t", "image/png", "-o"],
             capture_output=True,
+            env=external_command_env(),
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
@@ -162,6 +170,7 @@ def _grab_windows(dest: Path) -> bool:
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
+            env=external_command_env(),
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError):

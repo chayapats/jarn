@@ -33,6 +33,7 @@ from typing import Protocol
 from jarn.agent.files import INLINE_IMAGE_MAX_BYTES
 from jarn.agent.repomap import build_symbol_index
 from jarn.config.profiles import PROFILES
+from jarn.util.process_env import external_command_env
 
 _MODE_CHOICES = ("plan", "ask", "auto-edit", "yolo")
 
@@ -599,6 +600,7 @@ def expand_mentions(text: str, project_root: Path | None = None) -> str:
                 text=True,
                 timeout=_GIT_TIMEOUT,
                 cwd=cwd,
+                env=external_command_env(),
             )
             exit_code = proc.returncode
             output = (proc.stdout or "") + (proc.stderr or "")

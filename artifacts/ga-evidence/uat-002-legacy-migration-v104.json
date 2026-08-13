@@ -2,6 +2,7 @@
   "schema_version": 2,
   "record_id": "UAT-002-V104-PARTIAL",
   "candidate_version": "1.0.4",
+  "candidate_commit": "abdfef46af21d35011ad7cbfb8a890a17757e59a",
   "uat_id": "UAT-002",
   "criterion_ids": [
     "UAT-002",
@@ -37,7 +38,7 @@
   "result": "The migration and coexistence portions of UAT-002 passed on the exact v1.0.4 wheel, but the criterion remains Blocked until the immutable tagged installer itself performs activation over the real legacy resolution and the result is commit-bound.",
   "limitations": [
     "The protected installer flow was not invoked before an immutable v1.0.4 tag/release binary existed, so PATH activation and installer cleanup guidance are not claimed.",
-    "No candidate commit is recorded before the v1.0.4 source is committed/tagged."
+    "This record is bound to the immutable v1.0.4 commit; tagged installer lifecycle evidence is recorded separately."
   ],
   "redaction": {
     "raw_auth_output_persisted": false,

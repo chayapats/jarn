@@ -49,6 +49,7 @@ from deepagents.backends.protocol import (
 from deepagents.backends.sandbox import BaseSandbox
 
 from jarn.agent.process_util import terminate_process_group
+from jarn.util.process_env import external_command_env
 
 logger = logging.getLogger("jarn.agent.docker_backend")
 
@@ -104,6 +105,7 @@ def docker_available() -> bool:
             ["docker", "info"],  # noqa: S607
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=external_command_env(),
             timeout=_CONTROL_TIMEOUT,
             check=False,
         )
@@ -180,6 +182,7 @@ def _remove_containers_for_session(session_id: str) -> None:
                 "--filter", f"label=jarn-session={session_id}",
             ],
             capture_output=True,
+            env=external_command_env(),
             text=True,
             timeout=_CONTROL_TIMEOUT,
             check=False,
@@ -198,6 +201,7 @@ def _remove_containers_for_session(session_id: str) -> None:
                 ["docker", "rm", "-f", cid],  # noqa: S607
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=external_command_env(),
                 timeout=_CONTROL_TIMEOUT,
                 check=False,
             )
@@ -319,6 +323,7 @@ class CancellableDockerSandbox(BaseSandbox):
             proc = subprocess.run(  # noqa: S603
                 self._run_argv(),
                 capture_output=True,
+                env=external_command_env(),
                 text=True,
                 timeout=_CONTROL_TIMEOUT,
                 check=False,
@@ -379,6 +384,7 @@ class CancellableDockerSandbox(BaseSandbox):
                 ["docker", "rm", "-f", cid],  # noqa: S607
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=external_command_env(),
                 timeout=_CONTROL_TIMEOUT,
                 check=False,
             )
@@ -428,6 +434,7 @@ class CancellableDockerSandbox(BaseSandbox):
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             text=True,
+            env=external_command_env(),
             start_new_session=True,
         )
         with self._live_lock:
@@ -491,6 +498,7 @@ class CancellableDockerSandbox(BaseSandbox):
                 argv,
                 input=data,
                 capture_output=True,
+                env=external_command_env(),
                 timeout=_CONTROL_TIMEOUT,
                 check=False,
             )
@@ -526,6 +534,7 @@ class CancellableDockerSandbox(BaseSandbox):
             proc = subprocess.run(  # noqa: S603
                 argv,
                 capture_output=True,
+                env=external_command_env(),
                 timeout=_CONTROL_TIMEOUT,
                 check=False,
             )
@@ -572,6 +581,7 @@ class CancellableDockerSandbox(BaseSandbox):
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=external_command_env(),
                 timeout=_CONTROL_TIMEOUT,
                 check=False,
             )
