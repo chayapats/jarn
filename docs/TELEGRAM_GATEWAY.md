@@ -46,10 +46,16 @@ Inspect or control that service without opening config files:
 
 ```bash
 jarn gateway status
+jarn gateway install-service
 jarn gateway start
 jarn gateway stop
 jarn gateway restart
 ```
+
+If the optional user service cannot start, the verified bot config and
+credential remain usable with `jarn gateway`. Correct the reported systemd
+cause, then run `jarn gateway install-service`; you do not need to re-enter the
+token or send `/start` again.
 
 For SSH/automation, send the token over stdin rather than argv and supply a known
 numeric ID explicitly:

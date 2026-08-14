@@ -160,10 +160,7 @@ def load_gateway_settings(
                 "The Telegram gateway is disabled.",
                 cause="gateway.enabled is false in the effective configuration.",
                 retryable=False,
-                action=(
-                    "Set gateway.enabled to true in the global config, run "
-                    "`jarn config validate`, then rerun `jarn gateway`."
-                ),
+                action="Run `jarn gateway setup`; it configures and validates Telegram safely.",
                 component="gateway configuration",
             )
         )
@@ -203,8 +200,8 @@ def load_gateway_settings(
                 ),
                 retryable=False,
                 action=(
-                    "Store the token through a supported secret reference or set "
-                    "JARN_TELEGRAM_BOT_TOKEN, then rerun `jarn gateway`."
+                    "Run `jarn gateway setup`; it stores the token outside YAML and "
+                    "validates the bot before activation."
                 ),
                 component="Telegram credential",
             )
@@ -220,8 +217,8 @@ def load_gateway_settings(
                 ),
                 retryable=False,
                 action=(
-                    "Add at least one numeric operator ID to "
-                    "gateway.telegram.allowed_user_ids, validate config, and retry."
+                    "Run `jarn gateway setup`; it discovers your Telegram ID from a "
+                    "private /start and creates a fail-closed allowlist."
                 ),
                 component="Telegram allowlist",
             )

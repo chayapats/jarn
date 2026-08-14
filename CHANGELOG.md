@@ -5,6 +5,15 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-08-14
+
+### Fixed
+
+- Generate a systemd-compatible unquoted `WorkingDirectory=` for the guided
+  Telegram user service on Ubuntu 22.04, preserve verified Telegram config when
+  optional service activation fails, and add `jarn gateway install-service` so
+  service repair never requires re-entering the bot token.
+
 ## [1.0.8] - 2026-08-14
 
 ### Added
@@ -1478,6 +1487,7 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Windows: use WSL; native Windows terminal is unsupported
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
+[1.0.9]: https://github.com/chayapats/jarn/releases/tag/v1.0.9
 [1.0.8]: https://github.com/chayapats/jarn/releases/tag/v1.0.8
 [1.0.7]: https://github.com/chayapats/jarn/releases/tag/v1.0.7
 [1.0.6]: https://github.com/chayapats/jarn/releases/tag/v1.0.6

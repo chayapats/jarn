@@ -51,6 +51,7 @@ __all__ = [
     "TelegramOperator",
     "TelegramSetupClient",
     "run_gateway_service_action",
+    "run_gateway_service_install",
     "run_gateway_setup",
     "run_gateway_status",
 ]
@@ -413,9 +414,46 @@ class GatewayServiceManager:
             raise ValueError("service paths must not contain control characters")
         return '"' + value.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"') + '"'
 
+    @staticmethod
+    def _working_directory(value: str) -> str:
+        """Encode a path for systemd's non-command WorkingDirectory= field.
+
+        Unlike ``ExecStart=``, ``WorkingDirectory=`` on supported systemd
+        versions does not consistently strip quotes placed around only the
+        value.  Ubuntu 22.04 consequently treated ``"/home/user"`` as a
+        relative path and rejected the whole unit.  C-style escapes are part
+        of the unit-file syntax and preserve spaces without adding quotes.
+        """
+
+        if not value.startswith("/"):
+            raise ValueError("the service working directory must be absolute")
+        if any(character in value for character in ("\n", "\r", "\0")):
+            raise ValueError("service paths must not contain control characters")
+        return (
+            value.replace("%", "%%")
+            .replace("\\", "\\\\")
+            .replace(" ", "\\x20")
+            .replace("\t", "\\x09")
+            .replace('"', "\\x22")
+            .replace("'", "\\x27")
+        )
+
+    @staticmethod
+    def _failure_cause(
+        summary: str,
+        result: subprocess.CompletedProcess[str],
+    ) -> RuntimeError:
+        detail = (result.stderr or result.stdout or "").strip()
+        detail = " ".join(detail.split())
+        if len(detail) > 1_000:
+            detail = detail[:997] + "..."
+        if detail:
+            return RuntimeError(f"{summary}: {detail}")
+        return RuntimeError(f"{summary} (systemctl exit {result.returncode})")
+
     def unit_text(self) -> str:
         executable = self._quote(str(self.executable))
-        working = self._quote(str(self.home))
+        working = self._working_directory(str(self.home))
         environment = ""
         try:
             if global_home().resolve() != default_global_home().resolve():
@@ -456,13 +494,16 @@ class GatewayServiceManager:
         try:
             reload_result = self._run(["systemctl", "--user", "daemon-reload"])
             if reload_result.returncode != 0:
-                raise RuntimeError("systemd rejected the generated user unit")
+                raise self._failure_cause(
+                    "systemd rejected the generated user unit",
+                    reload_result,
+                )
             enable = self._run(
                 ["systemctl", "--user", "enable", self.unit_name],
                 timeout=30.0,
             )
             if enable.returncode != 0:
-                raise RuntimeError("systemd could not enable the gateway")
+                raise self._failure_cause("systemd could not enable the gateway", enable)
             # `enable --now` does not restart an already-running unit. An
             # explicit restart is mandatory when reconfiguration changed the
             # bot token or operator allowlist.
@@ -471,7 +512,10 @@ class GatewayServiceManager:
                 timeout=30.0,
             )
             if restart.returncode != 0:
-                raise RuntimeError("systemd could not start or restart the gateway")
+                raise self._failure_cause(
+                    "systemd could not start or restart the gateway",
+                    restart,
+                )
             result = self.status()
             if not result.active or not result.enabled:
                 raise RuntimeError("the gateway unit did not become active and enabled")
@@ -798,7 +842,30 @@ def run_gateway_setup(
                     default=True,
                 )
         if should_install:
-            running = manager.install_and_start()
+            try:
+                running = manager.install_and_start()
+            except Exception as exc:  # noqa: BLE001 - keep verified config usable
+                cause = redact_secrets(str(exc), known={token})
+                print(f"\nTelegram configuration verified at {config_path}")
+                if committed.backup_path:
+                    print(f"Previous config backed up at {committed.backup_path}")
+                print(credential_storage_notice(activated))
+                print("Run now in the foreground with: jarn gateway")
+                service_detail = _detail(
+                    ErrorCode.GATEWAY_RUNTIME_FAILED,
+                    "Telegram is configured, but its user service could not start.",
+                    cause=cause,
+                    component="Telegram user service",
+                    retryable=True,
+                    action=(
+                        "The verified Telegram configuration was kept. Run "
+                        "`jarn gateway` now, or correct systemd and run "
+                        "`jarn gateway install-service`."
+                    ),
+                    known={token},
+                )
+                print(service_detail.render(known_secrets={token}), file=sys.stderr)
+                return EXIT_INTERNAL
             print(f"User service enabled and running: {manager.unit_path}")
             if running.linger is False:
                 username = os.environ.get("USER", "YOUR_USER")
@@ -938,4 +1005,48 @@ def run_gateway_service_action(
         f"Telegram user service: active={'yes' if status.active else 'no'}, "
         f"enabled={'yes' if status.enabled else 'no'}"
     )
+    return EXIT_SUCCESS
+
+
+def run_gateway_service_install(
+    *,
+    service_manager: GatewayServiceManager | None = None,
+) -> int:
+    """Install and start the owner service from an existing verified config."""
+
+    # Reuse the production config/secret/allowlist gate before creating a
+    # persistent service. The resolved token stays in memory and is never
+    # passed to systemd, argv, or the unit file.
+    try:
+        from jarn.telegram.cli import load_gateway_settings
+
+        load_gateway_settings()
+    except SystemExit as exc:
+        return int(exc.code) if isinstance(exc.code, int) else EXIT_USAGE_CONFIG
+
+    manager = service_manager or GatewayServiceManager()
+    try:
+        status = manager.install_and_start()
+    except Exception as exc:  # noqa: BLE001
+        detail = _detail(
+            ErrorCode.GATEWAY_RUNTIME_FAILED,
+            "The Telegram gateway user service could not be installed.",
+            cause=redact_secrets(str(exc)),
+            component="Telegram user service",
+            retryable=True,
+            action=(
+                "Correct the reported systemd cause, then retry "
+                "`jarn gateway install-service`; `jarn gateway` remains available."
+            ),
+        )
+        print(detail.render(), file=sys.stderr)
+        return EXIT_INTERNAL
+
+    print(f"Telegram user service enabled and running: {manager.unit_path}")
+    if status.linger is False:
+        username = os.environ.get("USER", "YOUR_USER")
+        print(
+            "To keep it running after logout, an administrator can run: "
+            f"sudo loginctl enable-linger {username}"
+        )
     return EXIT_SUCCESS

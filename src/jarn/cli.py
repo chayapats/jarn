@@ -607,7 +607,15 @@ Stable exit codes:
     p_gateway.add_argument(
         "gateway_action",
         nargs="?",
-        choices=["run", "setup", "status", "start", "stop", "restart"],
+        choices=[
+            "run",
+            "setup",
+            "status",
+            "install-service",
+            "start",
+            "stop",
+            "restart",
+        ],
         default="run",
         help="Action to perform (default: run)",
     )
@@ -3246,6 +3254,10 @@ def _cmd_gateway(
         from jarn.telegram.setup import run_gateway_status
 
         return run_gateway_status()
+    if action == "install-service":
+        from jarn.telegram.setup import run_gateway_service_install
+
+        return run_gateway_service_install()
     if action in {"start", "stop", "restart"}:
         from jarn.telegram.setup import run_gateway_service_action
 

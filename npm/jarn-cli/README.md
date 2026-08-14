@@ -13,12 +13,11 @@ This package installs a small launcher exposed as both `jarn` and `jarn-cli`. Th
 actual program is a standalone binary shipped in a per-platform package
 (`jarn-cli-<platform>-<arch>`) that npm installs automatically for your machine.
 
-The v0.10 binary also includes the optional single-operator Telegram gateway. After
-adding the global `gateway:` configuration and token, run:
+The binary includes the optional single-operator Telegram gateway. Configure the
+bot, secret storage, operator allowlist, and optional user service interactively:
 
 ```bash
-export JARN_TELEGRAM_BOT_TOKEN='123456:replace-me'
-jarn gateway
+jarn gateway setup
 ```
 
 See the [gateway setup and systemd guide](https://github.com/chayapats/jarn/blob/main/docs/TELEGRAM_GATEWAY.md).
@@ -51,6 +50,6 @@ binary). On any unsupported host the `jarn` command prints these instructions.
 - Changelog: <https://github.com/chayapats/jarn/blob/main/CHANGELOG.md>
 - License: Apache-2.0
 
-The source line targets **v1.0.8 GA**. The protected release workflow promotes the
+The source line targets **v1.0.9 GA**. The protected release workflow promotes the
 exact GitHub Release binaries, PyPI package, and npm packages in lockstep; consult
 those registries for the currently published version.

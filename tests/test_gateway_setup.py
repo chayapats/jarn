@@ -15,6 +15,7 @@ from jarn.telegram.setup import (
     TelegramOperator,
     TelegramSetupClient,
     TelegramSetupFailure,
+    run_gateway_service_install,
     run_gateway_setup,
     run_gateway_status,
 )
@@ -322,6 +323,56 @@ def test_service_unit_contains_no_token_and_uses_owner_service(tmp_path, monkeyp
     assert "BOT_TOKEN" not in unit
     assert "token" not in unit.lower()
     assert str(tmp_path / ".jarn") in unit
+    assert f"WorkingDirectory={tmp_path}\n" in unit
+    assert f'WorkingDirectory="{tmp_path}"' not in unit
+
+
+def test_service_unit_escapes_working_directory_without_value_quotes(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "owner home%folder"
+    monkeypatch.setenv("JARN_HOME", str(home / ".jarn"))
+    manager = GatewayServiceManager(
+        home=home,
+        executable=home / "bin/jarn",
+        platform_name="linux",
+    )
+
+    unit = manager.unit_text()
+
+    assert "WorkingDirectory=" + str(home).replace("%", "%%").replace(" ", "\\x20") in unit
+    assert "WorkingDirectory=\"" not in unit
+
+
+def test_service_start_failure_includes_bounded_systemctl_diagnostic(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("jarn.telegram.setup.shutil.which", lambda name: f"/bin/{name}")
+
+    def runner(argv, **_kwargs):
+        if "restart" in argv:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr='WorkingDirectory= path is not absolute: "/home/operator"\n',
+            )
+        if "is-active" in argv or "is-enabled" in argv:
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+        if argv[0] == "loginctl":
+            return SimpleNamespace(returncode=0, stdout="yes\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    manager = GatewayServiceManager(
+        home=tmp_path,
+        executable=tmp_path / "bin/jarn",
+        runner=runner,
+        platform_name="linux",
+    )
+
+    with pytest.raises(RuntimeError, match="WorkingDirectory= path is not absolute"):
+        manager.install_and_start()
+
+    assert not manager.unit_path.exists()
 
 
 def test_gateway_status_is_secret_free(tmp_path, monkeypatch, capsys):
@@ -397,6 +448,73 @@ def test_gateway_parser_exposes_standard_setup_and_service_controls():
     assert setup.no_service is True
     assert setup.yes is True
     assert parser.parse_args(["gateway", "status"]).gateway_action == "status"
+    assert (
+        parser.parse_args(["gateway", "install-service"]).gateway_action
+        == "install-service"
+    )
+
+
+def test_service_failure_keeps_verified_gateway_config_and_credential(
+    tmp_path, monkeypatch, capsys
+):
+    path = _config(tmp_path, monkeypatch)
+    token = "123456:service-failure-token"
+    activated = _fake_credential()
+    rolled_back: list[ActivatedCredential] = []
+
+    class _FailingService:
+        unit_path = tmp_path / "jarn-telegram.service"
+
+        def status(self):
+            return ServiceStatus(True, False, False, False, True)
+
+        def install_and_start(self):
+            raise RuntimeError("systemd rejected WorkingDirectory")
+
+    monkeypatch.setattr(
+        "jarn.telegram.setup.activate_pending_credential",
+        lambda *_args, **_kwargs: activated,
+    )
+    monkeypatch.setattr("jarn.telegram.setup.resolve", lambda _reference: token)
+    monkeypatch.setattr("jarn.telegram.setup.rollback_activated_credential", rolled_back.append)
+
+    result = run_gateway_setup(
+        client=_Client(),
+        service_manager=_FailingService(),
+        allowed_users=[24680],
+        assume_yes=True,
+        secret_reader=lambda _prompt: token,
+    )
+
+    assert result == 1
+    assert rolled_back == []
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert raw["gateway"]["enabled"] is True
+    assert raw["gateway"]["telegram"]["token"] == activated.reference
+    assert raw["gateway"]["telegram"]["allowed_user_ids"] == [24680]
+    captured = capsys.readouterr()
+    assert "JARN-GATEWAY-005" in captured.err
+    assert "configuration was kept" in captured.err
+    assert "jarn gateway install-service" in captured.err
+    assert token not in captured.out + captured.err
+
+
+def test_install_service_reuses_existing_config_without_token_in_unit(
+    tmp_path, monkeypatch, capsys
+):
+    manager = SimpleNamespace(
+        unit_path=tmp_path / "jarn-telegram.service",
+        install_and_start=lambda: ServiceStatus(True, True, True, True, True),
+    )
+    monkeypatch.setattr(
+        "jarn.telegram.cli.load_gateway_settings",
+        lambda: SimpleNamespace(token="must-not-render"),
+    )
+
+    assert run_gateway_service_install(service_manager=manager) == 0
+    output = capsys.readouterr().out
+    assert "enabled and running" in output
+    assert "must-not-render" not in output
 
 
 def test_service_status_fails_closed_when_user_manager_is_unavailable(tmp_path, monkeypatch):
