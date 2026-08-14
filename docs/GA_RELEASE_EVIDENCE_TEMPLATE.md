@@ -40,12 +40,12 @@ prompt text, and raw authentication output are intentionally excluded.
 ```sh
 python3 scripts/ga_evidence.py \
   --evidence-dir artifacts/ga-evidence \
-  --candidate-version 1.0.6 \
+  --candidate-version 1.0.7 \
   --output artifacts/GA_RELEASE_EVIDENCE.md
 
 python3 scripts/ga_evidence.py \
   --evidence-dir artifacts/ga-evidence \
-  --candidate-version 1.0.6 \
+  --candidate-version 1.0.7 \
   --candidate-commit FULL_TAGGED_COMMIT_SHA \
   --strict \
   --output artifacts/GA_RELEASE_EVIDENCE.md

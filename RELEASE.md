@@ -1,7 +1,7 @@
 # Release process — General Availability candidate
 
 Fail-closed checklist for promoting one identical J.A.R.N. candidate to GitHub,
-PyPI, and npm. This source line targets v1.0.6; the registries and GitHub Releases
+PyPI, and npm. This source line targets v1.0.7; the registries and GitHub Releases
 remain the authority for current publication status. A tag push cannot promote a
 draft by itself: every criterion, UAT, and published-artifact gate must pass first.
 
@@ -17,7 +17,7 @@ uv run pytest tests/test_installer.py tests/test_ci.py tests/test_update.py -q
 uv run python scripts/benchmark_startup.py --output artifacts/startup.json
 uv run python scripts/ga_evidence.py \
   --evidence-dir artifacts/ga-evidence \
-  --candidate-version 1.0.6 \
+  --candidate-version 1.0.7 \
   --strict
 uv build
 ```
@@ -66,8 +66,8 @@ Optional binary smoke (maintainer):
 3. Tag and push (the tag creates a **draft**, not a public release):
 
 ```bash
-git tag -a v1.0.6 -m "J.A.R.N. v1.0.6"
-git push origin v1.0.6
+git tag -a v1.0.7 -m "J.A.R.N. v1.0.7"
+git push origin v1.0.7
 ```
 
 4. GitHub Actions builds binaries/packages plus the exact tagged `install.sh`, creates
@@ -83,10 +83,10 @@ git push origin v1.0.6
    to pass before setting that variable:
 
 ```bash
-tag_commit=$(git rev-list -n 1 v1.0.6)
+tag_commit=$(git rev-list -n 1 v1.0.7)
 python scripts/ga_evidence.py \
   --evidence-dir artifacts/ga-evidence \
-  --candidate-version 1.0.6 \
+  --candidate-version 1.0.7 \
   --candidate-commit "$tag_commit" \
   --strict
 ```

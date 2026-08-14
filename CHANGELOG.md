@@ -5,6 +5,16 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-08-14
+
+### Fixed
+
+- Reissue the Telegram-bundling candidate from an ordinary immutable release
+  commit so GitHub can execute the protected release workflow. The v1.0.6 tag
+  inherited a `[skip ci]` commit directive and therefore created no workflow
+  run, draft release, or registry package; it remains immutable and
+  unpublished.
+
 ## [1.0.6] - 2026-08-14
 
 ### Fixed
@@ -1450,6 +1460,7 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Windows: use WSL; native Windows terminal is unsupported
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
+[1.0.7]: https://github.com/chayapats/jarn/releases/tag/v1.0.7
 [1.0.6]: https://github.com/chayapats/jarn/releases/tag/v1.0.6
 [1.0.5]: https://github.com/chayapats/jarn/releases/tag/v1.0.5
 [1.0.4]: https://github.com/chayapats/jarn/releases/tag/v1.0.4

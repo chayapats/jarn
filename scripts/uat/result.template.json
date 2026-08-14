@@ -2,7 +2,7 @@
   "schema_version": 2,
   "record_id": "UAT-000",
   "uat_id": "UAT-000",
-  "candidate_version": "1.0.6",
+  "candidate_version": "1.0.7",
   "criterion_ids": ["UAT-000"],
   "status": "not_run",
   "started_at": "2000-01-01T00:00:00Z",
