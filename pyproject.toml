@@ -1,6 +1,6 @@
 [project]
 name = "jarn"
-version = "1.0.5"
+version = "1.0.6"
 description = "J.A.R.N. — Just A Reliable Nerd. A TUI-first coding agent harness built on DeepAgents."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -63,6 +63,10 @@ dev = [
 build = [
     "pyinstaller==6.21.0",
     "setuptools>=83.0.0",
+    # Standalone/npm binaries promise a working Telegram gateway. Keep the
+    # optional transport installed in the frozen build environment as well as
+    # collecting it in packaging/jarn.spec.
+    "aiogram>=3.30,<4",
 ]
 
 [project.scripts]

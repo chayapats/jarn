@@ -161,6 +161,15 @@ jobs:
           ./dist/jarn --version
           json=$(./dist/jarn doctor --json || true)
           echo "$json" | python -c "import json,sys; d=json.load(sys.stdin); assert 'ok' in d"
+          gateway_home="$RUNNER_TEMP/jarn-gateway-smoke"
+          mkdir -m 0700 "$gateway_home"
+          set +e
+          gateway_output=$(JARN_HOME="$gateway_home" ./dist/jarn gateway --fake-backend 2>&1)
+          gateway_rc=$?
+          set -e
+          test "$gateway_rc" -eq 2
+          printf '%s\n' "$gateway_output" | grep -F 'JARN-GATEWAY-002'
+          ! printf '%s\n' "$gateway_output" | grep -F 'JARN-GATEWAY-001'
       - name: Run Linux artifact on oldest supported glibc
         if: runner.os == 'Linux'
         run: >-

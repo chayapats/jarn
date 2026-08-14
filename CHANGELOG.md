@@ -5,6 +5,16 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-08-14
+
+### Fixed
+
+- Bundle and collect `aiogram` in every PyInstaller/npm standalone binary, and
+  add an exact-binary release smoke that refuses `JARN-GATEWAY-001`. The
+  immutable v1.0.5 draft exposed that its Telegram gateway dependency was
+  absent even though the standalone support contract advertised it; v1.0.5
+  remains unpublished and no package registry was mutated.
+
 ## [1.0.5] - 2026-08-13
 
 ### Security
@@ -1440,6 +1450,7 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Windows: use WSL; native Windows terminal is unsupported
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
+[1.0.6]: https://github.com/chayapats/jarn/releases/tag/v1.0.6
 [1.0.5]: https://github.com/chayapats/jarn/releases/tag/v1.0.5
 [1.0.4]: https://github.com/chayapats/jarn/releases/tag/v1.0.4
 [1.0.3]: https://github.com/chayapats/jarn/releases/tag/v1.0.3

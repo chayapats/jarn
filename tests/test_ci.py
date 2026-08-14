@@ -1064,6 +1064,19 @@ def test_pyproject_pins_pyinstaller_in_build_extra() -> None:
     )
 
 
+def test_standalone_build_bundles_and_smokes_telegram_gateway() -> None:
+    pyproject = PYPROJECT.read_text()
+    spec = (REPO / "packaging" / "jarn.spec").read_text()
+    release = RELEASE_YML.read_text()
+
+    build_block = pyproject.split("build = [", 1)[1].split("]", 1)[0]
+    assert '"aiogram>=3.30,<4"' in build_block
+    assert '"aiogram"' in spec
+    assert "./dist/jarn gateway --fake-backend" in release
+    assert "JARN-GATEWAY-002" in release
+    assert "JARN-GATEWAY-001" in release
+
+
 def test_nightly_eval_workflow_exists() -> None:
     workflow = yaml.safe_load(NIGHTLY_YML.read_text())
     job = workflow["jobs"]["eval"]

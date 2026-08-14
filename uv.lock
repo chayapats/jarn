@@ -931,7 +931,7 @@ wheels = [
 
 [[package]]
 name = "jarn"
-version = "1.0.5"
+version = "1.0.6"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -959,6 +959,7 @@ dependencies = [
 
 [package.optional-dependencies]
 build = [
+    { name = "aiogram" },
     { name = "pyinstaller" },
     { name = "setuptools" },
 ]
@@ -982,6 +983,7 @@ telegram = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiogram", marker = "extra == 'build'", specifier = ">=3.30,<4" },
     { name = "aiogram", marker = "extra == 'telegram'", specifier = ">=3.30,<4" },
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "deepagents", specifier = ">=0.6.7" },

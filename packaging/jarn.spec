@@ -26,6 +26,9 @@ _PACKAGES = [
     "ruamel.yaml",
     "tiktoken",
     "keyring",
+    # The standalone/npm distribution advertises Telegram support without an
+    # extra install. aiogram uses dynamic imports, so collect it wholesale.
+    "aiogram",
 ]
 
 datas, binaries, hiddenimports = [], [], []
