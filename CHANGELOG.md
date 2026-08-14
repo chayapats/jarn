@@ -5,6 +5,24 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-08-14
+
+### Added
+
+- Add `jarn gateway setup`, a transactional Telegram onboarding wizard that
+  verifies the bot with Telegram, discovers the operator from a new private
+  `/start`, stores the token outside YAML, preserves and backs up the existing
+  config, and offers a token-free owner-scoped systemd service. Add
+  `jarn gateway status|start|stop|restart` for normal operations without manual
+  config or service-file editing.
+
+### Security
+
+- Refuse hidden-token entry on a non-interactive terminal, discard bounded old
+  Telegram updates before operator discovery, reject active webhooks and
+  ambiguous senders, keep bot tokens out of argv/output/config/service units,
+  and roll back staged config/credentials/service state on failure.
+
 ## [1.0.7] - 2026-08-14
 
 ### Fixed
@@ -1460,6 +1478,7 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Windows: use WSL; native Windows terminal is unsupported
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
+[1.0.8]: https://github.com/chayapats/jarn/releases/tag/v1.0.8
 [1.0.7]: https://github.com/chayapats/jarn/releases/tag/v1.0.7
 [1.0.6]: https://github.com/chayapats/jarn/releases/tag/v1.0.6
 [1.0.5]: https://github.com/chayapats/jarn/releases/tag/v1.0.5

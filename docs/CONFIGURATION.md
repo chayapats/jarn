@@ -984,12 +984,15 @@ Network failures are silent — the check never blocks or crashes startup.
 
 Optional Telegram bot daemon, shipped in v0.10.0. **Global-tier only** — a
 project-tier `gateway:` block is stripped with a warning whether the project is
-trusted or not. Prefer a secret reference for the bot token (`${ENV}` /
-`keychain:…` / `file:…`); `strict_secrets` does not flag inline bot tokens today.
+trusted or not. Run `jarn gateway setup` for the supported default flow: it
+verifies the bot, discovers the operator from `/start`, stores the token outside
+YAML, and updates this section transactionally. Inline bot tokens are rejected;
+the config accepts only a secret reference (`${ENV}` / `keychain:…` / `file:…`).
 
 The npm/standalone binary includes Telegram support. Python installations require
 the optional dependency (`pip install 'jarn[telegram]'`). Start it with
-`jarn gateway`; `python -m jarn.telegram` is retained for compatibility.
+`jarn gateway`; inspect it with `jarn gateway status`. `python -m jarn.telegram`
+is retained for compatibility.
 
 ```yaml
 gateway:

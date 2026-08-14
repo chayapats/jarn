@@ -36,7 +36,7 @@ agents), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcrip
 base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists to
 `~/.jarn/config.yaml`), and per-server **MCP health** (`/mcp status`).
 
-> **Status:** this source line targets v1.0.7 General Availability. Publication is
+> **Status:** this source line targets v1.0.8 General Availability. Publication is
 > controlled by automated gates, protected UAT, and strict evidence; consult the
 > GitHub Releases, PyPI, and npm pages for the currently published version. v0.10 adds an optional
 > **single-operator Telegram gateway**: long-poll DM control, isolated per-root
@@ -257,16 +257,17 @@ v0.10 adds a single-operator, DM-only gateway for an always-on VPS. The npm bina
 includes it; Python installs need the optional extra:
 
 ```bash
-pip install 'jarn[telegram]'       # omit this line when installed through npm
-export JARN_TELEGRAM_BOT_TOKEN='123456:replace-me'
-jarn gateway
+pip install 'jarn[telegram]'       # omit for the standalone/npm distribution
+jarn gateway setup
 ```
 
-Enable `gateway.enabled`, add your numeric Telegram user id to the deny-by-default
-allowlist, and optionally allow project roots through `gateway.repos` in the
-**global** `~/.jarn/config.yaml`. See the
-[setup and systemd guide](docs/TELEGRAM_GATEWAY.md); never put `gateway:` in a
-project's `.jarn/config.yaml`.
+The wizard verifies the token with Telegram, asks you to send `/start` to the bot,
+discovers and confirms your numeric user ID, stores the token in the OS keychain
+(owner-only file fallback), updates the global config transactionally, and on Linux
+offers an owner-scoped systemd service. No token or hand-edited YAML is required.
+Use `jarn gateway status` afterward. Advanced repo allowlisting and manual service
+deployment remain documented in the [Telegram gateway guide](docs/TELEGRAM_GATEWAY.md);
+never put `gateway:` in a project's `.jarn/config.yaml`.
 
 ## Non-interactive / scripting
 
@@ -604,7 +605,7 @@ into the input. J.A.R.N. disables those flags for Textual (onboarding wizard,
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                 # 3055 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 3066 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # sanity-check your environment (add --json for machine output)

@@ -23,7 +23,7 @@ J.A.R.N. คือ terminal coding agent ที่ออกแบบในแน
 
 รันทั้งหมดใน terminal ของคุณ (Web UI อยู่ใน roadmap หลัง launch) ความสามารถเด่นได้แก่: **AGENTS.md / CLAUDE.md interop** (ทำงานร่วมกับ agent อื่นได้ทันที), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcript**, **`!` shell escape** (output ถูกส่งเข้า context ของ agent turn ถัดไปโดยอัตโนมัติ), **OS-level execution sandbox** (macOS `sandbox-exec` / Linux `bwrap`) และ **Docker container backend** (`execution.backend: docker`), **presets** (`/preset`, `jarn --preset`) ที่ตั้ง mode + sandbox พร้อมกันในคำสั่งเดียวพร้อม untrusted floor, **auto-checkpoint + `/undo` / `/redo`**, **repo map** (`/map`), **wiki knowledge base** (`/wiki`), **`/config` settings panel** (UI แบบ tab โต้ตอบได้ เซฟลง `~/.jarn/config.yaml`), และ **MCP health** ราย server (`/mcp status`)
 
-> **สถานะ:** source ชุดนี้มุ่งสู่ v1.0.7 General Availability การ publish ถูกควบคุม
+> **สถานะ:** source ชุดนี้มุ่งสู่ v1.0.8 General Availability การ publish ถูกควบคุม
 > ด้วย automated gates, protected UAT และ strict evidence; โปรดดู GitHub Releases,
 > PyPI และ npm เพื่อยืนยันรุ่นที่ publish อยู่ในปัจจุบัน
 > ตามเอกสารชุดนี้ v0.10 เพิ่ม
@@ -186,15 +186,16 @@ v0.10 เพิ่ม gateway แบบ DM-only สำหรับ operator ค�
 binary จาก npm รวมความสามารถนี้แล้ว ส่วนการติดตั้งด้วย Python ต้องเพิ่ม extra:
 
 ```bash
-pip install 'jarn[telegram]'       # ข้ามบรรทัดนี้ถ้าติดตั้งผ่าน npm
-export JARN_TELEGRAM_BOT_TOKEN='123456:replace-me'
-jarn gateway
+pip install 'jarn[telegram]'       # ข้ามบรรทัดนี้เมื่อใช้ standalone/npm distribution
+jarn gateway setup
 ```
 
-ตั้ง `gateway.enabled: true`, ใส่ Telegram user id แบบตัวเลขใน allowlist และถ้าต้องการ
-ให้สลับ repo ให้เพิ่ม root ใน `gateway.repos` ทั้งหมดต้องอยู่ใน config **global**
-`~/.jarn/config.yaml` เท่านั้น ห้ามใส่ `gateway:` ใน `.jarn/config.yaml` ของโปรเจกต์
-ดูขั้นตอนเต็มและตัวอย่าง systemd ที่ [คู่มือ Telegram gateway](docs/TELEGRAM_GATEWAY.md)
+Wizard จะตรวจ token กับ Telegram, ให้ส่ง `/start` หา bot แล้วค้นหาและยืนยัน numeric
+user ID ให้อัตโนมัติ จากนั้นเก็บ token ใน OS keychain (fallback เป็นไฟล์ owner-only),
+อัปเดต global config แบบ transactional และบน Linux จะเสนอสร้าง user systemd service
+ให้ด้วย จึงไม่ต้อง export token หรือเปิด YAML แก้เอง ใช้ `jarn gateway status` เพื่อตรวจสอบ
+ภายหลัง ส่วน repo allowlist และการ deploy ขั้นสูงดูได้ที่
+[คู่มือ Telegram gateway](docs/TELEGRAM_GATEWAY.md)
 
 ## Non-interactive / scripting (โหมด headless)
 
@@ -396,7 +397,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                 # 3055 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 3066 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)

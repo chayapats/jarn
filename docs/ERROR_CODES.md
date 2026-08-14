@@ -53,10 +53,10 @@ are not successful “ready for first prompt” states.
 | `JARN-AUTH-010` | Verified login ceremony did not complete | Follow the displayed browser/device recovery action |
 | `JARN-MODEL-001` | Selected model is unavailable, invalid, or lacks a required capability | Refresh the catalog and select an available entry; for Ollama, pull one whose `/api/show` capabilities include `tools` |
 | `JARN-MODEL-002` | A verified model catalog is unavailable | Restore credentials/network or use an honestly labelled cache |
-| `JARN-GATEWAY-001` | Telegram optional dependency is missing | Install the documented Telegram extra for this installation method |
-| `JARN-GATEWAY-002` | Gateway configuration is missing or invalid | Validate the global-only gateway configuration and retry |
-| `JARN-GATEWAY-003` | Gateway bot credential is missing/unresolvable | Store the token as a supported secret reference and retry |
-| `JARN-GATEWAY-004` | Telegram operator allowlist is invalid | Configure one or more numeric allowed user IDs |
+| `JARN-GATEWAY-001` | Telegram optional dependency is missing | Install the documented Telegram extra, then run `jarn gateway setup` |
+| `JARN-GATEWAY-002` | Gateway configuration is missing or invalid | Run `jarn gateway setup`; use `jarn config validate` if an existing config is corrupt |
+| `JARN-GATEWAY-003` | Gateway bot credential is missing, invalid, or unresolvable | Run `jarn gateway setup` and enter a current BotFather token through the hidden prompt |
+| `JARN-GATEWAY-004` | Telegram operator allowlist is invalid | Run `jarn gateway setup`, send `/start`, and confirm the discovered account |
 | `JARN-GATEWAY-005` | Gateway runtime failed/stopped unexpectedly | Inspect the redacted cause/log, correct the process/backend issue, and restart |
 | `JARN-SAFE-001` | Permission policy denied the action | Review target/scope and explicitly approve only if intended |
 | `JARN-SAFE-002` | An undeclared tool was classified fail-closed | Inspect the redacted diagnostic, then register and classify the tool before relying on it |

@@ -13,7 +13,7 @@ Subcommands:
     jarn update     check for or transactionally install an update
     jarn rollback   switch to the retained previous executable
     jarn trust      list / trust / untrust project roots
-    jarn gateway    run the Telegram gateway (requires ``jarn[telegram]``)
+    jarn gateway    set up, inspect, control, or run the Telegram gateway
     jarn --version  print version
 """
 
@@ -248,6 +248,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.epilog = """Start and common commands:
   jarn setup                       verified, resumable first-run setup
+  jarn gateway setup               verify a Telegram bot, discover your user ID,
+                                   store its token safely, and offer auto-start
   jarn                             start interactive coding in the current directory
   jarn exec "TASK" --mode ask      run one automation-safe, non-interactive turn
   jarn sessions                    list saved sessions; add --help for export/delete
@@ -600,10 +602,14 @@ Stable exit codes:
 
     p_gateway = sub.add_parser(
         "gateway",
-        help=(
-            "Run the Telegram gateway long-poll bot "
-            "(requires jarn[telegram], gateway.enabled, token, allowlist)"
-        ),
+        help=("Set up, inspect, or run the Telegram gateway"),
+    )
+    p_gateway.add_argument(
+        "gateway_action",
+        nargs="?",
+        choices=["run", "setup", "status", "start", "stop", "restart"],
+        default="run",
+        help="Action to perform (default: run)",
     )
     p_gateway.add_argument(
         "--fake-backend",
@@ -612,6 +618,41 @@ Stable exit codes:
             "Dry-run with InMemoryGatewayBackend (no daemon workers). "
             "Also set by JARN_TELEGRAM_FAKE_BACKEND=1."
         ),
+    )
+    p_gateway.add_argument(
+        "--token-stdin",
+        action="store_true",
+        help="Read the bot token from stdin (setup only; never place it in argv)",
+    )
+    p_gateway.add_argument(
+        "--allowed-user",
+        type=int,
+        action="append",
+        default=[],
+        metavar="ID",
+        help="Allow a numeric Telegram user ID (setup only; repeatable)",
+    )
+    p_gateway.add_argument(
+        "--no-service",
+        action="store_true",
+        help="Configure Telegram without offering a systemd user service",
+    )
+    p_gateway.add_argument(
+        "--yes",
+        action="store_true",
+        help="Accept setup save/service confirmations",
+    )
+    p_gateway.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace an existing Telegram bot/allowlist during setup",
+    )
+    p_gateway.add_argument(
+        "--timeout",
+        type=float,
+        default=120.0,
+        metavar="SECONDS",
+        help="Bounded wait for a new /start message during setup (default: 120)",
     )
 
     return parser
@@ -833,7 +874,16 @@ def _main(argv: list[str] | None = None) -> int:
 
     # Gateway is a long-running daemon — skip TUI key-protocol fixes.
     if args.command == "gateway":
-        return _cmd_gateway(fake_backend=bool(args.fake_backend))
+        return _cmd_gateway(
+            action=str(args.gateway_action),
+            fake_backend=bool(args.fake_backend),
+            token_stdin=bool(args.token_stdin),
+            allowed_users=list(args.allowed_user),
+            no_service=bool(args.no_service),
+            assume_yes=bool(args.yes),
+            force=bool(args.force),
+            timeout_seconds=float(args.timeout),
+        )
 
     # ChatGPT auth is a terminal/browser ceremony and does not need TUI key-protocol
     # setup. Dispatch it early like the gateway daemon.
@@ -1656,10 +1706,7 @@ def _config_provenance_payload(
 
 def _print_config_provenance(payload: dict[str, Any]) -> None:
     print("\n# Provenance")
-    print(
-        f"# Displayed values: {payload['selectedScope']} config "
-        f"({payload['selectedPath']})"
-    )
+    print(f"# Displayed values: {payload['selectedScope']} config ({payload['selectedPath']})")
     for layer in payload["runtimeLayers"]:
         print(f"# {layer['source']}: {layer['effect']}")
     print(f"# {payload['note']}")
@@ -3144,8 +3191,66 @@ def _cmd_completions(*, shell: str, parser: argparse.ArgumentParser) -> int:
     return 0
 
 
-def _cmd_gateway(*, fake_backend: bool = False) -> int:
-    """Run the Telegram gateway (long-poll bot + daemon/session backend)."""
+def _cmd_gateway(
+    *,
+    action: str = "run",
+    fake_backend: bool = False,
+    token_stdin: bool = False,
+    allowed_users: list[int] | None = None,
+    no_service: bool = False,
+    assume_yes: bool = False,
+    force: bool = False,
+    timeout_seconds: float = 120.0,
+) -> int:
+    """Set up, inspect, control, or run the Telegram gateway."""
+
+    setup_options_used = bool(
+        token_stdin
+        or allowed_users
+        or no_service
+        or assume_yes
+        or force
+        or timeout_seconds != 120.0
+    )
+    if action != "setup" and setup_options_used:
+        return _emit_cli_failure(
+            "JARN-CLI-001",
+            "Telegram setup options require the setup action.",
+            cause=f"One or more setup-only flags were used with `jarn gateway {action}`.",
+            component="CLI arguments",
+            action="Use `jarn gateway setup --help`, or remove the setup-only flags.",
+            exit_code=2,
+        )
+    if action != "run" and fake_backend:
+        return _emit_cli_failure(
+            "JARN-CLI-001",
+            "--fake-backend is available only when running the gateway.",
+            cause=f"The flag was used with `jarn gateway {action}`.",
+            component="CLI arguments",
+            action="Run `jarn gateway --fake-backend`, or remove that flag.",
+            exit_code=2,
+        )
+
+    if action == "setup":
+        from jarn.telegram.setup import run_gateway_setup
+
+        return run_gateway_setup(
+            token_stdin=token_stdin,
+            allowed_users=allowed_users,
+            no_service=no_service,
+            assume_yes=assume_yes,
+            force=force,
+            timeout_seconds=timeout_seconds,
+        )
+    if action == "status":
+        from jarn.telegram.setup import run_gateway_status
+
+        return run_gateway_status()
+    if action in {"start", "stop", "restart"}:
+        from jarn.telegram.setup import run_gateway_service_action
+
+        return run_gateway_service_action(action)
+
     from jarn.telegram.cli import run_gateway_cli
 
     return run_gateway_cli(fake_backend=fake_backend)

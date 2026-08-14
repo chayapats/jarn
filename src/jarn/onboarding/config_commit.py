@@ -271,6 +271,81 @@ def stage_setup_config(
     )
 
 
+def stage_gateway_config(
+    path: Path,
+    *,
+    token_ref: str,
+    allowed_user_ids: list[int],
+) -> StagedSetupConfig:
+    """Stage a Telegram gateway update without replacing unrelated settings.
+
+    Gateway onboarding is deliberately a layer on top of a working J.A.R.N.
+    setup.  Requiring an existing base configuration keeps the messaging wizard
+    from silently inventing provider/model choices, while the shared staged
+    commit gives it the same lock, backup, validation, atomic publish, and
+    rollback guarantees as first-time setup.
+    """
+
+    target = Path(path)
+    if target.is_symlink():
+        raise SetupConfigError(
+            f"Refusing to update configuration through a symbolic link: {target}"
+        )
+    if not target.exists():
+        raise SetupConfigError(
+            "Telegram gateway setup requires a working global configuration; "
+            "run `jarn setup` first."
+        )
+    if not target.is_file():
+        raise SetupConfigError(f"Configuration path is not a regular file: {target}")
+    clean_ids = sorted(set(allowed_user_ids))
+    if not clean_ids or any(value <= 0 for value in clean_ids):
+        raise SetupConfigError(
+            "Telegram allowed user IDs must contain one or more positive integers."
+        )
+    try:
+        source_text = target.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise SetupConfigError(f"Could not read existing configuration {target}: {exc}") from exc
+    source_mode: int | None = None
+    if os.name != "nt":
+        try:
+            source_mode = stat.S_IMODE(target.stat().st_mode)
+        except OSError:
+            source_mode = None
+
+    raw = _load_roundtrip(source_text, target)
+    try:
+        migrated = migrate_config(raw)
+        parsed_source = parse_config_model(migrated)
+        candidate = deepcopy(migrated)
+        candidate["config_version"] = CURRENT_CONFIG_VERSION
+        gateway = _mapping(candidate, "gateway")
+        telegram = _mapping(gateway, "telegram")
+        gateway["enabled"] = True
+        telegram["token"] = token_ref
+        telegram["allowed_user_ids"] = clean_ids
+        parsed = parse_config_model(candidate)
+    except (ConfigValidationError, ValueError) as exc:
+        raise SetupConfigError(
+            f"Gateway configuration candidate is invalid; the existing file was not changed: {exc}"
+        ) from exc
+
+    model = parsed_source.default_model or ""
+    return StagedSetupConfig(
+        path=target,
+        candidate=candidate,
+        candidate_text=_render(candidate, new_file=False),
+        source_text=source_text,
+        source_sha256=hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+        source_exists=True,
+        source_mode=source_mode,
+        provider=parsed.default_profile,
+        model=model,
+        permission_mode=str(parsed.permission_mode.value),
+    )
+
+
 def _timestamped_backup(path: Path, *, now: datetime | None = None) -> Path:
     stamp = (now or datetime.now(UTC)).astimezone(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     base = path.with_name(f"{path.name}.bak.{stamp}")
@@ -383,9 +458,7 @@ def rollback_setup_commit(result: SetupCommitResult) -> None:
             )
         else:
             staged.path.unlink(missing_ok=True)
-        restored = (
-            staged.path.read_bytes().decode("utf-8") if staged.source_exists else ""
-        )
+        restored = staged.path.read_bytes().decode("utf-8") if staged.source_exists else ""
         if restored != staged.source_text:
             raise SetupConfigError("Setup rollback verification failed.")
 
@@ -397,4 +470,5 @@ __all__ = [
     "commit_staged_config",
     "rollback_setup_commit",
     "stage_setup_config",
+    "stage_gateway_config",
 ]

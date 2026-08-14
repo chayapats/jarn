@@ -22,8 +22,47 @@ pip install 'jarn[telegram]'
 uv sync --extra dev --extra telegram
 ```
 
-Create the bot with Telegram's BotFather, find your numeric Telegram user id, and add
-this **only** to `~/.jarn/config.yaml`:
+Run the guided setup; do not paste the token into a command or edit YAML:
+
+```bash
+jarn gateway setup
+```
+
+The wizard performs the complete safe path:
+
+1. Prompts for the BotFather token with terminal echo disabled.
+2. Calls Telegram `getMe` to verify the exact bot and refuses an active webhook.
+3. Shows the bot link and asks you to send `/start`; the next private message is used
+   to discover your numeric user ID. Multiple senders require an explicit choice.
+4. Shows a secret-free summary and waits for confirmation before writing anything.
+5. Stores the token in the OS keychain, with an owner-only J.A.R.N. file fallback;
+   the YAML receives only a secret reference.
+6. Locks, backs up, validates, and atomically updates the global config. A failed
+   commit rolls back the newly staged credential.
+7. On Linux with a user systemd manager, offers to install and start an owner-scoped
+   service. It never puts the token in the unit or an environment file.
+
+Inspect or control that service without opening config files:
+
+```bash
+jarn gateway status
+jarn gateway start
+jarn gateway stop
+jarn gateway restart
+```
+
+For SSH/automation, send the token over stdin rather than argv and supply a known
+numeric ID explicitly:
+
+```bash
+printf '%s\n' "$JARN_TELEGRAM_BOT_TOKEN" | \
+  jarn gateway setup --token-stdin --allowed-user 123456789 --yes
+```
+
+### Advanced manual configuration
+
+The wizard is the supported default. If an operator deliberately manages secrets
+and services externally, the equivalent global-only configuration is:
 
 ```yaml
 gateway:
@@ -36,7 +75,7 @@ gateway:
       name: myapp
 ```
 
-Then export the secret and start the daemon:
+Then export the referenced secret and start the daemon:
 
 ```bash
 export JARN_TELEGRAM_BOT_TOKEN='123456:replace-me'
@@ -85,9 +124,11 @@ Keep `~/.jarn` private (`0700`); Jarn enforces this mode where POSIX permissions
 available. On a shared host, also audit ACLs and run the service under a dedicated user.
 See [../SECURITY.md](../SECURITY.md#telegram-gateway-vps) for the complete boundary.
 
-## systemd unit
+## Advanced systemd system unit
 
-Install as a dedicated user (example: `jarn`). Put the token in an
+The setup wizard normally creates a token-free **user** service automatically. For
+central multi-user VPS administration, install as a dedicated system user (example:
+`jarn`). Put the token in an
 `EnvironmentFile=` with `0600` permissions instead of committing it or embedding it
 in the unit.
 
