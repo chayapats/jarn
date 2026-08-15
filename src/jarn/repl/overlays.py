@@ -10,13 +10,12 @@ from typing import TypeVar, cast
 
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import HTML
-from rich.markup import escape as _rich_escape
 
 from jarn.agent.session import ApprovalReply, ApprovalRequest
 from jarn.permissions import RememberScope
 from jarn.repl import turn as repl_turn
 from jarn.repl.turn import _editable_field
-from jarn.tui import grammar, palette
+from jarn.tui import grammar, layout, palette
 
 _MenuT = TypeVar("_MenuT")
 
@@ -105,9 +104,11 @@ class OverlayMixin:
         # ask renders in the faint region above the input, which is easy to miss;
         # the user must clearly see this is a y/N decision.
         self.console.print(
-            f"[{palette.C_ERROR}]{grammar.GLYPH_WARN}  Entering YOLO mode[/{palette.C_ERROR}] "
-            f"[{palette.C_DIM}]— no approval prompts; the danger-guard still blocks "
-            f"catastrophic actions.[/{palette.C_DIM}]"
+            layout.err(f"{grammar.GLYPH_WARN}  Entering YOLO mode")
+            + " "
+            + layout.muted(
+                "— no approval prompts; the danger-guard still blocks catastrophic actions."
+            )
         )
         answer = await self._ask("Type 'y' to confirm yolo, anything else to cancel [y/N]: ")
         return answer.strip().lower() in ("y", "yes")
@@ -139,7 +140,7 @@ class OverlayMixin:
             confirm=self._confirm_yolo,
         )
         if "cancelled" in result.text.lower() or "requires confirmation" in result.text.lower():
-            self.console.print(f"[{palette.C_DIM}]{result.text}[/{palette.C_DIM}]")
+            self.console.print(layout.muted(result.text))
             return
         new = self.controller.config.permission_mode.value
         self._armed = False
@@ -239,20 +240,17 @@ class OverlayMixin:
         non-interactive — the in-graph summarization middleware handles it; see
         ``build_runtime``.)"""
         c = self.console
-        c.print(f"[{palette.C_DIM}]compacting…[/{palette.C_DIM}]")
+        c.print(layout.muted("compacting…"))
         try:
             summary = await self.controller.compact_preview()
         except Exception as exc:  # noqa: BLE001
-            c.print(
-                f"[{palette.C_ERROR}]compact failed: {_rich_escape(str(exc))}"
-                f"[/{palette.C_ERROR}]"
-            )
+            c.print(layout.err(f"compact failed: {exc}"))
             return
         if not summary:
             c.print("Nothing to compact yet.")
             return
-        c.print(f"[{palette.C_NOTICE}]Proposed compaction:[/{palette.C_NOTICE}]")
-        c.print(_rich_escape(summary))
+        c.print(layout.notice("Proposed compaction:"))
+        c.print(layout.escape(summary))
         answer = (await self._ask("Apply this compaction? [y/N/edit] ")).strip().lower()
         if answer in ("e", "edit"):
             from prompt_toolkit.application import run_in_terminal
@@ -261,21 +259,18 @@ class OverlayMixin:
                 lambda: repl_turn._edit_text_in_editor(summary, suffix=".md")
             )
             if edited is None:  # editor aborted — keep the original context intact
-                c.print(f"[{palette.C_DIM}]Compaction cancelled.[/{palette.C_DIM}]")
+                c.print(layout.muted("Compaction cancelled."))
                 return
             summary = edited
         elif answer not in ("y", "yes"):
-            c.print(f"[{palette.C_DIM}]Compaction cancelled.[/{palette.C_DIM}]")
+            c.print(layout.muted("Compaction cancelled."))
             return
         try:
             await self.controller.compact_apply(summary)
         except Exception as exc:  # noqa: BLE001
-            c.print(
-                f"[{palette.C_ERROR}]compact failed: {_rich_escape(str(exc))}"
-                f"[/{palette.C_ERROR}]"
-            )
+            c.print(layout.err(f"compact failed: {exc}"))
             return
-        c.print(f"[{palette.C_NOTICE}]Compacted.[/{palette.C_NOTICE}]")
+        c.print(layout.notice("Compacted."))
 
     def _config_render(self):
         """FormattedTextControl source for the settings panel."""

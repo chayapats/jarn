@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from rich.markup import escape as _escape_markup
-
 from jarn.commands.help import usage_error
 from jarn.controller.core import CommandResult
 from jarn.tui import layout
@@ -26,7 +24,7 @@ def cmd_sessions(ctrl: Controller, args: str) -> CommandResult:
         model = f"  {layout.muted(s.model)}" if s.model else ""
         state = "complete" if s.state == "complete" else "interrupted"
         lines.append(
-            f"{marker}{s.updated_human}  {_escape_markup(s.title)}  "
+            f"{marker}{s.updated_human}  {layout.escape(s.title)}  "
             f"{layout.muted(f'{s.thread_id[:8]} · {state}')}{project}{model}"
         )
     return CommandResult("\n".join(lines))
@@ -85,7 +83,7 @@ def format_undo_preview(preview: RestorePreview) -> str:
     ]
     if preview.files:
         lines.append(layout.muted("Affected changes:"))
-        lines.extend(f"  {_escape_markup(line)}" for line in preview.files)
+        lines.extend(f"  {layout.escape(line)}" for line in preview.files)
     else:
         lines.append(layout.muted("Affected changes: none (the working tree already matches)."))
     return "\n".join(lines)

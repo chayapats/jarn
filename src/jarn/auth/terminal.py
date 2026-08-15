@@ -18,8 +18,6 @@ from contextlib import suppress
 from typing import TextIO
 
 from rich.console import Console
-from rich.markup import escape
-
 from jarn.auth.models import AuthStatus, LoginChallenge, LoginMethod
 from jarn.auth.service import CodexAuthService
 from jarn.tui import layout
@@ -95,10 +93,9 @@ def render_login_challenge(
         )
         return
 
-    url = escape(challenge.url)
     if challenge.method is LoginMethod.DEVICE_CODE:
         console.print("\n" + layout.accent("Sign in to ChatGPT", bold=True))
-        console.print(f"1. Open this link on any device:\n   [link={url}]{url}[/link]")
+        console.print(f"1. Open this link on any device:\n   {layout.link(challenge.url)}")
         if challenge.user_code:
             console.print(
                 f"2. Enter this one-time code: {layout.warn(challenge.user_code)}"
@@ -107,7 +104,7 @@ def render_login_challenge(
         # Always print the fallback URL.  Browser launch is best effort and can
         # silently fail in minimal desktop environments.
         console.print("\n" + layout.accent("Sign in to ChatGPT", bold=True))
-        console.print(f"Open this link in your browser:\n  [link={url}]{url}[/link]")
+        console.print(f"Open this link in your browser:\n  {layout.link(challenge.url)}")
         if open_browser:
             with suppress(OSError, webbrowser.Error):
                 webbrowser.open(challenge.url)

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from rich.markup import escape as _escape_markup
-
 from jarn.commands.help import usage_error
 from jarn.controller.core import CommandResult
 from jarn.extensibility.mcp import load_mcp_tools, run_blocking
@@ -53,7 +51,7 @@ def cmd_status(ctrl: Controller, args: str) -> CommandResult:
         context_text = "not measured"
     import time as _time
 
-    elapsed = layout.escape("")
+    elapsed = ""
     try:
         elapsed = grammar.format_duration(_time.monotonic() - ctrl.session_started_at)
     except Exception:  # pragma: no cover - missing on very old controllers
@@ -133,14 +131,14 @@ def cmd_cost(ctrl, args: str) -> CommandResult:
         )
     for model, usage in t.per_model.items():
         lines.append(
-            f"  {_escape_markup(model)}: ${usage.cost_usd:.4f} · {usage.total_tokens:,} tok"
+            f"  {layout.escape(model)}: ${usage.cost_usd:.4f} · {usage.total_tokens:,} tok"
         )
     top = t.top_tools()
     if top:
         lines.append(layout.muted("top burners (by tool)"))
         for tool, usage in top:
             lines.append(
-                f"  {_escape_markup(tool)}: ${usage.cost_usd:.4f} · "
+                f"  {layout.escape(tool)}: ${usage.cost_usd:.4f} · "
                 f"{usage.total_tokens:,} tok · {usage.calls} calls"
             )
     lines.extend(_context_injection_lines(ctrl))
@@ -291,7 +289,7 @@ def _append_mcp_errors(lines: list[str], errors: dict) -> None:
     """Append one dimmed line per per-server discovery error (isolation aware)."""
     for name in sorted(errors):
         lines.append(
-            f"  {layout.err(grammar.GLYPH_FAIL)} {_escape_markup(name)}: "
+            f"  {layout.err(grammar.GLYPH_FAIL)} {layout.escape(name)}: "
             f"{layout.muted(errors[name])}"
         )
 
@@ -330,7 +328,7 @@ def _mcp_prompts(ctrl) -> CommandResult:
                 if cmd.argument_names
                 else ""
             )
-            desc = f" — {_escape_markup(cmd.description)}" if cmd.description else ""
+            desc = f" — {layout.escape(cmd.description)}" if cmd.description else ""
             lines.append(f"  {layout.accent('/' + name)}{args}{desc}")
     else:
         lines.append(layout.muted("No prompts available."))
@@ -370,7 +368,7 @@ def _mcp_prompt(ctrl, rest: list[str]) -> CommandResult:
     if not text.strip():
         return CommandResult(f"Prompt {key} returned no text.")
     note = layout.muted(f"{key} — invoke /{key} to inject this into a turn")
-    return CommandResult(f"{note}\n{_escape_markup(text)}")
+    return CommandResult(f"{note}\n{layout.escape(text)}")
 
 
 def _mcp_resources(ctrl) -> CommandResult:
@@ -385,11 +383,11 @@ def _mcp_resources(ctrl) -> CommandResult:
     if res.resources:
         lines.append(layout.muted("read with /mcp read <server> <uri>"))
         for r in res.resources:
-            label = _escape_markup(r.name or r.description or "")
+            label = layout.escape(r.name or r.description or "")
             mime = f" {layout.muted(r.mime_type)}" if r.mime_type else ""
             tail = f" — {label}" if label else ""
             lines.append(
-                f"  {layout.accent(r.server)} {_escape_markup(r.uri)}{mime}{tail}"
+                f"  {layout.accent(r.server)} {layout.escape(r.uri)}{mime}{tail}"
             )
     else:
         lines.append(layout.muted("No resources available."))
@@ -414,7 +412,7 @@ def _mcp_read(ctrl, rest: list[str]) -> CommandResult:
     if not content.strip():
         return CommandResult(f"Resource {uri} on {server} returned no content.")
     header = f"{layout.title(server)} {layout.muted(uri)}"
-    return CommandResult(f"{header}\n{_escape_markup(content)}")
+    return CommandResult(f"{header}\n{layout.escape(content)}")
 
 
 def cmd_telemetry(ctrl, args: str) -> CommandResult:
@@ -460,7 +458,7 @@ def cmd_ps(ctrl, args: str) -> CommandResult:
         state = "running" if p["running"] else f"exited ({p['exit_code']})"
         lines.append(
             f"  {layout.accent(str(p['id']))} {layout.muted(state)} "
-            f"{_escape_markup(p['command'])}"
+            f"{layout.escape(p['command'])}"
         )
     lines.append(layout.muted("/ps kill <id> to stop one"))
     return CommandResult("\n".join(lines))
@@ -484,7 +482,7 @@ def cmd_checkpoints(ctrl, args: str) -> CommandResult:
     lines = [layout.heading("Checkpoints", "most recent first")]
     for i, entry in enumerate(entries):
         marker = "→ " if i == 0 else "  "
-        lines.append(f"{marker}{layout.muted(entry.sha[:12])} {_escape_markup(entry.label)}")
+        lines.append(f"{marker}{layout.muted(entry.sha[:12])} {layout.escape(entry.label)}")
     return CommandResult("\n".join(lines))
 
 

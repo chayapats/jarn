@@ -109,6 +109,19 @@ def _format_cli_commands(parser: argparse.ArgumentParser) -> str:
     return "\n".join(lines).rstrip()
 
 
+def _print_plain_fields(
+    title: str,
+    rows: list[tuple[str, str]],
+    *,
+    indent: str = "  ",
+) -> None:
+    """Human CLI page: ``Label: value`` rows in the layout plain dialect."""
+    if title:
+        print(layout.title(title, dialect="plain"))
+    for label, value in rows:
+        print(f"{indent}{layout.field(label, value, dialect='plain')}")
+
+
 def _auth_timeout_arg(value: str) -> float:
     """Argparse validator kept local so ``jarn --help`` stays dependency-light."""
 
@@ -355,8 +368,21 @@ Stable exit codes:
     # ``--print`` flags remain supported; both routes dispatch through exactly
     # the same headless implementation and output contract.
     p_exec = sub.add_parser("exec", help="Run one non-interactive agent turn")
-    p_exec.add_argument("headless_prompt", metavar="PROMPT", help="Task text, or '-' for stdin")
-    p_exec.add_argument(
+    exec_input = p_exec.add_argument_group("Input")
+    exec_input.add_argument(
+        "headless_prompt", metavar="PROMPT", help="Task text, or '-' for stdin"
+    )
+    exec_input.add_argument("--cwd", dest="headless_cwd", metavar="PATH")
+    exec_input.add_argument("--resume-session", dest="headless_resume_session", metavar="THREAD")
+    exec_input.add_argument(
+        "--add-dir",
+        dest="add_dir",
+        action="append",
+        metavar="DIR",
+        help="Add a directory to this run's write scope (repeatable)",
+    )
+    exec_output = p_exec.add_argument_group("Output")
+    exec_output.add_argument(
         "--output-format",
         dest="headless_output_format",
         choices=["text", "json", "stream-json"],
@@ -364,34 +390,26 @@ Stable exit codes:
         metavar="FORMAT",
         help="Output format: text, one JSON result, or streaming NDJSON",
     )
-    p_exec.add_argument(
+    exec_output.add_argument(
         "--json",
         action="store_true",
         help="Alias for --output-format json",
     )
-    p_exec.add_argument("--model", dest="headless_model", metavar="REF")
-    p_exec.add_argument(
+    exec_output.add_argument("--output-schema", dest="headless_output_schema", metavar="FILE")
+    exec_run = p_exec.add_argument_group("Run")
+    exec_run.add_argument("--model", dest="headless_model", metavar="REF")
+    exec_run.add_argument(
         "--mode",
         dest="headless_permission_mode",
         choices=["plan", "ask", "auto-edit", "yolo"],
         metavar="MODE",
     )
-    p_exec.add_argument("--preset", dest="preset", metavar="NAME")
-    p_exec.add_argument("--max-turns", dest="headless_max_turns", type=int, default=1)
-    p_exec.add_argument("--cwd", dest="headless_cwd", metavar="PATH")
-    p_exec.add_argument(
+    exec_run.add_argument("--preset", dest="preset", metavar="NAME")
+    exec_run.add_argument("--max-turns", dest="headless_max_turns", type=int, default=1)
+    exec_run.add_argument(
         "--ignore-project-config",
         dest="headless_ignore_project_config",
         action="store_true",
-    )
-    p_exec.add_argument("--resume-session", dest="headless_resume_session", metavar="THREAD")
-    p_exec.add_argument("--output-schema", dest="headless_output_schema", metavar="FILE")
-    p_exec.add_argument(
-        "--add-dir",
-        dest="add_dir",
-        action="append",
-        metavar="DIR",
-        help="Add a directory to this run's write scope (repeatable)",
     )
 
     p_setup = sub.add_parser("setup", help="Run the onboarding wizard")
@@ -403,41 +421,46 @@ Stable exit codes:
     p_init = sub.add_parser("init", help="Create a JARN.md project context file")
     p_init.add_argument("--force", action="store_true", help="Overwrite existing JARN.md")
     p_doctor = sub.add_parser("doctor", help="Diagnose configuration and providers")
-    p_doctor.add_argument("--json", action="store_true", help="Emit diagnostics as JSON")
-    p_doctor.add_argument(
+    doctor_repair = p_doctor.add_argument_group("Repair")
+    doctor_repair.add_argument(
         "--fix",
         action="store_true",
         help="Apply the allowlisted repair plan (backups and rollback are automatic)",
     )
-    p_doctor.add_argument(
+    doctor_repair.add_argument(
         "--dry-run",
         action="store_true",
         help="Preview the repair plan without changing files (implies --fix)",
     )
-    p_doctor.add_argument(
+    doctor_checks = p_doctor.add_argument_group("Checks")
+    doctor_checks.add_argument(
+        "--network",
+        action="store_true",
+        help="Opt in to bounded provider reachability checks (doctor is offline by default)",
+    )
+    doctor_output = p_doctor.add_argument_group("Output")
+    doctor_output.add_argument("--json", action="store_true", help="Emit diagnostics as JSON")
+    doctor_output.add_argument(
         "--report",
         nargs="?",
         const="jarn-support-report.json",
         metavar="FILE",
         help="Write a privacy-scanned support report (default: ./jarn-support-report.json)",
     )
-    p_doctor.add_argument(
-        "--network",
-        action="store_true",
-        help="Opt in to bounded provider reachability checks (doctor is offline by default)",
-    )
 
     p_config = sub.add_parser("config", help="Inspect or safely manage configuration")
     config_actions = p_config.add_subparsers(dest="config_action", required=True)
 
     def add_config_scope(command: argparse.ArgumentParser, *, json_output: bool = True) -> None:
-        command.add_argument(
+        scope = command.add_argument_group("Scope")
+        scope.add_argument(
             "--project",
             action="store_true",
             help="Use the current project's .jarn/config.yaml instead of the global file",
         )
         if json_output:
-            command.add_argument("--json", action="store_true", help="Emit stable JSON")
+            output = command.add_argument_group("Output")
+            output.add_argument("--json", action="store_true", help="Emit stable JSON")
 
     p_config_show = config_actions.add_parser("show", help="Show redacted configuration YAML")
     add_config_scope(p_config_show)
@@ -460,7 +483,8 @@ Stable exit codes:
         "reset", help="Back up and replace configuration with the shipped template"
     )
     add_config_scope(p_config_reset)
-    p_config_reset.add_argument(
+    reset_confirm = p_config_reset.add_argument_group("Confirm")
+    reset_confirm.add_argument(
         "--yes", action="store_true", help="Confirm replacement without prompting"
     )
 
@@ -472,23 +496,27 @@ Stable exit codes:
         ("off", "Opt out without deleting existing local data"),
     ):
         telemetry_parser = telemetry_actions.add_parser(telemetry_action, help=telemetry_help)
-        telemetry_parser.add_argument("--json", action="store_true", help="Emit stable JSON")
+        telemetry_out = telemetry_parser.add_argument_group("Output")
+        telemetry_out.add_argument("--json", action="store_true", help="Emit stable JSON")
 
     p_update = sub.add_parser("update", help="Check for or transactionally install an update")
-    p_update.add_argument("--check", action="store_true", help="Check only; do not install")
-    p_update.add_argument("--json", action="store_true", help="Emit stable JSON")
-    p_update.add_argument(
+    update_release = p_update.add_argument_group("Release")
+    update_release.add_argument(
         "--channel",
         choices=["stable", "beta"],
         default="stable",
         help="Release channel (default: stable)",
     )
-    p_update.add_argument(
-        "--dry-run", action="store_true", help="Download and preview the installer plan only"
-    )
-    p_update.add_argument(
+    update_release.add_argument(
         "--version", dest="update_version", metavar="VERSION", help="Install this exact version"
     )
+    update_mode = p_update.add_argument_group("Mode")
+    update_mode.add_argument("--check", action="store_true", help="Check only; do not install")
+    update_mode.add_argument(
+        "--dry-run", action="store_true", help="Download and preview the installer plan only"
+    )
+    update_output = p_update.add_argument_group("Output")
+    update_output.add_argument("--json", action="store_true", help="Emit stable JSON")
 
     p_rollback = sub.add_parser("rollback", help="Activate the retained previous version")
     p_rollback.add_argument("--json", action="store_true", help="Emit stable JSON")
@@ -501,9 +529,11 @@ Stable exit codes:
         default="list",
     )
     p_sessions.add_argument("thread_id", nargs="?", metavar="THREAD")
-    p_sessions.add_argument("--output", metavar="FILE", help="Export destination")
-    p_sessions.add_argument("--json", action="store_true", help="Emit a JSON session list")
-    p_sessions.add_argument(
+    sessions_output = p_sessions.add_argument_group("Output")
+    sessions_output.add_argument("--output", metavar="FILE", help="Export destination")
+    sessions_output.add_argument("--json", action="store_true", help="Emit a JSON session list")
+    sessions_confirm = p_sessions.add_argument_group("Confirm")
+    sessions_confirm.add_argument(
         "--yes", action="store_true", help="Confirm deletion without an interactive prompt"
     )
     p_keys = sub.add_parser(
@@ -544,7 +574,8 @@ Stable exit codes:
         actions = parent.add_subparsers(dest=dest, required=True)
 
         def add_timeout(command: argparse.ArgumentParser) -> None:
-            command.add_argument(
+            wait = command.add_argument_group("Wait")
+            wait.add_argument(
                 "--timeout",
                 type=_auth_timeout_arg,
                 metavar="SECONDS",
@@ -556,40 +587,48 @@ Stable exit codes:
 
         login = actions.add_parser("login", help="Sign in with your ChatGPT subscription")
         add_timeout(login)
-        method = login.add_mutually_exclusive_group()
-        method.add_argument(
+        method = login.add_argument_group("Method")
+        method_choice = method.add_mutually_exclusive_group()
+        method_choice.add_argument(
             "--device",
             action="store_true",
             help="Use a device code (best for SSH/headless hosts; selected automatically there)",
         )
-        method.add_argument(
+        method_choice.add_argument(
             "--browser",
             action="store_true",
             help="Force browser/loopback login on this host",
         )
-        login.add_argument("--json", action="store_true", help="Emit JSONL challenge + status")
-        login.add_argument(
+        login_output = login.add_argument_group("Output")
+        login_output.add_argument("--json", action="store_true", help="Emit JSONL challenge + status")
+        login_confirm = login.add_argument_group("Confirm")
+        login_confirm.add_argument(
             "--yes",
             action="store_true",
             help="Install/update the official standalone Codex dependency without prompting",
         )
         status = actions.add_parser("status", help="Verify auth mode, account, and dependency")
         add_timeout(status)
-        status.add_argument("--json", action="store_true", help="Emit the stable JSON status")
-        status.add_argument(
+        status_output = status.add_argument_group("Output")
+        status_output.add_argument("--json", action="store_true", help="Emit the stable JSON status")
+        status_refresh = status.add_argument_group("Refresh")
+        status_refresh.add_argument(
             "--refresh",
             action="store_true",
             help="Force Codex to refresh the managed ChatGPT token",
         )
         logout = actions.add_parser("logout", help="Remove only Codex-managed credentials")
         add_timeout(logout)
-        logout.add_argument("--json", action="store_true", help="Emit the stable JSON status")
+        logout_output = logout.add_argument_group("Output")
+        logout_output.add_argument("--json", action="store_true", help="Emit the stable JSON status")
         repair = actions.add_parser(
             "repair", help="Recheck the Codex dependency and refresh ChatGPT auth"
         )
         add_timeout(repair)
-        repair.add_argument("--json", action="store_true", help="Emit the stable JSON status")
-        repair.add_argument(
+        repair_output = repair.add_argument_group("Output")
+        repair_output.add_argument("--json", action="store_true", help="Emit the stable JSON status")
+        repair_confirm = repair.add_argument_group("Confirm")
+        repair_confirm.add_argument(
             "--yes",
             action="store_true",
             help="Install/update the official standalone Codex dependency without prompting",
@@ -670,7 +709,8 @@ Stable exit codes:
         default="run",
         help="Action to perform (default: run)",
     )
-    p_gateway.add_argument(
+    gateway_run = p_gateway.add_argument_group("Run")
+    gateway_run.add_argument(
         "--fake-backend",
         action="store_true",
         help=(
@@ -678,12 +718,13 @@ Stable exit codes:
             "Also set by JARN_TELEGRAM_FAKE_BACKEND=1."
         ),
     )
-    p_gateway.add_argument(
+    gateway_setup = p_gateway.add_argument_group("Setup")
+    gateway_setup.add_argument(
         "--token-stdin",
         action="store_true",
         help="Read the bot token from stdin (setup only; never place it in argv)",
     )
-    p_gateway.add_argument(
+    gateway_setup.add_argument(
         "--allowed-user",
         type=int,
         action="append",
@@ -691,27 +732,28 @@ Stable exit codes:
         metavar="ID",
         help="Allow a numeric Telegram user ID (setup only; repeatable)",
     )
-    p_gateway.add_argument(
+    gateway_setup.add_argument(
         "--no-service",
         action="store_true",
         help="Configure Telegram without offering a systemd user service",
     )
-    p_gateway.add_argument(
-        "--yes",
-        action="store_true",
-        help="Accept setup save/service confirmations",
-    )
-    p_gateway.add_argument(
-        "--force",
-        action="store_true",
-        help="Replace an existing Telegram bot/allowlist during setup",
-    )
-    p_gateway.add_argument(
+    gateway_setup.add_argument(
         "--timeout",
         type=float,
         default=120.0,
         metavar="SECONDS",
         help="Bounded wait for a new /start message during setup (default: 120)",
+    )
+    gateway_setup.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace an existing Telegram bot/allowlist during setup",
+    )
+    gateway_confirm = p_gateway.add_argument_group("Confirm")
+    gateway_confirm.add_argument(
+        "--yes",
+        action="store_true",
+        help="Accept setup save/service confirmations",
     )
 
     return parser
@@ -1651,15 +1693,15 @@ def _config_reset_preview(
 
 
 def _print_config_reset_preview(preview: dict[str, Any]) -> None:
-    print("Configuration reset preview:")
-    print(f"  Target: {preview['target']} ({preview['scope']})")
-    print(f"  Operation: {preview['operation']} default template")
-    for category in preview["replacedCategories"]:
-        print(f"  Replace: {category}")
-    for category in preview["preservedCategories"]:
-        print(f"  Preserve: {category}")
+    rows: list[tuple[str, str]] = [
+        ("Target", f"{preview['target']} ({preview['scope']})"),
+        ("Operation", f"{preview['operation']} default template"),
+    ]
+    rows.extend(("Replace", category) for category in preview["replacedCategories"])
+    rows.extend(("Preserve", category) for category in preview["preservedCategories"])
     if preview["backup"]:
-        print("  Recovery: create a byte-for-byte backup before activation")
+        rows.append(("Recovery", "create a byte-for-byte backup before activation"))
+    _print_plain_fields("Configuration reset preview:", rows)
 
 
 def _config_diagnostic_payload(path: Path) -> dict[str, Any]:
@@ -2171,9 +2213,21 @@ def _cmd_telemetry(*, action: str, as_json: bool = False) -> int:
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         else:
             state = "enabled" if enabled else "disabled"
-            print(f"Telemetry: {state} (local only; no network upload).")
-            print(f"Sink: {summary['path']}")
-            print(f"Events: {summary['valid_event_count']} valid; health: {summary['health']}")
+            _print_plain_fields(
+                "",
+                [
+                    (
+                        "Telemetry",
+                        f"{state} (local only; no network upload).",
+                    ),
+                    ("Sink", str(summary["path"])),
+                    (
+                        "Events",
+                        f"{summary['valid_event_count']} valid; health: {summary['health']}",
+                    ),
+                ],
+                indent="",
+            )
             if failure is not None:
                 print(failure.render(), file=sys.stderr)
             elif warning is not None:

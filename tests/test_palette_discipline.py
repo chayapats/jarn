@@ -10,6 +10,8 @@ SRC = REPO / "src" / "jarn"
 
 _ALLOW_COLOR = {"palette.py"}
 _ALLOW_BOLD = {"palette.py", "layout.py"}
+_ALLOW_RICH_ESCAPE = {"layout.py"}
+_ALLOW_PALETTE_TAGS = {"layout.py"}
 
 _NAMED = re.compile(
     r"\[(?:/)?(?:(?:bold|b)\s+)?(?:green|red|yellow|cyan|blue|magenta)\b"
@@ -22,6 +24,8 @@ _HEX = re.compile(
     re.IGNORECASE,
 )
 _BOLD = re.compile(r"\[(?:/)?(?:bold|b)(?:\s|\])")
+_PALETTE_TAG = re.compile(r"\[\{?(?:palette|_p)\.")
+_RICH_ESCAPE_IMPORT = re.compile(r"from rich\.markup import escape")
 
 
 def test_no_named_rich_colors_or_hardcoded_brand_hex_outside_palette() -> None:
@@ -35,6 +39,10 @@ def test_no_named_rich_colors_or_hardcoded_brand_hex_outside_palette() -> None:
             if path.name not in _ALLOW_COLOR and (_NAMED.search(line) or _HEX.search(line)):
                 offenders.append(f"{rel}:{i}:{line.strip()}")
             if path.name not in _ALLOW_BOLD and _BOLD.search(line):
+                offenders.append(f"{rel}:{i}:{line.strip()}")
+            if path.name not in _ALLOW_PALETTE_TAGS and _PALETTE_TAG.search(line):
+                offenders.append(f"{rel}:{i}:{line.strip()}")
+            if path.name not in _ALLOW_RICH_ESCAPE and _RICH_ESCAPE_IMPORT.search(line):
                 offenders.append(f"{rel}:{i}:{line.strip()}")
     assert not offenders, "Color/markup SSOT leak — use jarn.tui.palette / layout:\n" + "\n".join(
         offenders

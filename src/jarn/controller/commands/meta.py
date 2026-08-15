@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from rich.markup import escape as _escape_markup
-
 from jarn.commands.help import format_help, format_help_detail, usage_error
 from jarn.controller.core import CommandResult
 from jarn.extensibility.skills import find_skill, render_skill_invocation
@@ -104,6 +102,6 @@ def cmd_skills(ctrl: Controller, args: str) -> CommandResult:
         trig = "manual" if s.is_manual else "auto"
         lines.append(
             f"  {layout.accent(s.name)} "
-            f"({layout.muted(f'{trig}, {s.scope}')}) — {_escape_markup(s.description)}"
+            f"({layout.muted(f'{trig}, {s.scope}')}) — {layout.escape(s.description)}"
         )
     return CommandResult("\n".join(lines))

@@ -566,10 +566,9 @@ def parse_slash_line(text: str) -> tuple[str, str] | None:
     return name, tail.strip()
 
 
-#: Read-only (or session-display) commands the Telegram worker runs locally —
-#: same ``handle_command`` pages as the REPL, rendered via layout HTML at the
-#: outbox. Mutating / picker / REPL-only names stay out of this set.
-GATEWAY_LOCAL_COMMANDS = frozenset(
+#: Display pages the Telegram worker runs locally via ``handle_command``.
+#: Read-only catalog pages — never mutate config, memory, or sandbox.
+GATEWAY_READONLY_COMMANDS = frozenset(
     {
         "status",
         "cost",
@@ -578,23 +577,24 @@ GATEWAY_LOCAL_COMMANDS = frozenset(
         "tools",
         "permissions",
         "mcp",
-        "memory",
         "sessions",
         "telemetry",
         "ps",
         "checkpoints",
         "modules",
         "doctor",
-        "verbose",
-        "focus",
-        "title",
         "skills",
         "help",
-        "sandbox",
-        "preset",
-        "config",
     }
 )
+
+#: Session chrome that does not write YAML unless the user later ``/config set``.
+GATEWAY_SESSION_COMMANDS = frozenset({"verbose", "focus", "title"})
+
+#: Union consumed by the gateway worker. Mutating names (config/preset/memory/
+#: sandbox and picker-only commands) stay out so Telegram cannot change the host
+#: through a local slash shortcut.
+GATEWAY_LOCAL_COMMANDS = GATEWAY_READONLY_COMMANDS | GATEWAY_SESSION_COMMANDS
 
 
 def is_gateway_local_command(name: str) -> bool:

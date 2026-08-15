@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, cast
 
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.markup import escape as _rich_escape
 
 from jarn.agent.session import ApprovalReply, ApprovalRequest, Event, EventKind
 from jarn.agent.turn_runner import run_agent_turn
@@ -24,7 +23,7 @@ from jarn.config.schema import PermissionMode
 from jarn.permissions import ActionKind, RememberScope
 from jarn.repl.auth_errors import _friendly_auth_error, _provider_hint
 from jarn.repl_renderer import TurnRenderer
-from jarn.tui import grammar, layout, palette
+from jarn.tui import grammar, layout
 from jarn.tui.controller import Controller
 from jarn.tui.notify import notify
 from jarn.util.process_env import external_command_env
@@ -110,8 +109,9 @@ async def _run_turn(
             await controller.ensure_runtime()
         except Exception as exc:  # noqa: BLE001  (CancelledError is BaseException → the outer handler)
             console.print(
-                f"[{palette.C_ERROR}]agent not ready: {_rich_escape(str(exc))}[/{palette.C_ERROR}]  "
-                f"[{palette.C_DIM}]· /help or jarn setup[/{palette.C_DIM}]"
+                layout.err(f"agent not ready: {exc}")
+                + "  "
+                + layout.muted("· /help or jarn setup")
             )
             return []
 
@@ -124,18 +124,18 @@ async def _run_turn(
             and controller.health in ("degraded", "error")
         ):
             controller.health_notice_shown = True
-            _warn_color, _glyph = (
-                (palette.C_ERROR, grammar.GLYPH_FAIL) if controller.health == "error" else (palette.C_WARN, grammar.GLYPH_WARN)
-            )
-            _doctor_hint = (
-                f" [{palette.C_DIM}]— run /doctor[/{palette.C_DIM}]"
-                if controller.health == "error"
-                else ""
-            )
-            console.print(
-                f"[{_warn_color}]{_glyph} {_rich_escape(controller.last_error)}[/{_warn_color}]{_doctor_hint}",
-                highlight=False,
-            )
+            if controller.health == "error":
+                console.print(
+                    layout.err(f"{grammar.GLYPH_FAIL} {controller.last_error}")
+                    + " "
+                    + layout.muted("— run /doctor"),
+                    highlight=False,
+                )
+            else:
+                console.print(
+                    layout.warn(f"{grammar.GLYPH_WARN} {controller.last_error}"),
+                    highlight=False,
+                )
 
         if not pending_only:
             controller.record_session_title(text, when=time.time())
@@ -201,24 +201,20 @@ async def _run_turn(
                 # only render the banner when a sink was wired (interactive REPL).
                 if queue_sink is not None:
                     renderer.on_notice(
-                        f"[{palette.C_DIM}]diagnostics: errors in edited files "
-                        f"— auto-fix round queued[/{palette.C_DIM}]"
+                        layout.muted("diagnostics: errors in edited files — auto-fix round queued")
                     )
             elif event.kind is EventKind.NOTICE and event.data.get("steer"):
                 # Mid-turn steering (T-4-6): mark where the steer landed in
                 # scrollback so the transcript shows it interleaved at its true
                 # position, distinct from a queued (» queued) or normal (›) line.
-                renderer.on_notice(
-                    f"[{palette.C_DIM}]{_rich_escape(event.text)}[/{palette.C_DIM}]"
-                )
+                renderer.on_notice(layout.muted(event.text))
             elif event.kind is EventKind.NOTICE and event.data.get("diagnostics"):
                 # Diagnostics suggest-mode NOTICE: plain notice listing findings.
                 d = event.data["diagnostics"]
-                body = _rich_escape(str(d.get("text", "")))
                 renderer.on_notice(
-                    f"[{palette.C_NOTICE}]diagnostics: {d.get('count', 0)} "
-                    f"issue(s) in edited files[/{palette.C_NOTICE}]\n"
-                    f"[{palette.C_DIM}]{body}[/{palette.C_DIM}]"
+                    layout.notice(f"diagnostics: {d.get('count', 0)} issue(s) in edited files")
+                    + "\n"
+                    + layout.muted(str(d.get("text", "")))
                 )
             elif event.kind is EventKind.NOTICE or (
                 event.kind is EventKind.APPROVAL
@@ -227,13 +223,9 @@ async def _run_turn(
                 if event.kind is EventKind.NOTICE and event.data.get("verify"):
                     renderer.on_verify_badge(event.data["verify"])
                 elif event.kind is EventKind.NOTICE and event.data.get("severity") == "error":
-                    renderer.on_notice(
-                        f"[{palette.C_ERROR}]{event.text}[/{palette.C_ERROR}]"
-                    )
+                    renderer.on_notice(layout.err(event.text))
                 else:
-                    renderer.on_notice(
-                        f"[{palette.C_NOTICE}]{event.text}[/{palette.C_NOTICE}]"
-                    )
+                    renderer.on_notice(layout.notice(event.text))
             elif event.kind is EventKind.APPROVAL:
                 pass  # authorized tool — side effect already happened; no UI line
             elif event.kind is EventKind.ERROR:
@@ -242,9 +234,7 @@ async def _run_turn(
                     provider = event.data.get("provider") or _provider_hint(controller)
                     renderer.on_notice(_friendly_auth_error(event.text, provider))
                 else:
-                    renderer.on_notice(
-                        f"[{palette.C_ERROR}]{event.text}[/{palette.C_ERROR}]"
-                    )
+                    renderer.on_notice(layout.err(event.text))
             # DONE and unknown kinds: no UI
 
         turn_result = await run_agent_turn(
@@ -440,9 +430,7 @@ async def _approve(
                 assert edit is not None
                 reply = await edit(request)
                 if reply is None:
-                    console.print(
-                        f"[{palette.C_DIM}]edit aborted — nothing applied[/{palette.C_DIM}]"
-                    )
+                    console.print(layout.muted("edit aborted — nothing applied"))
                     return ApprovalReply(False, message="rejected by user")
                 return reply
             return cast(ApprovalReply, picked)
@@ -480,13 +468,15 @@ async def _approve_plan(
     from rich.markdown import Markdown
 
     plan = request.plan or ""
-    console.print(f"\n[{palette.C_NOTICE}]▶ Plan ready for review[/{palette.C_NOTICE}]")
+    console.print("\n" + layout.notice("▶ Plan ready for review"))
     if plan.strip():
         console.print(Markdown(plan))
     if not controller.project_trusted:
         console.print(
-            f"[{palette.C_WARN}]{grammar.GLYPH_WARN} Project is untrusted — approving keeps read-only "
-            f"plan mode; run /trust to allow edits.[/{palette.C_WARN}]"
+            layout.warn(
+                f"{grammar.GLYPH_WARN} Project is untrusted — approving keeps read-only "
+                "plan mode; run /trust to allow edits."
+            )
         )
 
     auto = ("Approve → proceed in auto-edit",
@@ -515,13 +505,12 @@ async def _approve_plan(
         applied = controller.apply_mode(reply.plan_mode_target)
         if applied != reply.plan_mode_target:
             console.print(
-                f"[{palette.C_WARN}]mode clamped to {applied} — project untrusted "
-                f"(/trust to allow edits).[/{palette.C_WARN}]"
+                layout.warn(
+                    f"mode clamped to {applied} — project untrusted (/trust to allow edits)."
+                )
             )
         else:
-            console.print(
-                f"[{palette.C_NOTICE}]plan approved → {applied} mode[/{palette.C_NOTICE}]"
-            )
+            console.print(layout.notice(f"plan approved → {applied} mode"))
     return reply
 
 
@@ -547,7 +536,7 @@ async def _approve_suggested_memory(
         f"\n{layout.notice('▶ Suggested memory')} "
         f"{layout.muted('(' + suggestion.scope + ', ' + suggestion.type + ')')}"
     )
-    console.print(f"  {layout.strong(suggestion.name)} — {_rich_escape(suggestion.description)}")
+    console.print(f"  {layout.strong(suggestion.name)} — {layout.escape(suggestion.description)}")
     if suggestion.body.strip():
         console.print(Markdown(suggestion.body))
 
@@ -578,20 +567,18 @@ async def _approve_suggested_memory(
             _edit_text_in_editor, suggestion.body, suffix=".md"
         )
         if edited is None:
-            console.print(
-                f"[{palette.C_DIM}]edit aborted — memory not saved[/{palette.C_DIM}]"
-            )
+            console.print(layout.muted("edit aborted — memory not saved"))
             return ApprovalReply(False, message="User declined to save the memory.")
         suggestion.body = edited.strip()
         choice = True
 
     if choice is not True:
-        console.print(f"[{palette.C_DIM}]memory not saved[/{palette.C_DIM}]")
+        console.print(layout.muted("memory not saved"))
         return ApprovalReply(False, message="User declined to save the memory.")
 
     saved, message = controller.save_suggested_memory(suggestion)
-    colour = palette.C_NOTICE if saved else palette.C_WARN
-    console.print(f"[{colour}]{_rich_escape(message)}[/{colour}]")
+    printer = layout.notice if saved else layout.warn
+    console.print(printer(message))
     return ApprovalReply(saved, message="" if saved else message)
 
 
@@ -617,7 +604,7 @@ async def _approve_suggested_skill(
         f"{layout.muted('(trigger=' + suggestion.trigger + ')')}"
     )
     console.print(
-        f"  {layout.strong(suggestion.name)} — {_rich_escape(suggestion.description)}"
+        f"  {layout.strong(suggestion.name)} — {layout.escape(suggestion.description)}"
     )
     if suggestion.body.strip():
         console.print(Markdown(suggestion.body))
@@ -647,20 +634,18 @@ async def _approve_suggested_skill(
             _edit_text_in_editor, suggestion.body, suffix=".md"
         )
         if edited is None:
-            console.print(
-                f"[{palette.C_DIM}]edit aborted — skill not saved[/{palette.C_DIM}]"
-            )
+            console.print(layout.muted("edit aborted — skill not saved"))
             return ApprovalReply(False, message="User declined to save the skill.")
         suggestion.body = edited.strip()
         choice = True
 
     if choice is not True:
-        console.print(f"[{palette.C_DIM}]skill not saved[/{palette.C_DIM}]")
+        console.print(layout.muted("skill not saved"))
         return ApprovalReply(False, message="User declined to save the skill.")
 
     saved, message = controller.save_suggested_skill(suggestion)
-    colour = palette.C_NOTICE if saved else palette.C_WARN
-    console.print(f"[{colour}]{_rich_escape(message)}[/{colour}]")
+    printer = layout.notice if saved else layout.warn
+    console.print(printer(message))
     return ApprovalReply(saved, message="" if saved else message)
 
 
@@ -684,8 +669,7 @@ def _apply_model_ref(
     controller.apply_model(ref, reasoning_effort=reasoning_effort)
     effort_note = f" · reasoning {reasoning_effort}" if reasoning_effort else ""
     console.print(
-        f"[{palette.C_NOTICE}]model → {controller.config.resolved_main_model()}"
-        f"{effort_note}[/{palette.C_NOTICE}]"
+        layout.notice(f"model → {controller.config.resolved_main_model()}{effort_note}")
     )
 
 
@@ -694,10 +678,11 @@ def _apply_mode_ref(controller: Controller, console: Console, chosen: str) -> No
         applied = controller.apply_mode(PermissionMode(chosen).value)
         if applied != chosen:
             console.print(
-                f"[{palette.C_NOTICE}]mode → {applied}[/{palette.C_NOTICE}] "
-                f"[{palette.C_DIM}](clamped — project untrusted)[/{palette.C_DIM}]"
+                layout.notice(f"mode → {applied}")
+                + " "
+                + layout.muted("(clamped — project untrusted)")
             )
         else:
-            console.print(f"[{palette.C_NOTICE}]mode → {applied}[/{palette.C_NOTICE}]")
+            console.print(layout.notice(f"mode → {applied}"))
     except ValueError:
-        console.print(f"[{palette.C_ERROR}]unknown mode {chosen!r}[/{palette.C_ERROR}]")
+        console.print(layout.err(f"unknown mode {chosen!r}"))

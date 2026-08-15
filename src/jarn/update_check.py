@@ -145,7 +145,7 @@ def maybe_start_update_check(
         return None
 
     from jarn.config import paths
-    from jarn.tui import palette
+    from jarn.tui import layout
     from jarn.version import __version__
 
     def _run() -> None:
@@ -157,7 +157,7 @@ def maybe_start_update_check(
             )
             if notice is not None:
                 console.print(  # type: ignore[attr-defined]
-                    f"[{palette.C_DIM}]{notice}[/{palette.C_DIM}]"
+                    layout.muted(notice)
                 )
         except Exception:  # noqa: BLE001 — never crash startup
             pass

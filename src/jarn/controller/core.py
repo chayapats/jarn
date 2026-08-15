@@ -45,7 +45,7 @@ from jarn.memory import (
     new_thread_id,
 )
 from jarn.permissions import PermissionEngine
-from jarn.tui import grammar, palette
+from jarn.tui import grammar, layout, palette
 
 if TYPE_CHECKING:
     from jarn.catalog import ModelCatalogEntry, ModelCatalogSnapshot
@@ -1961,31 +1961,31 @@ class Controller:
             self.runtime.main_model_ref if self.runtime else None
         ) or self.config.resolved_main_model()
         glyph = {
-            "ok": f"[{palette.C_SUCCESS}]{grammar.GLYPH_KEY_OK}[/{palette.C_SUCCESS}] ",
+            "ok": f"{layout.ok(grammar.GLYPH_KEY_OK)} ",
             "error": (
-                f"[{palette.C_ERROR}]{grammar.GLYPH_FAIL} key[/{palette.C_ERROR}]"
-                f" [{palette.C_DIM}]·[/{palette.C_DIM}]"
-                f" [{palette.C_ERROR}]/doctor[/{palette.C_ERROR}] "
+                f"{layout.err(f'{grammar.GLYPH_FAIL} key')}"
+                f"{layout.sep()}"
+                f"{layout.err('/doctor')} "
             ),
-            "degraded": f"[{palette.C_WARN}]{grammar.GLYPH_WARN}[/{palette.C_WARN}] ",
+            "degraded": f"{layout.warn(grammar.GLYPH_WARN)} ",
             "unknown": "",
         }.get(self.health, "")
-        sep = f" [{palette.C_DIM}]·[/{palette.C_DIM}] "
+        sep = layout.sep()
         mode = palette.mode_label(self.config.permission_mode.value)
         # Make the isolation level visible: positively flag a real sandbox, and
         # never let the host (no-isolation) state hide — so nobody assumes they
         # are safe when the permission engine is the only thing standing guard.
         level = self.isolation_level()
         if level == "docker":
-            backend = f"{sep}[{palette.C_SUCCESS}]docker[/{palette.C_SUCCESS}]"
+            backend = f"{sep}{layout.ok('docker')}"
         elif level == "os-sandbox":
-            backend = f"{sep}[{palette.C_SUCCESS}]os-sandbox[/{palette.C_SUCCESS}]"
+            backend = f"{sep}{layout.ok('os-sandbox')}"
         elif level == "remote-sandbox":
-            backend = f"{sep}[{palette.C_SUCCESS}]sandbox[/{palette.C_SUCCESS}]"
+            backend = f"{sep}{layout.ok('sandbox')}"
         elif self.health == "degraded":
-            backend = f"{sep}[{palette.C_WARN}]host (no sandbox)[/{palette.C_WARN}]"
+            backend = f"{sep}{layout.warn('host (no sandbox)')}"
         else:
-            backend = f"{sep}[{palette.C_DIM}]host[/{palette.C_DIM}]"
+            backend = f"{sep}{layout.muted('host')}"
         return f"{glyph}{model or 'unconfigured'}{sep}{mode}{backend}{sep}{self.tracker.summary_line()}"
 
     # -- built-in commands --------------------------------------------------

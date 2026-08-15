@@ -6,7 +6,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from rich.console import Console
-from rich.markup import escape
 from rich.prompt import Confirm
 
 from jarn.auth import (
@@ -96,8 +95,8 @@ def prepare_chatgpt_setup(
         console.print(f"{layout.warn(grammar.GLYPH_WARN)} OpenAI Codex CLI is {reason}.")
         console.print(f"{layout.field('Purpose')} ChatGPT subscription authentication and model access")
         console.print(f"{layout.field('Version/channel')} {plan.version} ({plan.channel})")
-        console.print(f"{layout.field('Source')} {escape(plan.source)} — {escape(plan.metadata_url)}")
-        console.print(f"{layout.field('Destination')} {escape(plan.destination)}")
+        console.print(f"{layout.field('Source', plan.source)} — {layout.escape(plan.metadata_url)}")
+        console.print(f"{layout.field('Destination', plan.destination)}")
         console.print(f"{layout.field('Verification')} official metadata + SHA-256 manifest")
         ask_install = confirm_install or (
             lambda: Confirm.ask("Install the official standalone Codex CLI now?", default=True)
@@ -112,7 +111,7 @@ def prepare_chatgpt_setup(
             result = installer.install(
                 plan,
                 on_progress=lambda stage: console.print(
-                    layout.muted(f"Codex dependency: {escape(stage)}…")
+                    layout.muted(f"Codex dependency: {stage}…")
                 ),
             )
         except CodexDependencyInstallError as exc:
@@ -122,7 +121,7 @@ def prepare_chatgpt_setup(
                 kind=SetupFailureKind.DEPENDENCY,
             ) from exc
         console.print(
-            f"{layout.ok(grammar.GLYPH_OK)} Verified Codex CLI {escape(result.smoke_version)} at "
+            f"{layout.ok(grammar.GLYPH_OK)} Verified Codex CLI {layout.escape(result.smoke_version)} at "
             f"{layout.strong(result.executable)}"
         )
         auth = CodexAuthService(command=result.executable)
@@ -130,7 +129,7 @@ def prepare_chatgpt_setup(
 
     if not status.ready:
         if status.error is not None:
-            console.print(f"{layout.warn(grammar.GLYPH_WARN)} {escape(redact_secrets(status.error.message))}")
+            console.print(f"{layout.warn(grammar.GLYPH_WARN)} {layout.escape(redact_secrets(status.error.message))}")
         ask = confirm_login or (
             lambda: Confirm.ask("Sign in with your ChatGPT subscription now?", default=True)
         )

@@ -184,5 +184,95 @@ def test_parse_slash_line_and_gateway_local() -> None:
     assert parse_slash_line("not a command") is None
     assert is_gateway_local_command("status")
     assert is_gateway_local_command("usage")
+    assert is_gateway_local_command("verbose")
     assert not is_gateway_local_command("quit")
     assert not is_gateway_local_command("nope")
+    assert not is_gateway_local_command("config")
+    assert not is_gateway_local_command("preset")
+    assert not is_gateway_local_command("memory")
+    assert not is_gateway_local_command("sandbox")
+    from jarn.commands.registry import (
+        GATEWAY_LOCAL_COMMANDS,
+        GATEWAY_READONLY_COMMANDS,
+        GATEWAY_SESSION_COMMANDS,
+    )
+
+    assert "verbose" in GATEWAY_SESSION_COMMANDS
+    assert "focus" in GATEWAY_SESSION_COMMANDS
+    assert "title" in GATEWAY_SESSION_COMMANDS
+    assert "verbose" not in GATEWAY_READONLY_COMMANDS
+    assert "config" not in GATEWAY_LOCAL_COMMANDS
+    assert GATEWAY_LOCAL_COMMANDS == GATEWAY_READONLY_COMMANDS | GATEWAY_SESSION_COMMANDS
+
+
+def test_live_stream_helpers_use_grammar_and_palette() -> None:
+    assert grammar.GLYPH_PROMPT in layout.prompt("hello")
+    assert palette.C_USER in layout.prompt("hello")
+    assert "hello" in layout.prompt("hello")
+    queued = layout.steer("next", queued=True)
+    assert grammar.GLYPH_STEER in queued
+    assert "queued:" in queued
+    assert palette.C_DIM in queued
+    shell = layout.host_shell("ls -la")
+    assert palette.C_ERROR in shell
+    assert "ls -la" in shell
+    assert "(host shell)" in shell
+    assert palette.C_USER not in shell
+    assert grammar.GLYPH_THINKING in layout.thinking()
+    assert grammar.GLYPH_SUBAGENT in layout.subagent_prefix("reviewer")
+    done = layout.subagent_done("reviewer", 3, hint="ctrl+o")
+    assert "3 tool calls" in done
+    assert "ctrl+o" in done
+    opened = layout.tool_open("bash", "ls")
+    assert palette.C_TOOL in opened
+    assert grammar.GLYPH_TOOL in opened
+    assert "bash" in opened
+    closed = layout.tool_result("ok", duration=" · 1.2s", hint="· ctrl+o")
+    assert grammar.GLYPH_RESULT in closed
+    assert "1.2s" in closed
+    assert layout.cancelled() == layout.muted("cancelled")
+    assert " · " in layout.sep()
+    rich = layout.host_shell("rm -rf /")
+    html = layout.to_html(rich)
+    assert "<span" not in html
+    assert "rm -rf /" in html
+    assert layout.host_shell("x", dialect="plain").startswith("! x")
+
+
+def test_layout_helpers_escape_user_text() -> None:
+    assert layout.escape("[bold]x") == "\\[bold]x"
+    assert "\\[bold]x" in layout.prompt("[bold]x")
+    assert "\\[rm]" in layout.host_shell("[rm]")
+    assert "\\[x]" in layout.todo_item("[x]", "pending")
+    assert "\\[s]" in layout.steer("[s]", queued=True)
+
+
+def test_todo_spinner_banner_and_link_helpers() -> None:
+    done = layout.todo_glyph("completed")
+    assert grammar.GLYPH_TODO_DONE in done
+    assert palette.C_SUCCESS in done
+    running = layout.todo_item("ship it", "in_progress")
+    assert grammar.GLYPH_TODO_RUN in running
+    assert palette.ACCENT in running
+    assert "ship it" in running
+    finished = layout.todo_item("old", "completed")
+    assert palette.C_DIM in finished
+    truncated = layout.todo_item("abcdefghijklmnop", "pending", truncate=12)
+    assert "…" in truncated
+    spin = layout.spinner("⠋", "Working…")
+    assert palette.C_TOOL in spin
+    assert "Working…" in spin
+    banner = layout.host_shell_banner()
+    assert "⚡ host shell" in banner
+    assert palette.C_ERROR in banner
+    assert "danger-guard skipped" in banner
+    steered = layout.steer("next", queued=True, hint="  ·  [s] steer now")
+    assert "queued:" in steered
+    assert "steer now" in steered
+    rich_link = layout.link("https://example.test/a")
+    assert "[link=" in rich_link
+    assert "https://example.test/a" in rich_link
+    assert layout.link("https://example.test/a", dialect="plain") == "https://example.test/a"
+    html_link = layout.link("https://example.test/a", dialect="html")
+    assert "<a href=" in html_link
+    assert "<span" not in html_link

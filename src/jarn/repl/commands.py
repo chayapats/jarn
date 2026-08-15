@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 
 from rich.markdown import Markdown
-from rich.markup import escape as _rich_escape
 
 from jarn.agent.checkpoint import RestorePreview
 from jarn.agent.local_backend import CancellableLocalShellBackend
@@ -19,34 +18,17 @@ from jarn.repl.turn import _apply_model_ref
 from jarn.tui import grammar, layout, palette
 
 
-#: Plan-checklist glyphs — derived from grammar + the active palette so theme
-#: switches retint the live and committed todo lists together.
-def _todo_glyphs() -> dict[str, str]:
-    return {
-        "completed": f"[{palette.C_SUCCESS}]{grammar.GLYPH_TODO_DONE}[/{palette.C_SUCCESS}]",
-        "in_progress": f"[{palette.ACCENT}]{grammar.GLYPH_TODO_RUN}[/{palette.ACCENT}]",
-        "pending": f"[{palette.C_DIM}]{grammar.GLYPH_TODO_WAIT}[/{palette.C_DIM}]",
-    }
-
-
 def _todo_item_line(todo: dict, truncate: int | None) -> str:
     """One Rich-markup checklist line: ``  <glyph> <content>`` (completed dimmed).
 
     ``truncate`` (the live region's terminal width) bounds the content to a single
     line so a long todo can't wrap and blow the height budget; ``None`` (committed
     render) leaves it to wrap freely, preserving the pre-existing behaviour."""
-    status = todo.get("status", "pending")
-    glyphs = _todo_glyphs()
-    glyph = glyphs.get(status, glyphs["pending"])
-    content = str(todo.get("content", ""))
-    if truncate is not None:
-        limit = max(8, truncate - 4)  # 2-space indent + glyph + space
-        if len(content) > limit:
-            content = content[: limit - 1] + "…"
-    content = _rich_escape(content)
-    if status == "completed":
-        content = f"[{palette.C_DIM}]{content}[/{palette.C_DIM}]"
-    return f"  {glyph} {content}"
+    return layout.todo_item(
+        str(todo.get("content", "")),
+        str(todo.get("status", "pending")),
+        truncate=truncate,
+    )
 
 
 def format_todos(todos: list[dict], width: int, *, cap: int | None = None) -> list[str]:
@@ -61,7 +43,7 @@ def format_todos(todos: list[dict], width: int, *, cap: int | None = None) -> li
     overflow is elided behind a ``… +N more`` line. ``cap is None`` (committed
     render) shows every item, unwrapped, exactly as before.
     """
-    header = f"{layout.paint(palette.C_TOOL, grammar.GLYPH_TOOL)} {layout.strong('Todos')}"
+    header = f"{layout.tool()} {layout.strong('Todos')}"
     lines = [header]
     trunc = width if cap is not None else None
     if cap is None or len(todos) <= cap:
@@ -71,17 +53,16 @@ def format_todos(todos: list[dict], width: int, *, cap: int | None = None) -> li
     done = [t for t in todos if t.get("status") == "completed"]
     tail = [t for t in todos if t.get("status") != "completed"]  # in-progress + pending
     budget = cap
-    glyphs = _todo_glyphs()
     if done:
         lines.append(
-            f"  {glyphs['completed']} [{palette.C_DIM}]{len(done)} done[/{palette.C_DIM}]"
+            f"  {layout.todo_glyph('completed')} {layout.muted(f'{len(done)} done')}"
         )
         budget -= 1
     if len(tail) > budget:
         show = max(1, budget - 1)  # reserve a line for the "… +N more" summary
         lines.extend(_todo_item_line(t, trunc) for t in tail[:show])
         hidden = len(tail) - show
-        lines.append(f"  [{palette.C_DIM}]… +{hidden} more[/{palette.C_DIM}]")
+        lines.append(f"  {layout.muted(f'… +{hidden} more')}")
     else:
         lines.extend(_todo_item_line(t, trunc) for t in tail)
     return lines
@@ -119,10 +100,7 @@ class CommandMixin:
                 # a BaseException, so a real turn-cancellation still propagates.
                 from jarn.config.secrets import redact_secrets
 
-                c.print(
-                    f"[{palette.C_ERROR}]{_rich_escape(redact_secrets(str(exc)))}"
-                    f"[/{palette.C_ERROR}]"
-                )
+                c.print(layout.err(redact_secrets(str(exc))))
                 return
             await repl_turn._run_turn(
                 c, self.controller, rendered, self._ask,
@@ -165,7 +143,7 @@ class CommandMixin:
             # (T-CTRL-1). Idle is a no-op that does not undo the previous turn.
             result = await self.controller.abort()
             c.print(
-                f"[{palette.C_DIM}]{result.text}[/{palette.C_DIM}]"
+                layout.muted(result.text)
                 if result.text.lower().startswith("nothing to abort")
                 else result.text,
                 highlight=False,
@@ -240,14 +218,15 @@ class CommandMixin:
         """Show the exact restore scope, then require an explicit yes."""
         self.console.print(format_undo_preview(preview), highlight=False)
         self.console.print(
-            f"[{palette.C_WARN}]Current content in the affected files will be "
-            f"restored to this checkpoint.[/{palette.C_WARN}]",
+            layout.warn(
+                "Current content in the affected files will be restored to this checkpoint."
+            ),
             highlight=False,
         )
         # Own line so wrap cannot split the "/redo can recover" phrase the
         # undo confirmation test (and users) scan for.
         self.console.print(
-            f"[{palette.C_DIM}]/redo can recover the current state.[/{palette.C_DIM}]",
+            layout.muted("/redo can recover the current state."),
             highlight=False,
         )
         answer = await self._ask(
@@ -269,15 +248,12 @@ class CommandMixin:
         root = self.controller.project_root or Path(".")
         diff = await asyncio.to_thread(gather_diff, root)
         if not diff.is_repo:
-            c.print(f"[{palette.C_ERROR}]Not a git repository.[/{palette.C_ERROR}]")
+            c.print(layout.err("Not a git repository."))
             return
         prompt = commit_prompt(diff) if which == "commit" else review_prompt(diff)
         if prompt is None:
             what = "commit" if which == "commit" else "review"
-            c.print(
-                f"[{palette.C_DIM}]Nothing to {what} — the working tree is clean."
-                f"[/{palette.C_DIM}]"
-            )
+            c.print(layout.muted(f"Nothing to {what} — the working tree is clean."))
             return
         self._last_tool_outputs = []
         await repl_turn._run_turn(
@@ -305,8 +281,9 @@ class CommandMixin:
         provider = self.controller.current_provider()
         if not provider:
             c.print(
-                f"[{palette.C_ERROR}]No active provider — configure a model first "
-                f"with /model or run jarn setup.[/{palette.C_ERROR}]"
+                layout.err(
+                    "No active provider — configure a model first with /model or run jarn setup."
+                )
             )
             return
         provider_config = self.controller.config.providers.get(provider)
@@ -315,24 +292,26 @@ class CommandMixin:
             and provider_config.type.value == "codex_subscription"
         ):
             c.print(
-                f"[{palette.C_NOTICE}]Codex subscription uses managed ChatGPT "
-                "authentication, not an API key. Run `jarn codex login`, then "
-                f"verify it with `jarn codex status`.[/{palette.C_NOTICE}]"
+                layout.notice(
+                    "Codex subscription uses managed ChatGPT authentication, not an API key. "
+                    "Run `jarn codex login`, then verify it with `jarn codex status`."
+                )
             )
             return
         inline = args.strip()
         if inline:
             # Inline keys are convenient but land in shell/REPL history — warn.
             c.print(
-                f"[{palette.C_WARN}]Heads up: an inline key is visible in your "
-                f"scrollback/history. Prefer /key with no argument next time."
-                f"[/{palette.C_WARN}]"
+                layout.warn(
+                    "Heads up: an inline key is visible in your scrollback/history. "
+                    "Prefer /key with no argument next time."
+                )
             )
             secret = inline
         else:
             secret = await self._ask(f"Paste the {provider} API key (Enter to cancel): ")
         if not secret.strip():
-            c.print(f"[{palette.C_DIM}]No key entered — unchanged.[/{palette.C_DIM}]")
+            c.print(layout.muted("No key entered — unchanged."))
             return
         result = self.controller.set_provider_key(secret, provider=provider)
         c.print(result.text)
@@ -364,15 +343,17 @@ class CommandMixin:
         raw = args.strip()
         if not raw:
             c.print(
-                f"[{palette.C_DIM}]/add-dir <path> — add a directory to this "
-                f"session's write scope[/{palette.C_DIM}]"
+                layout.muted(
+                    "/add-dir <path> — add a directory to this session's write scope"
+                )
             )
             return
         if not self.controller.project_trusted:
             c.print(
-                f"[{palette.C_ERROR}]/add-dir is refused on an untrusted project — "
-                f"run /trust here first (an untrusted repo may not widen the "
-                f"agent's write scope).[/{palette.C_ERROR}]"
+                layout.err(
+                    "/add-dir is refused on an untrusted project — run /trust here first "
+                    "(an untrusted repo may not widen the agent's write scope)."
+                )
             )
             return
         if self.controller.config.permission_mode in (
@@ -385,14 +366,11 @@ class CommandMixin:
                 )
             ).strip().lower()
             if answer not in ("y", "yes"):
-                c.print(
-                    f"[{palette.C_DIM}]/add-dir cancelled — scope unchanged."
-                    f"[/{palette.C_DIM}]"
-                )
+                c.print(layout.muted("/add-dir cancelled — scope unchanged."))
                 return
         ok, msg = self.controller.add_root(raw)
-        color = palette.C_SUCCESS if ok else palette.C_ERROR
-        c.print(f"[{color}]{_rich_escape(msg)}[/{color}]")
+        printer = layout.ok if ok else layout.err
+        c.print(printer(msg))
 
     # -- queue --------------------------------------------------------------
 
@@ -404,14 +382,14 @@ class CommandMixin:
         if not sub:
             items = q.list()
             if not items:
-                c.print(f"[{palette.C_DIM}]Queue empty.[/{palette.C_DIM}]")
+                c.print(layout.muted("Queue empty."))
                 return
             for i, item in enumerate(items, 1):
-                c.print(f"  {i}. {_rich_escape(item.display)}", highlight=False)
+                c.print(f"  {i}. {layout.escape(item.display)}", highlight=False)
             return
         if sub == "clear":
             n = q.clear()
-            c.print(f"[{palette.C_NOTICE}]Cleared {n} queued line(s).[/{palette.C_NOTICE}]")
+            c.print(layout.notice(f"Cleared {n} queued line(s)."))
             return
         if sub == "cancel" and len(parts) >= 2:
             try:
@@ -421,12 +399,9 @@ class CommandMixin:
                 return
             removed = q.cancel(idx)
             if removed is None:
-                c.print(f"[{palette.C_ERROR}]No item at {idx}.[/{palette.C_ERROR}]")
+                c.print(layout.err(f"No item at {idx}."))
             else:
-                c.print(
-                    f"[{palette.C_NOTICE}]Removed: {_rich_escape(removed.display)}"
-                    f"[/{palette.C_NOTICE}]"
-                )
+                c.print(layout.notice(f"Removed: {removed.display}"))
             return
         if sub == "move" and len(parts) >= 3:
             try:
@@ -435,9 +410,9 @@ class CommandMixin:
                 c.print(usage_error("queue"), highlight=False)
                 return
             if not q.move(fr, to):
-                c.print(f"[{palette.C_ERROR}]Invalid queue indices.[/{palette.C_ERROR}]")
+                c.print(layout.err("Invalid queue indices."))
             else:
-                c.print(f"[{palette.C_NOTICE}]Moved item {fr} → {to}.[/{palette.C_NOTICE}]")
+                c.print(layout.notice(f"Moved item {fr} → {to}."))
             return
         if sub == "steer" and len(parts) >= 2:
             # Mid-turn steering (T-4-6): route the 1-based line into the steer slot
@@ -448,8 +423,8 @@ class CommandMixin:
                 c.print(usage_error("queue"), highlight=False)
                 return
             ok, msg = self._steer_index(idx)
-            color = palette.C_NOTICE if ok else palette.C_ERROR
-            c.print(f"[{color}]{_rich_escape(msg)}[/{color}]")
+            printer = layout.notice if ok else layout.err
+            c.print(printer(msg))
             return
         c.print(usage_error("queue"), highlight=False)
 
@@ -460,7 +435,7 @@ class CommandMixin:
 
         sessions = self.controller.sessions.list()
         if not sessions:
-            self.console.print(f"[{palette.C_DIM}]No previous sessions.[/{palette.C_DIM}]")
+            self.console.print(layout.muted("No previous sessions."))
             return
         options: list[tuple[str, SessionInfo | None]] = [
             (
@@ -525,25 +500,23 @@ class CommandMixin:
         try:
             turns = await self.controller.human_turns()
         except Exception as exc:  # noqa: BLE001
-            c.print(
-                f"[{palette.C_ERROR}]could not load conversation: "
-                f"{_rich_escape(str(exc))}[/{palette.C_ERROR}]"
-            )
+            c.print(layout.err(f"could not load conversation: {exc}"))
             return
         # Rewinding to the LAST user turn is a no-op (you'd keep everything and
         # re-ask the same thing), so it's not offered — need at least two turns
         # for an earlier one to exist.
         if len(turns) < 2:
             c.print(
-                f"[{palette.C_DIM}]Nothing to rewind — need an earlier user "
-                f"turn to branch from.[/{palette.C_DIM}]"
+                layout.muted(
+                    "Nothing to rewind — need an earlier user turn to branch from."
+                )
             )
             return
         # Drop the last turn: forking at it keeps the whole conversation, which
         # is a no-op. The picker only offers turns you can meaningfully branch
         # before continuing again.
         options: list[tuple[str, tuple[int, str] | None]] = [
-            (f"turn {n} · {_rich_escape(preview)}", (idx, preview))
+            (f"turn {n} · {preview}", (idx, preview))
             for n, (idx, preview) in enumerate(turns[:-1], start=1)
         ]
         options.append(("Cancel", None))
@@ -559,7 +532,7 @@ class CommandMixin:
         # Returns True (restore) / False (conversation only) / None (cancel).
         decision = await self._confirm_rewind_restore(cut_index, turns)
         if decision is None:
-            c.print(f"[{palette.C_DIM}]Rewind cancelled.[/{palette.C_DIM}]")
+            c.print(layout.muted("Rewind cancelled."))
             return
         restore_files = decision
         # Optional prompt edit: pre-fill the input with the chosen turn's text so
@@ -571,23 +544,29 @@ class CommandMixin:
 
         cut = await self.controller.fork_to_turn(cut_index, restore_files=restore_files)
         if cut is None:
-            c.print(f"[{palette.C_DIM}]Nothing to rewind.[/{palette.C_DIM}]")
+            c.print(layout.muted("Nothing to rewind."))
             return
         self._last_todos_sig = None
         await self._replay_transcript()
         if restore_files:
             c.print(
-                f"[{palette.C_NOTICE}]↩ rewound to a new branch — conversation and "
-                f"files restored to this turn[/{palette.C_NOTICE}] "
-                f"[{palette.C_DIM}]— the original session is still in /resume; "
-                f"/undo reverts this file restore.[/{palette.C_DIM}]"
+                layout.notice(
+                    "↩ rewound to a new branch — conversation and files restored to this turn"
+                )
+                + " "
+                + layout.muted(
+                    "— the original session is still in /resume; /undo reverts this file restore."
+                )
             )
         else:
             c.print(
-                f"[{palette.C_NOTICE}]↩ rewound to a new branch[/{palette.C_NOTICE}] "
-                f"[{palette.C_DIM}]— the original session is still in /resume. "
-                f"File edits made after this point are NOT reverted — /undo rolls back "
-                f"file changes one turn at a time.[/{palette.C_DIM}]"
+                layout.notice("↩ rewound to a new branch")
+                + " "
+                + layout.muted(
+                    "— the original session is still in /resume. "
+                    "File edits made after this point are NOT reverted — /undo rolls back "
+                    "file changes one turn at a time."
+                )
             )
         if not prompt:
             # No continuation: still index the new branch so it survives in /resume
@@ -599,7 +578,7 @@ class CommandMixin:
             return
         # Continue from the fork through the normal turn path (we're already the
         # active turn task, so call _run_turn directly — same as _handle does).
-        c.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(prompt)}")
+        c.print(layout.prompt(prompt))
         self._last_tool_outputs = []
         # Match the main submit path (repl/app.py): pass queue_sink so a
         # diagnostics auto-fix round on the rewound/edited prompt is queued, and
@@ -643,26 +622,26 @@ class CommandMixin:
         )
         if ref is None:
             c.print(
-                f"[{palette.C_DIM}]No checkpoint captured for that turn "
-                f"(autocheckpoint off, no edits that turn, or the thread was forked "
-                f"in an earlier session) "
-                f"— reverting the conversation only.[/{palette.C_DIM}]"
+                layout.muted(
+                    "No checkpoint captured for that turn "
+                    "(autocheckpoint off, no edits that turn, or the thread was forked "
+                    "in an earlier session) — reverting the conversation only."
+                )
             )
             return False
         # Preview what the restore would revert (git diff --stat, ≤10 lines).
         stat = await asyncio.to_thread(cpm.diff_stat, ref.sha)
         if stat:
             c.print(
-                f"[{palette.C_DIM}]Tracked changes vs that snapshot "
-                f"(untracked files created since will also be removed):"
-                f"[/{palette.C_DIM}]"
+                layout.muted(
+                    "Tracked changes vs that snapshot "
+                    "(untracked files created since will also be removed):"
+                )
             )
             for line in stat[:10]:
-                c.print(f"  [{palette.C_DIM}]{_rich_escape(line)}[/{palette.C_DIM}]")
+                c.print(f"  {layout.muted(line)}")
             if len(stat) > 10:
-                c.print(
-                    f"  [{palette.C_DIM}]… +{len(stat) - 10} more[/{palette.C_DIM}]"
-                )
+                c.print(f"  {layout.muted(f'… +{len(stat) - 10} more')}")
         # Warn when the tree has hand-edits no checkpoint captured — the restore
         # would roll them back (they stay recoverable via /undo, but flag it).
         if await asyncio.to_thread(cpm.has_uncheckpointed_changes):
@@ -688,10 +667,7 @@ class CommandMixin:
         c = self.console
         if what == "model":
             if self.controller.model_catalog_supported():
-                c.print(
-                    f"[{palette.C_DIM}]Checking live model catalogs…"
-                    f"[/{palette.C_DIM}]"
-                )
+                c.print(layout.muted("Checking live model catalogs…"))
                 snapshot = await asyncio.to_thread(self.controller.refresh_model_catalog)
                 if (
                     self.controller.model_catalog_requires_verification()
@@ -699,16 +675,14 @@ class CommandMixin:
                 ):
                     detail = snapshot.error.message if snapshot.error else snapshot.provenance_label
                     c.print(
-                        f"[{palette.C_WARN}]active-provider catalog unverified: "
-                        f"{_rich_escape(detail)}[/{palette.C_WARN}]  "
-                        f"[{palette.C_DIM}]· verified models from other configured providers "
-                        f"remain selectable[/{palette.C_DIM}]"
+                        layout.warn(f"active-provider catalog unverified: {detail}")
+                        + layout.sep()
+                        + layout.muted(
+                            "verified models from other configured providers remain selectable"
+                        )
                     )
                 else:
-                    c.print(
-                        f"[{palette.C_DIM}]{_rich_escape(snapshot.provenance_label)}"
-                        f"[/{palette.C_DIM}]"
-                    )
+                    c.print(layout.muted(snapshot.provenance_label))
             choices = self.controller.model_choices()
             options: list[tuple[str, str | None]] = [
                 (f"{key}  ({hint})", key) for key, hint in choices
@@ -740,16 +714,17 @@ class CommandMixin:
                 confirm=self._confirm_yolo,
             )
             if "cancelled" in result.text.lower():
-                c.print(f"[{palette.C_DIM}]{result.text}[/{palette.C_DIM}]")
+                c.print(layout.muted(result.text))
                 return
             applied = self.controller.config.permission_mode.value
             if "clamped" in result.text.lower():
                 c.print(
-                    f"[{palette.C_NOTICE}]mode → {applied}[/{palette.C_NOTICE}] "
-                    f"[{palette.C_DIM}](clamped — project untrusted)[/{palette.C_DIM}]"
+                    layout.notice(f"mode → {applied}")
+                    + " "
+                    + layout.muted("(clamped — project untrusted)")
                 )
             elif result.text.startswith("Permission mode set"):
-                c.print(f"[{palette.C_NOTICE}]mode → {applied}[/{palette.C_NOTICE}]")
+                c.print(layout.notice(f"mode → {applied}"))
             else:
                 c.print(result.text)
 
@@ -757,24 +732,18 @@ class CommandMixin:
         """Refresh every configured provider and pick only verified entries."""
         c = self.console
         if self.controller.model_catalog_supported():
-            c.print(
-                f"[{palette.C_DIM}]Refreshing live model catalogs…"
-                f"[/{palette.C_DIM}]"
-            )
+            c.print(layout.muted("Refreshing live model catalogs…"))
             snapshot = await asyncio.to_thread(self.controller.refresh_model_catalog)
-            c.print(
-                f"[{palette.C_DIM}]{_rich_escape(snapshot.provenance_label)}"
-                f"[/{palette.C_DIM}]"
-            )
+            c.print(layout.muted(snapshot.provenance_label))
             if (
                 self.controller.model_catalog_requires_verification()
                 and not snapshot.availability_verified
             ):
                 detail = snapshot.error.message if snapshot.error else snapshot.provenance_label
                 c.print(
-                    f"[{palette.C_WARN}]Could not verify the active provider: "
-                    f"{_rich_escape(detail)}[/{palette.C_WARN}]  "
-                    f"[{palette.C_DIM}]· checking other configured providers[/{palette.C_DIM}]"
+                    layout.warn(f"Could not verify the active provider: {detail}")
+                    + layout.sep()
+                    + layout.muted("checking other configured providers")
                 )
             entries = self.controller.verified_catalog_models()
             if entries:
@@ -801,8 +770,10 @@ class CommandMixin:
                 return
 
         c.print(
-            f"[{palette.C_DIM}]No verified models were reported by the configured providers. "
-            f"Check credentials/endpoints, or use Advanced manual entry.[/{palette.C_DIM}]"
+            layout.muted(
+                "No verified models were reported by the configured providers. "
+                "Check credentials/endpoints, or use Advanced manual entry."
+            )
         )
         custom = (await self._ask("Paste model ref (blank to cancel): ")).strip()
         if custom:
@@ -833,12 +804,9 @@ class CommandMixin:
         try:
             messages = await self.controller.history()
         except Exception as exc:  # noqa: BLE001
-            self.console.print(
-                f"[{palette.C_ERROR}]could not load session: {_rich_escape(str(exc))}"
-                f"[/{palette.C_ERROR}]"
-            )
+            self.console.print(layout.err(f"could not load session: {exc}"))
             return
-        self.console.print(f"[{palette.C_DIM}]── resumed: {len(messages)} messages ──[/{palette.C_DIM}]")
+        self.console.print(layout.muted(f"── resumed: {len(messages)} messages ──"))
         for msg in messages:
             self._replay_message(msg)
 
@@ -850,12 +818,12 @@ class CommandMixin:
                 b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
         text = str(content).strip()
         if mtype == "human" and text:
-            self.console.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(text)}")
+            self.console.print(layout.prompt(text))
         elif mtype == "ai" and text:
             self.console.print(Markdown(text, code_theme=palette.CODE_THEME))
         elif mtype == "tool" and text:
             first = text.splitlines()[0] if text else ""
-            self.console.print(f"  [{palette.C_DIM}]⎿ {_rich_escape(first[:80])}[/{palette.C_DIM}]")
+            self.console.print(layout.tool_result(first[:80]))
 
     async def _cmd_theme(self, args: str) -> None:
         """`/theme [dark|light|high-contrast|auto]`: switch the color theme.
@@ -910,8 +878,9 @@ class CommandMixin:
         else:
             if chosen not in _VALID:
                 c.print(
-                    f"[{palette.C_ERROR}]Unknown theme {chosen!r}. "
-                    f"Valid: dark, light, high-contrast, auto.[/{palette.C_ERROR}]"
+                    layout.err(
+                        f"Unknown theme {chosen!r}. Valid: dark, light, high-contrast, auto."
+                    )
                 )
                 return
 
@@ -922,13 +891,10 @@ class CommandMixin:
         # Persist via the standard config-set path.
         ok, msg = self.controller.set_setting("ui.theme", str(chosen))
         if ok:
-            c.print(
-                f"[{palette.C_SUCCESS}]Theme set to {chosen!r}"
-                f"{' (→ ' + palette_name + ')' if chosen == 'auto' else ''}."
-                f"[/{palette.C_SUCCESS}]"
-            )
+            suffix = f" (→ {palette_name})" if chosen == "auto" else ""
+            c.print(layout.ok(f"Theme set to {chosen!r}{suffix}."))
         else:
-            c.print(f"[{palette.C_ERROR}]{msg}[/{palette.C_ERROR}]")
+            c.print(layout.err(msg))
 
     def _maybe_autocheckpoint_hint(self) -> None:
         """After a turn that wrote a file, show the one-time /undo-unavailable
@@ -936,9 +902,7 @@ class CommandMixin:
         if self._turn_made_edits():
             hint = self.controller.autocheckpoint_off_hint()
             if hint:
-                self.console.print(
-                    f"[{palette.C_DIM}]{_rich_escape(hint)}[/{palette.C_DIM}]", highlight=False
-                )
+                self.console.print(layout.muted(hint), highlight=False)
 
     async def _render_todos(self) -> None:
         """Print the current plan checklist into scrollback after a turn, de-duped
@@ -971,17 +935,13 @@ class CommandMixin:
         """
         c = self.console
         if not command:
-            c.print(f"[{palette.C_DIM}]! <cmd>  — run a shell command directly[/{palette.C_DIM}]")
+            c.print(layout.muted("! <cmd>  — run a shell command directly"))
             return
         # Make it unmistakable this runs on the host, outside the agent: no
         # permission engine, no danger-guard, no sandbox. The ``!`` prefix is an
         # intentional bypass the user typed themselves, so we still print a
         # one-line reminder that the danger-guard is skipped for it.
-        c.print(
-            f"[{palette.C_ERROR}]⚡ host shell[/{palette.C_ERROR}] "
-            f"[{palette.C_DIM}]— runs on your machine directly; no agent, no "
-            f"approval, danger-guard skipped[/{palette.C_DIM}]"
-        )
+        c.print(layout.host_shell_banner())
         cwd = self.controller.project_root or Path(".")
         backend = CancellableLocalShellBackend(str(cwd))
         # execute is blocking; offload to a thread so the event-loop stays live
@@ -993,7 +953,7 @@ class CommandMixin:
             # (the renderer owns "cancelled" for agent turns; the shell path has no
             # renderer, so we own the message here) then re-raise so the event-loop
             # sees the cancellation.
-            c.print(f"[{palette.C_DIM}]interrupted[/{palette.C_DIM}]")
+            c.print(layout.muted("interrupted"))
             raise
         c.print(response.output)
         if self.controller.config.execution.shell_escape_context:

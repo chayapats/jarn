@@ -1,11 +1,15 @@
-"""Rich-markup layout primitives — the only way command pages should be built.
+"""String-markup SSOT — the only module that may compose ``[color]`` / HTML tags.
 
-Handlers return ``CommandResult(text)``; they compose that text here so spacing,
-column width, and semantic colors cannot drift between ``/help``, ``/status``,
-``/doctor``, and friends.
+Command pages, the live turn stream, CLI human text, and Telegram notices all
+call helpers here so spacing, glyphs, and semantic colors cannot drift.
 
-Telegram can reuse the same functions with ``dialect="html"``. CLI ``--help``
-uses ``dialect="plain"`` (same spacing, no markup).
+Dialects: ``rich`` (REPL), ``html`` (Telegram ``<b>`` ``<i>`` ``<code>``),
+``plain`` (CLI ``--help`` / ``NO_COLOR``). Specialized renderers that are not
+strings — ``toolbar.py`` (prompt_toolkit HTML) and ``widgets/diff.py`` (Rich
+``Text``) — consume ``grammar`` + ``palette`` directly and must not invent
+named colors.
+
+This module escapes user text. Callers must not pre-escape.
 """
 
 from __future__ import annotations
@@ -199,6 +203,152 @@ def key_mark(active: bool, *, dialect: Dialect = "rich") -> str:
 def more(n: int, *, dialect: Dialect = "rich") -> str:
     """``… (N more)`` footer used by truncated lists."""
     return muted(f"… ({n} more)", dialect=dialect)
+
+
+def sep(*, dialect: Dialect = "rich") -> str:
+    """Dim middle-dot used in status lines and hints."""
+    return f" {muted('·', dialect=dialect)} "
+
+
+def user(text: str = grammar.GLYPH_PROMPT, *, dialect: Dialect = "rich") -> str:
+    return paint(palette.C_USER, escape(text, dialect=dialect), dialect=dialect)
+
+
+def tool(text: str = grammar.GLYPH_TOOL, *, dialect: Dialect = "rich") -> str:
+    return paint(palette.C_TOOL, escape(text, dialect=dialect), dialect=dialect)
+
+
+def prompt(text: str, *, dialect: Dialect = "rich") -> str:
+    """User echo: cyan ``›`` then uncolored escaped text."""
+    return f"{user(grammar.GLYPH_PROMPT, dialect=dialect)} {escape(text, dialect=dialect)}"
+
+
+def steer(
+    text: str,
+    *,
+    queued: bool = False,
+    hint: str = "",
+    dialect: Dialect = "rich",
+) -> str:
+    """Queue / mid-turn steer line. Whole line is dim, including ``»``."""
+    body = f"{grammar.GLYPH_STEER} queued: {text}" if queued else f"{grammar.GLYPH_STEER} {text}"
+    if hint:
+        body += hint
+    return muted(body, dialect=dialect)
+
+
+def host_shell(cmd: str, *, dialect: Dialect = "rich") -> str:
+    """Host-direct ``!`` escape — stays error-red; never a friendly accent."""
+    return (
+        f"{err('!', dialect=dialect)} "
+        f"{err(cmd, dialect=dialect)} "
+        f"{muted('(host shell)', dialect=dialect)}"
+    )
+
+
+def thinking(*, dialect: Dialect = "rich") -> str:
+    return muted(f"{grammar.GLYPH_THINKING} thinking", dialect=dialect)
+
+
+def subagent_prefix(name: str, *, dialect: Dialect = "rich") -> str:
+    """Dim ``┊ name `` prefix on a subagent's tool lines (trailing space)."""
+    return muted(f"{grammar.GLYPH_SUBAGENT} {name} ", dialect=dialect)
+
+
+def subagent_done(
+    name: str,
+    n: int,
+    *,
+    hint: str = "",
+    dialect: Dialect = "rich",
+) -> str:
+    extra = f" · {hint}" if hint else ""
+    return muted(
+        f"{grammar.GLYPH_SUBAGENT} {name} {grammar.GLYPH_RESULT} done · {n} tool calls{extra}",
+        dialect=dialect,
+    )
+
+
+def tool_open(name: str, args: str = "", *, dialect: Dialect = "rich") -> str:
+    line = f"{tool(grammar.GLYPH_TOOL, dialect=dialect)} {strong(name, dialect=dialect)}"
+    if args:
+        line += f"  {muted(args, dialect=dialect)}"
+    return line
+
+
+def tool_result(
+    summary: str,
+    *,
+    duration: str = "",
+    hint: str = "",
+    indent: str = "  ",
+    dialect: Dialect = "rich",
+) -> str:
+    body = muted(f"{grammar.GLYPH_RESULT} {summary}{duration}", dialect=dialect)
+    extra = f" {muted(hint, dialect=dialect)}" if hint else ""
+    return f"{indent}{body}{extra}"
+
+
+def cancelled(*, dialect: Dialect = "rich") -> str:
+    return muted("cancelled", dialect=dialect)
+
+
+def todo_glyph(status: str = "pending", *, dialect: Dialect = "rich") -> str:
+    """Plan-checklist mark: done / in-progress / waiting."""
+    key = (status or "pending").lower()
+    if key == "completed":
+        return ok(grammar.GLYPH_TODO_DONE, dialect=dialect)
+    if key in {"in_progress", "running"}:
+        return accent(grammar.GLYPH_TODO_RUN, dialect=dialect)
+    return muted(grammar.GLYPH_TODO_WAIT, dialect=dialect)
+
+
+def todo_item(
+    content: str,
+    status: str = "pending",
+    *,
+    truncate: int | None = None,
+    dialect: Dialect = "rich",
+) -> str:
+    """One checklist row: ``  <glyph> <content>`` (completed items are dim)."""
+    body = str(content)
+    if truncate is not None:
+        limit = max(8, truncate - 4)
+        if len(body) > limit:
+            body = body[: limit - 1] + "…"
+    painted = (
+        muted(body, dialect=dialect)
+        if (status or "").lower() == "completed"
+        else escape(body, dialect=dialect)
+    )
+    return f"  {todo_glyph(status, dialect=dialect)} {painted}"
+
+
+def spinner(frame: str, text: str, *, dialect: Dialect = "rich") -> str:
+    """Live thinking/working line: tool-colored frame + dim status text."""
+    return f"{tool(frame, dialect=dialect)} {muted(text, dialect=dialect)}"
+
+
+def host_shell_banner(*, dialect: Dialect = "rich") -> str:
+    """One-line reminder that ``!`` is host-direct (danger-guard skipped)."""
+    return (
+        f"{err('⚡ host shell', dialect=dialect)} "
+        + muted(
+            "— runs on your machine directly; no agent, no approval, danger-guard skipped",
+            dialect=dialect,
+        )
+    )
+
+
+def link(url: str, text: str | None = None, *, dialect: Dialect = "rich") -> str:
+    """Clickable URL for Rich / Telegram; plain dialect prints the address."""
+    href = escape(url, dialect=dialect)
+    label = escape(url if text is None else text, dialect=dialect)
+    if dialect == "plain":
+        return label if text is None else f"{label} ({url})"
+    if dialect == "html":
+        return f'<a href="{href}">{label}</a>'
+    return f"[link={href}]{label}[/link]"
 
 
 def context_gauge(

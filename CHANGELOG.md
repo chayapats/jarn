@@ -25,7 +25,13 @@ All notable changes to J.A.R.N. are documented here. Format follows
   subcommand in grouped plain-dialect rows (Start / Account / Install /
   Workspace / Gateway / Support). Telegram `/status` `/cost` and other
   display commands run locally in the gateway worker and transcode layout
-  markup to HTML.
+  markup to HTML. The live turn stream, REPL notices, `status_line`, and
+  CLI human pages (`config reset` preview, `telemetry status`) go through
+  the same helpers. Telegram local slash names split into read-only pages
+  vs session chrome (`/verbose` `/focus` `/title`); mutating `/config`
+  `/preset` `/memory` `/sandbox` stay off the local shortcut. Busy CLI
+  subcommands (`exec`, `doctor`, `gateway`, `config`, `auth`, `sessions`,
+  `update`) group flags the same way as `jarn --help`.
 - Quieter default tool stream (`ui.tool_progress: new`). `/verbose` cycles
   density for the session; `/focus` hides tool chrome. The toolbar shows a
   context fill bar and session timer; YOLO stays sticky on narrow widths.

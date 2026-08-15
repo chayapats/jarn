@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from rich.markup import escape as _rich_escape
-
-from jarn.tui import palette
+from jarn.tui import layout
 from jarn.tui.controller import Controller
 
 
@@ -28,24 +26,24 @@ def _friendly_auth_error(raw: str, provider: str) -> str:
     """
     if provider == "codex_subscription":
         head = (
-            f"[{palette.C_ERROR}]Your ChatGPT subscription is not connected to "
-            f"Codex.[/{palette.C_ERROR}] Run "
-            f"[{palette.C_NOTICE}]jarn codex login[/{palette.C_NOTICE}], then verify "
-            f"it with [{palette.C_NOTICE}]jarn codex status[/{palette.C_NOTICE}]."
+            layout.err("Your ChatGPT subscription is not connected to Codex.")
+            + " Run "
+            + layout.notice("jarn codex login")
+            + ", then verify it with "
+            + layout.notice("jarn codex status")
+            + "."
         )
-        detail = raw.strip()
-        if detail:
-            head += f"\n[{palette.C_DIM}]{_rich_escape(detail)}[/{palette.C_DIM}]"
-        return head
-
-    who = f"for {provider} " if provider else ""
-    head = (
-        f"[{palette.C_ERROR}]Your API key {who}was rejected (401).[/{palette.C_ERROR}] "
-        f"Fix it with [{palette.C_NOTICE}]/key[/{palette.C_NOTICE}], run "
-        f"[{palette.C_NOTICE}]jarn setup[/{palette.C_NOTICE}], or set the provider's "
-        f"API-key env var."
-    )
+    else:
+        who = f"for {provider} " if provider else ""
+        head = (
+            layout.err(f"Your API key {who}was rejected (401).")
+            + " Fix it with "
+            + layout.notice("/key")
+            + ", run "
+            + layout.notice("jarn setup")
+            + ", or set the provider's API-key env var."
+        )
     detail = raw.strip()
     if detail:
-        head += f"\n[{palette.C_DIM}]{_rich_escape(detail)}[/{palette.C_DIM}]"
+        head += "\n" + layout.muted(detail)
     return head

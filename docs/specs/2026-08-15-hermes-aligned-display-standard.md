@@ -1,6 +1,6 @@
 # Hermes-aligned display & command standard
 
-- **Status:** implementing (waves A–E plus remaining SSOT in tree).
+- **Status:** implementing (waves A–K in tree).
 - **Goal:** make every J.A.R.N. command and live surface as easy to scan as
   [Hermes Agent](https://hermes-agent.nousresearch.com/docs/user-guide/cli) —
   plain language, one visual grammar, color with meaning, spacing that groups
@@ -718,6 +718,34 @@ turn without running a model. `/context` shows a bar + category table.
 | E4. Telegram uses layout HTML dialect for `/status` `/help` `/cost` | `telegram/outbox.py` or bot command path | telegram package tests |
 | E5. `CONFIGURATION.md` ui keys; `docs/README.md` link | docs | none |
 
+### Wave G — Live-stream layout helpers
+
+Move turn-stream chrome (`›`, `!`, `⏺`, `⎿`, `┊`, `✻`, todos, host-shell
+banner) into `layout.py` so the renderer, REPL, and Telegram cannot drift.
+Callers must not pre-escape; `layout.py` is the only module that may import
+`rich.markup.escape` or compose `[color]` tags.
+
+### Wave H–I — REPL consumers
+
+`repl_renderer.py`, `repl/turn.py`, `repl/keys.py`, `repl/app.py`,
+`repl/commands.py`, overlays, auth errors, and `Controller.status_line`
+print through layout helpers. prompt_toolkit HTML (toolbar, menus) and
+Rich `Text` (diff widget, live thinking) stay specialized and read
+`grammar` + `palette` directly.
+
+### Wave J — CLI subcommand groups + plain pages
+
+Busy parsers (`exec`, `doctor`, `gateway`, `config`, `auth`, `sessions`,
+`update`) use named `add_argument_group`s. Human `Label: value` pages
+(`config reset` preview, `telemetry status`) use `layout.field(..., dialect="plain")`.
+JSON / raw paths stay unstyled. `jarn --help` stays ≤ 160 lines.
+
+### Wave K — Telegram command layers
+
+`GATEWAY_READONLY_COMMANDS` (display pages) ∪ `GATEWAY_SESSION_COMMANDS`
+(`verbose` / `focus` / `title`, no YAML write) = `GATEWAY_LOCAL_COMMANDS`.
+Mutating names (`config`, `preset`, `memory`, `sandbox`) stay out.
+
 ### Wave F — Polish (optional, after A–E)
 
 - `/diff` (staged / all / session) if checkpoint + git already make it cheap.
@@ -795,6 +823,8 @@ Telegram `/status`, and a YOLO session to confirm the badge.
 3. **C1–C6** — “ux: splash, toolbar bar, quiet tool stream”
 4. **D1–D5** — “ux: status, context, tools, title”
 5. **E1–E5** — “ux: CLI help groups, doctor CTA, Telegram dialect”
+6. **G–K** — live-stream helpers, REPL/CLI consumers, Telegram command layers,
+   palette-markup discipline (this follow-up)
 
 Each PR description should include a before/after text mockup (no screenshots
 required) and the wave’s acceptance lines from this spec.

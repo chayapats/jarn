@@ -38,7 +38,6 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.markup import escape as _rich_escape
 
 from jarn.config.schema import Config
 from jarn.extensibility.commands import completion_catalog, parse_input
@@ -261,21 +260,23 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 context_files=self.config.compat.context_files,
             )
             if _ctx_path is not None:
-                c.print(
-                    f"[{palette.C_DIM}]context: {_ctx_path.name}[/{palette.C_DIM}]"
-                )
+                c.print(layout.muted(f"context: {_ctx_path.name}"))
         # One-time untrusted-project notice: the review-only floor is active and
         # capability keys were stripped. Surfaced once in scrollback (not per turn)
         # so the user knows why modes are clamped and how to unlock.
         if not self.controller.project_trusted and self.controller.project_root is not None:
             c.print(
-                f"{layout.warn(grammar.GLYPH_WARN + ' This project is untrusted')} "
-                f"[{palette.C_DIM}]— review-only floor active (modes clamped to plan; "
-                f"project hooks/MCP/providers ignored). Run [/{palette.C_DIM}]"
-                f"[{palette.C_NOTICE}]/trust[/{palette.C_NOTICE}]"
-                f"[{palette.C_DIM}] or [/{palette.C_DIM}]"
-                f"[{palette.C_NOTICE}]jarn trust[/{palette.C_NOTICE}]"
-                f"[{palette.C_DIM}] to unlock.[/{palette.C_DIM}]"
+                layout.warn(grammar.GLYPH_WARN + " This project is untrusted")
+                + " "
+                + layout.muted(
+                    "— review-only floor active (modes clamped to plan; "
+                    "project hooks/MCP/providers ignored). Run"
+                )
+                + " "
+                + layout.notice("/trust")
+                + layout.muted(" or ")
+                + layout.notice("jarn trust")
+                + layout.muted(" to unlock.")
             )
         # Background update-available check — never blocks the first prompt.
         from jarn.update_check import maybe_start_update_check
@@ -343,8 +344,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             await self.controller.ensure_runtime()
         except Exception as exc:  # noqa: BLE001
             self.console.print(
-                f"[{palette.C_WARN}]extensions not loaded:[/{palette.C_WARN}] {exc}  "
-                f"[{palette.C_DIM}]· send a message or run jarn setup[/{palette.C_DIM}]"
+                layout.warn("extensions not loaded:")
+                + f" {layout.escape(str(exc))} "
+                + layout.sep()
+                + layout.muted("send a message or run jarn setup")
             )
 
     def _warm_pricing_catalog(self) -> None:
@@ -358,8 +361,9 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             return
         if not network_fetch_enabled(config_network=self.config.pricing.network):
             self.console.print(
-                f"[{palette.C_DIM}]Network pricing catalog disabled "
-                f"— using bundled/override prices.[/{palette.C_DIM}]"
+                layout.muted(
+                    "Network pricing catalog disabled — using bundled/override prices."
+                )
             )
             return
         import threading
@@ -517,13 +521,11 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self.controller._steer_slot = None
         killed = self.controller.terminate_shells()
         if killed:
-            self.console.print(f"[{palette.C_DIM}]stopped {killed} running command(s)[/{palette.C_DIM}]")
+            self.console.print(layout.muted(f"stopped {killed} running command(s)"))
         if note_edits and self._turn_made_edits():
             note = self.controller.cancel_edit_note()
             if note:
-                self.console.print(
-                    f"[{palette.C_DIM}]{_rich_escape(note)}[/{palette.C_DIM}]", highlight=False
-                )
+                self.console.print(layout.muted(note), highlight=False)
 
     def _turn_made_edits(self) -> bool:
         """Whether the just-cancelled turn applied a file edit (write/edit) —
@@ -587,7 +589,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             width=width,
             file=buf,
         )
-        cap.print(f"[{palette.C_DIM}]{_rich_escape(text)}[/{palette.C_DIM}]", end="")
+        cap.print(layout.muted(text), end="")
         return buf.getvalue().rstrip("\n")
 
     def _stream_height(self) -> Dimension:
@@ -703,11 +705,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             width=width,
             file=buf,
         )
-        cap.print(
-            f"[{palette.C_TOOL}]{frame}[/{palette.C_TOOL}] "
-            f"[{palette.C_DIM}]{_rich_escape(text)}[/{palette.C_DIM}]",
-            end="",
-        )
+        cap.print(layout.spinner(frame, text), end="")
         return buf.getvalue().rstrip("\n")
 
     def _flash(self, html: HTML, secs: float = 2.0) -> None:
@@ -905,9 +903,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                     rel = path
                 at_ref = rel.as_posix() if hasattr(rel, "as_posix") else str(rel).replace("\\", "/")
                 self.input.insert_text(f"@{at_ref} ")
-                self.console.print(
-                    f"[{palette.C_NOTICE}]📎 attached {_rich_escape(at_ref)}[/{palette.C_NOTICE}]"
-                )
+                self.console.print(layout.notice(f"📎 attached {at_ref}"))
             if self.app is not None:
                 self.app.invalidate()
 
@@ -951,7 +947,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             return
         self.controller._steer_slot = line.payload
         self.console.print(
-            f"[{palette.C_DIM}]› (steered) {_rich_escape(line.display)}[/{palette.C_DIM}]"
+            layout.muted(f"{grammar.GLYPH_PROMPT} (steered) {line.display}")
         )
         if self.app is not None:
             self.app.invalidate()
@@ -1063,15 +1059,14 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             logging.getLogger("jarn").error("turn failed", exc_info=exc)
             from jarn.config import paths
 
-            self.console.print(
-                f"[{palette.C_ERROR}]{_rich_escape(str(exc))}[/{palette.C_ERROR}]"
-            )
+            self.console.print(layout.err(str(exc)))
             # soft_wrap so a long log path isn't word-wrapped mid-token (that split
             # ".../jarn.log" across a line on narrow / CI-width terminals).
             self.console.print(
-                f"[{palette.C_DIM}]full traceback → "
-                f"{paths.global_logs_dir() / 'jarn.log'}"
-                f" — report: jarn bug[/{palette.C_DIM}]",
+                layout.muted(
+                    f"full traceback → {paths.global_logs_dir() / 'jarn.log'} "
+                    "— report: jarn bug"
+                ),
                 soft_wrap=True,
                 highlight=False,
             )

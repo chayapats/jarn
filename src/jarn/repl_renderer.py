@@ -144,7 +144,7 @@ class TurnRenderer:
             n = self._tokens()
             label = f"{word}… {n} tok" if n else f"{word}…"
             self._status = self.console.status(
-                f"[{palette.C_DIM}]{label}[/{palette.C_DIM}]", spinner="dots"
+                layout.muted(label), spinner="dots"
             )
             self._status.start()
 
@@ -226,7 +226,7 @@ class TurnRenderer:
             self._live_clear()
             self._unspin()
             self._sep("reasoning")
-            self.console.print(f"[{palette.C_DIM}]{grammar.GLYPH_THINKING} thinking[/{palette.C_DIM}]")
+            self.console.print(layout.thinking())
             self.console.print(Text(self._rbuf.strip(), style=palette.C_DIM))
         self._rbuf = ""
 
@@ -248,7 +248,7 @@ class TurnRenderer:
         """Dim ``┊ <name> `` prefix marking a line as a subagent's, or ``""``."""
         if not agent:
             return ""
-        return f"[{palette.C_DIM}]{grammar.GLYPH_SUBAGENT} {esc(agent)} [/{palette.C_DIM}]"
+        return layout.subagent_prefix(agent)
 
     def _on_subagent_text(self, agent: str, text: str) -> None:
         """Collapse subagent prose: accumulate it into the Ctrl+O pager (in place) and
@@ -306,8 +306,7 @@ class TurnRenderer:
             n = self._subagent_tools.get(a, 0)
             hint = " · ctrl+o" if self._subagent_prose.get(a, "").strip() else ""
             self.console.print(
-                f"[{palette.C_DIM}]{grammar.GLYPH_SUBAGENT} {esc(a)} {grammar.GLYPH_RESULT} done · {n} tool calls{hint}"
-                f"[/{palette.C_DIM}]",
+                layout.subagent_done(a, n, hint="ctrl+o" if hint else ""),
                 highlight=False,
             )
         # One-shot: clear so a defensive second finish()/cancel() can't double-print.
@@ -371,14 +370,8 @@ class TurnRenderer:
             return
         self._sep("tool")
         prefix = self._agent_prefix(agent)
-        line = (
-            f"{prefix}{layout.paint(palette.C_TOOL, grammar.GLYPH_TOOL)} "
-            f"{layout.strong(name)}"
-        )
         arg_s = fmt_args(args)
-        if arg_s:
-            line += f"  {layout.muted(arg_s)}"
-        self.console.print(line, highlight=False)
+        self.console.print(prefix + layout.tool_open(name, arg_s), highlight=False)
         if agent:
             self._show_subagent_status()
         self._spin()
@@ -464,7 +457,7 @@ class TurnRenderer:
         if self._progress_active:
             self._progress_active.discard(tool_call_id or name)
             self._live_clear()
-        hint = f" [{palette.C_DIM}]· ctrl+o[/{palette.C_DIM}]" if full else ""
+        hint = "· ctrl+o" if full else ""
         dur = ""
         key, state = self._resolve_tool_state(name, tool_call_id)
         if state is not None:
@@ -477,7 +470,10 @@ class TurnRenderer:
         indent = "" if agent else "  "
         if self._tool_progress != "off":
             self.console.print(
-                f"{prefix}{indent}[{palette.C_DIM}]{grammar.GLYPH_RESULT} {esc(summary)}{dur}[/{palette.C_DIM}]{hint}",
+                prefix
+                + layout.tool_result(
+                    summary, duration=dur, hint=hint, indent=indent
+                ),
                 highlight=False,
             )
         if full:
@@ -494,41 +490,40 @@ class TurnRenderer:
 
     def on_verify_badge(self, verify_data: dict) -> None:
         """Render the structured verify result as a badge line."""
-        from jarn.tui import palette as _p
-
         self._commit_reasoning()
         self._commit_text()
         self._unspin()
         self._refresh_width()
 
-        cmd = esc(verify_data.get("cmd", ""))
+        cmd = verify_data.get("cmd", "")
         mode = verify_data.get("mode")
 
         if mode == "suggest":
             self.console.print(
-                f"  [{_p.C_DIM}]{grammar.GLYPH_RESULT} verify: run {cmd} to confirm "
-                f"(verify.gate: auto to automate)[/{_p.C_DIM}]",
+                layout.tool_result(
+                    f"verify: run {cmd} to confirm (verify.gate: auto to automate)"
+                ),
                 highlight=False,
             )
             return
 
         ok = verify_data.get("ok")
-        summary = esc(verify_data.get("summary", ""))
+        summary = str(verify_data.get("summary", ""))
         secs: float = float(verify_data.get("secs", 0.0))
         full_output: str = verify_data.get("full_output", "")
 
         if ok:
             self.console.print(
-                f"  [{_p.C_DIM}]{grammar.GLYPH_RESULT} verified: {cmd} [/{_p.C_DIM}]"
-                f"[{_p.C_SUCCESS}]{grammar.GLYPH_OK}[/{_p.C_SUCCESS}]"
-                f"[{_p.C_DIM}] {summary} · {secs:.1f}s[/{_p.C_DIM}]",
+                f"{layout.tool_result(f'verified: {cmd} ')}"
+                f"{layout.ok(grammar.GLYPH_OK)}"
+                f"{layout.muted(f' {summary} · {secs:.1f}s')}",
                 highlight=False,
             )
         else:
             self.console.print(
-                f"  [{_p.C_DIM}]{grammar.GLYPH_RESULT} verify: {cmd} [/{_p.C_DIM}]"
-                f"[{_p.C_ERROR}]{grammar.GLYPH_FAIL}[/{_p.C_ERROR}]"
-                f"[{_p.C_DIM}] {summary} · details ctrl+o[/{_p.C_DIM}]",
+                f"{layout.tool_result(f'verify: {cmd} ')}"
+                f"{layout.err(grammar.GLYPH_FAIL)}"
+                f"{layout.muted(f' {summary} · details ctrl+o')}",
                 highlight=False,
             )
             if full_output:
@@ -546,7 +541,7 @@ class TurnRenderer:
         self._commit_subagent_summaries()
         self._unspin()
         self._refresh_width()
-        self.console.print(f"\n[{palette.C_DIM}]cancelled[/{palette.C_DIM}]", highlight=False)
+        self.console.print("\n" + layout.cancelled(), highlight=False)
 
 
 # Backward-compatible alias used in tests.

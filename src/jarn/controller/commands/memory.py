@@ -6,8 +6,6 @@ import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rich.markup import escape as _escape_markup
-
 from jarn.agent.session import SuggestedMemory
 from jarn.commands.help import usage_error
 from jarn.controller.core import CommandResult
@@ -82,7 +80,7 @@ def cmd_wiki(ctrl, args: str) -> CommandResult:
         for slug, matched in results:
             lines.append(f"\n  {layout.accent(slug)}")
             for line in matched[:5]:
-                lines.append(f"    {_escape_markup(line)}")
+                lines.append(f"    {layout.escape(line)}")
             if len(matched) > 5:
                 lines.append(f"    {layout.more(len(matched) - 5)}")
         return CommandResult("\n".join(lines))
@@ -135,7 +133,7 @@ def _memory_list(ctrl) -> CommandResult:
             lines.append(
                 f"  {layout.accent(memory.name)} "
                 f"({layout.muted(memory.type)}) — "
-                f"{_escape_markup(memory.description)}"
+                f"{layout.escape(memory.description)}"
             )
     if not ctrl.project_trusted and ctrl.project_root is not None:
         lines.append(
@@ -162,7 +160,7 @@ def _memory_search(ctrl, query: str) -> CommandResult:
         lines.append(
             f"  {layout.accent(hit.memory.name)} "
             f"{layout.muted(f'({scope}, {hit.score:.2f})')} — "
-            f"{_escape_markup(hit.memory.description)}"
+            f"{layout.escape(hit.memory.description)}"
         )
         if hit.memory.body:
             lines.append(_format_memory_body(hit.memory.body))
@@ -182,7 +180,7 @@ def _memory_dump(ctrl) -> CommandResult:
     global_store = MemoryStore.global_store()
     global_index = global_store.index_text().strip()
     if global_index and "—" in global_index:
-        lines.append(_escape_markup(global_index))
+        lines.append(layout.escape(global_index))
     else:
         lines.append(layout.muted("(empty)"))
 
@@ -196,7 +194,7 @@ def _memory_dump(ctrl) -> CommandResult:
         if project_store:
             project_index = project_store.index_text().strip()
             if project_index and "—" in project_index:
-                lines.append(_escape_markup(project_index))
+                lines.append(layout.escape(project_index))
             else:
                 lines.append(layout.muted("(empty)"))
         else:
@@ -220,7 +218,7 @@ def _memory_dump(ctrl) -> CommandResult:
     label = f"Context file ({ctx_filename})" if ctx_filename else "Context file"
     lines.append(layout.notice(label))
     if ctx_text:
-        lines.append(_escape_markup(ctx_text.strip()))
+        lines.append(layout.escape(ctx_text.strip()))
     elif not ctrl.project_trusted and ctrl.project_root is not None:
         lines.append(layout.muted("Skipped — project untrusted."))
     else:
@@ -244,7 +242,7 @@ def _memory_dump(ctrl) -> CommandResult:
             lines.append(
                 f"  {layout.accent(hit.memory.name)} "
                 f"{layout.muted(f'({scope}, {hit.score:.2f})')} — "
-                f"{_escape_markup(hit.memory.description)}"
+                f"{layout.escape(hit.memory.description)}"
             )
     else:
         lines.append(layout.muted("(no memories to recall)"))
@@ -273,7 +271,7 @@ def _memory_show(ctrl, parts: list[str]) -> CommandResult:
             continue
         lines = [
             f"{layout.title(memory.name)} {layout.muted(f'({scope}, {memory.type})')}",
-            _escape_markup(memory.description),
+            layout.escape(memory.description),
         ]
         if memory.body:
             lines.append(_format_memory_body(memory.body))
@@ -405,7 +403,7 @@ def save_suggested_memory(ctrl, suggestion: SuggestedMemory) -> tuple[bool, str]
     return True, f"Saved {scope} memory: {path.name}"
 
 def _format_memory_body(body: str) -> str:
-    escaped = _escape_markup(body.strip())
+    escaped = layout.escape(body.strip())
     return "\n".join(f"    {line}" for line in escaped.splitlines())
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import stat
@@ -170,6 +171,42 @@ socket.getaddrinfo = denied
         assert detail in help_text
     assert len(help_text.splitlines()) <= 160
     assert len(help_text) <= 12_000
+
+
+def _subparser(parser: argparse.ArgumentParser, *names: str) -> argparse.ArgumentParser:
+    current = parser
+    for name in names:
+        sub = next(
+            action
+            for action in current._actions
+            if action.__class__.__name__ == "_SubParsersAction"
+        )
+        current = sub.choices[name]
+    return current
+
+
+def test_busy_subcommand_help_uses_argument_groups() -> None:
+    """Busy CLIs scan like Hermes: flags sit in named groups, dests unchanged."""
+    parser = cli.build_parser()
+    exec_help = _subparser(parser, "exec").format_help()
+    assert "Input:" in exec_help and "Output:" in exec_help and "Run:" in exec_help
+    doctor_help = _subparser(parser, "doctor").format_help()
+    assert "Repair:" in doctor_help and "Checks:" in doctor_help and "Output:" in doctor_help
+    update_help = _subparser(parser, "update").format_help()
+    assert "Release:" in update_help and "Mode:" in update_help and "Output:" in update_help
+    sessions_help = _subparser(parser, "sessions").format_help()
+    assert "Output:" in sessions_help and "Confirm:" in sessions_help
+    gateway_help = _subparser(parser, "gateway").format_help()
+    assert "Run:" in gateway_help and "Setup:" in gateway_help and "Confirm:" in gateway_help
+    assert "fake-backend" in gateway_help
+    login_help = _subparser(parser, "auth", "login").format_help()
+    assert "Method:" in login_help and "Wait:" in login_help and "Output:" in login_help
+    reset_help = _subparser(parser, "config", "reset").format_help()
+    assert "Scope:" in reset_help and "Confirm:" in reset_help
+    parsed = parser.parse_args(["exec", "do the thing", "--json", "--max-turns", "2"])
+    assert parsed.headless_prompt == "do the thing"
+    assert parsed.json is True
+    assert parsed.headless_max_turns == 2
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")

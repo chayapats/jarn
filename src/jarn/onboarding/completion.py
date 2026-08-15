@@ -10,8 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rich.console import Console
-from rich.markup import escape
-
 from jarn.auth import AuthStatus
 from jarn.config.defaults import CLOUD_PROVIDERS
 from jarn.install_state import (
@@ -233,12 +231,12 @@ def render_setup_completion(console: Console, summary: SetupCompletion) -> None:
     console.print("\n" + layout.banner_ok("Setup complete."))
     console.print(
         f"  {layout.field('J.A.R.N.', summary.install.version)} · "
-        f"{escape(summary.install.method)} · {install_label}"
+        f"{layout.escape(summary.install.method)} · {install_label}"
     )
     console.print(f"  {layout.field('Executable', summary.install.executable)}")
     console.print(f"  {layout.field('Config', str(summary.config_path))}")
     if summary.backup_path is not None:
-        console.print(f"  Previous config backup: {escape(str(summary.backup_path))}")
+        console.print(f"  Previous config backup: {layout.escape(str(summary.backup_path))}")
     console.print(f"  {layout.field('Provider', summary.provider)}")
     if summary.auth_mode:
         console.print(f"  {layout.field('Authentication', summary.auth_mode)}")
@@ -255,7 +253,7 @@ def render_setup_completion(console: Console, summary: SetupCompletion) -> None:
         f"  {layout.field('Permission', permission_mode_summary(summary.permission_mode))}"
     )
     console.print(f"  {layout.field('Working directory', str(summary.cwd))}")
-    console.print(f"  Provider validation: {escape(summary.validation)}")
+    console.print(f"  Provider validation: {layout.escape(summary.validation)}")
     console.print(f"\n  Next command: {layout.accent(summary.next_command, bold=True)}")
 
 
