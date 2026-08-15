@@ -212,6 +212,16 @@ def _frames_of(stdout: _Stdout, cls: type) -> list[Any]:
     return [f for f in stdout.frames() if isinstance(f, cls)]
 
 
+async def _wait_event(stdout: _Stdout, kind: str, timeout: float = 2.0) -> list[Any]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        found = [f for f in stdout.frames() if isinstance(f, EventFrame) and f.kind == kind]
+        if found:
+            return found
+        await asyncio.sleep(0.02)
+    pytest.fail(f"no {kind} event; got {stdout.frames()!r}")
+
+
 # ---------------------------------------------------------------------------
 # Redaction (T-WKR-2)
 # ---------------------------------------------------------------------------
@@ -795,3 +805,367 @@ async def test_emit_redacts_before_write(isolated_home: Path, tmp_path: Path):
 
 def test_worker_ordering_error_is_protocol_error():
     assert issubclass(WorkerOrderingError, Exception)
+
+
+async def _handshake_worker(isolated_home: Path, tmp_path: Path, ctrl):
+    root = tmp_path / "proj"
+    root.mkdir(exist_ok=True)
+    stdin, stdout = _Stdin(), _Stdout()
+    worker = GatewayWorker(
+        root=root,
+        controller=ctrl,
+        stdin=stdin,
+        stdout=stdout,
+        heartbeat_interval=60.0,
+        approval_store=PendingApprovalMap(isolated_home / "pending.json"),
+    )
+    task = asyncio.create_task(worker.run())
+    stdin.push(encode_line(HandshakeFrame(schema_version=SCHEMA_VERSION)))
+    await asyncio.sleep(0.05)
+    return worker, stdin, stdout, task
+
+
+@pytest.mark.asyncio
+async def test_mode_ask_is_local_not_an_agent_turn(isolated_home: Path, tmp_path: Path):
+    from jarn.config.schema import PermissionMode
+    from jarn.controller.async_ops import set_permission_mode as real_set
+    from jarn.controller.core import CommandResult
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    ctrl = _stub_controller(root=root)
+    ctrl.project_trusted = True
+    ctrl.config.permission_mode = PermissionMode.PLAN
+    handle_calls: list[tuple[str, str]] = []
+
+    def apply_mode(value: str) -> str:
+        target = PermissionMode(value)
+        ctrl.config.permission_mode = target
+        return target.value
+
+    ctrl.apply_mode = apply_mode
+
+    async def set_permission_mode(value, confirm=None):
+        return await real_set(ctrl, value, confirm=confirm)
+
+    ctrl.set_permission_mode = set_permission_mode
+    ctrl._invalidate_runtime = MagicMock()
+
+    def handle(name, args):
+        handle_calls.append((name, args))
+        return CommandResult("sync-mode")
+
+    ctrl.handle_command = handle
+    worker, stdin, stdout, task = await _handshake_worker(isolated_home, tmp_path, ctrl)
+    stdin.push(encode_line(TurnFrame(thread_id="t-mode", text="/mode ask")))
+    await _wait_event(stdout, "done")
+    notices = [f for f in stdout.frames() if isinstance(f, EventFrame) and f.kind == "notice"]
+    assert notices
+    assert "ask" in notices[0].text.lower() or "permission" in notices[0].text.lower()
+    assert not any(
+        isinstance(f, EventFrame) and f.kind == "text" and "echo:" in f.text
+        for f in stdout.frames()
+    )
+    assert ("mode", "ask") not in handle_calls
+    assert ctrl.config.permission_mode == PermissionMode.ASK
+    stdin.push(encode_line(ShutdownFrame()))
+    await asyncio.wait_for(task, timeout=2)
+    del worker
+
+
+@pytest.mark.asyncio
+async def test_mode_yolo_sends_card_cancel_leaves_mode(isolated_home: Path, tmp_path: Path):
+    from jarn.config.schema import PermissionMode
+    from jarn.controller.async_ops import set_permission_mode as real_set
+    from jarn.controller.core import CommandResult
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    ctrl = _stub_controller(root=root)
+    ctrl.project_trusted = True
+    ctrl.config.permission_mode = PermissionMode.ASK
+    handle_calls: list[tuple[str, str]] = []
+
+    def apply_mode(value: str) -> str:
+        target = PermissionMode(value)
+        ctrl.config.permission_mode = target
+        return target.value
+
+    ctrl.apply_mode = apply_mode
+
+    async def set_permission_mode(value, confirm=None):
+        return await real_set(ctrl, value, confirm=confirm)
+
+    ctrl.set_permission_mode = set_permission_mode
+    ctrl._invalidate_runtime = MagicMock()
+
+    def handle(name, args):
+        handle_calls.append((name, args))
+        return CommandResult("sync-yolo")
+
+    ctrl.handle_command = handle
+    worker, stdin, stdout, task = await _handshake_worker(isolated_home, tmp_path, ctrl)
+    stdin.push(encode_line(TurnFrame(thread_id="t-yolo", text="/mode yolo")))
+    cards = await _wait_event(stdout, "yolo_confirm")
+    token = str(cards[0].data.get("token") or "")
+    assert token
+    assert ("mode", "yolo") not in handle_calls
+    stdin.push(encode_line(ApprovalVerdictFrame(token=token, approved=False)))
+    await _wait_event(stdout, "done")
+    notices = [f.text for f in stdout.frames() if isinstance(f, EventFrame) and f.kind == "notice"]
+    assert any(
+        "cancelled" in (t or "").lower() or "unchanged" in (t or "").lower() for t in notices
+    )
+    assert ctrl.config.permission_mode == PermissionMode.ASK
+    assert ("mode", "yolo") not in handle_calls
+    stdin.push(encode_line(ShutdownFrame()))
+    await asyncio.wait_for(task, timeout=2)
+    del worker
+
+
+@pytest.mark.asyncio
+async def test_mode_yolo_untrusted_clamps_without_card(isolated_home: Path, tmp_path: Path):
+    from jarn.config.schema import PermissionMode
+    from jarn.controller.async_ops import set_permission_mode as real_set
+    from jarn.controller.core import CommandResult
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    ctrl = _stub_controller(root=root)
+    ctrl.project_trusted = False
+    ctrl.config.permission_mode = PermissionMode.PLAN
+
+    def apply_mode(value: str) -> str:
+        target = PermissionMode(value)
+        if not ctrl.project_trusted and target.rank > PermissionMode.PLAN.rank:
+            target = PermissionMode.PLAN
+        ctrl.config.permission_mode = target
+        return target.value
+
+    ctrl.apply_mode = apply_mode
+
+    async def set_permission_mode(value, confirm=None):
+        return await real_set(ctrl, value, confirm=confirm)
+
+    ctrl.set_permission_mode = set_permission_mode
+    ctrl._invalidate_runtime = MagicMock()
+    ctrl.handle_command = lambda name, args: CommandResult("sync")
+    worker, stdin, stdout, task = await _handshake_worker(isolated_home, tmp_path, ctrl)
+    stdin.push(encode_line(TurnFrame(thread_id="t-untrusted", text="/mode yolo")))
+    await _wait_event(stdout, "done")
+    kinds = [f.kind for f in stdout.frames() if isinstance(f, EventFrame)]
+    assert "yolo_confirm" not in kinds
+    notices = [f.text for f in stdout.frames() if isinstance(f, EventFrame) and f.kind == "notice"]
+    assert any("untrusted" in (t or "").lower() or "clamped" in (t or "").lower() for t in notices)
+    assert ctrl.config.permission_mode == PermissionMode.PLAN
+    stdin.push(encode_line(ShutdownFrame()))
+    await asyncio.wait_for(task, timeout=2)
+    del worker
+
+
+@pytest.mark.asyncio
+async def test_model_set_invalidates_runtime(isolated_home: Path, tmp_path: Path):
+    from jarn.controller.core import CommandResult
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    ctrl = _stub_controller(root=root)
+    ctrl._invalidate_runtime = MagicMock()
+
+    def handle(name, args):
+        if name == "model" and args.strip():
+            return CommandResult(f"Model set to {args.strip()} (rebuilding).", rebuilt=True)
+        if name == "model":
+            return CommandResult("Model: current")
+        return CommandResult("")
+
+    ctrl.handle_command = handle
+    worker, stdin, stdout, task = await _handshake_worker(isolated_home, tmp_path, ctrl)
+    stdin.push(encode_line(TurnFrame(thread_id="t-model", text="/model gpt-test")))
+    await _wait_event(stdout, "done")
+    ctrl._invalidate_runtime.assert_called()
+    assert not any(isinstance(f, EventFrame) and "echo:" in (f.text or "") for f in stdout.frames())
+    stdin.push(encode_line(ShutdownFrame()))
+    await asyncio.wait_for(task, timeout=2)
+    del worker
+
+
+@pytest.mark.asyncio
+async def test_skill_slash_seeds_same_turn(isolated_home: Path, tmp_path: Path):
+    from jarn.controller.core import CommandResult
+
+    seen: list[str] = []
+
+    async def run_turn(driver, text, **kwargs):
+        seen.append(text)
+        yield Event(EventKind.TEXT, text=f"echo:{text}")
+        yield Event(EventKind.DONE)
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    ctrl = _stub_controller(root=root, run_turn=run_turn)
+    ctrl.runtime = SimpleNamespace(skills={"deploy": SimpleNamespace(name="deploy")})
+
+    def handle(name, args):
+        if name in {"skill", "deploy"}:
+            return CommandResult(
+                "skill body",
+                seed_turn=True,
+                seed_input="Apply the activated `deploy` skill to this turn.",
+            )
+        return CommandResult("nope")
+
+    ctrl.handle_command = handle
+    worker, stdin, stdout, task = await _handshake_worker(isolated_home, tmp_path, ctrl)
+    stdin.push(encode_line(TurnFrame(thread_id="t-skill", text="/skill deploy")))
+    await _wait_event(stdout, "done")
+    assert seen
+    assert "deploy" in seen[0]
+    assert "/skill" not in seen[0]
+    stdin.push(encode_line(ShutdownFrame()))
+    await asyncio.wait_for(task, timeout=2)
+    del worker
+
+
+@pytest.mark.asyncio
+async def test_unknown_skill_is_notice_not_agent_prompt(isolated_home: Path, tmp_path: Path):
+    from jarn.controller.core import CommandResult
+
+    seen: list[str] = []
+
+    async def run_turn(driver, text, **kwargs):
+        seen.append(text)
+        yield Event(EventKind.TEXT, text=f"echo:{text}")
+        yield Event(EventKind.DONE)
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    ctrl = _stub_controller(root=root, run_turn=run_turn)
+
+    def handle(name, args):
+        return CommandResult("Unknown skill: 'nope'. Available: none.")
+
+    ctrl.handle_command = handle
+    worker, stdin, stdout, task = await _handshake_worker(isolated_home, tmp_path, ctrl)
+    stdin.push(encode_line(TurnFrame(thread_id="t-skill-miss", text="/skill nope")))
+    await _wait_event(stdout, "done")
+    notices = [f.text for f in stdout.frames() if isinstance(f, EventFrame) and f.kind == "notice"]
+    assert any("Unknown skill" in (t or "") for t in notices)
+    assert seen == []
+    stdin.push(encode_line(ShutdownFrame()))
+    await asyncio.wait_for(task, timeout=2)
+    del worker
+
+
+@pytest.mark.asyncio
+async def test_resume_unknown_id_does_not_start_agent_turn(isolated_home: Path, tmp_path: Path):
+    seen: list[str] = []
+
+    async def run_turn(driver, text, **kwargs):
+        seen.append(text)
+        yield Event(EventKind.TEXT, text=f"echo:{text}")
+        yield Event(EventKind.DONE)
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    ctrl = _stub_controller(root=root, run_turn=run_turn)
+    ctrl.sessions = SimpleNamespace(get=lambda tid: None, list=lambda: [])
+    worker, stdin, stdout, task = await _handshake_worker(isolated_home, tmp_path, ctrl)
+    stdin.push(encode_line(TurnFrame(thread_id="t-resume", text="/resume missing-id")))
+    await _wait_event(stdout, "done")
+    notices = [f.text for f in stdout.frames() if isinstance(f, EventFrame) and f.kind == "notice"]
+    assert any("Unknown session" in (t or "") or "Usage:" in (t or "") for t in notices)
+    assert seen == []
+    stdin.push(encode_line(ShutdownFrame()))
+    await asyncio.wait_for(task, timeout=2)
+    del worker
+
+
+@pytest.mark.asyncio
+async def test_compact_calls_controller_compact(isolated_home: Path, tmp_path: Path):
+    from jarn.controller.core import CommandResult
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    ctrl = _stub_controller(root=root)
+    compact_calls: list[str] = []
+
+    async def compact():
+        compact_calls.append("go")
+        return "summarized the thread"
+
+    ctrl.compact = compact
+    ctrl.handle_command = lambda name, args: CommandResult("status-only")
+    worker, stdin, stdout, task = await _handshake_worker(isolated_home, tmp_path, ctrl)
+    stdin.push(encode_line(TurnFrame(thread_id="t-compact", text="/compact")))
+    await _wait_event(stdout, "done")
+    assert compact_calls == ["go"]
+    notices = [f.text for f in stdout.frames() if isinstance(f, EventFrame) and f.kind == "notice"]
+    assert any("summarized" in (t or "") for t in notices)
+    stdin.push(encode_line(ShutdownFrame()))
+    await asyncio.wait_for(task, timeout=2)
+    del worker
+
+
+@pytest.mark.asyncio
+async def test_undo_without_confirm_does_not_restore(isolated_home: Path, tmp_path: Path):
+    from jarn.controller.core import CommandResult
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    ctrl = _stub_controller(root=root)
+    restored: list[str] = []
+
+    async def undo(*, confirm=None):
+        preview = SimpleNamespace(
+            ok=True,
+            message="ckpt",
+            files=["a.py"],
+            file_count=1,
+            sha="abc",
+            current_tree="t",
+        )
+        if confirm is None:
+            return CommandResult("preview only; no files were changed.")
+        if not await confirm(preview):
+            return CommandResult("Undo cancelled — no files were changed.")
+        restored.append("yes")
+        return CommandResult("Undone.")
+
+    ctrl.undo = undo
+    ctrl.handle_command = lambda name, args: CommandResult("sync-undo-mutate")
+    worker, stdin, stdout, task = await _handshake_worker(isolated_home, tmp_path, ctrl)
+    stdin.push(encode_line(TurnFrame(thread_id="t-undo", text="/undo")))
+    cards = await _wait_event(stdout, "undo_confirm")
+    token = str(cards[0].data.get("token") or "")
+    stdin.push(encode_line(ApprovalVerdictFrame(token=token, approved=False)))
+    await _wait_event(stdout, "done")
+    assert restored == []
+    notices = [f.text for f in stdout.frames() if isinstance(f, EventFrame) and f.kind == "notice"]
+    assert any("cancelled" in (t or "").lower() or "no files" in (t or "").lower() for t in notices)
+    stdin.push(encode_line(ShutdownFrame()))
+    await asyncio.wait_for(task, timeout=2)
+    del worker
+
+
+@pytest.mark.asyncio
+async def test_mutating_slash_on_worker_is_notice_not_agent(isolated_home: Path, tmp_path: Path):
+    seen: list[str] = []
+
+    async def run_turn(driver, text, **kwargs):
+        seen.append(text)
+        yield Event(EventKind.TEXT, text=f"echo:{text}")
+        yield Event(EventKind.DONE)
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    ctrl = _stub_controller(root=root, run_turn=run_turn)
+    worker, stdin, stdout, task = await _handshake_worker(isolated_home, tmp_path, ctrl)
+    stdin.push(encode_line(TurnFrame(thread_id="t-cfg", text="/config set ui.theme light")))
+    await _wait_event(stdout, "done")
+    notices = [f.text for f in stdout.frames() if isinstance(f, EventFrame) and f.kind == "notice"]
+    assert any("terminal" in (t or "").lower() or "jarn CLI" in (t or "") for t in notices)
+    assert seen == []
+    stdin.push(encode_line(ShutdownFrame()))
+    await asyncio.wait_for(task, timeout=2)
+    del worker

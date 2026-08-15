@@ -48,6 +48,7 @@ __all__ = [
     "TelegramSender",
     "build_approval_card",
     "build_media_refusal_card",
+    "build_undo_confirm_card",
     "build_yolo_confirm_card",
     "effective_telegram_tool_progress",
     "encode_callback",
@@ -116,7 +117,7 @@ class TelegramSender(Protocol):
 class CallbackKind:
     """Decoded callback button payload."""
 
-    kind: str  # tool | memory | skill | plan | yolo
+    kind: str  # tool | memory | skill | plan | yolo | undo
     token: str
     action: str  # once | session | deny | save | decline | auto-edit | ask | keep | ok | no
 
@@ -143,6 +144,7 @@ def parse_callback(data: str | None) -> CallbackKind | None:
         "s": "skill",
         "p": "plan",
         "y": "yolo",
+        "u": "undo",
     }
     kind = kind_map.get(prefix)
     if kind is None or not token:
@@ -425,6 +427,23 @@ def build_yolo_confirm_card(*, token: str = "yolo") -> tuple[str, dict[str, Any]
     return text, markup
 
 
+def build_undo_confirm_card(*, token: str = "undo") -> tuple[str, dict[str, Any]]:
+    """Confirm/Cancel card for Telegram ``/undo`` (same callback pattern as yolo)."""
+    text = f"{layout.strong('Restore checkpoint?', dialect='html')}\n" + layout.escape(
+        "This reverts the last turn's file changes. Cancel leaves files unchanged.",
+        dialect="html",
+    )
+    markup = _inline_keyboard(
+        [
+            [
+                ("Confirm", encode_callback("u", token, "ok")),
+                ("Cancel", encode_callback("u", token, "no")),
+            ]
+        ]
+    )
+    return text, markup
+
+
 def build_media_refusal_card(
     *,
     message: str,
@@ -531,6 +550,14 @@ class Outbox:
             return
         if kind == "notice":
             await self.send_notice(chat_id, text or str(data.get("message") or ""))
+            return
+        if kind == "yolo_confirm":
+            await self.send_yolo_confirm(chat_id, token=str(data.get("token") or "yolo"))
+            return
+        if kind == "undo_confirm":
+            await self.send_undo_confirm(chat_id, token=str(data.get("token") or "undo"))
+            return
+        if kind == "thread_switch":
             return
         if kind == "approval_ask" or data.get("approval_ask"):
             await self.send_approval_card(
@@ -762,6 +789,16 @@ class Outbox:
 
     async def send_yolo_confirm(self, chat_id: int, *, token: str = "yolo") -> Any:
         html, markup = build_yolo_confirm_card(token=token)
+        self.restart_draft(chat_id)
+        return await self.sender.send_message(
+            chat_id=chat_id,
+            text=html,
+            parse_mode=self.parse_mode,
+            reply_markup=self._coerce_markup(markup),
+        )
+
+    async def send_undo_confirm(self, chat_id: int, *, token: str = "undo") -> Any:
+        html, markup = build_undo_confirm_card(token=token)
         self.restart_draft(chat_id)
         return await self.sender.send_message(
             chat_id=chat_id,

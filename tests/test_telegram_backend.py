@@ -173,6 +173,35 @@ async def test_bind_outbox_delivers_worker_events_from_reader_thread(
 
 
 @pytest.mark.asyncio
+async def test_thread_switch_event_rebinds_chat_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("JARN_HOME", str(home))
+    personal = tmp_path / "personal"
+    personal.mkdir()
+    (personal / ".jarn").mkdir()
+    supervisor = MagicMock(spec=DaemonSupervisor)
+    supervisor.on_outbound = None
+    supervisor.on_worker_death = None
+    router = SessionRouter(supervisor, personal_root=personal)
+    backend = SessionRouterBackend(router=router, supervisor=supervisor)
+    original = router.thread_id_for(9)
+    backend.bind_outbox(Outbox(sender=_FakeSender()))
+    await backend._deliver_frame(
+        9,
+        EventFrame(
+            thread_id=original,
+            kind="thread_switch",
+            data={"thread_id": "resumed-thread-id"},
+        ),
+    )
+    assert router.thread_id_for(9) == "resumed-thread-id"
+    backend.unbind_outbox()
+
+
+@pytest.mark.asyncio
 async def test_restart_verdict_uses_stored_root_thread_and_chat(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

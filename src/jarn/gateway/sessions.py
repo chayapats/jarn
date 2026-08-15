@@ -301,6 +301,14 @@ class SessionRouter:
             state.threads[state.active_root] = tid
             return tid
 
+    def bind_thread(self, chat_id: int, thread_id: str, root: Path | None = None) -> str:
+        """Point this chat's active root at an existing ``thread_id`` (``/resume``)."""
+        with self._lock:
+            state = self._state(chat_id)
+            key = (root or state.active_root).resolve()
+            state.threads[key] = thread_id
+            return thread_id
+
     def cmd_stop(self, chat_id: int) -> bool:
         """Cancel the in-flight turn on the chat's active root.
 

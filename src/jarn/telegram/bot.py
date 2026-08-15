@@ -65,8 +65,15 @@ _CONFLICT_NOTICE = (
 _GATEWAY_HELP_ROWS: tuple[tuple[str, str], ...] = (
     ("/stop", "Cancel the in-flight turn"),
     ("/new", "Start a fresh thread"),
+    ("/reset", "Alias of /new (fresh gateway thread, not /clear)"),
     ("/repo <name>", "Switch the active repo"),
     ("/help [name]", "This catalog (same commands as the REPL)"),
+    ("/rollback", "Alias: use /checkpoints and /undo — not a mutate command"),
+)
+
+_ROLLBACK_NOTICE = (
+    "There is no /rollback mutate command. Use /checkpoints to list restores "
+    "and /undo to revert the last turn."
 )
 
 
@@ -297,6 +304,7 @@ class TelegramBotApp:
                 )
                 if restored:
                     _log.info("re-displayed %s parked approval card(s)", restored)
+            await self._register_bot_commands()
             return await self._poll_loop()
         finally:
             unbinder = getattr(self.backend, "unbind_outbox", None)
@@ -386,6 +394,29 @@ class TelegramBotApp:
             except Exception as exc:  # noqa: BLE001
                 _log.warning("conflict notice send failed: %s", exc)
 
+    async def _register_bot_commands(self) -> None:
+        """Publish the BotFather menu from local + gateway-only names."""
+        if self._bot is None:
+            return
+        setter = getattr(self._bot, "set_my_commands", None)
+        if not callable(setter):
+            return
+        from jarn.commands.registry import gateway_botfather_commands
+
+        rows = gateway_botfather_commands()
+        try:
+            from aiogram.types import BotCommand
+
+            commands = [
+                BotCommand(command=name, description=description) for name, description in rows
+            ]
+        except Exception:  # noqa: BLE001 — tests/fakes accept tuples
+            commands = [{"command": name, "description": description} for name, description in rows]
+        try:
+            await setter(commands)
+        except Exception:  # noqa: BLE001 — menu is best-effort
+            _log.warning("setMyCommands failed", exc_info=True)
+
     def stop(self) -> None:
         self._running = False
 
@@ -452,13 +483,13 @@ class TelegramBotApp:
         if parsed is None:
             return
 
-        if parsed.kind == "yolo":
+        if parsed.kind in {"yolo", "undo"}:
             await self.backend.submit_verdict(
                 chat_id=chat_id,
                 user_id=user_id,
                 token=parsed.token,
                 approved=parsed.action == "ok",
-                kind="yolo",
+                kind=parsed.kind,
             )
             return
 
@@ -522,7 +553,7 @@ class TelegramBotApp:
                 if self._outbox:
                     await self._outbox.send_notice(chat_id, "Stopped.")
                 return
-            if name == "new":
+            if name in {"new", "reset"}:
                 thread_id = await self.backend.new_thread(chat_id=chat_id, user_id=user_id)
                 if self._outbox:
                     await self._outbox.send_notice(chat_id, f"New thread: {thread_id}")
@@ -551,6 +582,20 @@ class TelegramBotApp:
             if name == "help":
                 if self._outbox:
                     await self._outbox.send_html(chat_id, _telegram_help_html(rest))
+                return
+            if name == "rollback":
+                if self._outbox:
+                    await self._outbox.send_notice(chat_id, _ROLLBACK_NOTICE)
+                return
+            from jarn.commands.registry import (
+                GATEWAY_ONLY_COMMANDS,
+                gateway_mutating_notice,
+                is_gateway_mutating_command,
+            )
+
+            if is_gateway_mutating_command(name) and name not in GATEWAY_ONLY_COMMANDS:
+                if self._outbox:
+                    await self._outbox.send_notice(chat_id, gateway_mutating_notice(name))
                 return
 
         # Media path (T-TG-4).

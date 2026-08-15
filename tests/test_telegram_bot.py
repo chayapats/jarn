@@ -29,6 +29,7 @@ class FakeBot:
     unauthorized_on_poll: bool = False
     sent: list[tuple[Any, ...]] = field(default_factory=list)
     answered: list[Any] = field(default_factory=list)
+    commands_set: list[Any] = field(default_factory=list)
     webhook_url: str = ""
     pending_update_count: int = 0
     _page: int = 0
@@ -69,6 +70,9 @@ class FakeBot:
 
     async def answer_callback_query(self, callback_query_id, **kwargs):
         self.answered.append(callback_query_id)
+
+    async def set_my_commands(self, commands, **kwargs):
+        self.commands_set = list(commands)
 
     @property
     def session(self):
@@ -210,6 +214,9 @@ async def test_help_uses_command_catalog_html_and_does_not_submit_a_turn():
     joined = "\n".join(bodies)
     assert "<b>Work</b>" in joined
     assert "/compact" in joined
+    assert "Gateway" in joined
+    assert "/reset" in joined
+    assert "/rollback" in joined
     assert "<span" not in joined
     assert any(sent[2].get("parse_mode") == "HTML" for sent in fake.sent)
 
@@ -386,6 +393,13 @@ async def test_start_binds_restores_and_unbinds_production_backend_lifecycle(
     assert calls[0][0] == "bind"
     assert calls[1] == ("restore", (42,))
     assert calls[-1] == "unbind"
+    menu_names = {
+        getattr(cmd, "command", None) or cmd.get("command") for cmd in fake.commands_set
+    }
+    assert "status" in menu_names
+    assert "stop" in menu_names
+    assert "reset" in menu_names
+    assert "config" not in menu_names
 
 
 @pytest.mark.asyncio
@@ -410,3 +424,85 @@ def test_poller_lock_second_holder_fails(tmp_path):
         first.release()
     with PollerLock(path) as lock:
         assert lock.held
+
+
+@pytest.mark.asyncio
+async def test_reset_aliases_new_and_does_not_submit_a_turn():
+    backend = InMemoryGatewayBackend()
+    fake = FakeBot()
+    app = TelegramBotApp(token="fake", allowed_user_ids=[1], backend=backend)
+    app._bot = None
+    app._outbox = Outbox(sender=fake)
+    await app.handle_update(_update_message(uid=1, user_id=1, chat_id=1, text="/reset"))
+    assert backend.threads == [(1, 1)]
+    assert backend.turns == []
+    assert any("New thread:" in sent[1] for sent in fake.sent)
+
+
+@pytest.mark.asyncio
+async def test_rollback_is_help_alias_not_a_turn_or_mutate():
+    backend = InMemoryGatewayBackend()
+    fake = FakeBot()
+    app = TelegramBotApp(token="fake", allowed_user_ids=[1], backend=backend)
+    app._bot = None
+    app._outbox = Outbox(sender=fake)
+    await app.handle_update(_update_message(uid=1, user_id=1, chat_id=1, text="/rollback"))
+    assert backend.turns == []
+    assert backend.threads == []
+    joined = "\n".join(sent[1] for sent in fake.sent)
+    assert "/checkpoints" in joined
+    assert "/undo" in joined
+
+
+@pytest.mark.asyncio
+async def test_mutating_config_set_is_refused_without_submit_turn():
+    backend = InMemoryGatewayBackend()
+    fake = FakeBot()
+    app = TelegramBotApp(token="fake", allowed_user_ids=[1], backend=backend)
+    app._bot = None
+    app._outbox = Outbox(sender=fake)
+    await app.handle_update(
+        _update_message(uid=1, user_id=1, chat_id=1, text="/config set ui.theme light")
+    )
+    await app.handle_update(_update_message(uid=2, user_id=1, chat_id=1, text="/clear"))
+    assert backend.turns == []
+    joined = "\n".join(sent[1] for sent in fake.sent)
+    assert "terminal" in joined.lower() or "jarn CLI" in joined
+    assert "/config" in joined
+
+
+@pytest.mark.asyncio
+async def test_help_chunks_oversized_html(monkeypatch):
+    backend = InMemoryGatewayBackend()
+    fake = FakeBot()
+    app = TelegramBotApp(token="fake", allowed_user_ids=[1], backend=backend)
+    app._bot = None
+    app._outbox = Outbox(sender=fake)
+    monkeypatch.setattr(
+        "jarn.telegram.outbox.chunk_html",
+        lambda html, **kwargs: ["HELP-PART-1", "HELP-PART-2"],
+    )
+    await app.handle_update(_update_message(uid=1, user_id=1, chat_id=1, text="/help"))
+    assert backend.turns == []
+    bodies = [sent[1] for sent in fake.sent]
+    assert bodies == ["HELP-PART-1", "HELP-PART-2"]
+
+
+def test_botfather_menu_names_are_local_or_gateway_only():
+    from jarn.commands.registry import (
+        GATEWAY_LOCAL_COMMANDS,
+        GATEWAY_ONLY_COMMANDS,
+        gateway_botfather_commands,
+        is_gateway_mutating_command,
+    )
+
+    menu = gateway_botfather_commands()
+    names = {name for name, _ in menu}
+    assert names <= (GATEWAY_LOCAL_COMMANDS | GATEWAY_ONLY_COMMANDS)
+    assert {"stop", "new", "repo", "help", "reset"} <= names
+    assert "config" not in names
+    assert "clear" not in names
+    assert "memory" not in names
+    for name in names:
+        if name not in GATEWAY_ONLY_COMMANDS:
+            assert not is_gateway_mutating_command(name)

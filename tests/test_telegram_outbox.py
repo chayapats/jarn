@@ -12,6 +12,7 @@ from jarn.telegram.outbox import (
     Outbox,
     build_approval_card,
     build_media_refusal_card,
+    build_undo_confirm_card,
     build_yolo_confirm_card,
     effective_telegram_tool_progress,
     encode_callback,
@@ -439,3 +440,52 @@ async def test_layout_notice_is_sent_as_telegram_html():
     assert "<b>Status</b>" in sender.messages[0]["text"]
     assert "[b]" not in sender.messages[0]["text"]
     assert sender.messages[0]["parse_mode"] == "HTML"
+
+
+def test_undo_confirm_card_uses_yolo_callback_pattern():
+    text, markup = build_undo_confirm_card(token="undo-abc")
+    labels = [b["text"] for r in markup["inline_keyboard"] for b in r]
+    assert labels == ["Confirm", "Cancel"]
+    parsed = parse_callback(markup["inline_keyboard"][0][0]["callback_data"])
+    assert parsed is not None
+    assert parsed.kind == "undo"
+    assert parsed.token == "undo-abc"
+    assert parsed.action == "ok"
+    cancel = parse_callback(markup["inline_keyboard"][0][1]["callback_data"])
+    assert cancel is not None and cancel.action == "no"
+    assert "Restore" in text
+
+
+@pytest.mark.asyncio
+async def test_yolo_confirm_event_sends_existing_card():
+    sender = FakeSender()
+    out = Outbox(sender=sender)
+    await out.on_event(7, kind="yolo_confirm", data={"token": "yolo-tok"})
+    assert sender.messages
+    assert "Enable yolo" in sender.messages[0]["text"]
+    assert sender.messages[0]["reply_markup"] is not None
+    assert sender.messages[0]["parse_mode"] == "HTML"
+
+
+@pytest.mark.asyncio
+async def test_undo_confirm_event_sends_card():
+    sender = FakeSender()
+    out = Outbox(sender=sender)
+    await out.on_event(7, kind="undo_confirm", data={"token": "undo-tok"})
+    assert sender.messages
+    assert "Restore checkpoint" in sender.messages[0]["text"]
+    assert sender.messages[0]["reply_markup"] is not None
+
+
+def test_chunk_html_splits_under_limit_without_overflow():
+    from jarn.telegram.htmlutil import TELEGRAM_MESSAGE_MAX, chunk_html
+
+    short = "<b>Status</b>"
+    assert chunk_html(short) == [short]
+    blob = "\n".join(f"<b>row-{i}</b> " + ("x" * 80) for i in range(80))
+    parts = chunk_html(blob)
+    assert len(parts) > 1
+    assert all(len(part) <= TELEGRAM_MESSAGE_MAX for part in parts)
+    reconstructed = "\n".join(parts)
+    assert "row-0" in reconstructed
+    assert "row-79" in reconstructed
