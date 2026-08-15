@@ -439,6 +439,9 @@ _VALID_NOTIFY_VALUES: frozenset[str] = frozenset({"off", "bell", "desktop", "bot
 
 _VALID_TOOL_PROGRESS_VALUES: frozenset[str] = frozenset(TOOL_PROGRESS_VALUES)
 
+BUSY_INPUT_MODES: tuple[str, ...] = ("queue", "steer", "interrupt")
+_VALID_BUSY_INPUT_MODES: frozenset[str] = frozenset(BUSY_INPUT_MODES)
+
 _VALID_SHOW_REASONING_VALUES: frozenset[str] = frozenset(SHOW_REASONING_VALUES)
 
 
@@ -473,12 +476,17 @@ class UIConfig:
     wrap_at: int = WRAP_AT
     #: How much tool activity to print: off | new | all | verbose.
     tool_progress: str = "new"
+    #: Enter-while-busy: queue | steer | interrupt. Session overlay via /busy;
+    #: persist with /config set ui.busy_input_mode.
+    busy_input_mode: str = "queue"
     #: How thinking/reasoning is shown: collapsed | full | off.
     show_reasoning: str = "collapsed"
     #: Draw the bottom status bar.
     statusbar: bool = True
     #: Draw the context fill bar inside the status bar.
     context_bar: bool = True
+    #: Extra "queued/steering" copy on a busy ack. Default off — one short Working…
+    busy_ack_detail: bool = False
 
 
 @dataclass(slots=True)
@@ -564,17 +572,41 @@ class UpdatesConfig:
     check: bool = True
 
 
+_VALID_TOOL_PROGRESS_CLEANUP: frozenset[str] = frozenset({"delete", "keep"})
+
+#: Telegram overlay only (P4-2). Do **not** inherit CLI ``ui.busy_input_mode``.
+TELEGRAM_BUSY_INPUT_MODES: frozenset[str] = frozenset({"steer", "queue"})
+TELEGRAM_BUSY_INPUT_DEFAULT = "steer"
+
+
 @dataclass(slots=True)
 class GatewayTelegramConfig:
-    """Telegram bot credentials for the optional gateway daemon.
+    """Telegram bot credentials and chat-surface overlays for the gateway.
 
     ``token`` is a secret *reference* (``${ENV}`` / ``keychain:…`` / ``file:…``),
     resolved via :mod:`jarn.config.secrets` — never an inline bot token.
     ``allowed_user_ids`` is the entire remaining auth boundary for DMs.
+
+    ``tool_progress`` is the Telegram overlay (``off|new|all|verbose``). Default
+    ``off`` is the #40 quiet contract and must **not** inherit CLI
+    ``ui.tool_progress: new``. ``/verbose`` cycles session state only.
+
+    ``busy_input_mode`` is the Telegram overlay (``steer|queue``). Default
+    ``steer`` must **not** inherit CLI ``ui.busy_input_mode: queue``.
     """
 
     token: str = ""
     allowed_user_ids: list[int] = field(default_factory=list)
+    #: Chat overlay. Unset/off = quiet; never inherit ``ui.tool_progress``.
+    tool_progress: str = "off"
+    #: After finalize, ``delete`` removes the progress bubble; ``keep`` leaves it.
+    tool_progress_cleanup: str = "delete"
+    #: User-visible ``Working — N min`` after a quiet interval while a turn runs.
+    long_running_notifications: bool = True
+    #: Second DM while a turn is in flight: steer (default) or queue. Never CLI queue.
+    busy_input_mode: str = TELEGRAM_BUSY_INPUT_DEFAULT
+    #: Extra queued/steering paragraph on the Working… ack. Default off.
+    busy_ack_detail: bool = False
 
 
 @dataclass(slots=True)

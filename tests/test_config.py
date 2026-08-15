@@ -83,6 +83,28 @@ def test_ui_steering_parsed_false(tmp_path):
     assert cfg.ui.steering is False
 
 
+def test_ui_busy_input_mode_default_queue(tmp_path):
+    cfg = load_config(
+        global_path=tmp_path / "missing-global.yaml",
+        project_path=tmp_path / "missing-project.yaml",
+    )
+    assert cfg.ui.busy_input_mode == "queue"
+
+
+def test_ui_busy_input_mode_parsed(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"ui": {"busy_input_mode": "steer"}})
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.ui.busy_input_mode == "steer"
+
+
+def test_ui_busy_input_mode_rejects_unknown(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"ui": {"busy_input_mode": "yell"}})
+    with pytest.raises(ConfigError, match="ui.busy_input_mode"):
+        load_config(global_path=gp, project_path=None)
+
+
 def test_global_loaded(tmp_path):
     gp = tmp_path / "g.yaml"
     _write(gp, {"default_profile": "anthropic", "permission_mode": "yolo"})
@@ -744,6 +766,13 @@ def test_gateway_defaults(tmp_path):
     assert cfg.gateway.enabled is False
     assert cfg.gateway.telegram.token == ""
     assert cfg.gateway.telegram.allowed_user_ids == []
+    assert cfg.gateway.telegram.tool_progress == "off"
+    assert cfg.gateway.telegram.tool_progress_cleanup == "delete"
+    assert cfg.gateway.telegram.long_running_notifications is True
+    assert cfg.gateway.telegram.busy_input_mode == "steer"
+    assert cfg.gateway.telegram.busy_ack_detail is False
+    assert cfg.ui.tool_progress == "new"
+    assert cfg.ui.busy_ack_detail is False
     assert cfg.gateway.repos == []
 
 
@@ -820,6 +849,64 @@ def test_gateway_enabled_is_settable():
     from jarn.config.settings import is_settable
 
     assert is_settable("gateway.enabled")
+    assert is_settable("gateway.telegram.tool_progress")
+    assert is_settable("gateway.telegram.tool_progress_cleanup")
+    assert is_settable("gateway.telegram.long_running_notifications")
+    assert is_settable("gateway.telegram.busy_input_mode")
+    assert is_settable("gateway.telegram.busy_ack_detail")
+    assert is_settable("ui.busy_ack_detail")
+
+
+def test_gateway_telegram_tool_progress_overlay_does_not_inherit_ui(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"ui": {"tool_progress": "new"}})
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.ui.tool_progress == "new"
+    assert cfg.gateway.telegram.tool_progress == "off"
+
+
+def test_gateway_telegram_progress_keys_validated(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"gateway": {"telegram": {"tool_progress": "loud"}}})
+    with pytest.raises(ConfigError, match="tool_progress"):
+        load_config(global_path=gp, project_path=None)
+    _write(gp, {"gateway": {"telegram": {"tool_progress_cleanup": "archive"}}})
+    with pytest.raises(ConfigError, match="tool_progress_cleanup"):
+        load_config(global_path=gp, project_path=None)
+    _write(
+        gp,
+        {
+            "gateway": {
+                "telegram": {
+                    "tool_progress": "verbose",
+                    "tool_progress_cleanup": "keep",
+                    "long_running_notifications": False,
+                }
+            }
+        },
+    )
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.gateway.telegram.tool_progress == "verbose"
+    assert cfg.gateway.telegram.tool_progress_cleanup == "keep"
+    assert cfg.gateway.telegram.long_running_notifications is False
+
+
+def test_gateway_telegram_busy_input_mode_validated(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"gateway": {"telegram": {"busy_input_mode": "interrupt"}}})
+    with pytest.raises(ConfigError, match="busy_input_mode"):
+        load_config(global_path=gp, project_path=None)
+    _write(
+        gp,
+        {
+            "gateway": {
+                "telegram": {"busy_input_mode": "queue", "busy_ack_detail": True}
+            }
+        },
+    )
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.gateway.telegram.busy_input_mode == "queue"
+    assert cfg.gateway.telegram.busy_ack_detail is True
 
 
 def test_ensure_personal_root_creates_git_repo(tmp_path, monkeypatch):

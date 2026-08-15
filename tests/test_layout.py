@@ -208,7 +208,18 @@ def test_layout_to_html_transcodes_rich_tags() -> None:
 
 
 def test_parse_slash_line_and_gateway_local() -> None:
-    from jarn.commands.registry import is_gateway_local_command, parse_slash_line
+    from jarn.commands.registry import (
+        COMMAND_SPECS,
+        GATEWAY_LOCAL_COMMANDS,
+        GATEWAY_MUTATING_COMMANDS,
+        GATEWAY_ONLY_COMMANDS,
+        GATEWAY_READONLY_COMMANDS,
+        GATEWAY_SESSION_COMMANDS,
+        gateway_botfather_commands,
+        is_gateway_local_command,
+        is_gateway_mutating_command,
+        parse_slash_line,
+    )
 
     assert parse_slash_line("/status") == ("status", "")
     assert parse_slash_line("/HELP compact") == ("help", "compact")
@@ -219,30 +230,94 @@ def test_parse_slash_line_and_gateway_local() -> None:
     assert is_gateway_local_command("verbose")
     assert is_gateway_local_command("map")
     assert is_gateway_local_command("wiki")
+    assert is_gateway_local_command("model")
+    assert is_gateway_local_command("mode")
+    assert is_gateway_local_command("compact")
+    assert is_gateway_local_command("undo")
+    assert is_gateway_local_command("resume")
+    assert is_gateway_local_command("skill")
     assert not is_gateway_local_command("quit")
     assert not is_gateway_local_command("nope")
     assert not is_gateway_local_command("config")
     assert not is_gateway_local_command("preset")
     assert not is_gateway_local_command("memory")
     assert not is_gateway_local_command("sandbox")
-    from jarn.commands.registry import (
-        GATEWAY_LOCAL_COMMANDS,
-        GATEWAY_READONLY_COMMANDS,
-        GATEWAY_SESSION_COMMANDS,
-    )
 
     assert "verbose" in GATEWAY_SESSION_COMMANDS
     assert "focus" in GATEWAY_SESSION_COMMANDS
     assert "title" in GATEWAY_SESSION_COMMANDS
+    assert "model" in GATEWAY_SESSION_COMMANDS
+    assert "mode" in GATEWAY_SESSION_COMMANDS
+    assert "compact" in GATEWAY_SESSION_COMMANDS
+    assert "undo" in GATEWAY_SESSION_COMMANDS
+    assert "redo" in GATEWAY_SESSION_COMMANDS
+    assert "resume" in GATEWAY_SESSION_COMMANDS
+    assert "skill" in GATEWAY_SESSION_COMMANDS
     assert "verbose" not in GATEWAY_READONLY_COMMANDS
+    assert "sessions" in GATEWAY_READONLY_COMMANDS
+    assert "checkpoints" in GATEWAY_READONLY_COMMANDS
+    assert "ps" in GATEWAY_READONLY_COMMANDS
     assert "config" not in GATEWAY_LOCAL_COMMANDS
+    assert "config" in GATEWAY_MUTATING_COMMANDS
     assert GATEWAY_LOCAL_COMMANDS == GATEWAY_READONLY_COMMANDS | GATEWAY_SESSION_COMMANDS
+    mutating = (
+        "config",
+        "preset",
+        "memory",
+        "sandbox",
+        "trust",
+        "key",
+        "login",
+        "logout",
+        "add-dir",
+        "init",
+        "module",
+        "theme",
+        "rewind",
+        "queue",
+        "abort",
+        "commit",
+        "review",
+        "clear",
+        "quit",
+        "exit",
+        "expand",
+        "diff",
+        "busy",
+    )
+    for name in mutating:
+        assert name in GATEWAY_MUTATING_COMMANDS
+        assert name not in GATEWAY_LOCAL_COMMANDS
+        assert is_gateway_mutating_command(name)
+        assert not is_gateway_local_command(name)
+    assert is_gateway_mutating_command("new")  # alias of clear
+    assert not is_gateway_local_command("new")
+    for spec in COMMAND_SPECS:
+        canonical = spec.alias_of or spec.name
+        assert canonical in GATEWAY_LOCAL_COMMANDS or canonical in GATEWAY_MUTATING_COMMANDS, (
+            canonical
+        )
+    menu = gateway_botfather_commands()
+    menu_names = {name for name, _ in menu}
+    assert menu_names <= (GATEWAY_LOCAL_COMMANDS | GATEWAY_ONLY_COMMANDS)
+    assert "config" not in menu_names
+    assert "clear" not in menu_names
+    assert {"stop", "new", "repo", "help", "reset"} <= menu_names
 
 
 def test_live_stream_helpers_use_grammar_and_palette() -> None:
     assert grammar.GLYPH_PROMPT in layout.prompt("hello")
     assert palette.C_USER in layout.prompt("hello")
     assert "hello" in layout.prompt("hello")
+    token = "[Pasted text #1 +12 lines]"
+    preview = layout.paste_preview(token)
+    assert "\n" not in preview
+    assert palette.C_DIM in preview
+    assert layout.is_paste_token(token)
+    assert not layout.is_paste_token("hello")
+    echo = layout.submitted_echo(token, "a\nb\nc")
+    assert echo == preview
+    assert "\n" not in echo
     queued = layout.steer("next", queued=True)
     assert grammar.GLYPH_STEER in queued
     assert "queued:" in queued

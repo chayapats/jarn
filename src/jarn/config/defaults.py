@@ -267,9 +267,24 @@ ui:
   approval_diff_lines: 40   # max diff lines inline before "View full diff" in an approval
   wrap_at: 120          # 0 = terminal width
   tool_progress: new    # off | new | all | verbose
+  busy_input_mode: queue  # queue | steer | interrupt
   show_reasoning: collapsed  # collapsed | full | off
   statusbar: true
   context_bar: true
+  busy_ack_detail: false  # extra queued/steering paragraph on Working… ack
+
+# Optional Telegram DM gateway (global config only). Chat tool-progress starts
+# OFF and does not inherit ui.tool_progress. /verbose is session-only.
+# gateway:
+#   enabled: false
+#   telegram:
+#     token: ${{JARN_TELEGRAM_BOT_TOKEN}}
+#     allowed_user_ids: []
+#     tool_progress: off              # off | new | all | verbose
+#     tool_progress_cleanup: delete   # delete | keep
+#     long_running_notifications: true
+#     busy_input_mode: steer          # steer | queue (does not inherit CLI queue)
+#     busy_ack_detail: false          # extra queued/steering paragraph on Working… ack
 
 # ── Cross-vendor interop ──────────────────────────────────────────────────────
 # Controls which context file is auto-loaded and whether ~/.claude / .claude/

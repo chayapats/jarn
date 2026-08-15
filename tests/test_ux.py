@@ -544,3 +544,16 @@ def test_no_color_styled_fg():
     # No HTML markup or ANSI escapes leak through
     assert "<style" not in bold_plain
     assert "<b>" not in bold_plain
+
+
+def test_strip_md_wrappers_keeps_fences_and_lists():
+    from jarn.tui import layout
+
+    src = "A **bold** word and __also__ this.\n\n```\nkeep **stars**\n```\n\n- list item\n1. numbered"
+    out = layout.strip_md_wrappers(src)
+    assert "**bold**" not in out
+    assert "__also__" not in out
+    assert "bold" in out and "also" in out
+    assert "keep **stars**" in out
+    assert "- list item" in out
+    assert "1. numbered" in out

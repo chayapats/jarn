@@ -1,6 +1,10 @@
 # Hermes-aligned display & command standard
 
-- **Status:** implementing (waves A–K plus list/page primitives in tree).
+- **Status:** landed on main via [#92](https://github.com/chayapats/jarn/pull/92) (2026-08-15).
+- **Successor:** remaining CLI + Telegram parity (Wave F leftovers, Telegram
+  live `tool_progress`, command layers) is tracked in
+  [2026-08-15-hermes-parity-closeout.md](2026-08-15-hermes-parity-closeout.md).
+  This file remains the visual-grammar SSOT.
 - **Goal:** make every J.A.R.N. command and live surface as easy to scan as
   [Hermes Agent](https://hermes-agent.nousresearch.com/docs/user-guide/cli) —
   plain language, one visual grammar, color with meaning, spacing that groups
@@ -642,6 +646,8 @@ must ship in the same wave as the first consumer.
 Do not land “a bit of everything”. Each wave is reviewable, test-gated, and
 leaves the product consistent.
 
+Waves A–K are in tree (landed on main via [#92](https://github.com/chayapats/jarn/pull/92)).
+
 ### Wave A — Foundation (no user-visible copy rewrite yet)
 
 **Intent:** make it impossible to print a new unthemed color.
@@ -747,6 +753,9 @@ JSON / raw paths stay unstyled. `jarn --help` stays ≤ 160 lines.
 Mutating names (`config`, `preset`, `memory`, `sandbox`) stay out.
 
 ### Wave F — Polish (optional, after A–E)
+
+Remaining Wave F leftovers are **not** closed here; they moved to the
+[parity close-out](2026-08-15-hermes-parity-closeout.md):
 
 - `/diff` (staged / all / session) if checkpoint + git already make it cheap.
 - Paste preview for huge multiline pastes (Hermes one-liner).

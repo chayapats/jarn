@@ -14,11 +14,30 @@ if TYPE_CHECKING:
     from jarn.controller.core import Controller
 
 
+def filter_sessions(sessions: list, query: str) -> list:
+    """Filter by ``session_label``, title, or thread-id prefix. Empty query = all."""
+    q = (query or "").strip().lower()
+    if not q:
+        return list(sessions)
+    matched = []
+    for session in sessions:
+        label = session_label(session).lower()
+        title = (getattr(session, "title", None) or "").lower()
+        thread_id = str(getattr(session, "thread_id", "")).lower()
+        if q in label or q in title or thread_id.startswith(q):
+            matched.append(session)
+    return matched
+
+
 def cmd_sessions(ctrl: Controller, args: str) -> CommandResult:
-    sessions = ctrl.sessions.list()
+    query = args.strip()
+    sessions = filter_sessions(ctrl.sessions.list(), query)
     if not sessions:
+        if query:
+            return CommandResult(f"No sessions matching {query!r}.")
         return CommandResult("No previous sessions.")
-    lines = [layout.heading("Recent sessions", "use /resume to pick one")]
+    hint = f"filter: {query}" if query else "filter: /sessions [q]"
+    lines = [layout.heading("Recent sessions", hint)]
     for s in sessions:
         marker = "→ " if s.thread_id == ctrl.thread_id else "  "
         project = f"  {layout.muted(s.project_root)}" if s.project_root else ""
@@ -29,6 +48,48 @@ def cmd_sessions(ctrl: Controller, args: str) -> CommandResult:
             f"{layout.muted('· ' + state)}{project}{model}"
         )
     return CommandResult("\n".join(lines))
+
+
+def resolve_resume_target(ctrl: Controller, token: str) -> object | None:
+    """Resolve ``/resume <id>`` to a session row (exact id, then unique prefix)."""
+    token = token.strip()
+    if not token:
+        return None
+    sessions = getattr(ctrl, "sessions", None)
+    getter = getattr(sessions, "get", None)
+    if callable(getter):
+        info = getter(token)
+        tid = getattr(info, "thread_id", None)
+        if isinstance(tid, str) and tid:
+            return info
+    lister = getattr(sessions, "list", None)
+    if not callable(lister):
+        return None
+    try:
+        rows = lister()
+    except TypeError:
+        rows = lister(limit=100)
+    matches = [
+        row
+        for row in rows or []
+        if isinstance(getattr(row, "thread_id", None), str) and str(row.thread_id).startswith(token)
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def cmd_resume(ctrl: Controller, args: str) -> CommandResult:
+    """Text ``/resume <id>`` for Telegram (no prompt_toolkit overlay)."""
+    token = args.strip()
+    if not token:
+        return CommandResult(usage_error("resume"))
+    target = resolve_resume_target(ctrl, token)
+    tid = getattr(target, "thread_id", None)
+    if not isinstance(tid, str) or not tid:
+        return CommandResult(usage_error("resume", extra=f"Unknown session {token!r}."))
+    ctrl.resume_thread(tid)
+    return CommandResult(f"Resumed session {tid}.")
 
 
 def cmd_clear(ctrl: Controller, args: str) -> CommandResult:

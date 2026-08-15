@@ -4,8 +4,10 @@ Maps ``(chat_id, root) → thread_id``, keeps a per-chat active root (default
 ``~/.jarn/personal``), and routes turns onto the per-root worker supervised by
 :class:`~jarn.gateway.daemon.DaemonSupervisor`.
 
-Busy policy (#38): while a turn is in flight on the **root**, new messages are
-**queued** with an explicit notice; ``/stop`` cancels. Not interrupt-on-text.
+Busy policy (#38 / P4-2): while a turn is in flight on the **root**, a second
+DM **steers** into that turn by default (``gateway.telegram.busy_input_mode``).
+``queue`` keeps the per-root FIFO. Never a second in-flight ``_run_turn``.
+``/stop`` cancels. Not interrupt-on-text.
 
 ``/repo`` may only target the personal root or an entry in ``gateway.repos``.
 Any bind that resolves to ``$HOME`` or collides with the global config path is
@@ -22,12 +24,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from jarn.config import paths
-from jarn.config.schema import GatewayRepo
+from jarn.config.schema import (
+    TELEGRAM_BUSY_INPUT_DEFAULT,
+    TELEGRAM_BUSY_INPUT_MODES,
+    GatewayRepo,
+)
 from jarn.gateway.approvals import PendingApprovalMap
 from jarn.gateway.daemon import DaemonSupervisor, WorkerDeadError, WorkerHandle
 from jarn.gateway.lease import RootLeaseHeldError
 from jarn.gateway.protocol import (
     ApprovalAskFrame,
+    EventFrame,
     MediaRef,
     OutboundFrame,
     StatusFrame,
@@ -116,6 +123,7 @@ class SessionRouter:
         on_event: EventHook | None = None,
         on_worker_death: DeathHook | None = None,
         approval_store: PendingApprovalMap | None = None,
+        busy_input_mode: str = TELEGRAM_BUSY_INPUT_DEFAULT,
     ) -> None:
         self._supervisor = supervisor
         self._personal_root = (
@@ -138,6 +146,11 @@ class SessionRouter:
         # chat_ids that most recently dispatched on a root (for death/event fan-out).
         self._root_owner: dict[Path, int] = {}
         self._lock = threading.RLock()
+        self.busy_input_mode = (
+            busy_input_mode
+            if busy_input_mode in TELEGRAM_BUSY_INPUT_MODES
+            else TELEGRAM_BUSY_INPUT_DEFAULT
+        )
 
         # Wire supervisor hooks (compose with any pre-existing ones).
         prev_outbound = supervisor.on_outbound
@@ -301,6 +314,14 @@ class SessionRouter:
             state.threads[state.active_root] = tid
             return tid
 
+    def bind_thread(self, chat_id: int, thread_id: str, root: Path | None = None) -> str:
+        """Point this chat's active root at an existing ``thread_id`` (``/resume``)."""
+        with self._lock:
+            state = self._state(chat_id)
+            key = (root or state.active_root).resolve()
+            state.threads[key] = thread_id
+            return thread_id
+
     def cmd_stop(self, chat_id: int) -> bool:
         """Cancel the in-flight turn on the chat's active root.
 
@@ -342,17 +363,24 @@ class SessionRouter:
         *,
         media: Sequence[MediaRef] | None = None,
         root: Path | str | None = None,
+        busy_mode: str | None = None,
     ) -> str:
         """Route a user message to the active root's worker.
 
         Returns the ``thread_id`` the turn is (or will be) bound to. When the
-        root is busy the turn is queued, :data:`QUEUED_NOTICE` is emitted, and
-        the same thread id is returned.
+        root is busy, a same-thread text DM **steers** (default) or is queued.
+        ``busy_mode`` overrides the router overlay for this call (scheduler
+        jobs always pass ``queue``).
 
         *root* overrides the chat's active root for this turn only (used by the
         in-gateway scheduler so jobs keep their stored root).
         """
         media_list = list(media or [])
+        mode = busy_mode or self.busy_input_mode
+        if mode not in TELEGRAM_BUSY_INPUT_MODES:
+            mode = TELEGRAM_BUSY_INPUT_DEFAULT
+        steer: tuple[Path, str, str] | None = None
+        queued_ack: tuple[Path, str] | None = None
         with self._lock:
             state = self._state(chat_id)
             key = Path(root).expanduser().resolve() if root is not None else state.active_root
@@ -363,23 +391,39 @@ class SessionRouter:
 
             busy = key in self._busy_roots
             handle = self._supervisor.get_worker(key)
+            in_flight_tid = None
             if handle is not None and handle.turn_in_flight:
                 busy = True
+                in_flight_tid = handle.in_flight_thread_id
 
             if busy:
-                self._queues.setdefault(key, deque()).append(
-                    QueuedTurn(
-                        chat_id=chat_id,
-                        thread_id=tid,
-                        text=text,
-                        media=media_list,
+                same_thread = in_flight_tid is None or in_flight_tid == tid
+                if mode == "steer" and same_thread and not media_list:
+                    steer = (key, tid, text)
+                else:
+                    self._queues.setdefault(key, deque()).append(
+                        QueuedTurn(
+                            chat_id=chat_id,
+                            thread_id=tid,
+                            text=text,
+                            media=media_list,
+                        )
                     )
-                )
-                self._notice(chat_id, QUEUED_NOTICE)
-                return tid
+                    queued_ack = (key, tid)
 
-            self._busy_roots.add(key)
-            self._root_owner[key] = chat_id
+            elif steer is None:
+                self._busy_roots.add(key)
+                self._root_owner[key] = chat_id
+
+        if queued_ack is not None:
+            self._emit_busy_ack(chat_id, queued_ack[0], queued_ack[1], mode="queue")
+            return tid
+
+        if steer is not None:
+            steer_root, steer_tid, steer_text = steer
+            self._supervisor.steer(steer_root, steer_tid, steer_text)
+            self._emit_busy_ack(chat_id, steer_root, steer_tid, mode="steer")
+            return tid
 
         try:
             self._dispatch(key, chat_id, tid, text, media_list)
@@ -391,7 +435,7 @@ class SessionRouter:
 
     def submit_due_work(self, work: DueWork) -> str:
         """Submit one scheduler firing as a normal turn (park+push approvals)."""
-        return self.submit_turn(work.chat_id, work.prompt, root=work.root)
+        return self.submit_turn(work.chat_id, work.prompt, root=work.root, busy_mode="queue")
 
     def tick_scheduler(
         self,
@@ -573,6 +617,24 @@ class SessionRouter:
                 self.on_notice(chat_id, text)
             except Exception:  # noqa: BLE001
                 _log.exception("on_notice hook failed chat=%s", chat_id)
+
+    def _emit_busy_ack(self, chat_id: int, root: Path, thread_id: str, *, mode: str) -> None:
+        """Deliver a short Working… ack via the event path (not a notice essay)."""
+        if self.on_event is None:
+            return
+        try:
+            self.on_event(
+                chat_id,
+                root,
+                EventFrame(
+                    thread_id=thread_id,
+                    kind="busy_ack",
+                    text="Working…",
+                    data={"mode": mode},
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            _log.exception("busy_ack hook failed chat=%s", chat_id)
 
 
 def validate_gateway_root(root: Path | str, *, personal_ok: bool = False) -> Path:

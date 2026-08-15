@@ -89,11 +89,54 @@ def cmd_status(ctrl: Controller, args: str) -> CommandResult:
         layout.kv("Context", context_text),
         layout.kv("Session", "  ·  ".join(session_bits)),
     ]
+    compact_n = int(getattr(ctrl, "compact_count", 0) or 0)
+    if compact_n:
+        lines.append(
+            layout.kv(
+                "Compact",
+                f"{compact_n}  ·  /compact applies (in-graph auto-compact is not counted)",
+            )
+        )
     recap = _status_recap(ctrl, recap_meta)
     if recap:
         lines.append(layout.section("Recap"))
         lines.extend(recap)
     return CommandResult("\n".join(lines))
+
+
+def format_resume_recap(ctrl: Controller) -> str:
+    """Local directory/model/mode + last-turn recap after ``/resume``.
+
+    Reuses :func:`_transcript_recap` / :func:`_status_recap` — no model call.
+    """
+    model = ctrl.config.resolved_main_model() or "not configured"
+    mode = ctrl.config.permission_mode.value
+    mode_label = _PERMISSION_LABELS.get(mode, mode)
+    recap_meta = _transcript_recap(ctrl.sessions.transcript_path(ctrl.thread_id))
+    title = ""
+    for session in ctrl.sessions.list():
+        if session.thread_id == ctrl.thread_id:
+            title = session.title or ""
+            break
+    session_bits = [str(ctrl.thread_id)]
+    turns = int(recap_meta.get("turns") or 0)
+    if turns > 0:
+        session_bits.append("1 turn" if turns == 1 else f"{turns} turns")
+    if title:
+        session_bits.append(title)
+    lines = [
+        layout.heading("Resumed"),
+        "",
+        layout.kv("Directory", str(ctrl.project_root)),
+        layout.kv("Model", model),
+        layout.kv("Permissions", f"{mode_label}  ·  {mode}"),
+        layout.kv("Session", "  ·  ".join(session_bits)),
+    ]
+    recap = _status_recap(ctrl, recap_meta)
+    if recap:
+        lines.append(layout.section("Recap"))
+        lines.extend(recap)
+    return "\n".join(lines)
 
 
 def _recap_snippet(text: str, width: int = _RECAP_SNIPPET_WIDTH) -> str:
@@ -668,6 +711,45 @@ def cmd_verbose(ctrl: Controller, args: str) -> CommandResult:
             [
                 layout.kv("Tool progress", ctrl.tool_progress),
                 layout.muted("Session only — persist with /config set ui.tool_progress."),
+            ]
+        )
+    )
+
+
+def cmd_busy(ctrl: Controller, args: str) -> CommandResult:
+    from jarn.config.schema import BUSY_INPUT_MODES
+
+    wanted = args.strip().lower()
+    current = getattr(ctrl, "busy_input_mode", None) or getattr(
+        ctrl.config.ui, "busy_input_mode", "queue"
+    )
+    if wanted in ("", "status"):
+        return CommandResult(
+            "\n".join(
+                [
+                    layout.kv("Busy input", str(current)),
+                    layout.muted(
+                        "Session only — persist with /config set ui.busy_input_mode."
+                    ),
+                ]
+            )
+        )
+    if wanted not in BUSY_INPUT_MODES:
+        return CommandResult(usage_error("busy"))
+    if wanted == "steer" and not ctrl.config.ui.steering:
+        return CommandResult(
+            layout.err("Steering is off.")
+            + " "
+            + layout.muted("Enable ui.steering or use /busy queue.")
+        )
+    ctrl.busy_input_mode = wanted
+    return CommandResult(
+        "\n".join(
+            [
+                layout.kv("Busy input", ctrl.busy_input_mode),
+                layout.muted(
+                    "Session only — persist with /config set ui.busy_input_mode."
+                ),
             ]
         )
     )

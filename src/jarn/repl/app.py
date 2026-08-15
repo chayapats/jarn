@@ -169,6 +169,9 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         # 's' promotes the last queued line. Opened briefly on each `» queued` echo so a
         # fresh message starting with 's' typed LATER is never swallowed (T-4-6 / I5).
         self._steer_armed_until: float = 0.0
+        # Interrupt-mode Enter-while-busy: hold drain so a leftover queued line
+        # cannot start between abort's cancelled ``_handle`` finally and the new turn.
+        self._defer_queue_drain = False
         self._resume_task: asyncio.Task | None = None
         self._extensions_task: asyncio.Task[None] | None = None
         self._extensions_started = False
@@ -286,6 +289,12 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self._warm_pricing_catalog()
         self.app = self._build_app()
         self._title_hook("idle")   # Set idle title on app start
+        from jarn.agent.background import manager as bg_manager
+
+        loop = asyncio.get_running_loop()
+        bg = bg_manager()
+        on_bg_exit = self._background_exit_dispatch(loop)
+        bg.add_exit_listener(on_bg_exit)
         try:
             # patch_stdout routes all printed output above the pinned input, into
             # the terminal's native scrollback — the Claude-Code layout.
@@ -305,6 +314,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                     self._resume_task = asyncio.create_task(self._resume_picker())
                 await self.app.run_async()
         finally:
+            bg.remove_exit_listener(on_bg_exit)
             extensions_task = self._extensions_task
             if (
                 extensions_task is not None
@@ -527,6 +537,31 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             if note:
                 self.console.print(layout.muted(note), highlight=False)
 
+    def _background_exit_dispatch(self, loop: asyncio.AbstractEventLoop):
+        """Marshal a ProcessManager exit callback onto the REPL event loop."""
+
+        def _on_bg_exit(snap: object) -> None:
+            loop.call_soon_threadsafe(self._print_background_finish, snap)
+
+        return _on_bg_exit
+
+    def _print_background_finish(self, snap: object) -> None:
+        from jarn.agent.background import BackgroundExit
+
+        if not isinstance(snap, BackgroundExit):
+            return
+        self.console.print(
+            layout.background_finish_panel(
+                snap.id,
+                snap.exit_code,
+                tail=snap.tail,
+                command=snap.command,
+            ),
+            highlight=False,
+        )
+        if self.app is not None:
+            self.app.invalidate()
+
     def _turn_made_edits(self) -> bool:
         """Whether the just-cancelled turn applied a file edit (write/edit) —
         detected from the live tool-output sink, same signal as the
@@ -564,13 +599,16 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             return self._stream_md_cache[1]
         buf = io.StringIO()
         plain_terminal = palette.no_color()
+        body = source.strip()
+        if plain_terminal:
+            body = layout.strip_md_wrappers(body)
         cap = Console(
             force_terminal=not plain_terminal,
             no_color=plain_terminal,
             width=width,
             file=buf,
         )
-        cap.print(Markdown(source.strip(), code_theme=palette.CODE_THEME), end="")
+        cap.print(Markdown(body, code_theme=palette.CODE_THEME), end="")
         rendered = buf.getvalue().rstrip("\n")
         self._stream_md_cache = (source, rendered, width)
         return rendered
@@ -845,6 +883,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             ctx_used, ctx_window, ctx_frac = ctx
         width = shutil.get_terminal_size((100, 24)).columns
         elapsed = time.monotonic() - self.controller.session_started_at
+        session_title = ""
+        info = self.controller.sessions.get(self.controller.thread_id)
+        if info is not None:
+            session_title = info.title or ""
         return render_toolbar(
             model=model,
             mode=cfg.permission_mode.value,
@@ -861,6 +903,8 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             context_window=ctx_window,
             elapsed_s=elapsed,
             context_bar=cfg.ui.context_bar,
+            compact_count=getattr(self.controller, "compact_count", 0),
+            title=session_title,
             width=width,
         )
 
@@ -970,6 +1014,8 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
 
     def _drain_queue(self) -> None:
         """Start the next queued line as a new turn (mirrors the submit path)."""
+        if self._defer_queue_drain:
+            return
         if not self._busy():
             # A steer the (now-ended) turn never consumed (model finished before a
             # settled boundary) runs as the next normal turn — never lost (spec §3).

@@ -290,7 +290,7 @@ J.A.R.N. แสดงผล conversation ลงบน terminal buffer ปกต�
 
 Reply ของ assistant render เป็น **Markdown** (heading, list, code ที่มี syntax highlight)
 
-`/model`, `/mode`, และ `/resume` ถ้าไม่ใส่ argument จะเปิด **arrow-key picker** (↑/↓ + Enter; Esc ยกเลิก) `/model` ยังมี custom ref prompt ด้วย
+`/model`, `/mode`, และ `/sessions` (alias `/resume`) ถ้าไม่ใส่ argument จะเปิด **arrow-key picker** (↑/↓ + Enter; Esc ยกเลิก) `/model` ยังมี custom ref prompt ด้วย `/sessions [q]` กรองรายการ
 
 ขณะที่ turn กำลังรัน บรรทัดที่ submit ไปจะถูก **queue** (แสดงใน toolbar เป็น `queue N`) จัดการด้วย `/queue`, `/queue clear`, `/queue cancel <n>`, หรือ `/queue move <from> <to>`
 
@@ -316,6 +316,7 @@ Reply ของ assistant render เป็น **Markdown** (heading, list, code 
 | `/abort` | หยุด turn นี้และ roll back ไฟล์ |
 | `/commit` | ร่าง commit จาก diff ปัจจุบัน (ถามก่อน) |
 | `/review` | review diff แบบ read-only |
+| `/diff [staged\|all\|session]` | แสดง git diff ของ staged, working-tree หรือไฟล์ใน session |
 | `/compact [status]` | สรุปแล้วทำต่อใน thread ใหม่ |
 | `/expand` | เปิด tool output เต็มของ turn ล่าสุด |
 | `/memory [search\|show\|add\|update\|delete\|dump] …` | จัดการ long-term memory |
@@ -336,13 +337,13 @@ Reply ของ assistant render เป็น **Markdown** (heading, list, code 
 | `/logout` | ออกจากระบบ ChatGPT |
 | `/doctor` | ตรวจ configuration, provider, และ key |
 | `/tools` | รายการ tool ที่ agent ใช้ได้ใน session นี้ |
-| `/resume` | เลือก session เก่าเพื่อ resume |
 | `/rewind` | ย้อนไป turn ก่อนหน้า (fork เป็น thread ใหม่) |
-| `/sessions` | รายการ session เก่า |
+| `/sessions [q]` | เลือก session เก่า หรือแสดงรายการ (alias: /resume) |
 | `/title [text]` | ดูหรือตั้งชื่อ session |
 | `/checkpoints` | รายการ auto-checkpoint ล่าสุด |
 | `/ps [kill <id>]` | ดูหรือ kill background process |
 | `/queue [clear\|cancel <n>\|move <from> <to>\|steer <n>]` | ดูหรือจัดการ input ที่ queue ไว้ |
+| `/busy [interrupt\|queue\|steer\|status]` | ตั้งว่า Enter ทำอะไรขณะที่ turn กำลังรัน |
 | `/map [focus] [--refresh]` | แสดง repo map |
 | `/wiki [search <q>\|list]` | ค้นหาหรือแสดงรายการหน้า wiki |
 | `/quit` | ออกจาก J.A.R.N. (alias: /exit) |
@@ -405,7 +406,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                 # 3118 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 3207 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)

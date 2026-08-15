@@ -17,10 +17,12 @@ import argparse
 import asyncio
 import contextlib
 import dataclasses
+import inspect
 import logging
 import os
 import sys
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from pathlib import Path
@@ -119,6 +121,7 @@ def redact_outbound_frame(frame: OutboundFrame) -> OutboundFrame:
             kind=frame.kind,
             text=redact_secrets(frame.text or ""),
             data=redact_outbound_value(frame.data or {}),
+            progress=frame.progress,
         )
     if isinstance(frame, ApprovalAskFrame):
         mem: dict[str, Any] | None = None
@@ -152,7 +155,7 @@ def redact_outbound_frame(frame: OutboundFrame) -> OutboundFrame:
     return frame
 
 
-def event_to_frame(event: Event, *, thread_id: str) -> EventFrame:
+def event_to_frame(event: Event, *, thread_id: str, progress: str | None = None) -> EventFrame:
     """Map an agent :class:`Event` to a private pipe :class:`EventFrame`."""
     kind = event.kind.value if isinstance(event.kind, EventKind) else str(event.kind)
     return EventFrame(
@@ -160,6 +163,7 @@ def event_to_frame(event: Event, *, thread_id: str) -> EventFrame:
         kind=kind,
         text=event.text or "",
         data=dict(event.data or {}),
+        progress=progress,
     )
 
 
@@ -209,7 +213,9 @@ class GatewayWorker:
 
     Construct with an injectable :class:`Controller` for tests, or let
     :meth:`from_root` build a real one. Turns are serialized by construction
-    (one in-flight task); inbound ``cancel`` / ``steer`` target that task.
+    (one in-flight task, T-QA-1). A second ``TurnFrame`` while busy steers or
+    queues; it never starts another ``_run_turn``. Inbound ``cancel`` / ``steer``
+    target the in-flight task.
     """
 
     def __init__(
@@ -238,6 +244,43 @@ class GatewayWorker:
         self._turn_thread_id: str | None = None
         self._last_activity = self._clock()
         self._emit_lock = asyncio.Lock()
+        self._pending_confirms: dict[str, asyncio.Future[bool]] = {}
+        self._queued_turn: TurnFrame | None = None
+        self._seed_telegram_tool_progress()
+
+    def _seed_telegram_tool_progress(self) -> None:
+        """Telegram quiet default: overlay or ``off``, never CLI ``ui.tool_progress``."""
+        from jarn.telegram.outbox import effective_telegram_tool_progress
+
+        value = effective_telegram_tool_progress(getattr(self.controller, "config", None))
+        try:
+            self.controller.tool_progress = value
+        except Exception:  # noqa: BLE001 — stub controllers may reject assignment
+            _log.debug("could not seed controller.tool_progress", exc_info=True)
+
+    def _session_progress(self) -> str:
+        from jarn.tui.grammar import TOOL_PROGRESS_VALUES
+
+        raw = getattr(self.controller, "tool_progress", "off")
+        if isinstance(raw, str) and raw in TOOL_PROGRESS_VALUES:
+            return raw
+        return "off"
+
+    def _busy_input_mode(self) -> str:
+        from jarn.telegram.outbox import effective_telegram_busy_input_mode
+
+        return effective_telegram_busy_input_mode(getattr(self.controller, "config", None))
+
+    def _should_steer_busy(self, frame: TurnFrame) -> bool:
+        """Steer same-thread text. Media / other threads / queue mode use the slot."""
+        return (
+            self._busy_input_mode() == "steer"
+            and not frame.media
+            and (not self._turn_thread_id or frame.thread_id == self._turn_thread_id)
+        )
+
+    def _event_frame(self, event: Event, *, thread_id: str) -> EventFrame:
+        return event_to_frame(event, thread_id=thread_id, progress=self._session_progress())
 
     @classmethod
     def from_root(
@@ -348,14 +391,15 @@ class GatewayWorker:
         await self.aemit(self.status_frame())
 
     async def _handle_turn(self, frame: TurnFrame) -> None:
+        if self._shutdown:
+            return
         if self._turn_in_flight():
-            await self.aemit(
-                ErrorFrame(
-                    message="turn already in flight",
-                    code="busy",
-                    thread_id=frame.thread_id,
-                )
-            )
+            mode = "steer" if self._should_steer_busy(frame) else "queue"
+            if mode == "steer":
+                await self._handle_steer(SteerFrame(thread_id=frame.thread_id, text=frame.text))
+            else:
+                self._queued_turn = frame
+            await self._emit_busy_ack(frame, mode=mode)
             return
         self._turn_thread_id = frame.thread_id
         task = asyncio.create_task(
@@ -367,71 +411,255 @@ class GatewayWorker:
         # Do not await here — the main loop must keep reading cancel/steer/shutdown.
         task.add_done_callback(self._on_turn_done)
 
+    async def _emit_busy_ack(self, frame: TurnFrame, *, mode: str) -> None:
+        from jarn.telegram.outbox import BUSY_ACK_TEXT
+
+        await self.aemit(
+            EventFrame(
+                thread_id=frame.thread_id,
+                kind="busy_ack",
+                text=BUSY_ACK_TEXT,
+                data={"mode": mode},
+                progress=self._session_progress(),
+            )
+        )
+
     def _on_turn_done(self, task: asyncio.Task[Any]) -> None:
         if self._turn_task is task:
             self._turn_task = None
             self._turn_thread_id = None
             self.controller.bind_turn_task(None)
             self._touch()
+            queued = self._queued_turn
+            self._queued_turn = None
+            if queued is not None and not self._shutdown:
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    return
+                frame = queued
 
-    async def _try_local_slash(self, frame: TurnFrame) -> bool:
-        """Run registry display commands locally — same pages as the REPL."""
-        from jarn.commands.registry import is_gateway_local_command, parse_slash_line
+                def _kick() -> None:
+                    loop.create_task(self._handle_turn(frame))
+
+                loop.call_soon(_kick)
+
+    async def _confirm_card(self, kind: str, thread_id: str) -> bool:
+        """Send a Confirm/Cancel card and wait for the matching verdict."""
+        token = f"{kind}-{uuid.uuid4().hex[:10]}"
+        fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        self._pending_confirms[token] = fut
+        await self.aemit(
+            EventFrame(
+                thread_id=thread_id,
+                kind=f"{kind}_confirm",
+                data={"token": token},
+                progress=self._session_progress(),
+            )
+        )
+        try:
+            return bool(await fut)
+        finally:
+            self._pending_confirms.pop(token, None)
+
+    async def _confirm_undo(self, preview: Any, thread_id: str) -> bool:
+        from jarn.controller.commands.session import format_undo_preview
+
+        await self.aemit(
+            EventFrame(
+                thread_id=thread_id,
+                kind="notice",
+                text=format_undo_preview(preview)
+                + "\nConfirmation required before restore; no files were changed.",
+                progress=self._session_progress(),
+            )
+        )
+        return await self._confirm_card("undo", thread_id)
+
+    async def _dispatch_slash(self, frame: TurnFrame) -> Any:
+        """Run a leading slash locally. ``None`` means fall through to the agent."""
+        from jarn.commands.help import usage_error
+        from jarn.commands.registry import (
+            canonical_name,
+            gateway_mutating_notice,
+            is_gateway_local_command,
+            is_gateway_mutating_command,
+            parse_slash_line,
+            spec_by_name,
+        )
+        from jarn.controller.commands.session import cmd_resume
         from jarn.controller.core import CommandResult
+        from jarn.extensibility.skills import find_skill
 
         parsed = parse_slash_line(frame.text)
         if parsed is None:
-            return False
+            return None
         name, args = parsed
+        thread_id = frame.thread_id
+
+        if is_gateway_mutating_command(name):
+            return CommandResult(gateway_mutating_notice(name))
+
         if not is_gateway_local_command(name):
-            return False
+            if spec_by_name(name) is not None:
+                return CommandResult(gateway_mutating_notice(name))
+            skills = getattr(getattr(self.controller, "runtime", None), "skills", None) or {}
+            if find_skill(skills, name) is None:
+                return None
+
+        key = canonical_name(name) or name
+
+        if key == "mode" and args.strip():
+            setter = getattr(self.controller, "set_permission_mode", None)
+            if callable(setter):
+                result = setter(
+                    args.strip(),
+                    confirm=lambda: self._confirm_card("yolo", thread_id),
+                )
+                if inspect.isawaitable(result):
+                    return await result
+                if isinstance(result, CommandResult):
+                    return result
+
+        if key == "compact" and not args.strip():
+            compact = getattr(self.controller, "compact", None)
+            if callable(compact):
+                summary = compact()
+                if inspect.isawaitable(summary):
+                    summary = await summary
+                if isinstance(summary, CommandResult):
+                    return summary
+                return CommandResult(str(summary) if summary else "Nothing to compact.")
+
+        # Parsed name, not canonical: CLI `/resume` aliases `/sessions` (picker),
+        # but Telegram `/resume <id>` is the text resume path.
+        if name == "resume":
+            result = cmd_resume(self.controller, args)
+            new_id = getattr(self.controller, "thread_id", None)
+            if isinstance(new_id, str) and result.text.startswith("Resumed session "):
+                await self.aemit(
+                    EventFrame(
+                        thread_id=thread_id,
+                        kind="thread_switch",
+                        data={"thread_id": new_id},
+                        progress=self._session_progress(),
+                    )
+                )
+            return result
+
+        if key == "undo":
+            undo = getattr(self.controller, "undo", None)
+            if callable(undo):
+                sub = args.strip().lower()
+                if sub == "confirm":
+
+                    async def _yes(_preview: Any) -> bool:
+                        return True
+
+                    result = undo(confirm=_yes)
+                elif sub:
+                    return CommandResult(
+                        usage_error("undo", extra=f"Unknown /undo subcommand: {sub!r}.")
+                    )
+                else:
+                    result = undo(confirm=lambda preview: self._confirm_undo(preview, thread_id))
+                if inspect.isawaitable(result):
+                    return await result
+                if isinstance(result, CommandResult):
+                    return result
+
+        if key == "redo":
+            redo = getattr(self.controller, "redo", None)
+            if callable(redo):
+                result = redo()
+                if inspect.isawaitable(result):
+                    return await result
+                if isinstance(result, CommandResult):
+                    return result
+
         handler = getattr(self.controller, "handle_command", None)
         if not callable(handler):
-            return False
+            return None
         result = handler(name, args)
-        if not isinstance(result, CommandResult) or result.seed_turn:
-            return False
+        if not isinstance(result, CommandResult):
+            return None
+        return result
+
+    async def _finish_local(self, thread_id: str, result: Any) -> str | None:
+        """Apply rebuilt/seed_turn. Return seed text, or None when the turn is done."""
+        if getattr(result, "rebuilt", False):
+            invalidate = getattr(self.controller, "_invalidate_runtime", None)
+            if callable(invalidate):
+                invalidate()
+        if getattr(result, "seed_turn", False):
+            if result.text:
+                await self.aemit(
+                    EventFrame(
+                        thread_id=thread_id,
+                        kind="notice",
+                        text=result.text,
+                        progress=self._session_progress(),
+                    )
+                )
+            return result.seed_input or result.text or ""
         await self.aemit(
             EventFrame(
-                thread_id=frame.thread_id,
+                thread_id=thread_id,
                 kind="notice",
                 text=result.text or "",
+                progress=self._session_progress(),
             )
         )
-        await self.aemit(EventFrame(thread_id=frame.thread_id, kind="done"))
-        return True
+        await self.aemit(
+            EventFrame(
+                thread_id=thread_id,
+                kind="done",
+                progress=self._session_progress(),
+            )
+        )
+        return None
+
+    async def _run_agent_body(self, frame: TurnFrame, *, text: str) -> None:
+        thread_id = frame.thread_id
+        enriched = await asyncio.to_thread(self.controller.enrich_turn_input, text)
+        approver = self._make_park_approver(
+            thread_id,
+            chat_id=frame.chat_id,
+        )
+
+        async def on_event(event: Event) -> None:
+            await self.aemit(self._event_frame(event, thread_id=thread_id))
+
+        result = await run_agent_turn(
+            self.controller,
+            enriched,
+            approver=approver,
+            media=_media_inputs(frame) or None,
+            on_event=on_event,
+        )
+        if result.error is not None:
+            await self.aemit(
+                ErrorFrame(
+                    message=result.error.text or "turn failed",
+                    code="turn_error",
+                    thread_id=thread_id,
+                )
+            )
 
     async def _run_turn(self, frame: TurnFrame) -> None:
         thread_id = frame.thread_id
         try:
             self.controller.resume_thread(thread_id)
             await self.controller.ensure_runtime()
-            if not frame.media and await self._try_local_slash(frame):
-                return
-            enriched = await asyncio.to_thread(self.controller.enrich_turn_input, frame.text)
-            approver = self._make_park_approver(
-                thread_id,
-                chat_id=frame.chat_id,
-            )
-
-            async def on_event(event: Event) -> None:
-                await self.aemit(event_to_frame(event, thread_id=thread_id))
-
-            result = await run_agent_turn(
-                self.controller,
-                enriched,
-                approver=approver,
-                media=_media_inputs(frame) or None,
-                on_event=on_event,
-            )
-            if result.error is not None:
-                await self.aemit(
-                    ErrorFrame(
-                        message=result.error.text or "turn failed",
-                        code="turn_error",
-                        thread_id=thread_id,
-                    )
-                )
+            agent_text = frame.text
+            if not frame.media:
+                local = await self._dispatch_slash(frame)
+                if local is not None:
+                    seed = await self._finish_local(thread_id, local)
+                    if seed is None:
+                        return
+                    agent_text = seed
+            await self._run_agent_body(frame, text=agent_text)
         except ApprovalParked:
             # approval_ask already emitted via on_park; interrupt stays in state.sqlite.
             _log.info("approval parked thread=%s", thread_id)
@@ -456,6 +684,11 @@ class GatewayWorker:
                 )
 
     async def _handle_approval_verdict(self, frame: ApprovalVerdictFrame) -> None:
+        pending = self._pending_confirms.get(frame.token)
+        if pending is not None:
+            if not pending.done():
+                pending.set_result(bool(frame.approved))
+            return
         if self._turn_in_flight():
             await self.aemit(
                 ErrorFrame(
@@ -505,7 +738,7 @@ class GatewayWorker:
                 plan_mode_target=frame.plan_mode_target,
                 store=self.approval_store,
             ):
-                await self.aemit(event_to_frame(event, thread_id=thread_id))
+                await self.aemit(self._event_frame(event, thread_id=thread_id))
         except ApprovalParked:
             _log.info("approval parked again thread=%s", thread_id)
         except asyncio.CancelledError:
@@ -529,6 +762,7 @@ class GatewayWorker:
                 )
 
     async def _handle_cancel(self, frame: CancelFrame) -> None:
+        self._queued_turn = None
         if not self._turn_in_flight():
             return
         if self._turn_thread_id and frame.thread_id != self._turn_thread_id:
@@ -571,6 +805,7 @@ class GatewayWorker:
 
     async def _handle_shutdown(self) -> None:
         self._shutdown = True
+        self._queued_turn = None
         if self._turn_in_flight():
             try:
                 await self.controller.abort()

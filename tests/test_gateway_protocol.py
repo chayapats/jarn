@@ -114,6 +114,10 @@ def test_event_round_trip():
     assert out.kind == "text"
     assert out.text == "hello"
     assert out.data == {"n": 1}
+    stamped = _round_trip_outbound(
+        EventFrame(thread_id="t1", kind="tool_start", text="bash", progress="new")
+    )
+    assert stamped.progress == "new"
 
 
 def test_status_heartbeat_fields_round_trip():

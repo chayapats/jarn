@@ -468,3 +468,106 @@ def test_tmpdir_removed_on_prune(tmp_path):
     mgr.list()  # triggers _prune_exited()
 
     assert not proc_dir.exists(), "tmpdir must be removed after prune"
+
+
+def test_background_finish_panel_text():
+    from jarn.tui import layout
+
+    text = layout.background_finish_panel(
+        "bg3", 0, tail="hello-bg-panel", command="echo hello-bg-panel"
+    )
+    assert "bg3" in text
+    assert "exit 0" in text
+    assert "hello-bg-panel" in text
+    assert "/ps" in text
+    failed = layout.background_finish_panel("bg4", 1, tail="boom")
+    assert "exit 1" in failed
+    assert "/ps" in failed
+
+
+def test_exit_listener_fires_on_prune(tmp_path):
+    from jarn.tui import layout
+
+    mgr = _quiesce()
+    seen = []
+    mgr.add_exit_listener(seen.append)
+    proc = mgr.start("echo hello-bg-panel", cwd=str(tmp_path))
+    _wait(mgr, proc.id)
+    assert seen == []
+    mgr.list()
+    assert len(seen) == 1
+    snap = seen[0]
+    assert snap.id == proc.id
+    assert snap.exit_code == 0
+    assert "hello-bg-panel" in snap.tail
+    panel = layout.background_finish_panel(
+        snap.id, snap.exit_code, tail=snap.tail, command=snap.command
+    )
+    assert proc.id in panel
+    assert "exit 0" in panel
+    assert "/ps" in panel
+
+
+def test_exit_listener_fires_when_monitor_reaps(tmp_path):
+    mgr = ProcessManager()
+    mgr.configure(max_lifetime_secs=1.0)
+    seen = []
+    mgr.add_exit_listener(seen.append)
+    proc = mgr.start("echo panel-reap", cwd=str(tmp_path))
+    try:
+        assert proc.reaped.wait(5.0), "monitor must reap the exited child"
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not seen:
+            time.sleep(0.05)
+        assert seen, "exit listener must run after reap"
+        assert seen[0].id == proc.id
+        assert seen[0].exit_code == 0
+        assert "panel-reap" in seen[0].tail
+    finally:
+        mgr.shutdown()
+
+
+def test_exit_listener_exception_does_not_break_prune(tmp_path):
+    mgr = _quiesce()
+
+    def boom(_snap):
+        raise RuntimeError("listener boom")
+
+    seen = []
+    mgr.add_exit_listener(boom)
+    mgr.add_exit_listener(seen.append)
+    proc = mgr.start("echo still-ok", cwd=str(tmp_path))
+    _wait(mgr, proc.id)
+    mgr.list()
+    assert len(seen) == 1
+    assert seen[0].id == proc.id
+
+
+def test_background_finish_marshals_to_event_loop(tmp_path, monkeypatch, base_config):
+    from io import StringIO
+
+    from rich.console import Console
+
+    from jarn.agent.background import BackgroundExit
+    from jarn.repl.app import InlineApp
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    app = InlineApp(base_config, tmp_path)
+    app.console = Console(file=StringIO(), width=80)
+    scheduled = []
+
+    class _Loop:
+        def call_soon_threadsafe(self, fn, *args):
+            scheduled.append((fn, args))
+
+    dispatch = app._background_exit_dispatch(_Loop())
+    snap = BackgroundExit(id="bg1", command="echo hi", exit_code=0, tail="hi")
+    dispatch(snap)
+    assert scheduled == [(app._print_background_finish, (snap,))]
+    scheduled[0][0](*scheduled[0][1])
+    out = app.console.file.getvalue()
+    assert "bg1" in out
+    assert "exit 0" in out
+    assert "hi" in out
+    assert "/ps" in out
+    app.controller.close()

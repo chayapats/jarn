@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from rich.console import Console
-from rich.markdown import Markdown
 
 from jarn.agent.session import ApprovalReply, ApprovalRequest, Event, EventKind
 from jarn.agent.turn_runner import run_agent_turn
@@ -465,12 +464,10 @@ async def _approve_plan(
     ``controller.apply_mode`` (which clamps to the review-only floor on an
     untrusted project), so the rest of the turn can carry out the plan.
     """
-    from rich.markdown import Markdown
-
     plan = request.plan or ""
     console.print("\n" + layout.notice(f"{grammar.GLYPH_PLAY} Plan ready for review"))
     if plan.strip():
-        console.print(Markdown(plan))
+        layout.print_assistant_markdown(console, plan)
     if not controller.project_trusted:
         console.print(
             layout.warn(
@@ -538,7 +535,7 @@ async def _approve_suggested_memory(
     )
     console.print(f"  {layout.strong(suggestion.name)} — {layout.escape(suggestion.description)}")
     if suggestion.body.strip():
-        console.print(Markdown(suggestion.body))
+        layout.print_assistant_markdown(console, suggestion.body)
 
     save = ("Save this memory", True)
     edit_save = ("Edit, then save", _EDIT_MEMORY)
@@ -607,7 +604,7 @@ async def _approve_suggested_skill(
         f"  {layout.strong(suggestion.name)} — {layout.escape(suggestion.description)}"
     )
     if suggestion.body.strip():
-        console.print(Markdown(suggestion.body))
+        layout.print_assistant_markdown(console, suggestion.body)
 
     save = ("Save this skill", True)
     edit_save = ("Edit, then save", _EDIT_SKILL)

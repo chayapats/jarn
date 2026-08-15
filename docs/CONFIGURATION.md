@@ -560,6 +560,10 @@ ui:
                            # next turn (never lost). Set false to hide the [s]
                            # affordance and make /queue steer decline politely.
   wrap_at: 120             # wrap assistant markdown at this column (0 = terminal width)
+  busy_input_mode: queue   # queue | steer | interrupt — Enter while a CLI turn
+                           # is running. `/busy` is session-only; persist with
+                           # `/config set ui.busy_input_mode`.
+  busy_ack_detail: false   # extra queued/steering paragraph on the short Working… ack
   tool_progress: new       # off | new | all | verbose — how much tool activity to print.
                            # `/verbose` cycles this for the session only; persist with
                            # `/config set ui.tool_progress`.
@@ -1007,6 +1011,11 @@ gateway:
   telegram:
     token: ${JARN_TELEGRAM_BOT_TOKEN}   # or keychain:/file:
     allowed_user_ids: [123456789]      # DM auth allowlist
+    tool_progress: off                 # off | new | all | verbose (does not inherit ui.tool_progress)
+    tool_progress_cleanup: delete      # delete | keep
+    long_running_notifications: true   # Working — N min after quiet minutes
+    busy_input_mode: steer             # steer | queue (does not inherit CLI queue)
+    busy_ack_detail: false             # extra queued/steering paragraph on Working… ack
   repos:                                # /repo allowlist
     - path: /srv/repos/myapp
       name: myapp
@@ -1022,6 +1031,11 @@ allowed user id. `/repo` can select only entries in `gateway.repos`.
 | `gateway.enabled` | bool | `false` | Enable the gateway daemon |
 | `gateway.telegram.token` | str | `""` | Bot token secret reference |
 | `gateway.telegram.allowed_user_ids` | list[int] | `[]` | Allowed Telegram user ids |
+| `gateway.telegram.tool_progress` | enum | `off` | Chat overlay (`off`, `new`, `all`, `verbose`). Unset/off stays quiet and does **not** inherit `ui.tool_progress`. `/verbose` is session-only |
+| `gateway.telegram.tool_progress_cleanup` | enum | `delete` | After finalize: `delete` the progress bubble or `keep` it |
+| `gateway.telegram.long_running_notifications` | bool | `true` | Show `Working — N min` after a quiet interval while a turn is in flight |
+| `gateway.telegram.busy_input_mode` | enum | `steer` | Second DM while a turn is in flight: `steer` (default) or `queue`. Does **not** inherit CLI `ui.busy_input_mode` |
+| `gateway.telegram.busy_ack_detail` | bool | `false` | Extra queued/steering paragraph on the short `Working…` ack |
 | `gateway.repos` | list | `[]` | `{path, name?}` allowlist for `/repo` |
 
 Non-empty environment values override the corresponding config fields:

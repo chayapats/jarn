@@ -279,9 +279,66 @@ def test_toolbar_yolo_badge_survives_narrow():
         cost_line="$0.00 · 1000 tok · 99 calls · very long cost line",
         cost_status=BudgetStatus.OK,
         width=40,
+        title="A long session title that must drop first",
+        compact_count=3,
+        context_frac=0.42,
+        context_used=12_400,
+        context_window=200_000,
+        context_bar=True,
     )
     assert "YOLO" in narrow.value
     assert "yolo" in narrow.value
+
+
+def test_toolbar_title_drops_before_bar_and_yolo():
+    """Drop order among named pieces: YOLO > model > bar > title."""
+    title = "Fix toolbar"
+    common = dict(
+        model="openrouter/claude",
+        mode="yolo",
+        cost_line="$0.06",
+        cost_status=BudgetStatus.OK,
+        compact_count=2,
+        title=title,
+        context_frac=0.06,
+        context_used=12_400,
+        context_window=200_000,
+        context_bar=True,
+        trusted=True,
+    )
+    w40 = render_toolbar(**common, width=40)
+    w60 = render_toolbar(**common, width=60)
+    w80 = render_toolbar(**common, width=80)
+    w120 = render_toolbar(**common, width=120)
+    assert "YOLO" in w40.value
+    assert title not in w40.value
+    assert "YOLO" in w60.value
+    assert title not in w60.value
+    assert "YOLO" in w80.value
+    assert title not in w80.value
+    assert "YOLO" in w120.value
+    assert "compact 2" in w120.value
+    assert title in w120.value
+    # Title is pinned right of the named pieces that remain.
+    assert w120.value.index("YOLO") < w120.value.index(title)
+    # Title is the first of {YOLO, model, bar, title} to drop: when title
+    # is absent, YOLO and the model remain.
+    for sample in (w40, w60, w80, w120):
+        if title not in sample.value:
+            assert "YOLO" in sample.value
+            assert "openrouter/claude" in sample.value
+
+
+def test_toolbar_compact_badge_hidden_when_zero():
+    result = render_toolbar(
+        model="m",
+        mode="ask",
+        cost_line="$0.00",
+        cost_status=BudgetStatus.OK,
+        compact_count=0,
+        width=120,
+    )
+    assert "compact" not in result.value
 
 
 def test_toolbar_trust_segment_survives_narrow():

@@ -241,6 +241,13 @@ class Controller:
         self.session_started_at = time.monotonic()
         self.tool_progress = getattr(config.ui, "tool_progress", TOOL_PROGRESS_DEFAULT)
         self.focus_mode = False
+        #: Session-local Enter-while-busy mode. Seeded from config; /busy does
+        #: not write YAML (persist with /config set ui.busy_input_mode).
+        self.busy_input_mode = getattr(config.ui, "busy_input_mode", "queue")
+        #: Session-local ``/compact`` apply count for the toolbar badge. In-graph
+        #: auto-compact is not observed without a new engine API, so only
+        #: :meth:`compact_apply` increments this.
+        self.compact_count = 0
         self._focus_saved_progress: str | None = None
         # Diagnostics auto-fix chain round (T-3-3): 0 for a real user turn,
         # incremented when an auto-fix round is queued, reset on real user
@@ -252,10 +259,11 @@ class Controller:
         # drivers are recreated each turn and would reset a per-driver flag).
         self.inline_images_disabled: bool = False
         # T-4-6 mid-turn steering: a single pending-steer slot the REPL writes (via
-        # [s] / /queue steer) and each per-turn SessionDriver pulls at a settled
-        # boundary. Controller-held (not per-driver) so it survives across the
-        # drivers minted per turn/retry; single-shot (cleared on pull) so a steer is
-        # never double-applied across a model-rotation retry.
+        # [s] / /queue steer / Enter-while-busy in steer mode) and each per-turn
+        # SessionDriver pulls at a settled boundary. Controller-held (not per-driver)
+        # so it survives across the drivers minted per turn/retry; single-shot
+        # (cleared on pull) so a steer is never double-applied across a model-rotation
+        # retry.
         self._steer_slot: str | None = None
         # Session-lifetime holder for the last injected date block. Drivers are
         # recreated per turn, so this ONE shared dict is passed to every per-turn
@@ -891,6 +899,7 @@ class Controller:
         if todos:
             seed["todos"] = todos
         await rt.agent.aupdate_state(self._config(), seed)
+        self.compact_count += 1
 
     async def compact(self) -> str:
         """One-shot summarize-and-fork primitive: generate a summary via

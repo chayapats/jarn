@@ -784,9 +784,11 @@ class UIConfigModel(_StrictModel):
     steering: bool = True
     wrap_at: int = 120
     tool_progress: str = "new"
+    busy_input_mode: str = "queue"
     show_reasoning: str = "collapsed"
     statusbar: bool = True
     context_bar: bool = True
+    busy_ack_detail: bool = False
 
     @field_validator("theme", mode="before")
     @classmethod
@@ -862,6 +864,18 @@ class UIConfigModel(_StrictModel):
             )
         return raw
 
+    @field_validator("busy_input_mode", mode="before")
+    @classmethod
+    def _busy_input_mode(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_BUSY_INPUT_MODES
+
+        raw = str(value)
+        if raw not in _VALID_BUSY_INPUT_MODES:
+            raise ConfigValidationError(
+                f"ui.busy_input_mode must be one of {sorted(_VALID_BUSY_INPUT_MODES)} (got {raw!r})."
+            )
+        return raw
+
     @field_validator("show_reasoning", mode="before")
     @classmethod
     def _show_reasoning(cls, value: Any) -> str:
@@ -883,6 +897,11 @@ class UIConfigModel(_StrictModel):
     @classmethod
     def _context_bar(cls, value: Any) -> bool:
         return _normalize_bool(value, "ui.context_bar")
+
+    @field_validator("busy_ack_detail", mode="before")
+    @classmethod
+    def _busy_ack_detail(cls, value: Any) -> bool:
+        return _normalize_bool(value, "ui.busy_ack_detail")
 
 
 class CompatConfigModel(_StrictModel):
@@ -1056,6 +1075,11 @@ class UpdatesConfigModel(_StrictModel):
 class GatewayTelegramConfigModel(_StrictModel):
     token: str = ""
     allowed_user_ids: list[int] = Field(default_factory=list)
+    tool_progress: str = "off"
+    tool_progress_cleanup: str = "delete"
+    long_running_notifications: bool = True
+    busy_input_mode: str = "steer"
+    busy_ack_detail: bool = False
 
     @field_validator("token", mode="before")
     @classmethod
@@ -1080,6 +1104,64 @@ class GatewayTelegramConfigModel(_StrictModel):
                 )
             out.append(item)
         return out
+
+    @field_validator("tool_progress", mode="before")
+    @classmethod
+    def _tg_tool_progress(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_TOOL_PROGRESS_VALUES
+
+        if value is None or value == "":
+            return "off"
+        raw = str(value)
+        if raw not in _VALID_TOOL_PROGRESS_VALUES:
+            raise ConfigValidationError(
+                "gateway.telegram.tool_progress must be one of "
+                f"{sorted(_VALID_TOOL_PROGRESS_VALUES)} (got {raw!r})."
+            )
+        return raw
+
+    @field_validator("tool_progress_cleanup", mode="before")
+    @classmethod
+    def _tg_tool_progress_cleanup(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_TOOL_PROGRESS_CLEANUP
+
+        if value is None or value == "":
+            return "delete"
+        raw = str(value)
+        if raw not in _VALID_TOOL_PROGRESS_CLEANUP:
+            raise ConfigValidationError(
+                "gateway.telegram.tool_progress_cleanup must be one of "
+                f"{sorted(_VALID_TOOL_PROGRESS_CLEANUP)} (got {raw!r})."
+            )
+        return raw
+
+    @field_validator("long_running_notifications", mode="before")
+    @classmethod
+    def _tg_long_running_notifications(cls, value: Any) -> bool:
+        return _normalize_bool(value, "gateway.telegram.long_running_notifications")
+
+    @field_validator("busy_input_mode", mode="before")
+    @classmethod
+    def _tg_busy_input_mode(cls, value: Any) -> str:
+        from jarn.config.schema import (
+            TELEGRAM_BUSY_INPUT_DEFAULT,
+            TELEGRAM_BUSY_INPUT_MODES,
+        )
+
+        if value is None or value == "":
+            return TELEGRAM_BUSY_INPUT_DEFAULT
+        raw = str(value)
+        if raw not in TELEGRAM_BUSY_INPUT_MODES:
+            raise ConfigValidationError(
+                "gateway.telegram.busy_input_mode must be one of "
+                f"{sorted(TELEGRAM_BUSY_INPUT_MODES)} (got {raw!r})."
+            )
+        return raw
+
+    @field_validator("busy_ack_detail", mode="before")
+    @classmethod
+    def _tg_busy_ack_detail(cls, value: Any) -> bool:
+        return _normalize_bool(value, "gateway.telegram.busy_ack_detail")
 
 
 class GatewayRepoModel(_StrictModel):
@@ -1434,9 +1516,11 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             steering=model.ui.steering,
             wrap_at=model.ui.wrap_at,
             tool_progress=model.ui.tool_progress,
+            busy_input_mode=model.ui.busy_input_mode,
             show_reasoning=model.ui.show_reasoning,
             statusbar=model.ui.statusbar,
             context_bar=model.ui.context_bar,
+            busy_ack_detail=model.ui.busy_ack_detail,
         ),
         compat=CompatConfig(
             context_files=list(model.compat.context_files),
@@ -1466,6 +1550,11 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             telegram=GatewayTelegramConfig(
                 token=model.gateway.telegram.token,
                 allowed_user_ids=list(model.gateway.telegram.allowed_user_ids),
+                tool_progress=model.gateway.telegram.tool_progress,
+                tool_progress_cleanup=model.gateway.telegram.tool_progress_cleanup,
+                long_running_notifications=model.gateway.telegram.long_running_notifications,
+                busy_input_mode=model.gateway.telegram.busy_input_mode,
+                busy_ack_detail=model.gateway.telegram.busy_ack_detail,
             ),
             repos=[
                 GatewayRepo(path=r.path, name=r.name) for r in model.gateway.repos

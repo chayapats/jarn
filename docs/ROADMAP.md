@@ -1,10 +1,11 @@
 # Roadmap
 
 > **Audience:** users curious about what is shipped versus planned, and contributors
-> choosing where to contribute. Items marked `[x]` are implemented and in the
-> current release; `[ ]` items are scaffolded or documented but not yet shipped.
+> choosing where to contribute. Items marked `[x]` are implemented. Hermes
+> display-parity close-out `[x]` rows are on `feat/hermes-parity-closeout`, not
+> a GitHub Release. `[ ]` items are scaffolded or documented but not yet shipped.
 
-Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-12** (this source line
+Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-15** (this source line
 targets v1.0.9 GA; consult the release and package registries for publication status).
 
 ## v1 — implemented
@@ -189,24 +190,89 @@ multi-agent review. See the design spec under `docs/superpowers/specs/`.
   `wiki_search` / `wiki_read` / `wiki_write` / `wiki_append`; `/wiki` command;
   `wiki.enabled` (default `false`); project tier gated by trust
 
-## Planned — Hermes-aligned display & command standard
+## Hermes-aligned display & command standard — shipped (2026-08-15)
 
-Design spec: [2026-08-15-hermes-aligned-display-standard.md](specs/2026-08-15-hermes-aligned-display-standard.md).
-
-Goal: slash commands, live turn output, toolbar, `jarn --help`, and `jarn doctor`
+Visual grammar SSOT:
+[2026-08-15-hermes-aligned-display-standard.md](specs/2026-08-15-hermes-aligned-display-standard.md)
+(landed on main via [#92](https://github.com/chayapats/jarn/pull/92)).
+Slash commands, live turn output, toolbar, `jarn --help`, and `jarn doctor`
 share one visual grammar — plain-language copy, palette-only colors, consistent
 spacing — matching the clarity of Hermes Agent without copying its branding.
 
-- [ ] **Wave A** — one palette + `tui/layout.py` helpers; doctor/config/module
+- [x] **Wave A** — one palette + `tui/layout.py` helpers; doctor/config/module
   panels stop using hardcoded `[green]` / hex
-- [ ] **Wave B** — readable `/help` (columns, `/help <cmd>`, case-insensitive
+- [x] **Wave B** — readable `/help` (columns, `/help <cmd>`, case-insensitive
   names, skills as slash commands, usage-error helper)
-- [ ] **Wave C** — splash info strip, toolbar fill bar + duration + sticky YOLO,
+- [x] **Wave C** — splash info strip, toolbar fill bar + duration + sticky YOLO,
   quiet default tool stream (`/verbose`, `/focus`)
-- [ ] **Wave D** — restyle `/status` (local recap), split `/context` from `/cost`,
+- [x] **Wave D** — restyle `/status` (local recap), split `/context` from `/cost`,
   `/tools`, `/title`
-- [ ] **Wave E** — grouped `jarn --help`, TTY-friendly errors, Telegram HTML
+- [x] **Wave E** — grouped `jarn --help`, TTY-friendly errors, Telegram HTML
   dialect of the same helpers
+- [x] **Wave G** — live-stream layout helpers (`›`, `!`, `⏺`, `⎿`, `┊`, `✻`)
+- [x] **Waves H–I** — REPL / renderer / overlays print through layout helpers
+- [x] **Wave J** — CLI subcommand groups + plain `Label: value` pages
+- [x] **Wave K** — Telegram command layers (readonly pages ∪ session chrome)
+
+Wave F polish (`/diff`, `/busy`, paste preview, `/sessions` picker, compact-count,
+resume recap, background finish panel) did **not** fully land in #92. Remaining
+items are the close-out below.
+
+## Hermes display-parity close-out (2026-08-15)
+
+SSOT:
+[2026-08-15-hermes-parity-closeout.md](specs/2026-08-15-hermes-parity-closeout.md).
+Identity stays cyan/teal. Host-direct `!` stays red.
+
+**Merged on `feat/hermes-parity-closeout`.** Not a GitHub Release. `[x]` here
+means the phase is in this branch, not that it is in the current published
+package on main.
+
+- [x] **P0 — Contract** — A–K marked landed; remaining work pointed here
+  ([#93](https://github.com/chayapats/jarn/pull/93))
+- [x] **P1 — CLI remaining** — paste preview, resume recap, toolbar
+  compact-count + title, `/sessions` picker, `/diff`, `/busy`, markdown-light
+  on `NO_COLOR`, background finish panel
+  ([#96](https://github.com/chayapats/jarn/pull/96))
+- [x] **P4-1 — CLI Enter-while-busy** — Enter follows session `/busy` mode
+  (queue / steer / interrupt); still one `InputQueue`
+  ([#97](https://github.com/chayapats/jarn/pull/97), onto P1)
+- [x] **P2 — Telegram live turn** — opt-in `/verbose` progress bubble (default
+  stays quiet), working heartbeat, cleanup delete
+  ([#94](https://github.com/chayapats/jarn/pull/94))
+- [x] **P3 — Telegram commands** — local `/model` `/mode` `/compact` `/undo`
+  `/sessions` `/resume <id>`; mutating names refused with a terminal hint
+  ([#95](https://github.com/chayapats/jarn/pull/95), onto P2)
+- [x] **P4 — Telegram busy UX** — second DM steers (default) or queues; short
+  `Working…` ack; never a second in-flight turn
+  ([#98](https://github.com/chayapats/jarn/pull/98), onto P3)
+- [x] **P5 — Evidence** — UAT checklists, text mockups, config keys, parity
+  table, changelog. Live terminal/bot rows **Not run**. No `demo.gif` (`vhs`
+  not installed). No git tag.
+  ([#99](https://github.com/chayapats/jarn/pull/99))
+
+UAT: [UAT-HERMES-PARITY.md](assets/UAT-HERMES-PARITY.md).
+
+Optional / skipped (not blockers):
+
+- P4-4 `/background` — **Deferred** — `/ps` sufficient ([#98](https://github.com/chayapats/jarn/pull/98))
+- P4-5 Ctrl+S input stash — skipped
+
+### Frozen non-goals (this close-out)
+
+Out of this close-out. Changing one needs a spec amendment, not a drive-by PR.
+These are **not** promised here (Web UI / open-core remain v2+ / launch-gated
+below; they are not part of this block):
+
+- Voice STT/TTS; still refuse voice notes
+- Group chat / multi-user
+- Discord, Slack, WhatsApp, or other chat platforms
+- Personalities, kawaii, pets, `/skin` marketplace
+- Second Ink / alt-screen TUI (stay native scrollback + prompt_toolkit)
+- Remote ALWAYS
+- Making host-direct `!` go through approvals (`!` stays red)
+- Web UI, open-core, native Windows
+- Rewind slices 3–4 (in-place same-thread rewind, visual branch tree)
 
 ## v2+ / launch-gated (scaffolded + documented, not shipped)
 

@@ -145,6 +145,9 @@ SETTINGS: tuple[Setting, ...] = (
     _s("ui.tool_progress", "enum", "Appearance", "Tool progress",
        "How much tool activity to show: off, new (default), all, verbose.",
        ("off", "new", "all", "verbose")),
+    _s("ui.busy_input_mode", "enum", "Appearance", "Busy input",
+       "What Enter does while a turn is running: queue, steer, or interrupt.",
+       ("queue", "steer", "interrupt")),
     _s("ui.show_reasoning", "enum", "Appearance", "Thinking display",
        "How model reasoning is shown: collapsed, full, or off.",
        ("collapsed", "full", "off")),
@@ -152,12 +155,27 @@ SETTINGS: tuple[Setting, ...] = (
        "Show the bottom status bar (model, mode, context, cost)."),
     _s("ui.context_bar", "bool", "Appearance", "Context bar",
        "Show a fill bar for context-window pressure."),
+    _s("ui.busy_ack_detail", "bool", "Appearance", "Busy ack detail",
+       "Add a queued/steering paragraph to the short Working… busy ack."),
     # ── Updates ──
     _s("updates.check", "bool", "Updates", "Update check",
        "Check PyPI for a newer jarn release at startup (cached 24 h; skipped when offline)."),
     # ── Gateway (global-only; token / allowlist / repos stay YAML-only) ──
     _s("gateway.enabled", "bool", "Gateway", "Telegram gateway",
        "Run the optional Telegram gateway daemon (global config only)."),
+    _s("gateway.telegram.tool_progress", "enum", "Gateway", "Telegram tool progress",
+       "Chat overlay: off (quiet default), new, all, or verbose. Does not inherit ui.tool_progress.",
+       ("off", "new", "all", "verbose")),
+    _s("gateway.telegram.tool_progress_cleanup", "enum", "Gateway", "Progress bubble cleanup",
+       "After the answer lands: delete the progress bubble, or keep it.",
+       ("delete", "keep")),
+    _s("gateway.telegram.long_running_notifications", "bool", "Gateway", "Working heartbeat",
+       "Show Working — N min after a quiet interval while a Telegram turn is in flight."),
+    _s("gateway.telegram.busy_input_mode", "enum", "Gateway", "Telegram busy input",
+       "Second DM while a turn is in flight: steer (default) or queue. Does not inherit CLI queue.",
+       ("steer", "queue")),
+    _s("gateway.telegram.busy_ack_detail", "bool", "Gateway", "Telegram busy ack detail",
+       "Add a queued/steering paragraph to the Telegram Working… ack. Default off."),
 )
 
 _BY_KEY: dict[str, Setting] = {s.key: s for s in SETTINGS}

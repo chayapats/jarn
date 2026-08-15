@@ -15,7 +15,7 @@ from jarn.gateway.daemon import DaemonSupervisor
 from jarn.gateway.protocol import EventFrame, MediaRef, TurnFrame
 from jarn.gateway.sessions import SessionRouter, UnknownRepoError
 from jarn.telegram.backend import SessionRouterBackend
-from jarn.telegram.outbox import Outbox
+from jarn.telegram.outbox import BUSY_ACK_TEXT, Outbox
 
 
 class _FakeSender:
@@ -30,6 +30,15 @@ class _FakeSender:
     async def send_message(self, chat_id, text, **kwargs):
         self.messages.append({"chat_id": chat_id, "text": text, **kwargs})
         return {"message_id": len(self.messages)}
+
+    async def edit_message(self, chat_id, message_id, text, **kwargs):
+        self.messages.append(
+            {"chat_id": chat_id, "message_id": message_id, "text": text, "edit": True, **kwargs}
+        )
+        return {"message_id": message_id}
+
+    async def delete_message(self, chat_id, message_id, **kwargs):
+        return True
 
 
 @pytest.mark.asyncio
@@ -125,6 +134,47 @@ async def test_submit_turn_forwards_media_refs(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_second_submit_while_busy_steers_not_second_turn(tmp_path: Path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("JARN_HOME", str(home))
+    personal = tmp_path / "personal"
+    personal.mkdir()
+    (personal / ".jarn").mkdir()
+
+    supervisor = MagicMock(spec=DaemonSupervisor)
+    supervisor.on_outbound = None
+    supervisor.on_worker_death = None
+    sent: list = []
+
+    def _send(root, frame):
+        sent.append((root, frame))
+
+    supervisor.send.side_effect = _send
+    supervisor.ensure_worker.return_value = SimpleNamespace(root=personal.resolve())
+    supervisor.get_worker.return_value = None
+
+    router = SessionRouter(supervisor, personal_root=personal)
+    backend = SessionRouterBackend(router=router, supervisor=supervisor)
+    sender = _FakeSender()
+    backend.bind_outbox(Outbox(sender=sender))
+
+    await backend.submit_turn(chat_id=7, user_id=1, text="first")
+    turns = [f for _, f in sent if isinstance(f, TurnFrame)]
+    assert len(turns) == 1
+
+    await backend.submit_turn(chat_id=7, user_id=1, text="prefer pytest")
+    supervisor.steer.assert_called_once()
+    _root, tid, text = supervisor.steer.call_args.args
+    assert text == "prefer pytest"
+    assert len([f for _, f in sent if isinstance(f, TurnFrame)]) == 1
+    await asyncio.sleep(0.05)
+    assert any(BUSY_ACK_TEXT in m["text"] for m in sender.messages)
+    assert not any("Steering" in m["text"] for m in sender.messages)
+    assert not any("Queued" in m["text"] for m in sender.messages)
+
+
+@pytest.mark.asyncio
 async def test_bind_outbox_delivers_worker_events_from_reader_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -160,6 +210,35 @@ async def test_bind_outbox_delivers_worker_events_from_reader_thread(
         await asyncio.sleep(0.01)
     assert sender.drafts and "hello" in sender.drafts[-1]
     assert sender.messages and sender.messages[-1]["text"] == "hello"
+    backend.unbind_outbox()
+
+
+@pytest.mark.asyncio
+async def test_thread_switch_event_rebinds_chat_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("JARN_HOME", str(home))
+    personal = tmp_path / "personal"
+    personal.mkdir()
+    (personal / ".jarn").mkdir()
+    supervisor = MagicMock(spec=DaemonSupervisor)
+    supervisor.on_outbound = None
+    supervisor.on_worker_death = None
+    router = SessionRouter(supervisor, personal_root=personal)
+    backend = SessionRouterBackend(router=router, supervisor=supervisor)
+    original = router.thread_id_for(9)
+    backend.bind_outbox(Outbox(sender=_FakeSender()))
+    await backend._deliver_frame(
+        9,
+        EventFrame(
+            thread_id=original,
+            kind="thread_switch",
+            data={"thread_id": "resumed-thread-id"},
+        ),
+    )
+    assert router.thread_id_for(9) == "resumed-thread-id"
     backend.unbind_outbox()
 
 

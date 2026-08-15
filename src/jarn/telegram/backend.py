@@ -61,7 +61,7 @@ class VerdictSubmission:
     scope: str = "once"
     plan_mode_target: str | None = None
     message: str = ""
-    kind: str = "tool"  # tool | memory | skill | plan | yolo
+    kind: str = "tool"  # tool | memory | skill | plan | yolo | undo
 
 
 @runtime_checkable
@@ -267,14 +267,25 @@ class SessionRouterBackend:
 
     async def _deliver_frame(self, chat_id: int, frame: OutboundFrame) -> None:
         outbox = self._outbox
-        if outbox is None or isinstance(frame, StatusFrame):
+        if outbox is None:
+            return
+        if isinstance(frame, StatusFrame):
+            await outbox.maybe_long_running(chat_id, turn_in_flight=frame.turn_in_flight)
             return
         if isinstance(frame, EventFrame):
+            if frame.kind == "thread_switch":
+                new_id = frame.data.get("thread_id") if isinstance(frame.data, dict) else None
+                if isinstance(new_id, str) and new_id:
+                    binder = getattr(self.router, "bind_thread", None)
+                    if callable(binder):
+                        binder(chat_id, new_id)
+                return
             await outbox.on_event(
                 chat_id,
                 kind=frame.kind,
                 text=frame.text,
                 data=dict(frame.data),
+                progress=frame.progress,
             )
             return
         if isinstance(frame, ErrorFrame):
@@ -372,11 +383,12 @@ class SessionRouterBackend:
         kind: str = "tool",
     ) -> None:
         del user_id
-        record = None if kind == "yolo" else self.approval_store.get(token)
-        if record is None and kind != "yolo":
+        confirm_kinds = {"yolo", "undo"}
+        record = None if kind in confirm_kinds else self.approval_store.get(token)
+        if record is None and kind not in confirm_kinds:
             raise KeyError(f"unknown or expired approval token: {token}")
         if record is None:
-            # Yolo confirmations are controller-owned and have no parked row.
+            # Yolo / undo confirmations are controller-owned and have no parked row.
             root = self.router.active_root(chat_id)
         else:
             if record.chat_id not in (0, chat_id):

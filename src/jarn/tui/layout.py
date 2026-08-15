@@ -260,6 +260,34 @@ def banner_err(text: str, *, dialect: Dialect = "rich") -> str:
     return f"{err(grammar.GLYPH_FAIL, dialect=dialect)} {escape(text, dialect=dialect)}"
 
 
+def background_finish_panel(
+    job_id: str,
+    exit_code: int | None,
+    *,
+    tail: str = "",
+    command: str = "",
+    dialect: Dialect = "rich",
+) -> str:
+    """Small scrollback panel when a ``run_in_background`` job exits."""
+    if exit_code == 0:
+        status = ok(f"exit {exit_code}", dialect=dialect)
+    elif exit_code is None:
+        status = muted("exited", dialect=dialect)
+    else:
+        status = err(f"exit {exit_code}", dialect=dialect)
+    lines = [
+        f"{heading('Background', dialect=dialect)}"
+        f"{sep(dialect=dialect)}{accent(job_id, dialect=dialect)}"
+        f"{sep(dialect=dialect)}{status}"
+    ]
+    if command:
+        lines.append(kv("Command", truncate(command, 72), dialect=dialect))
+    if tail:
+        lines.append(kv("Output", truncate(tail, 72), dialect=dialect))
+    lines.append(muted("/ps to list jobs", dialect=dialect))
+    return "\n".join(lines)
+
+
 def flag(good: bool, yes: str = "ok", no: str = "missing", *, dialect: Dialect = "rich") -> str:
     return ok(yes, dialect=dialect) if good else err(no, dialect=dialect)
 
@@ -292,6 +320,48 @@ def tool(text: str = grammar.GLYPH_TOOL, *, dialect: Dialect = "rich") -> str:
 def prompt(text: str, *, dialect: Dialect = "rich") -> str:
     """User echo: cyan ``›`` then uncolored escaped text."""
     return f"{user(grammar.GLYPH_PROMPT, dialect=dialect)} {escape(text, dialect=dialect)}"
+
+
+_PASTE_TOKEN_RE = re.compile(r"^\[Pasted text #\d+ \+\d+ lines\]$")
+
+
+def is_paste_token(text: str) -> bool:
+    """True when *text* is a bracketed-paste placeholder from ``repl/keys.py``."""
+    return bool(_PASTE_TOKEN_RE.match((text or "").strip()))
+
+
+def paste_label(expanded: str) -> str:
+    """One-line label for a multiline payload that was not already tokenized."""
+    body = expanded or ""
+    lines = body.count("\n") + (1 if body else 0)
+    return f"[Pasted text +{lines} lines]"
+
+
+def paste_preview(display: str, *, dialect: Dialect = "rich") -> str:
+    """One dim scrollback line for a submitted multiline paste."""
+    return muted(f"{grammar.GLYPH_PROMPT} {display}", dialect=dialect)
+
+
+def submitted_echo(stripped: str, expanded: str, *, dialect: Dialect = "rich") -> str:
+    """Scrollback echo for a submitted user line.
+
+    Multiline payloads and ``[Pasted text #N +L lines]`` tokens collapse to one
+    dim preview line. Host-direct ``!`` stays error-red. The agent still
+    receives *expanded*; this helper only chooses the echo.
+    """
+    payload = expanded if expanded else stripped
+    host_direct = stripped.startswith("!") or payload.lstrip().startswith("!")
+    multiline = is_paste_token(stripped) or "\n" in payload
+    if host_direct:
+        cmd = stripped[1:].strip() if stripped.startswith("!") else payload.lstrip()[1:].strip()
+        if multiline:
+            shown = stripped if is_paste_token(stripped) else paste_label(payload)
+            return host_shell(shown, dialect=dialect)
+        return host_shell(cmd, dialect=dialect)
+    if multiline:
+        display = stripped if is_paste_token(stripped) else paste_label(payload)
+        return paste_preview(display, dialect=dialect)
+    return prompt(stripped, dialect=dialect)
 
 
 def steer(
@@ -487,6 +557,41 @@ def context_gauge(
         pair = f"{format_tokens(used)}/{format_tokens(window)}"
         return f"{escape(pair, dialect=dialect)} {bar} {pct}"
     return f"{bar} {pct}"
+
+
+_FENCE_SPLIT = re.compile(r"(```[\s\S]*?```|~~~[\s\S]*?~~~)")
+_WRAP_BOLD = re.compile(r"\*\*(.+?)\*\*")
+_WRAP_UNDER = re.compile(r"__(.+?)__")
+
+
+def strip_md_wrappers(text: str) -> str:
+    """Strip ``**`` / ``__`` wrappers outside fenced blocks.
+
+    Used on dumb/``NO_COLOR`` so leaked markdown wrappers do not print as
+    literals. Fences and list markers are kept.
+    """
+    parts: list[str] = []
+    for part in _FENCE_SPLIT.split(text or ""):
+        if part.startswith("```") or part.startswith("~~~"):
+            parts.append(part)
+            continue
+        parts.append(_WRAP_UNDER.sub(r"\1", _WRAP_BOLD.sub(r"\1", part)))
+    return "".join(parts)
+
+
+def print_assistant_markdown(console: object, source: str) -> None:
+    """Committed assistant markdown.
+
+    TTY Rich markdown is unchanged. On dumb/``NO_COLOR``, strip leaked ``**`` /
+    ``__`` wrappers first (fences kept), then still run Markdown so headings
+    and lists render.
+    """
+    from rich.markdown import Markdown
+
+    body = (source or "").strip()
+    if palette.no_color():
+        body = strip_md_wrappers(body)
+    console.print(Markdown(body, code_theme=palette.CODE_THEME))  # type: ignore[attr-defined]
 
 
 def looks_like_layout_markup(text: str) -> bool:

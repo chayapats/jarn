@@ -83,7 +83,20 @@ def unified_diff_text(
     if max_lines is not None and len(diff) > max_lines:
         hidden = len(diff) - max_lines
         diff = diff[:max_lines]
+    return _colorize_diff_lines(diff, hidden=hidden)
 
+
+def colorize_unified_diff(text: str, *, max_lines: int | None = None) -> Text:
+    """Colorize an existing unified-diff string (e.g. ``git diff`` output)."""
+    lines = (text or "").splitlines()
+    hidden = 0
+    if max_lines is not None and len(lines) > max_lines:
+        hidden = len(lines) - max_lines
+        lines = lines[:max_lines]
+    return _colorize_diff_lines(lines, hidden=hidden)
+
+
+def _colorize_diff_lines(diff: list[str], *, hidden: int = 0) -> Text:
     text = Text()
     i = 0
     while i < len(diff):
