@@ -322,7 +322,7 @@ def test_service_unit_contains_no_token_and_uses_owner_service(tmp_path, monkeyp
     assert "UMask=0077" in unit
     assert "BOT_TOKEN" not in unit
     assert "token" not in unit.lower()
-    assert str(tmp_path / ".jarn") in unit
+    assert GatewayServiceManager._quote("JARN_HOME=" + str(tmp_path / ".jarn")) in unit
     working = (
         str(tmp_path)
         .replace("%", "%%")
@@ -553,6 +553,7 @@ def test_service_status_fails_closed_when_user_manager_is_unavailable(tmp_path, 
 
 def test_user_service_install_is_atomic_token_free_and_verified(tmp_path, monkeypatch):
     monkeypatch.setenv("JARN_HOME", str(tmp_path / ".jarn"))
+    monkeypatch.setenv("USER", "operator")
     monkeypatch.setattr("jarn.telegram.setup.shutil.which", lambda name: f"/bin/{name}")
     calls: list[list[str]] = []
     started = False
