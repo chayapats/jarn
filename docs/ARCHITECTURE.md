@@ -223,7 +223,9 @@ another root. Operational details are in [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.
 - `repl.py` — terminal app (layout, keys, queue drain, command dispatch).
 - `repl_renderer.py` — `TurnRenderer` (streaming Markdown, per-tool durations).
 - `tui/toolbar.py` — adaptive bottom toolbar; `tui/input_queue.py` — FIFO input queue.
-- `tui/palette.py` — theme tokens + `configure_ui(theme, accent)`.
+- `tui/palette.py` — theme tokens + `configure_ui(theme, accent)`. Planned
+  Hermes-aligned visual grammar:
+  [display standard spec](specs/2026-08-15-hermes-aligned-display-standard.md).
 - `agent/os_sandbox.py` — macOS SBPL / Linux bwrap wrappers; path-injection guard.
 - `agent/checkpoint.py` — pre-turn snapshots via private git refs; undo/redo stack.
 - `agent/repomap.py` — AST + regex source parser; ranked map builder; token budgeting.

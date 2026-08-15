@@ -189,6 +189,25 @@ multi-agent review. See the design spec under `docs/superpowers/specs/`.
   `wiki_search` / `wiki_read` / `wiki_write` / `wiki_append`; `/wiki` command;
   `wiki.enabled` (default `false`); project tier gated by trust
 
+## Planned — Hermes-aligned display & command standard
+
+Design spec: [2026-08-15-hermes-aligned-display-standard.md](specs/2026-08-15-hermes-aligned-display-standard.md).
+
+Goal: slash commands, live turn output, toolbar, `jarn --help`, and `jarn doctor`
+share one visual grammar — plain-language copy, palette-only colors, consistent
+spacing — matching the clarity of Hermes Agent without copying its branding.
+
+- [ ] **Wave A** — one palette + `tui/layout.py` helpers; doctor/config/module
+  panels stop using hardcoded `[green]` / hex
+- [ ] **Wave B** — readable `/help` (columns, `/help <cmd>`, case-insensitive
+  names, skills as slash commands, usage-error helper)
+- [ ] **Wave C** — splash info strip, toolbar fill bar + duration + sticky YOLO,
+  quiet default tool stream (`/verbose`, `/focus`)
+- [ ] **Wave D** — restyle `/status` (local recap), split `/context` from `/cost`,
+  `/tools`, `/title`
+- [ ] **Wave E** — grouped `jarn --help`, TTY-friendly errors, Telegram HTML
+  dialect of the same helpers
+
 ## v2+ / launch-gated (scaffolded + documented, not shipped)
 
 - [ ] **Web UI** — design + core seams ready ([WEB_UI.md](WEB_UI.md), `web/`); the
