@@ -294,6 +294,48 @@ def prompt(text: str, *, dialect: Dialect = "rich") -> str:
     return f"{user(grammar.GLYPH_PROMPT, dialect=dialect)} {escape(text, dialect=dialect)}"
 
 
+_PASTE_TOKEN_RE = re.compile(r"^\[Pasted text #\d+ \+\d+ lines\]$")
+
+
+def is_paste_token(text: str) -> bool:
+    """True when *text* is a bracketed-paste placeholder from ``repl/keys.py``."""
+    return bool(_PASTE_TOKEN_RE.match((text or "").strip()))
+
+
+def paste_label(expanded: str) -> str:
+    """One-line label for a multiline payload that was not already tokenized."""
+    body = expanded or ""
+    lines = body.count("\n") + (1 if body else 0)
+    return f"[Pasted text +{lines} lines]"
+
+
+def paste_preview(display: str, *, dialect: Dialect = "rich") -> str:
+    """One dim scrollback line for a submitted multiline paste."""
+    return muted(f"{grammar.GLYPH_PROMPT} {display}", dialect=dialect)
+
+
+def submitted_echo(stripped: str, expanded: str, *, dialect: Dialect = "rich") -> str:
+    """Scrollback echo for a submitted user line.
+
+    Multiline payloads and ``[Pasted text #N +L lines]`` tokens collapse to one
+    dim preview line. Host-direct ``!`` stays error-red. The agent still
+    receives *expanded*; this helper only chooses the echo.
+    """
+    payload = expanded if expanded else stripped
+    host_direct = stripped.startswith("!") or payload.lstrip().startswith("!")
+    multiline = is_paste_token(stripped) or "\n" in payload
+    if host_direct:
+        cmd = stripped[1:].strip() if stripped.startswith("!") else payload.lstrip()[1:].strip()
+        if multiline:
+            shown = stripped if is_paste_token(stripped) else paste_label(payload)
+            return host_shell(shown, dialect=dialect)
+        return host_shell(cmd, dialect=dialect)
+    if multiline:
+        display = stripped if is_paste_token(stripped) else paste_label(payload)
+        return paste_preview(display, dialect=dialect)
+    return prompt(stripped, dialect=dialect)
+
+
 def steer(
     text: str,
     *,

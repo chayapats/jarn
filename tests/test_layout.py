@@ -243,6 +243,15 @@ def test_live_stream_helpers_use_grammar_and_palette() -> None:
     assert grammar.GLYPH_PROMPT in layout.prompt("hello")
     assert palette.C_USER in layout.prompt("hello")
     assert "hello" in layout.prompt("hello")
+    token = "[Pasted text #1 +12 lines]"
+    preview = layout.paste_preview(token)
+    assert "\n" not in preview
+    assert palette.C_DIM in preview
+    assert layout.is_paste_token(token)
+    assert not layout.is_paste_token("hello")
+    echo = layout.submitted_echo(token, "a\nb\nc")
+    assert echo == preview
+    assert "\n" not in echo
     queued = layout.steer("next", queued=True)
     assert grammar.GLYPH_STEER in queued
     assert "queued:" in queued
