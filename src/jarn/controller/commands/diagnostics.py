@@ -89,6 +89,14 @@ def cmd_status(ctrl: Controller, args: str) -> CommandResult:
         layout.kv("Context", context_text),
         layout.kv("Session", "  ·  ".join(session_bits)),
     ]
+    compact_n = int(getattr(ctrl, "compact_count", 0) or 0)
+    if compact_n:
+        lines.append(
+            layout.kv(
+                "Compact",
+                f"{compact_n}  ·  /compact applies (in-graph auto-compact is not counted)",
+            )
+        )
     recap = _status_recap(ctrl, recap_meta)
     if recap:
         lines.append(layout.section("Recap"))

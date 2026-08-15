@@ -272,6 +272,7 @@ async def test_compact_apply_seeds_fresh_thread(tmp_path, monkeypatch):
     seeded = ctrl.runtime.agent.updated["messages"][0]
     assert isinstance(seeded, HumanMessage)
     assert "MY SUMMARY" in seeded.content
+    assert ctrl.compact_count == 1
     ctrl.close()
 
 

@@ -845,6 +845,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             ctx_used, ctx_window, ctx_frac = ctx
         width = shutil.get_terminal_size((100, 24)).columns
         elapsed = time.monotonic() - self.controller.session_started_at
+        session_title = ""
+        info = self.controller.sessions.get(self.controller.thread_id)
+        if info is not None:
+            session_title = info.title or ""
         return render_toolbar(
             model=model,
             mode=cfg.permission_mode.value,
@@ -861,6 +865,8 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             context_window=ctx_window,
             elapsed_s=elapsed,
             context_bar=cfg.ui.context_bar,
+            compact_count=getattr(self.controller, "compact_count", 0),
+            title=session_title,
             width=width,
         )
 

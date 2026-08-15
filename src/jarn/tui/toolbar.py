@@ -60,6 +60,8 @@ def render_toolbar(
     context_window: int | None = None,
     elapsed_s: float | None = None,
     context_bar: bool = True,
+    compact_count: int = 0,
+    title: str = "",
     width: int = 120,
 ) -> HTML:
     """Compose toolbar HTML; drop low-priority segments on narrow terminals."""
@@ -162,6 +164,17 @@ def render_toolbar(
             )
         )
         order += 1
+    if compact_count > 0:
+        label = f"compact {compact_count}"
+        segments.append(
+            ToolbarSegment(
+                palette.styled_fg(palette.C_NOTICE, _esc(label)),
+                priority=6,
+                width=len(label) + 2,
+                order=order,
+            )
+        )
+        order += 1
     if context_frac is not None:
         color = _ctx_color(context_frac)
         if (
@@ -206,6 +219,19 @@ def render_toolbar(
             order=order,
         )
     )
+    order += 1
+    if title:
+        # Pinned right (high order). Dropped before the fill bar (priority > 7)
+        # and first among {YOLO, model, bar, title}.
+        shown = title if len(title) <= 24 else title[:23] + "…"
+        segments.append(
+            ToolbarSegment(
+                palette.styled_fg(palette.C_DIM, _esc(shown)),
+                priority=8,
+                width=len(shown) + 2,
+                order=order,
+            )
+        )
 
     sep = _sep()
     sep_w = 3

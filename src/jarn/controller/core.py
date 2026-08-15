@@ -241,6 +241,10 @@ class Controller:
         self.session_started_at = time.monotonic()
         self.tool_progress = getattr(config.ui, "tool_progress", TOOL_PROGRESS_DEFAULT)
         self.focus_mode = False
+        #: Session-local ``/compact`` apply count for the toolbar badge. In-graph
+        #: auto-compact is not observed without a new engine API, so only
+        #: :meth:`compact_apply` increments this.
+        self.compact_count = 0
         self._focus_saved_progress: str | None = None
         # Diagnostics auto-fix chain round (T-3-3): 0 for a real user turn,
         # incremented when an auto-fix round is queued, reset on real user
@@ -891,6 +895,7 @@ class Controller:
         if todos:
             seed["todos"] = todos
         await rt.agent.aupdate_state(self._config(), seed)
+        self.compact_count += 1
 
     async def compact(self) -> str:
         """One-shot summarize-and-fork primitive: generate a summary via
