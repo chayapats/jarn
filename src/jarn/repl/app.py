@@ -564,13 +564,16 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             return self._stream_md_cache[1]
         buf = io.StringIO()
         plain_terminal = palette.no_color()
+        body = source.strip()
+        if plain_terminal:
+            body = layout.strip_md_wrappers(body)
         cap = Console(
             force_terminal=not plain_terminal,
             no_color=plain_terminal,
             width=width,
             file=buf,
         )
-        cap.print(Markdown(source.strip(), code_theme=palette.CODE_THEME), end="")
+        cap.print(Markdown(body, code_theme=palette.CODE_THEME), end="")
         rendered = buf.getvalue().rstrip("\n")
         self._stream_md_cache = (source, rendered, width)
         return rendered

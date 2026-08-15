@@ -331,7 +331,7 @@ class TurnRenderer:
             self._refresh_width()
             self._live_clear()
             self._sep("text")
-            self.console.print(Markdown(stable.strip(), code_theme=palette.CODE_THEME))
+            layout.print_assistant_markdown(self.console, stable)
 
     def _commit_text(self) -> None:
         self._flush_stable()
@@ -339,7 +339,7 @@ class TurnRenderer:
             self._refresh_width()
             self._live_clear()
             self._sep("text")
-            self.console.print(Markdown(self._buf.strip(), code_theme=palette.CODE_THEME))
+            layout.print_assistant_markdown(self.console, self._buf)
         self._buf = ""
         self._live_clear()
 

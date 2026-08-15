@@ -531,6 +531,41 @@ def context_gauge(
     return f"{bar} {pct}"
 
 
+_FENCE_SPLIT = re.compile(r"(```[\s\S]*?```|~~~[\s\S]*?~~~)")
+_WRAP_BOLD = re.compile(r"\*\*(.+?)\*\*")
+_WRAP_UNDER = re.compile(r"__(.+?)__")
+
+
+def strip_md_wrappers(text: str) -> str:
+    """Strip ``**`` / ``__`` wrappers outside fenced blocks.
+
+    Used on dumb/``NO_COLOR`` so leaked markdown wrappers do not print as
+    literals. Fences and list markers are kept.
+    """
+    parts: list[str] = []
+    for part in _FENCE_SPLIT.split(text or ""):
+        if part.startswith("```") or part.startswith("~~~"):
+            parts.append(part)
+            continue
+        parts.append(_WRAP_UNDER.sub(r"\1", _WRAP_BOLD.sub(r"\1", part)))
+    return "".join(parts)
+
+
+def print_assistant_markdown(console: object, source: str) -> None:
+    """Committed assistant markdown.
+
+    TTY Rich markdown is unchanged. On dumb/``NO_COLOR``, strip leaked ``**`` /
+    ``__`` wrappers first (fences kept), then still run Markdown so headings
+    and lists render.
+    """
+    from rich.markdown import Markdown
+
+    body = (source or "").strip()
+    if palette.no_color():
+        body = strip_md_wrappers(body)
+    console.print(Markdown(body, code_theme=palette.CODE_THEME))  # type: ignore[union-attr]
+
+
 def looks_like_layout_markup(text: str) -> bool:
     """True when *text* contains layout-generated Rich tags (not user prose)."""
     return _MARKUP_TAG.search(text or "") is not None

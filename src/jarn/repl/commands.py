@@ -7,8 +7,6 @@ import asyncio
 import time
 from pathlib import Path
 
-from rich.markdown import Markdown
-
 from jarn.agent.checkpoint import RestorePreview
 from jarn.agent.local_backend import CancellableLocalShellBackend
 from jarn.commands.help import usage_error
@@ -785,7 +783,7 @@ class CommandMixin:
         if mtype == "human" and text:
             self.console.print(layout.prompt(text))
         elif mtype == "ai" and text:
-            self.console.print(Markdown(text, code_theme=palette.CODE_THEME))
+            layout.print_assistant_markdown(self.console, text)
         elif mtype == "tool" and text:
             first = text.splitlines()[0] if text else ""
             self.console.print(layout.tool_result(first[:80]))
