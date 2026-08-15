@@ -5,18 +5,22 @@ from __future__ import annotations
 import json
 
 from rich.console import Console
-from rich.markup import escape as _escape
 
 from jarn.tui import grammar, layout
 
 
 def _esc(value: object) -> str:
     """Escape a value for Rich markup; ``None`` becomes empty."""
+    return layout.escape(_plain(value))
+
+
+def _plain(value: object) -> str:
+    """Redact secrets without Rich escaping (for layout helpers that escape)."""
     if value is None:
         return ""
     from jarn.config.secrets import redact_secrets
 
-    return _escape(redact_secrets(str(value)))
+    return redact_secrets(str(value))
 
 
 def doctor_to_json(diag: dict) -> str:
@@ -28,7 +32,7 @@ def doctor_to_json(diag: dict) -> str:
 
 def doctor_lines(diag: dict) -> list[str]:
     """Return Rich-markup lines for doctor diagnostics."""
-    lines: list[str] = ["[b]jarn doctor[/b]"]
+    lines: list[str] = [layout.title("jarn doctor")]
 
     append_inventory_lines(lines, diag)
 
@@ -43,19 +47,19 @@ def doctor_lines(diag: dict) -> list[str]:
     if diag.get("jarn_home_mode_warning"):
         lines.append(layout.warn(diag['jarn_home_mode_warning']))
     root = diag.get("project_root")
-    lines.append(f"project root: {_esc(root) if root else '[dim]none[/dim]'}")
+    lines.append(f"project root: {_esc(root) if root else layout.muted('none')}")
     # Added (--add-dir / /add-dir) roots beyond the primary, if any.
     added_roots = [r for r in diag.get("roots", []) if r != (str(root) if root else None)]
     if added_roots:
         lines.append(
             "added roots: " + ", ".join(_esc(r) for r in added_roots)
-            + " [dim](write scope only — checkpoint/context stay primary)[/dim]"
+            + f" {layout.muted('(write scope only — checkpoint/context stay primary)')}"
         )
     if diag.get("project_trusted") is False and diag.get("project_stripped_keys"):
         keys = ", ".join(diag["project_stripped_keys"])
         lines.append(
             f"{layout.warn('project untrusted — stripped keys: ' + _esc(keys))}"
-            " [dim](run `jarn trust <root>` to enable)[/dim]"
+            f" {layout.muted('(run `jarn trust <root>` to enable)')}"
         )
 
     if not present:
@@ -82,7 +86,7 @@ def doctor_lines(diag: dict) -> list[str]:
     if sbx_avail:
         sbx_status = f"{layout.ok(_esc(sbx_backend) + ' available')}"
     else:
-        sbx_status = "[dim]unavailable[/dim]"
+        sbx_status = layout.muted("unavailable")
     lines.append(f"sandbox: {sbx_status} · mode {sbx_mode}")
 
     ex = diag.get("execution") or {}
@@ -127,7 +131,7 @@ def doctor_lines(diag: dict) -> list[str]:
             f"{layout.warn('prompt module diagnostics unavailable: ' + _esc(module_diag['error']))}"
         )
 
-    lines.append("\n[b]Providers[/b]")
+    lines.append("\n" + layout.title("Providers"))
     for entry in diag.get("providers") or []:
         if entry.get("key_ok"):
             key_state = layout.ok("key ok")
@@ -138,7 +142,7 @@ def doctor_lines(diag: dict) -> list[str]:
             f"({_esc(entry.get('type', ''))}): {key_state}"
         )
 
-    lines.append("\n[b]Main model build[/b]")
+    lines.append("\n" + layout.title("Main model build"))
     if diag.get("main_model_builds"):
         lines.append(f"  {layout.ok(grammar.GLYPH_OK + ' model constructs')}")
     else:
@@ -154,9 +158,17 @@ def doctor_lines(diag: dict) -> list[str]:
         lines.append(layout.warn(f"{grammar.GLYPH_WARN} {_esc(warning)}"))
 
     ok = diag.get("ok", False)
-    lines.append(
-        f"\n{layout.banner_ok('All good.') if ok else layout.banner_warn('Issues found above. Run jarn doctor --fix --dry-run to preview repairs.')}"
-    )
+    issue_n = len(diag.get("errors") or []) + len(diag.get("warnings") or [])
+    if ok:
+        cta = layout.banner_ok("All good.")
+    else:
+        n = issue_n or 1
+        noun = "issue" if n == 1 else "issues"
+        cta = layout.banner_warn(
+            f"{n} {noun} — see above. "
+            "Run jarn doctor --fix --dry-run to preview repairs."
+        )
+    lines.append(f"\n{cta}")
     return lines
 
 
@@ -285,7 +297,7 @@ def append_error_lines(lines: list[str], errors: list[dict]) -> None:
     """Render stable error anatomy without exposing a Python traceback."""
     if not errors:
         return
-    lines.append("\n[b]Actionable errors[/b]")
+    lines.append("\n" + layout.title("Actionable errors"))
     for item in errors:
         lines.append(
             f"  {layout.err(grammar.GLYPH_FAIL + ' ' + _esc(item.get('code') or 'JARN-INTERNAL-001') + ':')} "
@@ -305,7 +317,7 @@ def append_error_lines(lines: list[str], errors: list[dict]) -> None:
 def append_extension_lines(lines: list[str], ext: dict) -> None:
     """Append the doctor Extensions block as Rich-markup lines."""
     counts = ext.get("counts") or {}
-    lines.append("\n[b]Extensions[/b]")
+    lines.append("\n" + layout.title("Extensions"))
     if ext.get("project_trusted") is False:
         lines.append(
             f"  {layout.warn('project untrusted — project-tier files/config skipped')}"
@@ -332,7 +344,7 @@ def append_extension_lines(lines: list[str], ext: dict) -> None:
         active = [r for r in rows if r.get("status") in ("active", "renamed_builtin")]
         if not active:
             continue
-        lines.append(f"\n  [b]{label}[/b]")
+        lines.append(f"\n  {layout.title(label)}")
         for row in active:
             scope = _esc(row.get("scope", ""))
             name = _esc(row.get("name", ""))
@@ -342,7 +354,7 @@ def append_extension_lines(lines: list[str], ext: dict) -> None:
 
     hooks = [h for h in ext.get("hooks") or [] if h.get("status") == "active"]
     if hooks:
-        lines.append("\n  [b]Hooks[/b]")
+        lines.append("\n  " + layout.title("Hooks"))
         for hook in hooks:
             blocking = "blocking" if hook.get("blocking") else "non-blocking"
             lines.append(
@@ -353,7 +365,7 @@ def append_extension_lines(lines: list[str], ext: dict) -> None:
 
     servers = [s for s in ext.get("mcp_servers") or [] if s.get("status") == "active"]
     if servers:
-        lines.append("\n  [b]MCP servers[/b]")
+        lines.append("\n  " + layout.title("MCP servers"))
         for server in servers:
             health = server.get("health") or "unknown"
             lines.append(
@@ -369,17 +381,20 @@ def append_extension_lines(lines: list[str], ext: dict) -> None:
         if r.get("status") == "shadowed"
     ]
     if shadowed:
-        lines.append("\n  [dim]Shadowed (not loaded):[/dim]")
+        lines.append("\n  " + layout.muted("Shadowed (not loaded):"))
         for row in shadowed:
             lines.append(
-                f"    [dim]{_esc(row.get('name') or '')} "
-                f"({_esc(row.get('scope') or '')}) — "
-                f"{_esc(row.get('detail', ''))}[/dim]"
+                "    "
+                +                 layout.muted(
+                    f"{_plain(row.get('name') or '')} "
+                    f"({_plain(row.get('scope') or '')}) — "
+                    f"{_plain(row.get('detail', ''))}"
+                )
             )
 
 
 def render_doctor_console(console: Console, diag: dict) -> None:
     """Print doctor diagnostics to a Rich console."""
-    console.rule("[b]jarn doctor[/b]")
+    console.rule(layout.title("jarn doctor"))
     for line in doctor_lines(diag)[1:]:
         console.print(line)

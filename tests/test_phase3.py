@@ -96,7 +96,6 @@ def test_format_help_has_toolbar_glyphs_legend():
 
 def test_builtin_command_group_field():
     """Every builtin has a non-empty group assigned."""
-    from jarn.extensibility.commands import BUILTINS
 
     for cmd in BUILTINS:
         assert cmd.group in ("Work", "Setup", "Session"), (
@@ -106,7 +105,6 @@ def test_builtin_command_group_field():
 
 def test_profile_command_removed_in_v06():
     """/profile was removed in v0.6.0; it must not appear in BUILTINS."""
-    from jarn.extensibility.commands import BUILTINS
 
     profile_cmd = next((c for c in BUILTINS if c.name == "profile"), None)
     assert profile_cmd is None, "/profile must be absent from BUILTINS (removed in v0.6.0)"

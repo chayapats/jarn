@@ -1,4 +1,4 @@
-"""Fail CI if named Rich colors or brand hex leak outside the palette SSOT."""
+"""Fail CI if named Rich colors, [dim], or brand hex leak outside the palette SSOT."""
 
 from __future__ import annotations
 
@@ -8,12 +8,13 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 SRC = REPO / "src" / "jarn"
 
-# palette.py is the color table. Onboarding wizards are a separate first-run
-# surface (wave E) and stay allowlisted until they share layout helpers.
-_ALLOW_DIRS = ("onboarding",)
 _ALLOW_FILES = {"palette.py"}
 
-_NAMED = re.compile(r"\[(?:/)?(?:bold\s+)?(?:green|red|yellow|cyan|blue|magenta)\b")
+_NAMED = re.compile(
+    r"\[(?:/)?(?:(?:bold|b)\s+)?(?:green|red|yellow|cyan|blue|magenta)\b"
+    r"|\[(?:/)?dim\]"
+    r"|border_style\s*=\s*['\"](?:cyan|green|red|yellow|blue|magenta)['\"]"
+)
 _HEX = re.compile(
     r"#(?:22d3ee|7c8f94|3ee07a|3fb950|f85149|d29922)\b",
     re.IGNORECASE,
@@ -21,10 +22,7 @@ _HEX = re.compile(
 
 
 def _allowed(path: Path) -> bool:
-    rel = path.relative_to(SRC)
-    if rel.name in _ALLOW_FILES:
-        return True
-    return rel.parts[0] in _ALLOW_DIRS if rel.parts else False
+    return path.name in _ALLOW_FILES
 
 
 def test_no_named_rich_colors_or_hardcoded_brand_hex_outside_palette() -> None:

@@ -60,6 +60,10 @@ def test_parser_exposes_ga_admin_surface_and_exit_taxonomy() -> None:
     help_text = parser.format_help()
     assert "Stable exit codes:" in help_text
     assert "3 auth" in help_text and "7 update/rollback failed" in help_text
+    assert "Start:" in help_text
+    assert "One-shot:" in help_text
+    assert help_text.index("Start and common commands:") < help_text.index("Start:")
+    assert "See `jarn <command> --help`" in help_text
 
 
 def test_top_level_help_is_offline_complete_plain_and_non_mutating(tmp_path: Path) -> None:

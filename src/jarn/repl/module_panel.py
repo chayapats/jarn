@@ -261,6 +261,6 @@ class ModulePanel:
             out.append((palette.C_DIM, "   Managed automatically · cannot be toggled here\n"))
         out.append((palette.C_DIM, "   ↑/↓ move · Esc/q close\n"))
         if self.message:
-            style, glyph = (palette.C_SUCCESS, grammar.GLYPH_OK) if self.message_ok else (palette.C_ERROR, "!")
+            style, glyph = (palette.C_SUCCESS, grammar.GLYPH_OK) if self.message_ok else (palette.C_ERROR, grammar.GLYPH_FAIL)
             out.append((style, f"   {glyph} {self.message}\n"))
         return out

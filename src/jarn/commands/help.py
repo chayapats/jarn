@@ -5,8 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from rich.markup import escape as _escape_rich
-
 from jarn.commands.registry import (
     COMMAND_SPECS,
     CommandSpec,
@@ -17,17 +15,22 @@ from jarn.commands.registry import (
     spec_by_name,
 )
 from jarn.tui import grammar, layout
+from jarn.tui.layout import Dialect
 
 
 def format_help(
     custom: dict[str, Any] | None = None,
     *,
     custom_description: Callable[[Any], str] | None = None,
+    dialect: Dialect = "rich",
 ) -> str:
-    """Build ``/help`` body (Rich markup), grouped by section."""
+    """Build ``/help`` body, grouped by section.
+
+    ``dialect='html'`` is Telegram ``parse_mode=HTML`` (same catalog, no Rich).
+    """
     lines: list[str] = [
-        layout.title("Commands"),
-        layout.muted("type /help <name> for details"),
+        layout.title("Commands", dialect=dialect),
+        layout.muted("type /help <name> for details", dialect=dialect),
         "",
     ]
 
@@ -36,7 +39,7 @@ def format_help(
         specs = [s for s in grouped.get(group_name, []) if s.index]
         if not specs:
             continue
-        lines.append(layout.title(group_name))
+        lines.append(layout.title(group_name, dialect=dialect))
         name_width = min(
             grammar.HELP_NAME_WIDTH,
             max(len(slash_index(spec)) for spec in specs),
@@ -47,12 +50,13 @@ def format_help(
                     slash_index(spec),
                     spec.description,
                     name_width=name_width,
+                    dialect=dialect,
                 )
             )
         lines.append("")
 
     if custom:
-        lines.append(layout.title("Project commands"))
+        lines.append(layout.title("Project commands", dialect=dialect))
         custom_rows = []
         for command in custom.values():
             name = getattr(command, "name", "")
@@ -67,15 +71,15 @@ def format_help(
             max((len(n) for n, _ in custom_rows), default=8),
         )
         for name, desc in custom_rows:
-            lines.append(layout.row(name, desc, name_width=width))
+            lines.append(layout.row(name, desc, name_width=width, dialect=dialect))
         lines.append("")
 
-    lines.append(layout.title("Shortcuts"))
-    lines.append(f"  {layout.muted(grammar.shortcut_line())}")
-    lines.append(f"  {layout.muted(grammar.HELP_COPY_HINT)}")
+    lines.append(layout.title("Shortcuts", dialect=dialect))
+    lines.append(f"  {layout.muted(grammar.shortcut_line(), dialect=dialect)}")
+    lines.append(f"  {layout.muted(grammar.HELP_COPY_HINT, dialect=dialect)}")
     lines.append("")
-    lines.append(layout.title("Glyphs"))
-    lines.append(f"  {layout.muted(grammar.glyph_legend())}")
+    lines.append(layout.title("Glyphs", dialect=dialect))
+    lines.append(f"  {layout.muted(grammar.glyph_legend(), dialect=dialect)}")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -84,11 +88,12 @@ def format_help_detail(
     custom: dict[str, Any] | None = None,
     *,
     custom_description: Callable[[Any], str] | None = None,
+    dialect: Dialect = "rich",
 ) -> str:
     """``/help <name>`` page from the registry (or a custom command)."""
     spec = spec_by_name(name)
     if spec is not None:
-        return _detail_from_spec(spec)
+        return _detail_from_spec(spec, dialect=dialect)
     if custom:
         key = name.strip().lstrip("/")
         command = custom.get(key) or custom.get(key.lower())
@@ -100,37 +105,40 @@ def format_help_detail(
             )
             return "\n".join(
                 [
-                    layout.title(f"/{getattr(command, 'name', key)}"),
+                    layout.title(f"/{getattr(command, 'name', key)}", dialect=dialect),
                     "",
-                    f"  {_escape_rich(desc)}",
+                    f"  {layout.escape(desc, dialect=dialect)}",
                     "",
-                    layout.muted("Project command — its body is sent to the agent."),
+                    layout.muted(
+                        "Project command — its body is sent to the agent.",
+                        dialect=dialect,
+                    ),
                 ]
             )
-    return unknown_command(name)
+    return unknown_command(name, dialect=dialect)
 
 
-def _detail_from_spec(spec: CommandSpec) -> str:
-    lines = [layout.title(slash_usage(spec)), ""]
-    lines.append(f"  {_escape_rich(spec.blurb or spec.description)}")
+def _detail_from_spec(spec: CommandSpec, *, dialect: Dialect = "rich") -> str:
+    lines = [layout.title(slash_usage(spec), dialect=dialect), ""]
+    lines.append(f"  {layout.escape(spec.blurb or spec.description, dialect=dialect)}")
     if spec.alias_of:
         lines.append("")
-        lines.append(layout.muted(f"Alias of /{spec.alias_of}."))
+        lines.append(layout.muted(f"Alias of /{spec.alias_of}.", dialect=dialect))
     if spec.aliases:
         names = ", ".join(f"/{a}" for a in spec.aliases)
         lines.append("")
-        lines.append(layout.muted(f"Also /{spec.name}: {names}"))
+        lines.append(layout.muted(f"Also /{spec.name}: {names}", dialect=dialect))
     lines.append("")
-    lines.append(layout.kv("Usage", slash_usage(spec)))
+    lines.append(layout.kv("Usage", slash_usage(spec), dialect=dialect))
     if spec.examples:
         lines.append("")
-        lines.append(layout.muted("Examples"))
+        lines.append(layout.muted("Examples", dialect=dialect))
         for item in spec.examples:
-            lines.append(f"  {layout.accent(item)}")
+            lines.append(f"  {layout.accent(item, dialect=dialect)}")
     if spec.related:
         rel = "  ".join(f"/{item}" for item in spec.related)
         lines.append("")
-        lines.append(layout.kv("Related", rel))
+        lines.append(layout.kv("Related", rel, dialect=dialect))
     return "\n".join(lines)
 
 
@@ -139,6 +147,7 @@ def usage_error(
     *,
     extra: str = "",
     hint: str = "",
+    dialect: Dialect = "rich",
 ) -> str:
     """Standard failed-command page. Syntax always comes from the registry."""
     spec = spec_by_name(name)
@@ -147,28 +156,33 @@ def usage_error(
     related = spec.related if spec is not None else ()
     lines: list[str] = []
     if extra:
-        lines.append(layout.err(extra))
-        lines.append(layout.muted(f"Usage: {syntax}"))
+        lines.append(layout.err(extra, dialect=dialect))
+        lines.append(layout.muted(f"Usage: {syntax}", dialect=dialect))
     else:
-        lines.append(layout.err(f"Usage: {syntax}"))
+        lines.append(layout.err(f"Usage: {syntax}", dialect=dialect))
     if hint:
-        lines.append(layout.muted(hint))
+        lines.append(layout.muted(hint, dialect=dialect))
     if examples:
         lines.append("")
-        lines.append(layout.muted("Examples"))
+        lines.append(layout.muted("Examples", dialect=dialect))
         for item in examples:
-            lines.append(f"  {layout.accent(item)}")
+            lines.append(f"  {layout.accent(item, dialect=dialect)}")
     if related:
         rel = "  ".join(f"/{item}" for item in related)
         lines.append("")
-        lines.append(layout.muted(f"Related  {rel}"))
+        lines.append(layout.muted(f"Related  {rel}", dialect=dialect))
     topic = spec.name if spec is not None else name
     lines.append("")
-    lines.append(layout.muted(f"Type /help {topic} for details."))
+    lines.append(layout.muted(f"Type /help {topic} for details.", dialect=dialect))
     return "\n".join(lines)
 
 
-def unknown_command(name: str, suggestions: list[str] | None = None) -> str:
+def unknown_command(
+    name: str,
+    suggestions: list[str] | None = None,
+    *,
+    dialect: Dialect = "rich",
+) -> str:
     import difflib
 
     from jarn.commands.registry import _SPEC_BY_NAME
@@ -181,7 +195,7 @@ def unknown_command(name: str, suggestions: list[str] | None = None) -> str:
             n=5,
             cutoff=0.55,
         )
-    lines = [layout.err(f"Unknown command: /{clean}"), ""]
+    lines = [layout.err(f"Unknown command: /{clean}", dialect=dialect), ""]
     if suggestions:
         shown = []
         for item in suggestions:
@@ -191,11 +205,11 @@ def unknown_command(name: str, suggestions: list[str] | None = None) -> str:
                 shown.append(label)
         lines.append(
             "  Did you mean  "
-            + "  ".join(layout.accent(f"/{item}") for item in shown)
+            + "  ".join(layout.accent(f"/{item}", dialect=dialect) for item in shown)
             + "?"
         )
         lines.append("")
-    lines.append(layout.muted("Type /help to list commands."))
+    lines.append(layout.muted("Type /help to list commands.", dialect=dialect))
     return "\n".join(lines)
 
 

@@ -729,7 +729,7 @@ def test_reasoning_streams_live_into_sink():
 
     seen: list[str] = []
     r = _TurnRenderer(Console(file=StringIO()),
-                      live_sink=seen.append, spinner=False)
+                      live_sink=seen.append, spinner=False, show_reasoning="full")
     r.on_reasoning("weighing ")
     r.on_reasoning("options")
     # The growing thinking text is pushed to the live region before any other
@@ -745,7 +745,7 @@ def test_reasoning_live_preview_clears_when_committed():
 
     seen: list[str] = []
     console = Console(file=StringIO(), width=80)
-    r = _TurnRenderer(console, live_sink=seen.append, spinner=False)
+    r = _TurnRenderer(console, live_sink=seen.append, spinner=False, show_reasoning="full")
     r.on_reasoning("pondering")
     assert "pondering" in seen[-1]
     # Real text arriving commits the reasoning block and collapses the preview.
@@ -762,7 +762,7 @@ def test_reasoning_streams_live_into_rich_live(monkeypatch):
     from jarn.repl_renderer import TurnRenderer as _TurnRenderer
 
     console = Console(file=StringIO(), force_terminal=True, width=80)
-    r = _TurnRenderer(console, spinner=False)  # no sink -> Rich Live path
+    r = _TurnRenderer(console, spinner=False, show_reasoning="full")  # no sink -> Rich Live path
     updates: list = []
     try:
         r.on_reasoning("thinking hard")
@@ -833,6 +833,7 @@ async def test_run_turn_dispatches_tool_progress(tmp_path, monkeypatch):
     from jarn.repl_renderer import TOOL_PROGRESS_STREAM_PREFIX
 
     ctrl = _controller(tmp_path, monkeypatch)
+    ctrl.tool_progress = "all"
 
     async def _noop_runtime():
         return None
@@ -3590,16 +3591,24 @@ def test_gen_stat_thinking_proxies_context_when_prompt_unknown(tmp_path, monkeyp
 
 
 def test_help_generated_from_registry():
-    """`/help` body is generated from the unified command registry."""
+    """`/help` body is generated from the unified command registry.
+
+    Hidden aliases (`index=False` / `alias_of`) are not listed as their own
+    rows; they still appear in the primary command's description so `/help`
+    remains searchable for `/new`, `/exit`, and `/usage`.
+    """
     from jarn.commands.registry import COMMAND_SPECS, grouped_specs, help_group_order
     from jarn.extensibility.commands import format_help
 
     body = format_help()
     for spec in COMMAND_SPECS:
+        if spec.alias_of or not spec.index:
+            assert f"/{spec.name}" in body
+            continue
         assert f"/{spec.name}" in body
         assert spec.description in body
 
-    grouped = grouped_specs()
+    grouped = grouped_specs(index_only=True)
     for group_name in help_group_order():
         specs = grouped.get(group_name, [])
         if not specs:
@@ -3607,25 +3616,24 @@ def test_help_generated_from_registry():
         assert f"[b]{group_name}[/b]" in body
         group_pos = body.index(f"[b]{group_name}[/b]")
         for spec in specs:
-            assert body.index(f"/{spec.name}") > group_pos
+            assert body.find(f"/{spec.name}", group_pos) > group_pos
 
 
 def test_commit_width_tracks_resize(monkeypatch):
     """console.width is refreshed at every commit — tracks the current terminal width.
 
-    TDD RED: before the fix, console.width stays at the startup value after a resize.
-    TDD GREEN: after the fix, console.width equals the current terminal width (capped
-    at 100) at each commit and live-render call.
+    TDD GREEN: console.width equals the current terminal width (capped
+    at ``ui.wrap_at``, default 120) at each commit and live-render call.
     """
     import os
     import shutil as _shutil
 
     from jarn.repl_renderer import TurnRenderer
 
-    # Phase 1: terminal reports 120 cols → width capped to 100.
+    # Phase 1: terminal reports 200 cols → width capped to wrap_at (120).
     monkeypatch.setattr(
         _shutil, "get_terminal_size",
-        lambda *_a, **_k: os.terminal_size((120, 24)),
+        lambda *_a, **_k: os.terminal_size((200, 24)),
     )
     # legacy_windows=False: Rich's width getter reserves one column on a legacy
     # Windows console (returns set width - 1), which is Rich's quirk — this test
@@ -3638,8 +3646,8 @@ def test_commit_width_tracks_resize(monkeypatch):
     r.on_text("first commit text")
     r.on_tool("tool_a", {})  # triggers _commit_text before the tool line
 
-    # After first commit, width should be refreshed to min(120, 100) = 100.
-    assert console.width == 100, f"expected 100 (120 cols capped at 100), got {console.width}"
+    # After first commit, width should be refreshed to min(200, 120) = 120.
+    assert console.width == 120, f"expected 120 (200 cols capped at wrap_at), got {console.width}"
 
     # Phase 2: terminal shrinks to 60 cols.
     monkeypatch.setattr(
@@ -3650,10 +3658,10 @@ def test_commit_width_tracks_resize(monkeypatch):
     r.on_text("second commit text")
     r.finish()  # triggers _commit_text
 
-    # After second commit, width should be refreshed to min(60, 100) = 60.
+    # After second commit, width should be refreshed to min(60, 120) = 60.
     assert console.width == 60, f"expected 60 after resize, got {console.width}"
 
-    # Phase 3: wide terminal (250 cols) → width still capped at 100.
+    # Phase 3: wide terminal (250 cols) → width still capped at wrap_at (120).
     console3 = Console(
         file=StringIO(), force_terminal=True, width=80, legacy_windows=False
     )
@@ -3664,7 +3672,7 @@ def test_commit_width_tracks_resize(monkeypatch):
     r3 = TurnRenderer(console3, live_sink=lambda _: None, spinner=False)
     r3.on_text("cap test text")
     r3.finish()
-    assert console3.width == 100, f"expected 100 cap at 250 cols, got {console3.width}"
+    assert console3.width == 120, f"expected 120 cap at 250 cols, got {console3.width}"
 
     # Phase 4: floor guard test — terminal reports 0 cols → width floored to 1.
     from jarn.repl_renderer import _current_width
@@ -4931,7 +4939,7 @@ def test_git_mention_argv_disables_color(tmp_path, monkeypatch):
 
 
 def test_verify_badge_render_pass():
-    """Pass badge: shows verified:, cmd, ✓, summary, timing, ⎿."""
+    """Pass badge: shows verified:, cmd, success glyph, summary, timing, ⎿."""
     from io import StringIO
 
     from jarn.repl_renderer import TurnRenderer
@@ -4942,7 +4950,7 @@ def test_verify_badge_render_pass():
     out = console.file.getvalue()
     assert "verified:" in out
     assert "pytest" in out
-    assert "✓" in out
+    assert "✔" in out
     assert "214 passed" in out
     assert "3.2s" in out
     assert "⎿" in out

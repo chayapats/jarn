@@ -20,6 +20,7 @@ from jarn.install_state import (
     load_actionable_install_record,
 )
 from jarn.permissions.labels import permission_mode_summary
+from jarn.tui import layout
 from jarn.util.process_env import external_command_env
 from jarn.version import __version__
 
@@ -229,7 +230,7 @@ def render_setup_completion(console: Console, summary: SetupCompletion) -> None:
     """Render only facts verified before the successful commit."""
 
     install_label = "verified" if summary.install.verified else "unverified"
-    console.print("\n[bold green]Setup complete.[/bold green]")
+    console.print("\n" + layout.banner_ok("Setup complete."))
     console.print(
         f"  J.A.R.N.: [b]{escape(summary.install.version)}[/b] · "
         f"{escape(summary.install.method)} · {install_label}"
@@ -246,7 +247,7 @@ def render_setup_completion(console: Console, summary: SetupCompletion) -> None:
     if summary.auth_workspace:
         console.print(f"  Workspace: [b]{escape(summary.auth_workspace)}[/b]")
     console.print(
-        f"  Model: [b]{escape(summary.model_display)}[/b] [dim]({escape(summary.model)})[/dim]"
+        f"  Model: {layout.strong(summary.model_display)} {layout.muted('(' + summary.model + ')')}"
     )
     if summary.reasoning_effort:
         console.print(f"  Reasoning: [b]{escape(summary.reasoning_effort)}[/b]")
@@ -255,7 +256,7 @@ def render_setup_completion(console: Console, summary: SetupCompletion) -> None:
     )
     console.print(f"  Working directory: [b]{escape(str(summary.cwd))}[/b]")
     console.print(f"  Provider validation: {escape(summary.validation)}")
-    console.print(f"\n  Next command: [bold cyan]{escape(summary.next_command)}[/bold cyan]")
+    console.print(f"\n  Next command: {layout.accent(summary.next_command, bold=True)}")
 
 
 __all__ = [

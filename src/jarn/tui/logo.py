@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jarn.tui import grammar, layout, palette
+from jarn.tui import grammar, layout
 
 WORDMARK = "\n".join([
     r"     ██╗      █████╗      ██████╗      ███╗   ██╗",
@@ -18,9 +18,7 @@ WORDMARK = "\n".join([
 TAGLINE = "just a reliable nerd"
 
 
-SHORTCUT_HINT = (
-    f"[{palette.C_DIM}]{grammar.SHORTCUT_HINT}[/{palette.C_DIM}]"
-)
+SHORTCUT_HINT = layout.muted(grammar.SHORTCUT_HINT)
 
 
 def display_folder(path: Path | None) -> str:
@@ -64,8 +62,8 @@ def splash_info_strip(
 def splash(version: str) -> str:
     """Big ASCII wordmark welcome."""
     return (
-        f"[b {palette.ACCENT}]{WORDMARK}[/b {palette.ACCENT}]\n"
-        f"[dim]{TAGLINE} · v{version}[/dim]\n\n"
+        f"{layout.accent(WORDMARK, bold=True)}\n"
+        f"{layout.muted(f'{TAGLINE} · v{version}')}\n\n"
         f"{SHORTCUT_HINT}"
     )
 
@@ -73,7 +71,7 @@ def splash(version: str) -> str:
 def splash_compact(version: str) -> str:
     """Single-line wordmark + version + shortcut hint."""
     return (
-        f"[b {palette.ACCENT}]JARN[/b {palette.ACCENT}] "
-        f"[dim]v{version} · {TAGLINE}[/dim]  "
+        f"{layout.accent('JARN', bold=True)} "
+        f"{layout.muted(f'v{version} · {TAGLINE}')}  "
         f"{SHORTCUT_HINT}"
     )

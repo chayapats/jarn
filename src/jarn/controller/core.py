@@ -45,7 +45,7 @@ from jarn.memory import (
     new_thread_id,
 )
 from jarn.permissions import PermissionEngine
-from jarn.tui import palette
+from jarn.tui import grammar, palette
 
 if TYPE_CHECKING:
     from jarn.catalog import ModelCatalogEntry, ModelCatalogSnapshot
@@ -1961,13 +1961,13 @@ class Controller:
             self.runtime.main_model_ref if self.runtime else None
         ) or self.config.resolved_main_model()
         glyph = {
-            "ok": f"[{palette.C_SUCCESS}]●[/{palette.C_SUCCESS}] ",
+            "ok": f"[{palette.C_SUCCESS}]{grammar.GLYPH_KEY_OK}[/{palette.C_SUCCESS}] ",
             "error": (
-                f"[{palette.C_ERROR}]✗ key[/{palette.C_ERROR}]"
+                f"[{palette.C_ERROR}]{grammar.GLYPH_FAIL} key[/{palette.C_ERROR}]"
                 f" [{palette.C_DIM}]·[/{palette.C_DIM}]"
                 f" [{palette.C_ERROR}]/doctor[/{palette.C_ERROR}] "
             ),
-            "degraded": f"[{palette.C_WARN}]⚠[/{palette.C_WARN}] ",
+            "degraded": f"[{palette.C_WARN}]{grammar.GLYPH_WARN}[/{palette.C_WARN}] ",
             "unknown": "",
         }.get(self.health, "")
         sep = f" [{palette.C_DIM}]·[/{palette.C_DIM}] "

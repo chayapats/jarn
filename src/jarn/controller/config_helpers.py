@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from rich.markup import escape as _escape_markup
 
 from jarn.config.schema import PermissionMode
+from jarn.tui import grammar
 
 if TYPE_CHECKING:
     from jarn.controller.core import CommandResult, Controller
@@ -102,7 +103,7 @@ def set_setting(ctrl: Controller, key: str, raw: str) -> tuple[bool, str]:
     msg = f"saved {key} = {shown}"
     note = next((w.message for w in new_warnings if w.involves(key)), None)
     if note:
-        msg += f"  ⚠ {note}"
+        msg += f"  {grammar.GLYPH_WARN} {note}"
     return True, msg
 
 

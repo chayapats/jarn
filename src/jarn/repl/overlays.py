@@ -105,7 +105,7 @@ class OverlayMixin:
         # ask renders in the faint region above the input, which is easy to miss;
         # the user must clearly see this is a y/N decision.
         self.console.print(
-            f"[{palette.C_ERROR}]⚠  Entering YOLO mode[/{palette.C_ERROR}] "
+            f"[{palette.C_ERROR}]{grammar.GLYPH_WARN}  Entering YOLO mode[/{palette.C_ERROR}] "
             f"[{palette.C_DIM}]— no approval prompts; the danger-guard still blocks "
             f"catastrophic actions.[/{palette.C_DIM}]"
         )

@@ -34,6 +34,7 @@ from jarn.telegram.htmlutil import (
     format_code,
     format_pre,
 )
+from jarn.tui import grammar
 
 _log = logging.getLogger("jarn.telegram.outbox")
 
@@ -203,7 +204,7 @@ def build_approval_card(
             args_blob = json.dumps(safe_args, ensure_ascii=False, indent=2)[:1200]
         except (TypeError, ValueError):
             args_blob = escape_html(str(safe_args)[:1200])
-    danger = " ⚠" if dangerous else ""
+    danger = f" {grammar.GLYPH_WARN}" if dangerous else ""
     title = escape_html(action or "tool")
     lines = [f"<b>Approve{danger}</b> {format_code(title)}"]
     if target:

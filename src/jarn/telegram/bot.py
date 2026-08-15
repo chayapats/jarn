@@ -62,6 +62,38 @@ _CONFLICT_NOTICE = (
     "(Telegram 409). Standing down — not retrying, not calling logOut."
 )
 
+_GATEWAY_HELP_ROWS: tuple[tuple[str, str], ...] = (
+    ("/stop", "Cancel the in-flight turn"),
+    ("/new", "Start a fresh thread"),
+    ("/repo <name>", "Switch the active repo"),
+    ("/help [name]", "This catalog (same commands as the REPL)"),
+)
+
+
+def _split_slash(text: str) -> tuple[str, str] | None:
+    """``(/name, rest)`` for a Telegram slash line; strips ``@bot`` suffix."""
+    if not text.startswith("/"):
+        return None
+    head, _, tail = text.partition(" ")
+    name = head[1:].split("@", 1)[0].lower()
+    if not name:
+        return None
+    return name, tail.strip()
+
+
+def _telegram_help_html(topic: str = "") -> str:
+    """``/help`` body in Telegram HTML — same catalog as the REPL."""
+    from jarn.commands.help import format_help, format_help_detail
+    from jarn.tui import layout
+
+    if topic:
+        return format_help_detail(topic, dialect="html")
+    lines = [format_help(dialect="html").rstrip(), ""]
+    lines.append(layout.section("Gateway", dialect="html"))
+    for name, desc in _GATEWAY_HELP_ROWS:
+        lines.append(layout.row(name, desc, dialect="html"))
+    return "\n".join(lines)
+
 
 def _is_telegram_unauthorized(exc: BaseException) -> bool:
     """Classify Telegram's permanent 401 without coupling module import-time."""
@@ -478,34 +510,44 @@ class TelegramBotApp:
             text = ""
         text = str(text)
 
-        if text.startswith("/stop"):
-            await self.backend.stop(chat_id=chat_id, user_id=user_id)
-            if self._outbox:
-                await self._outbox.send_notice(chat_id, "Stopped.")
-            return
-        if text.startswith("/new"):
-            thread_id = await self.backend.new_thread(chat_id=chat_id, user_id=user_id)
-            if self._outbox:
-                await self._outbox.send_notice(chat_id, f"New thread: {thread_id}")
-            return
-        if text.startswith("/repo"):
-            parts = text.split(maxsplit=1)
-            name = parts[1].strip() if len(parts) > 1 else ""
-            if not name:
+        parsed = _split_slash(text)
+        if parsed is not None:
+            name, rest = parsed
+            if name == "stop":
+                await self.backend.stop(chat_id=chat_id, user_id=user_id)
                 if self._outbox:
-                    await self._outbox.send_notice(chat_id, "Usage: /repo <name-or-path>")
+                    await self._outbox.send_notice(chat_id, "Stopped.")
                 return
-            try:
-                root = await self.backend.set_repo(
-                    chat_id=chat_id, user_id=user_id, name_or_path=name
-                )
-            except Exception as exc:  # noqa: BLE001
+            if name == "new":
+                thread_id = await self.backend.new_thread(chat_id=chat_id, user_id=user_id)
                 if self._outbox:
-                    await self._outbox.send_notice(chat_id, f"/repo failed: {exc}")
+                    await self._outbox.send_notice(chat_id, f"New thread: {thread_id}")
                 return
-            if self._outbox:
-                await self._outbox.send_notice(chat_id, f"Active repo: {root}")
-            return
+            if name == "repo":
+                from jarn.tui import layout
+
+                if not rest:
+                    if self._outbox:
+                        await self._outbox.send_html(
+                            chat_id,
+                            layout.err("Usage: /repo <name-or-path>", dialect="html"),
+                        )
+                    return
+                try:
+                    root = await self.backend.set_repo(
+                        chat_id=chat_id, user_id=user_id, name_or_path=rest
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    if self._outbox:
+                        await self._outbox.send_notice(chat_id, f"/repo failed: {exc}")
+                    return
+                if self._outbox:
+                    await self._outbox.send_notice(chat_id, f"Active repo: {root}")
+                return
+            if name == "help":
+                if self._outbox:
+                    await self._outbox.send_html(chat_id, _telegram_help_html(rest))
+                return
 
         # Media path (T-TG-4).
         media_refs = []

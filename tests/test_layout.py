@@ -106,3 +106,50 @@ def test_help_index_uses_work_session_setup() -> None:
     assert "[b]Glyphs[/b]" in body
     assert "[b]Daily[/b]" not in body
     assert "[b]Toolbar glyphs[/b]" not in body
+
+
+def test_layout_html_dialect_is_telegram_safe() -> None:
+    html = format_help(dialect="html")
+    assert "<b>Work</b>" in html
+    assert "<code>/model" in html or "<code>/mode" in html
+    assert "<span" not in html
+    assert "[b]" not in html
+    assert palette.C_SUCCESS not in html
+    detail = format_help_detail("compact", dialect="html")
+    assert "<b>/compact" in detail
+    assert "<span" not in detail
+
+
+def test_error_detail_tty_adds_color_and_blank_lines(monkeypatch) -> None:
+    from jarn.errors import ErrorCode, error_detail
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    class _Tty:
+        def isatty(self) -> bool:
+            return True
+
+    detail = error_detail(
+        ErrorCode.CLI_USAGE,
+        "Command usage is invalid.",
+        cause="missing argument",
+        component="command line parser",
+        retryable=False,
+        action="Run jarn --help",
+    )
+    colored = detail.render(stream=_Tty())
+    assert "\x1b[" in colored
+    assert "\n\nCause:" in colored
+    assert "Next:" in colored
+    plain = detail.render(stream=object())
+    assert "\x1b[" not in plain
+    assert plain.splitlines()[1].startswith("Cause:")
+
+
+def test_heading_and_more_helpers() -> None:
+    line = layout.heading("Settings", "hint")
+    assert "Settings" in line
+    assert "hint" in line
+    assert palette.C_DIM in line
+    assert "3" in layout.more(3)

@@ -12,11 +12,12 @@ from rich.markup import escape as _rich_escape
 
 from jarn.agent.checkpoint import RestorePreview
 from jarn.agent.local_backend import CancellableLocalShellBackend
+from jarn.commands.help import usage_error
 from jarn.controller.commands.session import format_undo_preview
 from jarn.repl import turn as repl_turn
 from jarn.repl.turn import _apply_model_ref
-from jarn.commands.help import usage_error
-from jarn.tui import grammar, palette
+from jarn.tui import grammar, layout, palette
+
 
 #: Plan-checklist glyphs — derived from grammar + the active palette so theme
 #: switches retint the live and committed todo lists together.
@@ -240,7 +241,12 @@ class CommandMixin:
         self.console.print(format_undo_preview(preview), highlight=False)
         self.console.print(
             f"[{palette.C_WARN}]Current content in the affected files will be "
-            f"restored to this checkpoint.[/{palette.C_WARN}] "
+            f"restored to this checkpoint.[/{palette.C_WARN}]",
+            highlight=False,
+        )
+        # Own line so wrap cannot split the "/redo can recover" phrase the
+        # undo confirmation test (and users) scan for.
+        self.console.print(
             f"[{palette.C_DIM}]/redo can recover the current state.[/{palette.C_DIM}]",
             highlight=False,
         )
@@ -661,9 +667,11 @@ class CommandMixin:
         # would roll them back (they stay recoverable via /undo, but flag it).
         if await asyncio.to_thread(cpm.has_uncheckpointed_changes):
             c.print(
-                f"[{palette.C_WARN}]⚠ Uncommitted changes not captured by any "
-                f"checkpoint will be rolled back by the restore (/undo can recover "
-                f"them).[/{palette.C_WARN}]"
+                layout.warn(
+                    f"{grammar.GLYPH_WARN} Uncommitted changes not captured by any "
+                    "checkpoint will be rolled back by the restore "
+                    "(/undo can recover them)."
+                )
             )
         options: list[tuple[str, bool | None]] = [
             ("Restore files too (recommended)", True),

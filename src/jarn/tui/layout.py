@@ -34,12 +34,19 @@ def paint(
     bold: bool = False,
     dialect: Dialect = "rich",
 ) -> str:
-    """Wrap *text* (already escaped if needed) in a semantic color."""
+    """Wrap *text* (already escaped if needed) in a semantic color.
+
+    HTML is Telegram ``parse_mode=HTML``: ``<b>``, ``<i>``, ``<code>`` only —
+    no ``<span>`` and no inline CSS (Telegram strips them).
+    """
     if dialect == "html":
-        weight = ' style="font-weight:bold"' if bold else ""
-        return f'<span{weight}>{text}</span>' if not color else (
-            f"<b>{text}</b>" if bold else text
-        )
+        if bold or color in {palette.C_ERROR, palette.C_WARN, palette.C_SUCCESS}:
+            return f"<b>{text}</b>"
+        if color == palette.C_DIM:
+            return f"<i>{text}</i>"
+        if color == palette.ACCENT:
+            return f"<code>{text}</code>"
+        return text
     if bold:
         return f"[bold {color}]{text}[/bold {color}]"
     return f"[{color}]{text}[/{color}]"
@@ -69,11 +76,23 @@ def notice(text: str, *, dialect: Dialect = "rich") -> str:
     return paint(palette.C_NOTICE, escape(text, dialect=dialect), dialect=dialect)
 
 
-def title(text: str, *, dialect: Dialect = "rich") -> str:
+def strong(text: str, *, dialect: Dialect = "rich") -> str:
+    """Inline bold (not a page title)."""
     body = escape(text, dialect=dialect)
     if dialect == "html":
         return f"<b>{body}</b>"
     return f"[b]{body}[/b]"
+
+
+def title(text: str, *, dialect: Dialect = "rich") -> str:
+    return strong(text, dialect=dialect)
+
+
+def heading(text: str, hint: str = "", *, dialect: Dialect = "rich") -> str:
+    """Page title with an optional muted hint on the same line."""
+    if not hint:
+        return title(text, dialect=dialect)
+    return f"{title(text, dialect=dialect)} {muted(hint, dialect=dialect)}"
 
 
 def section(text: str, *, dialect: Dialect = "rich") -> str:
@@ -159,6 +178,11 @@ def key_mark(active: bool, *, dialect: Dialect = "rich") -> str:
     if active:
         return ok(grammar.GLYPH_KEY_OK, dialect=dialect)
     return muted(grammar.GLYPH_KEY_OFF, dialect=dialect)
+
+
+def more(n: int, *, dialect: Dialect = "rich") -> str:
+    """``… (N more)`` footer used by truncated lists."""
+    return muted(f"… ({n} more)", dialect=dialect)
 
 
 def context_gauge(

@@ -22,7 +22,7 @@ from jarn.config.yaml_store import (
     atomic_write_yaml,
     load_yaml_doc,
 )
-from jarn.tui import grammar, palette
+from jarn.tui import grammar, layout, palette
 from jarn.util.atomic import atomic_write_text, file_lock
 
 
@@ -411,7 +411,7 @@ class ConfigPanel:
     def _value_text(self, spec: Setting) -> tuple[str, str]:
         """(style, text) for a setting's value (friendly, non-selected rows)."""
         if spec.type == "bool":
-            return (palette.C_SUCCESS, "● On") if bool(self.value_of(spec)) else (palette.C_DIM, "○ Off")
+            return (palette.C_SUCCESS, f"{grammar.GLYPH_KEY_OK} On") if bool(self.value_of(spec)) else (palette.C_DIM, f"{grammar.GLYPH_KEY_OFF} Off")
         val = self.value_of(spec)
         if val is None or val == "":
             return (palette.C_DIM, "—")
@@ -485,17 +485,20 @@ class ConfigPanel:
 
 def format_settings(config: object) -> str:
     """Render the current settable settings, grouped, as Rich-markup text."""
-    lines = ["[b]Settings[/b] [dim](editable with /config set <key> <value>)[/dim]"]
+    lines = [layout.heading("Settings", "editable with /config set <key> <value>")]
     last_group = ""
     for spec in SETTINGS:
         if spec.group != last_group:
-            lines.append(f"\n[dim]── {spec.group} ──[/dim]")
+            lines.append(f"\n{layout.muted(f'── {spec.group} ──')}")
             last_group = spec.group
         val = get_value(config, spec.key)
-        shown = "[dim](unset)[/dim]" if val is None or val == "" else str(val)
+        shown = layout.muted("(unset)") if val is None or val == "" else str(val)
         lines.append(f"  {spec.key} = {shown}")
     lines.append(
-        "\n[dim]Changes persist to ~/.jarn/config.yaml. Structured keys "
-        "(providers/hooks/mcp_servers) — edit the file or run `jarn setup`.[/dim]"
+        "\n"
+        + layout.muted(
+            "Changes persist to ~/.jarn/config.yaml. Structured keys "
+            "(providers/hooks/mcp_servers) — edit the file or run `jarn setup`."
+        )
     )
     return "\n".join(lines)

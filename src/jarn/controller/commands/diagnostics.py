@@ -10,7 +10,7 @@ from jarn.commands.help import usage_error
 from jarn.controller.core import CommandResult
 from jarn.extensibility.mcp import load_mcp_tools, run_blocking
 from jarn.permissions.labels import PERMISSION_MODE_NAMES as _PERMISSION_LABELS
-from jarn.tui import grammar, layout, palette
+from jarn.tui import grammar, layout
 
 if TYPE_CHECKING:
     from jarn.agent.prompt_modules import PromptModuleScope
@@ -121,10 +121,13 @@ def cmd_doctor(ctrl: Controller, args: str) -> CommandResult:
 
 def cmd_cost(ctrl, args: str) -> CommandResult:
     t = ctrl.tracker
-    lines = [f"[b]Session usage[/b] — {t.summary_line()}", f"status: {t.status().value}"]
+    lines = [
+        layout.heading("Session usage", t.summary_line()),
+        f"status: {t.status().value}",
+    ]
     if t.total.cache_read_tokens or t.total.cache_creation_tokens:
         lines.append(
-            f"[{palette.C_DIM}]cache[/{palette.C_DIM}] "
+            f"{layout.muted('cache')} "
             f"{t.total.cache_read_tokens:,} read · "
             f"{t.total.cache_creation_tokens:,} write"
         )
@@ -134,7 +137,7 @@ def cmd_cost(ctrl, args: str) -> CommandResult:
         )
     top = t.top_tools()
     if top:
-        lines.append(f"[{palette.C_DIM}]top burners (by tool)[/{palette.C_DIM}]")
+        lines.append(layout.muted("top burners (by tool)"))
         for tool, usage in top:
             lines.append(
                 f"  {_escape_markup(tool)}: ${usage.cost_usd:.4f} · "
@@ -150,7 +153,7 @@ def cmd_modules(ctrl: Controller, args: str) -> CommandResult:
     if sub not in ("", "active"):
         return CommandResult(usage_error("modules"))
     statuses, assembly = ctrl.prompt_module_statuses()
-    lines = [f"[b]Prompt modules[/b] — assembled prompt {assembly.token_count:,} tok"]
+    lines = [layout.heading("Prompt modules", f"assembled prompt {assembly.token_count:,} tok")]
     for status in statuses:
         if sub == "active" and not status.active:
             continue
@@ -170,13 +173,13 @@ def cmd_modules(ctrl: Controller, args: str) -> CommandResult:
             f"{status.scope} · {token_text}{truncated}"
         )
         lines.append(
-            f"      [{palette.C_DIM}]{_escape_markup(status.activation_reason)} · "
-            f"source: {_escape_markup(status.source)}[/{palette.C_DIM}]"
+            f"      {layout.muted(status.activation_reason + ' · source: ' + status.source)}"
         )
     if sub != "active":
         lines.append(
-            f"[{palette.C_DIM}]Lazy skill bodies: /skills, then "
-            f"/module on skill.NAME [turn|session].[/{palette.C_DIM}]"
+            layout.muted(
+                "Lazy skill bodies: /skills, then /module on skill.NAME [turn|session]."
+            )
         )
     return CommandResult("\n".join(lines))
 
@@ -203,10 +206,10 @@ def cmd_permissions(ctrl, args: str) -> CommandResult:
     mode = ctrl.config.permission_mode.value
     label = _PERMISSION_LABELS.get(mode, mode)
     lines = [
-        f"[b]Mode[/b]: {label} [dim]({mode})[/dim]",
-        f"[b]Allow[/b]: {', '.join(_escape_markup(p) for p in r.allow) or '(none)'}",
-        f"[b]Deny[/b]: {', '.join(_escape_markup(p) for p in r.deny) or '(none)'}",
-        f"[b]Session-allow[/b]: {', '.join(_escape_markup(p) for p in session_allow) or '(none)'}",
+        layout.kv("Mode", f"{label}  ·  ({mode})"),
+        layout.kv("Allow", ", ".join(r.allow) or "(none)"),
+        layout.kv("Deny", ", ".join(r.deny) or "(none)"),
+        layout.kv("Session-allow", ", ".join(session_allow) or "(none)"),
     ]
     return CommandResult("\n".join(lines))
 
@@ -264,26 +267,23 @@ def _mcp_status(ctrl, parts: list[str]) -> CommandResult:
     servers = ctrl.config.mcp_servers
     if not servers:
         return CommandResult("No MCP servers configured.")
-    glyph = {
-        "ok": f"[{palette.C_SUCCESS}]●[/{palette.C_SUCCESS}]",
-        "error": f"[{palette.C_ERROR}]✗[/{palette.C_ERROR}]",
+    mark = {
+        "ok": layout.key_mark(True),
+        "error": layout.err(grammar.GLYPH_FAIL),
     }
-    lines = ["[b]MCP servers[/b]"]
+    lines = [layout.title("MCP servers")]
     for server in servers:
         health = ctrl.mcp_health.get(server.name, server.health or "unknown")
-        mark = glyph.get(health, f"[{palette.C_DIM}]○[/{palette.C_DIM}]")
+        glyph = mark.get(health, layout.key_mark(False))
         transport = getattr(server, "transport", "") or ""
-        detail = f" [dim]({_escape_markup(transport)})[/dim]" if transport else ""
-        line = f"  {mark} {layout.accent(server.name)}{detail} — {health}"
+        detail = f" {layout.muted(f'({transport})')}" if transport else ""
+        line = f"  {glyph} {layout.accent(server.name)}{detail} — {health}"
         err = ctrl.mcp_errors.get(server.name)
         if err:
-            line += f"\n      [dim]last error: {_escape_markup(err)}[/dim]"
+            line += f"\n      {layout.muted('last error: ' + err)}"
         lines.append(line)
     if not ctrl.runtime:
-        lines.append(
-            f"[{palette.C_DIM}]Health is populated after the first turn "
-            f"loads the servers.[/{palette.C_DIM}]"
-        )
+        lines.append(layout.muted("Health is populated after the first turn loads the servers."))
     return CommandResult("\n".join(lines))
 
 
@@ -291,8 +291,8 @@ def _append_mcp_errors(lines: list[str], errors: dict) -> None:
     """Append one dimmed line per per-server discovery error (isolation aware)."""
     for name in sorted(errors):
         lines.append(
-            f"  [{palette.C_ERROR}]✗[/{palette.C_ERROR}] {_escape_markup(name)}: "
-            f"[{palette.C_DIM}]{_escape_markup(errors[name])}[/{palette.C_DIM}]"
+            f"  {layout.err(grammar.GLYPH_FAIL)} {_escape_markup(name)}: "
+            f"{layout.muted(errors[name])}"
         )
 
 
@@ -320,28 +320,27 @@ def _mcp_prompts(ctrl) -> CommandResult:
 
     res = run_blocking(load_mcp_prompts(servers, ctrl.config.permissions.network))
     _register_prompt_commands(ctrl, res.prompts)
-    lines = ["[b]MCP prompts[/b]"]
+    lines = [layout.title("MCP prompts")]
     if res.prompts:
-        lines.append(
-            f"[{palette.C_DIM}]invoke with /<name> — injects the prompt into your "
-            f"turn[/{palette.C_DIM}]"
-        )
+        lines.append(layout.muted("invoke with /<name> — injects the prompt into your turn"))
         for name in sorted(res.prompts):
             cmd = res.prompts[name]
             args = (
-                f" [{palette.C_DIM}]({', '.join(cmd.argument_names)})[/{palette.C_DIM}]"
+                f" {layout.muted('(' + ', '.join(cmd.argument_names) + ')')}"
                 if cmd.argument_names
                 else ""
             )
             desc = f" — {_escape_markup(cmd.description)}" if cmd.description else ""
             lines.append(f"  {layout.accent('/' + name)}{args}{desc}")
     else:
-        lines.append(f"[{palette.C_DIM}]No prompts available.[/{palette.C_DIM}]")
+        lines.append(layout.muted("No prompts available."))
     _append_mcp_errors(lines, res.errors)
     if res.prompts and not ctrl.runtime:
         lines.append(
-            f"[{palette.C_DIM}]Prompts become invokable after the first turn "
-            f"builds the runtime — re-run /mcp prompts then.[/{palette.C_DIM}]"
+            layout.muted(
+                "Prompts become invokable after the first turn "
+                "builds the runtime — re-run /mcp prompts then."
+            )
         )
     return CommandResult("\n".join(lines))
 
@@ -370,10 +369,7 @@ def _mcp_prompt(ctrl, rest: list[str]) -> CommandResult:
         return CommandResult(redact_secrets(f"Failed to fetch prompt {key}: {exc}"))
     if not text.strip():
         return CommandResult(f"Prompt {key} returned no text.")
-    note = (
-        f"[{palette.C_DIM}]{_escape_markup(key)} — invoke /{_escape_markup(key)} "
-        f"to inject this into a turn[/{palette.C_DIM}]"
-    )
+    note = layout.muted(f"{key} — invoke /{key} to inject this into a turn")
     return CommandResult(f"{note}\n{_escape_markup(text)}")
 
 
@@ -385,22 +381,18 @@ def _mcp_resources(ctrl) -> CommandResult:
     from jarn.extensibility.mcp import list_mcp_resources
 
     res = run_blocking(list_mcp_resources(servers, ctrl.config.permissions.network))
-    lines = ["[b]MCP resources[/b]"]
+    lines = [layout.title("MCP resources")]
     if res.resources:
-        lines.append(f"[{palette.C_DIM}]read with /mcp read <server> <uri>[/{palette.C_DIM}]")
+        lines.append(layout.muted("read with /mcp read <server> <uri>"))
         for r in res.resources:
             label = _escape_markup(r.name or r.description or "")
-            mime = (
-                f" [{palette.C_DIM}]{_escape_markup(r.mime_type)}[/{palette.C_DIM}]"
-                if r.mime_type
-                else ""
-            )
+            mime = f" {layout.muted(r.mime_type)}" if r.mime_type else ""
             tail = f" — {label}" if label else ""
             lines.append(
                 f"  {layout.accent(r.server)} {_escape_markup(r.uri)}{mime}{tail}"
             )
     else:
-        lines.append(f"[{palette.C_DIM}]No resources available.[/{palette.C_DIM}]")
+        lines.append(layout.muted("No resources available."))
     _append_mcp_errors(lines, res.errors)
     return CommandResult("\n".join(lines))
 
@@ -421,9 +413,7 @@ def _mcp_read(ctrl, rest: list[str]) -> CommandResult:
         return CommandResult(redact_secrets(f"Failed to read {uri} from {server}: {exc}"))
     if not content.strip():
         return CommandResult(f"Resource {uri} on {server} returned no content.")
-    header = (
-        f"[b]{_escape_markup(server)}[/b] [{palette.C_DIM}]{_escape_markup(uri)}[/{palette.C_DIM}]"
-    )
+    header = f"{layout.title(server)} {layout.muted(uri)}"
     return CommandResult(f"{header}\n{_escape_markup(content)}")
 
 
@@ -437,18 +427,15 @@ def cmd_telemetry(ctrl, args: str) -> CommandResult:
     install = "present" if summary["install_id_present"] else "absent"
     size_kb = summary["size_bytes"] / 1024
     lines = [
-        "[b]Telemetry[/b]",
-        f"  status: {enabled}",
-        f"  file: {_escape_markup(summary['path']) or '(none)'}",
-        f"  size: {size_kb:.1f} KB ({summary['size_bytes']:,} bytes)",
-        f"  events on disk: {summary['event_count']:,}",
-        f"  install id: {install}",
+        layout.title("Telemetry"),
+        layout.kv("status", enabled),
+        layout.kv("file", summary["path"] or "(none)"),
+        layout.kv("size", f"{size_kb:.1f} KB ({summary['size_bytes']:,} bytes)"),
+        layout.kv("events on disk", f"{summary['event_count']:,}"),
+        layout.kv("install id", install),
     ]
     if not summary["enabled"]:
-        lines.append(
-            f"[{palette.C_DIM}]Opt in with observability.telemetry: true "
-            f"in config.[/{palette.C_DIM}]"
-        )
+        lines.append(layout.muted("Opt in with observability.telemetry: true in config."))
     return CommandResult("\n".join(lines))
 
 
@@ -468,13 +455,14 @@ def cmd_ps(ctrl, args: str) -> CommandResult:
     procs = mgr.list()
     if not procs:
         return CommandResult("No background processes.")
-    lines = ["[b]Background processes[/b]"]
+    lines = [layout.title("Background processes")]
     for p in procs:
         state = "running" if p["running"] else f"exited ({p['exit_code']})"
         lines.append(
-            f"  {layout.accent(str(p['id']))} [dim][{state}][/dim] {_escape_markup(p['command'])}"
+            f"  {layout.accent(str(p['id']))} {layout.muted(state)} "
+            f"{_escape_markup(p['command'])}"
         )
-    lines.append("[dim]/ps kill <id> to stop one[/dim]")
+    lines.append(layout.muted("/ps kill <id> to stop one"))
     return CommandResult("\n".join(lines))
 
 
@@ -493,10 +481,10 @@ def cmd_checkpoints(ctrl, args: str) -> CommandResult:
             "No checkpoints yet. "
             "Checkpoints are taken automatically at the start of each agent turn."
         )
-    lines = ["[b]Checkpoints[/b] [dim](most recent first)[/dim]"]
+    lines = [layout.heading("Checkpoints", "most recent first")]
     for i, entry in enumerate(entries):
         marker = "→ " if i == 0 else "  "
-        lines.append(f"{marker}[dim]{entry.sha[:12]}[/dim] {_escape_markup(entry.label)}")
+        lines.append(f"{marker}{layout.muted(entry.sha[:12])} {_escape_markup(entry.label)}")
     return CommandResult("\n".join(lines))
 
 
@@ -505,7 +493,7 @@ def _context_injection_lines(ctrl) -> list[str]:
     statuses, assembly = ctrl.prompt_module_statuses()
     lines = [
         "",
-        f"[b]Prompt modules[/b] [dim]({assembly.token_count:,} tok assembled)[/dim]",
+        layout.heading("Prompt modules", f"{assembly.token_count:,} tok assembled"),
     ]
     for status in statuses:
         if not status.active:

@@ -11,7 +11,7 @@ from __future__ import annotations
 from textual.app import App, ComposeResult
 from textual.widgets import RichLog, Static
 
-from jarn.tui import palette
+from jarn.tui import layout
 from jarn.tui.theme import ALL_THEMES, theme_name_for
 
 
@@ -25,8 +25,8 @@ class KeyInspector(App):
     def compose(self) -> ComposeResult:
         yield Static(
             "Key inspector — press any key (try Caps Lock / your language switch).\n"
-            "[dim]Each line shows: key=<name> char=<character> aliases=<...>. "
-            "Press Ctrl+Q to quit.[/dim]",
+            f"{layout.muted('Each line shows: key=<name> char=<character> aliases=<...>. '
+            'Press Ctrl+Q to quit.')}",
             id="hdr",
         )
         yield RichLog(highlight=False, markup=True, id="log")
@@ -43,9 +43,9 @@ class KeyInspector(App):
         char = getattr(event, "character", None)
         aliases = getattr(event, "aliases", None)
         self.query_one("#log", RichLog).write(
-            f"key=[b {palette.ACCENT}]{event.key!r}[/b {palette.ACCENT}]  "
-            f"char=[{palette.C_WARN}]{char!r}[/{palette.C_WARN}]  "
-            f"aliases=[dim]{aliases!r}[/dim]"
+            f"key={layout.accent(repr(event.key), bold=True)}  "
+            f"char={layout.warn(repr(char))}  "
+            f"aliases={layout.muted(repr(aliases))}"
         )
 
 

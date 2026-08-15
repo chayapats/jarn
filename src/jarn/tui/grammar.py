@@ -151,8 +151,8 @@ SHORTCUTS: tuple[str, ...] = (
 )
 
 SHORTCUT_HINT = (
-    f"Type a message · /help for commands · Tab complete · "
-    f"Shift+Tab mode · Esc cancel"
+    "Type a message · /help for commands · Tab complete · "
+    "Shift+Tab mode · Esc cancel"
 )
 
 HELP_COPY_HINT = "Copy: drag-select + ⌘C in your terminal (native scrollback)."

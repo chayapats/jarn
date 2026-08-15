@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from jarn.commands.help import usage_error
 from jarn.config.schema import PermissionMode
 from jarn.controller.core import CommandResult
-from jarn.tui import palette
+from jarn.tui import layout
 
 if TYPE_CHECKING:
     from jarn.controller.core import Controller
@@ -34,7 +34,7 @@ def cmd_config(ctrl: Controller, args: str) -> CommandResult:
         tail = ""
         if spec.choices:
             opts = ", ".join(c if c else "(none)" for c in spec.choices)
-            tail = f"  [{palette.C_DIM}](choices: {opts})[/{palette.C_DIM}]"
+            tail = f"  {layout.muted('(choices: ' + opts + ')')}"
         return CommandResult(f"{key} = {shown}{tail}")
     if sub == "set":
         if len(parts) < 3:
@@ -234,8 +234,11 @@ def cmd_trust(ctrl, args: str) -> CommandResult:
     note = ""
     if danger:
         note = (
-            "\n[dim]Project hooks / MCP servers / providers from "
-            ".jarn/config.yaml are now active.[/dim]"
+            "\n"
+            + layout.muted(
+                "Project hooks / MCP servers / providers from "
+                ".jarn/config.yaml are now active."
+            )
         )
     return CommandResult(
         f"Trusted {root}. Review-only floor lifted; "

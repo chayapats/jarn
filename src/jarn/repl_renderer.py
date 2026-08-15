@@ -517,14 +517,14 @@ class TurnRenderer:
         if ok:
             self.console.print(
                 f"  [{_p.C_DIM}]{grammar.GLYPH_RESULT} verified: {cmd} [/{_p.C_DIM}]"
-                f"[{_p.C_SUCCESS}]✓[/{_p.C_SUCCESS}]"
+                f"[{_p.C_SUCCESS}]{grammar.GLYPH_OK}[/{_p.C_SUCCESS}]"
                 f"[{_p.C_DIM}] {summary} · {secs:.1f}s[/{_p.C_DIM}]",
                 highlight=False,
             )
         else:
             self.console.print(
                 f"  [{_p.C_DIM}]{grammar.GLYPH_RESULT} verify: {cmd} [/{_p.C_DIM}]"
-                f"[{_p.C_ERROR}]✗[/{_p.C_ERROR}]"
+                f"[{_p.C_ERROR}]{grammar.GLYPH_FAIL}[/{_p.C_ERROR}]"
                 f"[{_p.C_DIM}] {summary} · details ctrl+o[/{_p.C_DIM}]",
                 highlight=False,
             )

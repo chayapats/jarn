@@ -58,7 +58,21 @@ class JarnArgumentParser(argparse.ArgumentParser):
             retryable=False,
             action=f"Run `{self.prog} --help`, correct the command, and retry.",
         )
-        self.exit(2, detail.render() + "\n")
+        self.exit(2, detail.render(stream=sys.stderr) + "\n")
+
+    def format_help(self) -> str:
+        """Common commands (epilog) first, then grouped flags — scannable ``--help``."""
+        formatter = self._get_formatter()
+        formatter.add_usage(self.usage, self._actions, self._mutually_exclusive_groups)
+        formatter.add_text(self.description)
+        formatter.add_text(self.epilog)
+        for action_group in self._action_groups:
+            formatter.start_section(action_group.title)
+            formatter.add_text(action_group.description)
+            formatter.add_arguments(action_group._group_actions)
+            formatter.end_section()
+        formatter.add_text("See `jarn <command> --help` for subcommand flags.")
+        return formatter.format_help()
 
 
 def _auth_timeout_arg(value: str) -> float:
@@ -118,10 +132,12 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"jarn {__version__}")
-    parser.add_argument(
+
+    start = parser.add_argument_group("Start")
+    start.add_argument(
         "--resume", action="store_true", help="Pick a previous session to resume on launch"
     )
-    parser.add_argument(
+    start.add_argument(
         "--add-dir",
         dest="add_dir",
         action="append",
@@ -133,8 +149,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    # Headless one-shot flags (top-level, not a subcommand).
-    parser.add_argument(
+    oneshot = parser.add_argument_group("One-shot")
+    oneshot.add_argument(
         "-p",
         "--print",
         dest="headless_prompt",
@@ -144,7 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Pass '-' to read the prompt from stdin."
         ),
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--output-format",
         dest="headless_output_format",
         choices=["text", "json", "stream-json"],
@@ -158,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
             "`claude -p --output-format stream-json`."
         ),
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--json",
         action="store_true",
         help=(
@@ -167,13 +183,13 @@ def build_parser() -> argparse.ArgumentParser:
             "{error: {kind, message}}."
         ),
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--model",
         dest="headless_model",
         metavar="REF",
         help="Override the active model for this headless run.",
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--mode",
         dest="headless_permission_mode",
         choices=["plan", "ask", "auto-edit", "yolo"],
@@ -184,13 +200,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     # Deprecated alias of --mode (hidden); still honoured.
-    parser.add_argument(
+    oneshot.add_argument(
         "--permission-mode",
         dest="headless_permission_mode",
         choices=["plan", "ask", "auto-edit", "yolo"],
         help=argparse.SUPPRESS,
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--preset",
         dest="preset",
         metavar="NAME",
@@ -199,7 +215,7 @@ def build_parser() -> argparse.ArgumentParser:
             "(trusted-repo|review-only|sandbox-required|ci|offline)."
         ),
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--max-turns",
         dest="headless_max_turns",
         type=int,
@@ -210,13 +226,13 @@ def build_parser() -> argparse.ArgumentParser:
             "invocation always runs exactly one complete model/tool graph turn."
         ),
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--cwd",
         dest="headless_cwd",
         metavar="PATH",
         help="Working directory for this headless run.",
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--ignore-project-config",
         dest="headless_ignore_project_config",
         action="store_true",
@@ -225,7 +241,7 @@ def build_parser() -> argparse.ArgumentParser:
             "files (safe for automation on untrusted checkouts)."
         ),
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--resume-session",
         dest="headless_resume_session",
         metavar="THREAD",
@@ -235,7 +251,7 @@ def build_parser() -> argparse.ArgumentParser:
             "continues without a new user message."
         ),
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--output-schema",
         dest="headless_output_schema",
         metavar="FILE",
@@ -2727,8 +2743,8 @@ def _cmd_login() -> int:
 
     console = Console()
     console.print(
-        "\n[b cyan]OpenRouter login[/b cyan]  "
-        "[dim]— Opens your browser; close it here with Ctrl+C to abort.[/dim]\n"
+        f"\n{layout.accent('OpenRouter login', bold=True)}  "
+        f"{layout.muted('— Opens your browser; close it here with Ctrl+C to abort.')}\n"
     )
 
     try:
@@ -2767,11 +2783,11 @@ def _cmd_login() -> int:
     if not result.changed:
         # Existing key kept — nothing to persist; don't rewrite the config.
         console.print(f"{layout.ok(grammar.GLYPH_OK)}  Keeping your existing key ([b]{result.reference}[/b]).")
-        console.print(f"   Key tail: [dim]{result.masked_key}[/dim]")
+        console.print(f"   Key tail: {layout.muted(result.masked_key)}")
         return 0
 
     console.print(f"{layout.ok(grammar.GLYPH_OK)}  Logged in — key stored as [b]{result.reference}[/b]")
-    console.print(f"   Key tail: [dim]{result.masked_key}[/dim]")
+    console.print(f"   Key tail: {layout.muted(result.masked_key)}")
 
     # Write the reference into the OpenRouter provider in the global config.
     if _write_openrouter_key_ref(result.reference):
@@ -2833,7 +2849,7 @@ def _cmd_auth(
     def announce_wait(message: str) -> None:
         if not as_json:
             deadline = getattr(service, "timeout_seconds", timeout_seconds or 120.0)
-            console.print(f"[dim]{message} (timeout {deadline:g}s)…[/dim]")
+            console.print(layout.muted(f"{message} (timeout {deadline:g}s)…"))
 
     def emit(status) -> None:
         if as_json:
@@ -2928,7 +2944,7 @@ def _cmd_auth(
                 on_progress=(
                     None
                     if as_json
-                    else lambda stage: console.print(f"[dim]Codex dependency: {stage}…[/dim]")
+                    else lambda stage: console.print(layout.muted(f"Codex dependency: {stage}…"))
                 ),
             )
         except CodexDependencyInstallError as exc:
@@ -2981,9 +2997,10 @@ def _cmd_auth(
                 return EXIT_AUTH
             if not as_json:
                 console.print(
-                    "\n[b cyan]ChatGPT subscription login[/b cyan]  "
-                    "[dim]— credentials remain managed by Codex; "
-                    "J.A.R.N. never reads them.[/dim]"
+                    f"\n{layout.accent('ChatGPT subscription login', bold=True)}  "
+                    + layout.muted(
+                        "— credentials remain managed by Codex; J.A.R.N. never reads them."
+                    )
                 )
             method = detect_login_method(force_device=device, force_browser=browser)
             status = login_interactive(
@@ -3461,7 +3478,7 @@ def _prompt_project_trust(root: Path, danger: dict, status: str) -> bool:
     console.print(
         "\n"
         + layout.warn(f"{grammar.GLYPH_WARN} This project's config")
-        + f" ([dim]{root}/.jarn/config.yaml[/dim]) "
+        + f" ({layout.muted(str(root) + '/.jarn/config.yaml')}) "
         "declares settings that can run code or access secrets:"
     )
     labels = {
@@ -3480,8 +3497,10 @@ def _prompt_project_trust(root: Path, danger: dict, status: str) -> bool:
     if status == "changed":
         console.print(layout.warn("These changed since you last trusted this project."))
     console.print(
-        "[dim]Trust only repositories you would run code from. If you decline, "
-        "these settings are ignored and the session continues safely.[/dim]"
+        layout.muted(
+            "Trust only repositories you would run code from. If you decline, "
+            "these settings are ignored and the session continues safely."
+        )
     )
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print(

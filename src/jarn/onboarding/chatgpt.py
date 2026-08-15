@@ -26,6 +26,7 @@ from jarn.catalog import ModelCatalogEntry, ModelCatalogService, ModelCatalogSna
 from jarn.config.schema import ProviderConfig, ProviderType
 from jarn.config.secrets import redact_secrets
 from jarn.onboarding.outcome import SetupCommandError, SetupFailureKind
+from jarn.tui import grammar, layout
 
 
 class ChatGPTSetupError(SetupCommandError):
@@ -68,8 +69,10 @@ def prepare_chatgpt_setup(
     catalog = catalog_service or ModelCatalogService()
     auth_timeout = float(getattr(auth, "timeout_seconds", 120.0))
     console.print(
-        "[dim]Checking the Codex dependency and ChatGPT account "
-        f"(timeout {auth_timeout:g}s)…[/dim]"
+        layout.muted(
+            f"Checking the Codex dependency and ChatGPT account "
+            f"(timeout {auth_timeout:g}s)…"
+        )
     )
     status = auth.status(refresh=True)
     if status.dependency.state in (
@@ -90,7 +93,7 @@ def prepare_chatgpt_setup(
             if status.dependency.state is DependencyState.MISSING
             else f"incompatible ({status.dependency.version or 'version unknown'})"
         )
-        console.print(f"[yellow]![/yellow] OpenAI Codex CLI is {reason}.")
+        console.print(f"{layout.warn(grammar.GLYPH_WARN)} OpenAI Codex CLI is {reason}.")
         console.print("[b]Purpose:[/b] ChatGPT subscription authentication and model access")
         console.print(f"[b]Version/channel:[/b] {plan.version} ({plan.channel})")
         console.print(f"[b]Source:[/b] {escape(plan.source)} — {escape(plan.metadata_url)}")
@@ -109,7 +112,7 @@ def prepare_chatgpt_setup(
             result = installer.install(
                 plan,
                 on_progress=lambda stage: console.print(
-                    f"[dim]Codex dependency: {escape(stage)}…[/dim]"
+                    layout.muted(f"Codex dependency: {escape(stage)}…")
                 ),
             )
         except CodexDependencyInstallError as exc:
@@ -119,7 +122,7 @@ def prepare_chatgpt_setup(
                 kind=SetupFailureKind.DEPENDENCY,
             ) from exc
         console.print(
-            f"[green]✔[/green] Verified Codex CLI {escape(result.smoke_version)} at "
+            f"{layout.ok(grammar.GLYPH_OK)} Verified Codex CLI {escape(result.smoke_version)} at "
             f"[b]{escape(result.executable)}[/b]"
         )
         auth = CodexAuthService(command=result.executable)
@@ -127,7 +130,7 @@ def prepare_chatgpt_setup(
 
     if not status.ready:
         if status.error is not None:
-            console.print(f"[yellow]![/yellow] {escape(redact_secrets(status.error.message))}")
+            console.print(f"{layout.warn(grammar.GLYPH_WARN)} {escape(redact_secrets(status.error.message))}")
         ask = confirm_login or (
             lambda: Confirm.ask("Sign in with your ChatGPT subscription now?", default=True)
         )
@@ -154,7 +157,7 @@ def prepare_chatgpt_setup(
         )
 
     provider = ProviderConfig(type=ProviderType.CODEX_SUBSCRIPTION)
-    console.print("[dim]Loading the models available to this ChatGPT account…[/dim]")
+    console.print(layout.muted("Loading the models available to this ChatGPT account…"))
     snapshot = catalog.get_catalog(
         "codex_subscription",
         provider,
@@ -186,12 +189,12 @@ def prepare_chatgpt_setup(
         raise ChatGPTSetupError(message, kind=SetupFailureKind.MODEL)
 
     console.print(
-        f"[green]✔[/green] Verified ChatGPT ([b]{escape(status.plan_type or 'plan unknown')}[/b])"
+        f"{layout.ok(grammar.GLYPH_OK)} Verified ChatGPT ([b]{escape(status.plan_type or 'plan unknown')}[/b])"
     )
     effort_text = f", reasoning [b]{escape(effort)}[/b]" if effort else ""
     console.print(
-        f"[green]✔[/green] Using account default [b]{escape(selected.display_name)}[/b]"
-        f"{effort_text} [dim]({escape(snapshot.provenance_label)})[/dim]"
+        f"{layout.ok(grammar.GLYPH_OK)} Using account default [b]{escape(selected.display_name)}[/b]"
+        f"{effort_text} {layout.muted('(' + snapshot.provenance_label + ')')}"
     )
     return ChatGPTSetupResult(
         auth=status,

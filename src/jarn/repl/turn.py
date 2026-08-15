@@ -125,7 +125,7 @@ async def _run_turn(
         ):
             controller.health_notice_shown = True
             _warn_color, _glyph = (
-                (palette.C_ERROR, "✗") if controller.health == "error" else (palette.C_WARN, "⚠")
+                (palette.C_ERROR, grammar.GLYPH_FAIL) if controller.health == "error" else (palette.C_WARN, grammar.GLYPH_WARN)
             )
             _doctor_hint = (
                 f" [{palette.C_DIM}]— run /doctor[/{palette.C_DIM}]"
@@ -488,7 +488,7 @@ async def _approve_plan(
         console.print(Markdown(plan))
     if not controller.project_trusted:
         console.print(
-            f"[{palette.C_WARN}]⚠ Project is untrusted — approving keeps read-only "
+            f"[{palette.C_WARN}]{grammar.GLYPH_WARN} Project is untrusted — approving keeps read-only "
             f"plan mode; run /trust to allow edits.[/{palette.C_WARN}]"
         )
 

@@ -9,9 +9,13 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 - One visual grammar for the terminal: glyphs, spacing, and context-pressure
   colors live in `tui/grammar.py` / `tui/palette.py`; command pages are built
-  with `tui/layout.py`. `/help` is grouped Work / Session / Setup with
-  `/help <name>` detail pages. Usage errors, Tab completion, and the README
-  command table all read `commands/registry.py`.
+  with `tui/layout.py` (Rich or Telegram HTML). `/help` is grouped Work /
+  Session / Setup with `/help <name>` detail pages. Usage errors, Tab
+  completion, README command table, and Telegram `/help` all read
+  `commands/registry.py`. `jarn --help` leads with common commands, then
+  Start / One-shot flag groups. TTY errors color the code and `Next:` line.
+  Onboarding, doctor, and slash-command pages use the same palette tokens
+  (no named Rich colors outside `palette.py`).
 - Quieter default tool stream (`ui.tool_progress: new`). `/verbose` cycles
   density for the session; `/focus` hides tool chrome. The toolbar shows a
   context fill bar and session timer; YOLO stays sticky on narrow widths.

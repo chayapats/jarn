@@ -53,7 +53,7 @@ from jarn.repl_renderer import (
     _current_width,
 )
 from jarn.repl_renderer import esc as _esc
-from jarn.tui import palette
+from jarn.tui import grammar, layout, palette
 from jarn.tui.completion import CompletionProvider
 from jarn.tui.controller import Controller
 from jarn.tui.input_queue import InputQueue
@@ -269,7 +269,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         # so the user knows why modes are clamped and how to unlock.
         if not self.controller.project_trusted and self.controller.project_root is not None:
             c.print(
-                f"[{palette.C_WARN}]⚠ This project is untrusted[/{palette.C_WARN}] "
+                f"{layout.warn(grammar.GLYPH_WARN + ' This project is untrusted')} "
                 f"[{palette.C_DIM}]— review-only floor active (modes clamped to plan; "
                 f"project hooks/MCP/providers ignored). Run [/{palette.C_DIM}]"
                 f"[{palette.C_NOTICE}]/trust[/{palette.C_NOTICE}]"

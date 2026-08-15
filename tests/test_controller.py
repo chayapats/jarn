@@ -1413,7 +1413,7 @@ def test_sync_undo_previews_but_cannot_bypass_confirmation(
     (root / "file.txt").write_text("after\n", encoding="utf-8")
 
     result = ctrl.handle_command("undo", "")
-    assert result.text.lower().startswith("undo preview")
+    assert "undo preview" in result.text.lower()
     assert "file.txt" in result.text
     assert "confirmation required" in result.text.lower()
     assert (root / "file.txt").read_text(encoding="utf-8") == "after\n"
@@ -2430,7 +2430,7 @@ async def test_async_undo_without_confirm_callback_only_previews(
 
     result = await ctrl.undo()
 
-    assert result.text.lower().startswith("undo preview")
+    assert "undo preview" in result.text.lower()
     assert "confirmation required" in result.text.lower()
     assert tracked.read_text(encoding="utf-8") == "after\n"
     ctrl.close()
