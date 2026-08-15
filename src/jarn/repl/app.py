@@ -286,6 +286,12 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self._warm_pricing_catalog()
         self.app = self._build_app()
         self._title_hook("idle")   # Set idle title on app start
+        from jarn.agent.background import manager as bg_manager
+
+        loop = asyncio.get_running_loop()
+        bg = bg_manager()
+        on_bg_exit = self._background_exit_dispatch(loop)
+        bg.add_exit_listener(on_bg_exit)
         try:
             # patch_stdout routes all printed output above the pinned input, into
             # the terminal's native scrollback — the Claude-Code layout.
@@ -305,6 +311,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                     self._resume_task = asyncio.create_task(self._resume_picker())
                 await self.app.run_async()
         finally:
+            bg.remove_exit_listener(on_bg_exit)
             extensions_task = self._extensions_task
             if (
                 extensions_task is not None
@@ -526,6 +533,31 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             note = self.controller.cancel_edit_note()
             if note:
                 self.console.print(layout.muted(note), highlight=False)
+
+    def _background_exit_dispatch(self, loop: asyncio.AbstractEventLoop):
+        """Marshal a ProcessManager exit callback onto the REPL event loop."""
+
+        def _on_bg_exit(snap: object) -> None:
+            loop.call_soon_threadsafe(self._print_background_finish, snap)
+
+        return _on_bg_exit
+
+    def _print_background_finish(self, snap: object) -> None:
+        from jarn.agent.background import BackgroundExit
+
+        if not isinstance(snap, BackgroundExit):
+            return
+        self.console.print(
+            layout.background_finish_panel(
+                snap.id,
+                snap.exit_code,
+                tail=snap.tail,
+                command=snap.command,
+            ),
+            highlight=False,
+        )
+        if self.app is not None:
+            self.app.invalidate()
 
     def _turn_made_edits(self) -> bool:
         """Whether the just-cancelled turn applied a file edit (write/edit) —

@@ -260,6 +260,34 @@ def banner_err(text: str, *, dialect: Dialect = "rich") -> str:
     return f"{err(grammar.GLYPH_FAIL, dialect=dialect)} {escape(text, dialect=dialect)}"
 
 
+def background_finish_panel(
+    job_id: str,
+    exit_code: int | None,
+    *,
+    tail: str = "",
+    command: str = "",
+    dialect: Dialect = "rich",
+) -> str:
+    """Small scrollback panel when a ``run_in_background`` job exits."""
+    if exit_code == 0:
+        status = ok(f"exit {exit_code}", dialect=dialect)
+    elif exit_code is None:
+        status = muted("exited", dialect=dialect)
+    else:
+        status = err(f"exit {exit_code}", dialect=dialect)
+    lines = [
+        f"{heading('Background', dialect=dialect)}"
+        f"{sep(dialect=dialect)}{accent(job_id, dialect=dialect)}"
+        f"{sep(dialect=dialect)}{status}"
+    ]
+    if command:
+        lines.append(kv("Command", truncate(command, 72), dialect=dialect))
+    if tail:
+        lines.append(kv("Output", truncate(tail, 72), dialect=dialect))
+    lines.append(muted("/ps to list jobs", dialect=dialect))
+    return "\n".join(lines)
+
+
 def flag(good: bool, yes: str = "ok", no: str = "missing", *, dialect: Dialect = "rich") -> str:
     return ok(yes, dialect=dialect) if good else err(no, dialect=dialect)
 
