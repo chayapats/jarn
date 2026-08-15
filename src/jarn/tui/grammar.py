@@ -56,6 +56,7 @@ SPACE_BLOCK = 1
 SPACE_TURN = 1
 
 HELP_NAME_WIDTH = 28
+HELP_NARROW_COLUMNS = 60
 KV_LABEL_WIDTH = 14
 
 # ── Width ───────────────────────────────────────────────────────────────────

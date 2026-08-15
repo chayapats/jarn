@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from typing import TYPE_CHECKING
 
 from jarn.commands.help import format_help, format_help_detail, usage_error
@@ -25,10 +26,12 @@ def cmd_help(ctrl: Controller, args: str) -> CommandResult:
                 custom_description=lambda c: getattr(c, "description", ""),
             )
         )
+    columns = shutil.get_terminal_size((80, 24)).columns
     return CommandResult(
         format_help(
             custom,
             custom_description=lambda c: getattr(c, "description", ""),
+            columns=columns,
         )
     )
 

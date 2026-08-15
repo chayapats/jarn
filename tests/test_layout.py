@@ -108,6 +108,38 @@ def test_help_index_uses_work_session_setup() -> None:
     assert "[b]Toolbar glyphs[/b]" not in body
 
 
+def test_format_help_wide_keeps_name_and_description_on_one_line() -> None:
+    for body in (format_help(), format_help(columns=80)):
+        status_line = next(line for line in body.splitlines() if "/status" in line)
+        assert "Show directory" in status_line
+        cost_line = next(line for line in body.splitlines() if "/cost" in line)
+        assert "Show session tokens" in cost_line
+
+
+def test_format_help_narrow_puts_description_on_next_line() -> None:
+    body = format_help(columns=50)
+    idx = body.index("/status")
+    name_line_end = body.index("\n", idx)
+    name_line = body[body.rfind("\n", 0, idx) + 1 : name_line_end]
+    desc_line = body[name_line_end + 1 : body.index("\n", name_line_end + 1)]
+    assert "Show directory" not in name_line
+    assert desc_line.startswith("      ")
+    assert "Show directory" in desc_line
+
+
+def test_layout_row_wraps_only_when_narrow() -> None:
+    wrapped = layout.row("/cost", "Show session tokens", columns=50)
+    wide = layout.row("/cost", "Show session tokens", columns=80)
+    assert "\n" in wrapped
+    assert "\n" not in wide
+    html = layout.row("/x", "y", columns=40, dialect="html")
+    assert "<span" not in html
+    assert "\n" in html
+    plain = layout.row("/x", "y", columns=40, dialect="plain")
+    assert "[" not in plain
+    assert "\n" in plain
+
+
 def test_layout_html_dialect_is_telegram_safe() -> None:
     html = format_help(dialect="html")
     assert "<b>Work</b>" in html

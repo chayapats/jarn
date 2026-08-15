@@ -382,17 +382,14 @@ class CommandMixin:
     # -- resume -------------------------------------------------------------
 
     async def _resume_picker(self) -> None:
-        from jarn.memory.sessions import SessionInfo
+        from jarn.memory.sessions import SessionInfo, session_label
 
         sessions = self.controller.sessions.list()
         if not sessions:
             self.console.print(layout.muted("No previous sessions."))
             return
         options: list[tuple[str, SessionInfo | None]] = [
-            (
-                f"{s.updated_human}  {s.title}  {s.thread_id[:8]}",
-                s,
-            )
+            (session_label(s), s)
             for s in sessions
         ]
         options.append(("Cancel", None))

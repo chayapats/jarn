@@ -23,10 +23,14 @@ def format_help(
     *,
     custom_description: Callable[[Any], str] | None = None,
     dialect: Dialect = "rich",
+    columns: int | None = None,
 ) -> str:
     """Build ``/help`` body, grouped by section.
 
     ``dialect='html'`` is Telegram ``parse_mode=HTML`` (same catalog, no Rich).
+    ``columns=None`` (default) is the wide single-line layout; do not probe
+    the terminal here. Pass a width below ``grammar.HELP_NARROW_COLUMNS`` to
+    wrap each command onto two lines.
     """
     lines: list[str] = [
         layout.title("Commands", dialect=dialect),
@@ -51,6 +55,7 @@ def format_help(
                     spec.description,
                     name_width=name_width,
                     dialect=dialect,
+                    columns=columns,
                 )
             )
         lines.append("")
@@ -71,7 +76,9 @@ def format_help(
             max((len(n) for n, _ in custom_rows), default=8),
         )
         for name, desc in custom_rows:
-            lines.append(layout.row(name, desc, name_width=width, dialect=dialect))
+            lines.append(
+                layout.row(name, desc, name_width=width, dialect=dialect, columns=columns)
+            )
         lines.append("")
 
     lines.append(layout.title("Shortcuts", dialect=dialect))

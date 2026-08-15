@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+import json
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 from jarn.commands.help import usage_error
 from jarn.controller.core import CommandResult
@@ -13,6 +15,13 @@ from jarn.tui import grammar, layout
 if TYPE_CHECKING:
     from jarn.agent.prompt_modules import PromptModuleScope
     from jarn.controller.core import Controller
+
+#: Cheap recap scan: last 256 KiB of a transcript is enough for Files / last lines.
+_TRANSCRIPT_RECAP_MAX_BYTES = 256 * 1024
+_EDIT_TOOL_NAMES = frozenset({"write_file", "edit_file"})
+_SKIP_USER_PREFIXES = ("(steered)", "(verification repair)")
+_RESPONSE_TOOL = "(response)"
+_RECAP_SNIPPET_WIDTH = 72
 
 
 def cmd_status(ctrl: Controller, args: str) -> CommandResult:
@@ -61,6 +70,13 @@ def cmd_status(ctrl: Controller, args: str) -> CommandResult:
         if session.thread_id == ctrl.thread_id:
             title = session.title or ""
             break
+    recap_meta = _transcript_recap(ctrl.sessions.transcript_path(ctrl.thread_id))
+    turns = int(recap_meta.get("turns") or 0)
+    session_bits = [str(ctrl.thread_id), elapsed]
+    if turns > 0:
+        session_bits.append("1 turn" if turns == 1 else f"{turns} turns")
+    if title:
+        session_bits.append(title)
     lines = [
         layout.heading("Status"),
         "",
@@ -71,31 +87,132 @@ def cmd_status(ctrl: Controller, args: str) -> CommandResult:
         layout.kv("Permissions", f"{mode_label}  ·  {mode}"),
         layout.kv("Workspace", trust),
         layout.kv("Context", context_text),
-        layout.kv(
-            "Session",
-            f"{ctrl.thread_id}  ·  {elapsed}" + (f"  ·  {title}" if title else ""),
-        ),
+        layout.kv("Session", "  ·  ".join(session_bits)),
     ]
-    recap = _status_recap(ctrl)
+    recap = _status_recap(ctrl, recap_meta)
     if recap:
         lines.append(layout.section("Recap"))
         lines.extend(recap)
     return CommandResult("\n".join(lines))
 
 
-def _status_recap(ctrl: Controller) -> list[str]:
+def _recap_snippet(text: str, width: int = _RECAP_SNIPPET_WIDTH) -> str:
+    """First line, collapsed whitespace, then ``layout.truncate`` (no pre-escape)."""
+    first = text.split("\n", 1)[0]
+    collapsed = " ".join(first.split())
+    if not collapsed:
+        return ""
+    return layout.truncate(collapsed, width)
+
+
+def _empty_transcript_recap() -> dict[str, Any]:
+    return {"turns": 0, "last_user": "", "last_assistant": "", "files": []}
+
+
+def _transcript_recap(path: Path) -> dict[str, Any]:
+    """Scan a session transcript JSONL for /status Recap fields. No model call.
+
+    Returns ``{turns, last_user, last_assistant, files}``. Missing/unreadable
+    files yield zeros/empties. Malformed JSONL lines are skipped.
+    """
+    recap = _empty_transcript_recap()
+    try:
+        if not path.is_file():
+            return recap
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            if size > _TRANSCRIPT_RECAP_MAX_BYTES:
+                fh.seek(size - _TRANSCRIPT_RECAP_MAX_BYTES)
+                data = fh.read()
+                newline = data.find(b"\n")
+                if newline >= 0:
+                    data = data[newline + 1 :]
+            else:
+                data = fh.read()
+        text = data.decode("utf-8", errors="replace")
+    except OSError:
+        return recap
+
+    turns = 0
+    last_user = ""
+    last_assistant = ""
+    file_order: dict[str, None] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        kind = record.get("type")
+        if kind == "user":
+            body = record.get("text")
+            if not isinstance(body, str):
+                body = "" if body is None else str(body)
+            if body.startswith(_SKIP_USER_PREFIXES):
+                continue
+            turns += 1
+            snippet = _recap_snippet(body)
+            if snippet:
+                last_user = snippet
+        elif kind == "assistant":
+            body = record.get("text")
+            if not isinstance(body, str):
+                body = "" if body is None else str(body)
+            snippet = _recap_snippet(body)
+            if snippet:
+                last_assistant = snippet
+        elif kind == "tool":
+            name = record.get("name")
+            if name not in _EDIT_TOOL_NAMES:
+                continue
+            args = record.get("args")
+            if not isinstance(args, dict):
+                continue
+            file_path = args.get("file_path") or args.get("path")
+            if file_path is None:
+                continue
+            path_text = str(file_path).strip()
+            if not path_text:
+                continue
+            file_order.pop(path_text, None)
+            file_order[path_text] = None
+    recap["turns"] = turns
+    recap["last_user"] = last_user
+    recap["last_assistant"] = last_assistant
+    recap["files"] = list(reversed(file_order))[:3]
+    return recap
+
+
+def _status_recap(ctrl: Controller, recap: dict[str, Any] | None = None) -> list[str]:
+    if recap is None:
+        recap = _transcript_recap(ctrl.sessions.transcript_path(ctrl.thread_id))
     lines: list[str] = []
-    top = ctrl.tracker.top_tools()
+    top = [
+        (name, usage)
+        for name, usage in ctrl.tracker.top_tools(limit=6)
+        if name != _RESPONSE_TOOL
+    ][:5]
     if top:
-        tools = " · ".join(
-            f"{name} {usage.calls}" for name, usage in top[:5]
-        )
+        tools = " · ".join(f"{name} {usage.calls}" for name, usage in top)
         lines.append(layout.kv("Tools", tools))
     t = ctrl.tracker.total
     if t.calls:
         lines.append(
             layout.kv("Calls", f"{t.calls}  ·  {t.total_tokens:,} tok  ·  ${t.cost_usd:.4f}")
         )
+    files = recap.get("files") or []
+    if files:
+        lines.append(layout.kv("Files", " · ".join(str(p) for p in files)))
+    last_user = recap.get("last_user") or ""
+    if last_user:
+        lines.append(layout.kv("Last you", str(last_user)))
+    last_assistant = recap.get("last_assistant") or ""
+    if last_assistant:
+        lines.append(layout.kv("Last J.A.R.N.", str(last_assistant)))
     return lines
 
 

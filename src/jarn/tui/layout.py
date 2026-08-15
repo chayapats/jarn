@@ -141,8 +141,19 @@ def row(
     *,
     name_width: int = grammar.HELP_NAME_WIDTH,
     dialect: Dialect = "rich",
+    columns: int | None = None,
 ) -> str:
-    """Command index row: accent name, padded, then description."""
+    """Command index row: accent name, padded, then description.
+
+    When ``0 < columns < grammar.HELP_NARROW_COLUMNS``, the full name sits on
+    its own line and the description is indented beneath it. Otherwise this is
+    a single padded line (long names truncate with ``…``).
+    """
+    if columns is not None and 0 < columns < grammar.HELP_NARROW_COLUMNS:
+        return (
+            f"  {accent(name, dialect=dialect)}\n"
+            f"      {escape(description, dialect=dialect)}"
+        )
     visible = name if len(name) <= name_width else name[: name_width - 1] + "…"
     pad = " " * max(1, name_width - len(name) + 2) if len(name) <= name_width else "  "
     return f"  {accent(visible, dialect=dialect)}{pad}{escape(description, dialect=dialect)}"

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from jarn.commands.help import usage_error
 from jarn.controller.core import CommandResult
+from jarn.memory.sessions import session_label
 from jarn.tui import layout
 
 if TYPE_CHECKING:
@@ -24,8 +25,8 @@ def cmd_sessions(ctrl: Controller, args: str) -> CommandResult:
         model = f"  {layout.muted(s.model)}" if s.model else ""
         state = "complete" if s.state == "complete" else "interrupted"
         lines.append(
-            f"{marker}{s.updated_human}  {layout.escape(s.title)}  "
-            f"{layout.muted(f'{s.thread_id[:8]} · {state}')}{project}{model}"
+            f"{marker}{layout.escape(session_label(s))}  "
+            f"{layout.muted('· ' + state)}{project}{model}"
         )
     return CommandResult("\n".join(lines))
 
