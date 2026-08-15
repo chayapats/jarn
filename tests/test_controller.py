@@ -94,10 +94,10 @@ def test_required_general_user_aliases_are_discoverable_and_work(
 
     status = ctrl.handle_command("status", "").text
     assert str(ctrl.project_root) in status
-    assert "provider:" in status
-    assert "authentication:" in status
-    assert "reasoning:" in status
-    assert "permissions:" in status
+    assert "Provider" in status
+    assert "Reasoning" in status
+    assert "Permissions" in status
+    assert "Directory" in status
 
     old_thread = ctrl.thread_id
     fresh = ctrl.handle_command("new", "")
@@ -117,6 +117,41 @@ def test_unknown_slash_command_offers_close_match(tmp_path, monkeypatch, base_co
     ctrl.close()
 
 
+def test_slash_commands_are_case_insensitive(tmp_path, monkeypatch, base_config):
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    lower = ctrl.handle_command("help", "").text
+    upper = ctrl.handle_command("HELP", "").text
+    assert lower == upper
+    mixed = ctrl.handle_command("Status", "").text
+    assert "Directory" in mixed
+    ctrl.close()
+
+
+def test_cmd_context_verbose_focus_tools_title(tmp_path, monkeypatch, base_config):
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    ctx = ctrl.handle_command("context", "").text
+    assert "Context" in ctx
+    usage = ctrl.handle_command("usage", "").text
+    assert "Session usage" in usage or "status:" in usage
+    before = ctrl.tool_progress
+    cycled = ctrl.handle_command("verbose", "").text
+    assert ctrl.tool_progress != before or before == "verbose"
+    assert "Tool progress" in cycled
+    on = ctrl.handle_command("focus", "on").text
+    assert ctrl.focus_mode is True
+    assert "on" in on.lower()
+    off = ctrl.handle_command("focus", "off").text
+    assert ctrl.focus_mode is False
+    assert "off" in off.lower()
+    tools = ctrl.handle_command("tools", "").text
+    assert "Tools" in tools
+    titled = ctrl.handle_command("title", "fix toolbar wrap").text
+    assert "fix toolbar wrap" in titled
+    shown = ctrl.handle_command("title", "").text
+    assert "fix toolbar wrap" in shown
+    ctrl.close()
+
+
 def test_permissions_uses_plain_language_mode_name(tmp_path, monkeypatch, base_config):
     base_config.permission_mode = PermissionMode.ASK
     ctrl = _controller(tmp_path, monkeypatch, base_config)
@@ -127,7 +162,7 @@ def test_permissions_uses_plain_language_mode_name(tmp_path, monkeypatch, base_c
 
 
 def test_help_renders_through_rich(tmp_path, monkeypatch, base_config):
-    """Usage hints like [/ref] must not break Rich markup in /help."""
+    """Usage hints must not break Rich markup in /help."""
     from io import StringIO
 
     from rich.console import Console
@@ -136,14 +171,14 @@ def test_help_renders_through_rich(tmp_path, monkeypatch, base_config):
 
     ctrl = _controller(tmp_path, monkeypatch, base_config)
     buf = StringIO()
-    # highlight=False: we're checking that our explicit Rich markup (and the
-    # escaped [/ref] usage hint) renders without breaking — not the repr
-    # highlighter, which cosmetically splits tokens like "/model" on the slash.
+    # highlight=False: we're checking that our explicit Rich markup renders
+    # without breaking — not the repr highlighter, which cosmetically splits
+    # tokens like "/model" on the slash.
     console = Console(file=buf, force_terminal=True, width=100, highlight=False)
     console.print(ctrl.handle_command("help", "").text)
     console.print(format_help())
     assert "/model" in buf.getvalue()
-    assert "[/ref]" in buf.getvalue() or "/ref" in buf.getvalue()
+    assert "/help" in buf.getvalue()
     ctrl.close()
 
 

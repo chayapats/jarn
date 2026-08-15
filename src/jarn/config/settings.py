@@ -22,6 +22,7 @@ from jarn.config.yaml_store import (
     atomic_write_yaml,
     load_yaml_doc,
 )
+from jarn.tui import grammar, palette
 from jarn.util.atomic import atomic_write_text, file_lock
 
 
@@ -139,6 +140,18 @@ SETTINGS: tuple[Setting, ...] = (
        "Update the terminal-tab title to show idle / working / approval states via OSC 2."),
     _s("ui.steering", "bool", "Appearance", "Mid-turn steering",
        "Let [s] / /queue steer <n> inject a queued line into the running turn."),
+    _s("ui.wrap_at", "int", "Appearance", "Wrap at column",
+       "Wrap assistant text at this width (0 = terminal width)."),
+    _s("ui.tool_progress", "enum", "Appearance", "Tool progress",
+       "How much tool activity to show: off, new (default), all, verbose.",
+       ("off", "new", "all", "verbose")),
+    _s("ui.show_reasoning", "enum", "Appearance", "Thinking display",
+       "How model reasoning is shown: collapsed, full, or off.",
+       ("collapsed", "full", "off")),
+    _s("ui.statusbar", "bool", "Appearance", "Status bar",
+       "Show the bottom status bar (model, mode, context, cost)."),
+    _s("ui.context_bar", "bool", "Appearance", "Context bar",
+       "Show a fill bar for context-window pressure."),
     # ── Updates ──
     _s("updates.check", "bool", "Updates", "Update check",
        "Check PyPI for a newer jarn release at startup (cached 24 h; skipped when offline)."),
@@ -270,14 +283,6 @@ class ConfigStore:
         atomic_write_yaml(self.path, data)
 
 
-# Style tokens (theme-agnostic where it matters; cyan accent matches the brand).
-_C_ACCENT = "#22d3ee"
-_C_DIM = "#7c8f94"
-_C_ON = "#3fb950"
-_C_WARN = "#d29922"
-_C_ERR = "#f85149"
-
-
 class ConfigPanel:
     """State model for the interactive ``/config`` settings panel.
 
@@ -406,12 +411,12 @@ class ConfigPanel:
     def _value_text(self, spec: Setting) -> tuple[str, str]:
         """(style, text) for a setting's value (friendly, non-selected rows)."""
         if spec.type == "bool":
-            return (_C_ON, "● On") if bool(self.value_of(spec)) else (_C_DIM, "○ Off")
+            return (palette.C_SUCCESS, "● On") if bool(self.value_of(spec)) else (palette.C_DIM, "○ Off")
         val = self.value_of(spec)
         if val is None or val == "":
-            return (_C_DIM, "—")
+            return (palette.C_DIM, "—")
         if spec.type == "enum":
-            return (_C_ACCENT, str(val))
+            return (palette.ACCENT, str(val))
         return ("", str(val))
 
     def render_lines(self) -> list[tuple[str, str]]:
@@ -422,12 +427,12 @@ class ConfigPanel:
         box describing the *selected* setting — so the screen stays uncluttered
         but always explains what the highlighted thing does.
         """
-        out: list[tuple[str, str]] = [("bold", "  ⚙  Settings"), (_C_DIM, "   esc to close\n\n")]
+        out: list[tuple[str, str]] = [("bold", "  ⚙  Settings"), (palette.C_DIM, "   esc to close\n\n")]
 
         # Horizontal category tabs.
         out.append(("", "   "))
         for i, g in enumerate(self.groups):
-            style = "reverse bold" if i == self.cat_index else _C_DIM
+            style = "reverse bold" if i == self.cat_index else palette.C_DIM
             out.append((style, f" {g} "))
             out.append(("", " "))
         out.append(("", "\n\n"))
@@ -452,9 +457,9 @@ class ConfigPanel:
 
         # Detail box for the selected setting: its description + how to change it.
         spec = self.current()
-        out.append((_C_DIM, "\n   " + "─" * (width + 28) + "\n"))
+        out.append((palette.C_DIM, "\n   " + "─" * (width + 28) + "\n"))
         out.append(("bold", f"   {spec.label}  "))
-        out.append((_C_DIM, f"{spec.desc}\n"))
+        out.append((palette.C_DIM, f"{spec.desc}\n"))
         if self.editing:
             hint = "type a value · Enter save · Esc cancel"
         elif spec.type == "bool":
@@ -464,15 +469,15 @@ class ConfigPanel:
             hint = f"Enter to cycle:  {opts}"
         else:
             hint = "Enter to edit"
-        out.append((_C_ACCENT, f"   {hint}\n"))
-        out.append((_C_DIM, "   ←/→ switch section · ↑/↓ move\n"))
+        out.append((palette.ACCENT, f"   {hint}\n"))
+        out.append((palette.C_DIM, "   ←/→ switch section · ↑/↓ move\n"))
         if self.message and not self.editing:
             if not self.message_ok:
-                style, glyph = _C_ERR, "✗"
-            elif "⚠" in self.message:
-                style, glyph = _C_WARN, ""   # message already carries its own ⚠
+                style, glyph = palette.C_ERROR, grammar.GLYPH_FAIL
+            elif grammar.GLYPH_WARN in self.message:
+                style, glyph = palette.C_WARN, ""   # message already carries its own warn glyph
             else:
-                style, glyph = _C_ON, "✓"
+                style, glyph = palette.C_SUCCESS, grammar.GLYPH_OK
             prefix = f"{glyph} " if glyph else ""
             out.append((style, f"   {prefix}{self.message}\n"))
         return out

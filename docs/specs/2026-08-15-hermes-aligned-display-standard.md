@@ -1,6 +1,6 @@
 # Hermes-aligned display & command standard
 
-- **Status:** design-proposed. Implementation is not in this change.
+- **Status:** implementing (waves A–D in tree; CLI argparse grouping is follow-up).
 - **Goal:** make every J.A.R.N. command and live surface as easy to scan as
   [Hermes Agent](https://hermes-agent.nousresearch.com/docs/user-guide/cli) —
   plain language, one visual grammar, color with meaning, spacing that groups

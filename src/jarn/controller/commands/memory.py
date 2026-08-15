@@ -9,9 +9,10 @@ from typing import TYPE_CHECKING
 from rich.markup import escape as _escape_markup
 
 from jarn.agent.session import SuggestedMemory
+from jarn.commands.help import usage_error
 from jarn.controller.core import CommandResult
 from jarn.memory import MemoryStore, RecallHit
-from jarn.tui import palette
+from jarn.tui import layout, palette
 
 if TYPE_CHECKING:
     from jarn.controller.core import Controller
@@ -42,15 +43,7 @@ def cmd_memory(ctrl, args: str) -> CommandResult:
         return _memory_delete(ctrl, parts[1:])
     if subcommand in ("dump", "context"):
         return _memory_dump(ctrl)
-    return CommandResult(
-        "Usage: /memory [search|show|add|update|delete|dump] ...\n"
-        "Examples:\n"
-        "  /memory dump\n"
-        "  /memory search pytest\n"
-        "  /memory add project project \"Test style\" \"Use pytest\" \"Prefer parametrized tests.\"\n"
-        "  /memory show project test-style\n"
-        "  /memory delete global test-style"
-    )
+    return CommandResult(usage_error("memory"))
 
 def cmd_wiki(ctrl, args: str) -> CommandResult:
     """List or search the wiki knowledge base.
@@ -81,20 +74,20 @@ def cmd_wiki(ctrl, args: str) -> CommandResult:
     if subcmd == "search":
         query = parts[1].strip() if len(parts) > 1 else ""
         if not query:
-            return CommandResult("Usage: /wiki search <query>")
+            return CommandResult(usage_error("wiki"))
         results = store.search(query)
         if not results:
             return CommandResult(f"No wiki pages matched {query!r}.")
         lines = [f"[b]Wiki search:[/b] {_escape_markup(query)!r}"]
         for slug, matched in results:
-            lines.append(f"\n  [cyan]{_escape_markup(slug)}[/cyan]")
+            lines.append(f"\n  {layout.accent(slug)}")
             for line in matched[:5]:
                 lines.append(f"    {_escape_markup(line)}")
             if len(matched) > 5:
                 lines.append(f"    [dim]… ({len(matched) - 5} more)[/dim]")
         return CommandResult("\n".join(lines))
 
-    return CommandResult("Usage: /wiki [search <q>|list]")
+    return CommandResult(usage_error("wiki"))
 
 def cmd_map(ctrl, args: str) -> CommandResult:
     """Build and display the ranked repo map.
@@ -140,7 +133,7 @@ def _memory_list(ctrl) -> CommandResult:
         lines.append(f"\n[b]{scope}[/b]")
         for memory in memories:
             lines.append(
-                f"  [cyan]{_escape_markup(memory.name)}[/cyan] "
+                f"  {layout.accent(memory.name)} "
                 f"([dim]{_escape_markup(memory.type)}[/dim]) — "
                 f"{_escape_markup(memory.description)}"
             )
@@ -155,14 +148,14 @@ def _memory_list(ctrl) -> CommandResult:
 
 def _memory_search(ctrl, query: str) -> CommandResult:
     if not query:
-        return CommandResult("Usage: /memory search <query>")
+        return CommandResult(usage_error("memory"))
     hits = _memory_search_hits(ctrl, query, k=5)
     if not hits:
         return CommandResult(f"No memories matched: {query!r}")
     lines = [f"[b]Recall for[/b] {_escape_markup(query)!r}"]
     for scope, hit in hits:
         lines.append(
-            f"  [cyan]{_escape_markup(hit.memory.name)}[/cyan] "
+                f"  {layout.accent(hit.memory.name)} "
             f"[dim]({scope}, {hit.score:.2f})[/dim] — "
             f"{_escape_markup(hit.memory.description)}"
         )
@@ -250,7 +243,7 @@ def _memory_dump(ctrl) -> CommandResult:
     if recall_hits:
         for scope, hit in recall_hits:
             lines.append(
-                f"  [cyan]{_escape_markup(hit.memory.name)}[/cyan] "
+                    f"  {layout.accent(hit.memory.name)} "
                 f"[dim]({scope}, {hit.score:.2f})[/dim] — "
                 f"{_escape_markup(hit.memory.description)}"
             )
@@ -261,7 +254,7 @@ def _memory_dump(ctrl) -> CommandResult:
 
 def _memory_show(ctrl, parts: list[str]) -> CommandResult:
     if not parts:
-        return CommandResult("Usage: /memory show [global|project] <name-or-slug>")
+        return CommandResult(usage_error("memory"))
     explicit_scope = parts[0].lower() in ("global", "project")
     if explicit_scope:
         scope = parts[0].lower()
@@ -274,7 +267,7 @@ def _memory_show(ctrl, parts: list[str]) -> CommandResult:
         name = " ".join(parts).strip()
         candidates = list(reversed(_memory_read_stores(ctrl)))
     if not name:
-        return CommandResult("Usage: /memory show [global|project] <name-or-slug>")
+        return CommandResult(usage_error("memory"))
     for scope, store in candidates:
         memory = store.get(name)
         if memory is None:
@@ -294,9 +287,7 @@ def _memory_add(ctrl, parts: list[str]) -> CommandResult:
     scope, idx = _memory_scope_from_parts(ctrl, parts)
     remaining = parts[idx:]
     if len(remaining) < 3:
-        return CommandResult(
-            "Usage: /memory add [global|project] <type> <name> <description> [body]"
-        )
+        return CommandResult(usage_error("memory"))
     mem_type, name, description = remaining[:3]
     if mem_type not in MEMORY_TYPES:
         return CommandResult(f"Unknown memory type {mem_type!r}; choose one of: {', '.join(MEMORY_TYPES)}")
@@ -311,7 +302,7 @@ def _memory_update(ctrl, parts: list[str]) -> CommandResult:
     scope, idx = _memory_scope_from_parts(ctrl, parts)
     remaining = parts[idx:]
     if len(remaining) < 2:
-        return CommandResult("Usage: /memory update [global|project] <name-or-slug> <description> [body]")
+        return CommandResult(usage_error("memory"))
     name, description = remaining[:2]
     store, error = _memory_store_for_scope(ctrl, scope, write=True)
     if error or store is None:
@@ -329,7 +320,7 @@ def _memory_delete(ctrl, parts: list[str]) -> CommandResult:
     scope, idx = _memory_scope_from_parts(ctrl, parts)
     name = " ".join(parts[idx:]).strip()
     if not name:
-        return CommandResult("Usage: /memory delete [global|project] <name-or-slug>")
+        return CommandResult(usage_error("memory"))
     store, error = _memory_store_for_scope(ctrl, scope, write=True)
     if error or store is None:
         return CommandResult(error or "Memory store unavailable.")

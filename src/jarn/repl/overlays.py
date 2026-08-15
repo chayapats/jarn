@@ -16,7 +16,7 @@ from jarn.agent.session import ApprovalReply, ApprovalRequest
 from jarn.permissions import RememberScope
 from jarn.repl import turn as repl_turn
 from jarn.repl.turn import _editable_field
-from jarn.tui import palette
+from jarn.tui import grammar, palette
 
 _MenuT = TypeVar("_MenuT")
 
@@ -143,11 +143,11 @@ class OverlayMixin:
             return
         new = self.controller.config.permission_mode.value
         self._armed = False
-        color = palette.MODE_COLOR.get(new, "#22d3ee")
-        glyph = palette.MODE_GLYPH.get(new, "◆")
+        color = palette.MODE_COLOR.get(new, palette.ACCENT)
+        glyph = palette.MODE_GLYPH.get(new, palette.MODE_GLYPH["ask"])
         self._flash(HTML(
             f'<style fg="{color}"><b>{glyph} {new}</b></style> '
-            f'<style fg="#7c8f94">mode</style>'
+            f'<style fg="{palette.C_DIM}">mode</style>'
         ))
         if self.app is not None:
             self.app.invalidate()
@@ -158,7 +158,7 @@ class OverlayMixin:
         if not self._last_tool_outputs:
             return None
         return "\n\n".join(
-            f"⏺ {name}\n{'─' * 40}\n{full or '(empty)'}"
+            f"{grammar.GLYPH_TOOL} {name}\n{'─' * 40}\n{full or '(empty)'}"
             for name, full in self._last_tool_outputs
         )
 
@@ -167,7 +167,7 @@ class OverlayMixin:
         mid-turn (reads whatever has accumulated so far). Ctrl+O toggles it shut."""
         text = self._expanded_text()
         if text is None:
-            self._flash(HTML('<style fg="#7c8f94">nothing to expand yet</style>'))
+            self._flash(HTML(f'<style fg="{palette.C_DIM}">nothing to expand yet</style>'))
             return
         self._pager_buffer.set_document(Document(text, 0), bypass_readonly=True)
         self._expanded = True
@@ -435,10 +435,12 @@ class OverlayMixin:
                 self.app.invalidate()
 
     def _pager_header(self) -> HTML:
-        base = (' <b>full output</b> '
-                '<style fg="#7c8f94">— ↑/↓ PgUp/PgDn scroll · Ctrl+O / q / Esc close</style>')
+        base = (
+            f' <b>full output</b> '
+            f'<style fg="{palette.C_DIM}">— ↑/↓ PgUp/PgDn scroll · Ctrl+O / q / Esc close</style>'
+        )
         if self._busy():  # the turn keeps running behind the overlay — show it
             frame = palette.SPINNER_FRAMES[int(time.monotonic() * 5) % len(palette.SPINNER_FRAMES)]
             elapsed = int(time.monotonic() - (self._turn_start or time.monotonic()))
-            base += f' <style fg="#5fb8d8">{frame} still working… ({elapsed}s)</style>'
+            base += f' <style fg="{palette.C_TOOL}">{frame} still working… ({elapsed}s)</style>'
         return HTML(base)

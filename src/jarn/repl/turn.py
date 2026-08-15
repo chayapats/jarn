@@ -24,7 +24,7 @@ from jarn.config.schema import PermissionMode
 from jarn.permissions import ActionKind, RememberScope
 from jarn.repl.auth_errors import _friendly_auth_error, _provider_hint
 from jarn.repl_renderer import TurnRenderer
-from jarn.tui import palette
+from jarn.tui import grammar, palette
 from jarn.tui.controller import Controller
 from jarn.tui.notify import notify
 from jarn.util.process_env import external_command_env
@@ -92,6 +92,9 @@ async def _run_turn(
     renderer = TurnRenderer(
         console, lambda: controller.tracker.total.total_tokens,
         live_sink=live_sink, spinner=spinner, tool_sink=tool_sink,
+        tool_progress=getattr(controller, "tool_progress", controller.config.ui.tool_progress),
+        wrap_at=controller.config.ui.wrap_at,
+        show_reasoning=controller.config.ui.show_reasoning,
     )
     # ONE cancellation handler spans the whole turn — runtime warm-up, enrich, AND
     # streaming — so a cancel during the PRE-STREAM awaits (``ensure_runtime`` or the
@@ -373,7 +376,11 @@ async def _approve(
     what = (f"run: {a.target}" if a.kind is ActionKind.SHELL
             else f"write: {a.target}" if a.kind is ActionKind.WRITE
             else f"{a.kind.value}: {a.target}")
-    danger = "[red]⚠ DANGEROUS — [/red]" if request.result.dangerous else ""
+    danger = (
+        f"[{palette.C_ERROR}]{grammar.GLYPH_WARN} DANGEROUS — [/{palette.C_ERROR}]"
+        if request.result.dangerous
+        else ""
+    )
     console.print(
         f"\n{danger}[bold]Approve?[/bold] {what}  "
         f"[{palette.C_DIM}]({request.result.reason})[/{palette.C_DIM}]"

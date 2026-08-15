@@ -57,7 +57,7 @@ from jarn.tui import palette
 from jarn.tui.completion import CompletionProvider
 from jarn.tui.controller import Controller
 from jarn.tui.input_queue import InputQueue
-from jarn.tui.logo import SHORTCUT_HINT, splash, splash_compact
+from jarn.tui.logo import SHORTCUT_HINT, display_folder, splash, splash_compact, splash_info_strip
 from jarn.tui.notify import notify, set_title
 from jarn.tui.toolbar import render_toolbar
 from jarn.version import __version__
@@ -76,6 +76,21 @@ _LIVE_TODOS_CAP = 8
 # controller's bounded background/thread paths and is still single-flighted if
 # the user submits immediately.
 _DEFERRED_RUNTIME_DELAY_SECONDS = 0.05
+
+
+def _startup_info_strip(app) -> str:
+    """Model / folder / mode strip printed under every splash variant."""
+    cfg = app.controller.config
+    model = cfg.resolved_main_model() or "unconfigured"
+    skills = None
+    if app.controller.runtime and app.controller.runtime.skills:
+        skills = len(app.controller.runtime.skills)
+    return splash_info_strip(
+        model=model,
+        folder=display_folder(app.controller.project_root),
+        mode=cfg.permission_mode.value,
+        skills=skills,
+    )
 
 
 class _GhostAutoSuggestion(AppendAutoSuggestion):
@@ -237,8 +252,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             c.print(splash_compact(__version__))
         else:  # off
             c.print(SHORTCUT_HINT)
-        c.print(f"[{palette.C_DIM}]terminal mode · Enter send · Shift+Enter newline · "
-                f"Shift+Tab mode · Esc interrupt · Ctrl+O or /expand · Ctrl+C exit[/{palette.C_DIM}]")
+        c.print(_startup_info_strip(self))
         # Startup notice: name the context file whose bounded excerpt was loaded.
         if self.controller.project_trusted and self.controller.project_root is not None:
             from jarn.memory.context import resolve_context_file
@@ -386,8 +400,11 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             ),
             height=Dimension(min=1, max=10), wrap_lines=True, dont_extend_height=True,
         )
-        toolbar = Window(
-            FormattedTextControl(self._toolbar), height=1, style="class:bottom-toolbar",
+        toolbar = ConditionalContainer(
+            Window(
+                FormattedTextControl(self._toolbar), height=1, style="class:bottom-toolbar",
+            ),
+            filter=Condition(lambda: self.controller.config.ui.statusbar),
         )
         # In-app pager overlay (Ctrl+O / /expand): a scrollable read-only view of
         # the last turn's full tool output, toggled with Ctrl+O. Rendered by the
@@ -823,10 +840,13 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 auth = "API key"
         tracker = self.controller.tracker
         ctx_frac: float | None = None
+        ctx_used: int | None = None
+        ctx_window: int | None = None
         ctx = self.controller.context_status()
         if ctx is not None:
-            _tokens, _window, ctx_frac = ctx
+            ctx_used, ctx_window, ctx_frac = ctx
         width = shutil.get_terminal_size((100, 24)).columns
+        elapsed = time.monotonic() - self.controller.session_started_at
         return render_toolbar(
             model=model,
             mode=cfg.permission_mode.value,
@@ -839,6 +859,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             trusted=self.controller.project_trusted,
             queue_count=len(self._input_queue),
             context_frac=ctx_frac,
+            context_used=ctx_used,
+            context_window=ctx_window,
+            elapsed_s=elapsed,
+            context_bar=cfg.ui.context_bar,
             width=width,
         )
 
@@ -853,8 +877,9 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         mcp_servers = [
             s.name for s in self.config.mcp_servers if s.enabled
         ]
+        skills = self.controller.runtime.skills if self.controller.runtime else None
         return CompletionProvider(
-            command_catalog=completion_catalog(custom),
+            command_catalog=completion_catalog(custom, skills=skills),
             project_root=self.controller.project_root,
             model_refs=model_refs or None,
             session_titles=session_titles or None,

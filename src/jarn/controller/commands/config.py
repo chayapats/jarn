@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from jarn.commands.help import usage_error
 from jarn.config.schema import PermissionMode
 from jarn.controller.core import CommandResult
 from jarn.tui import palette
@@ -23,7 +24,7 @@ def cmd_config(ctrl: Controller, args: str) -> CommandResult:
     sub = parts[0]
     if sub == "get":
         if len(parts) < 2:
-            return CommandResult("Usage: /config get <key>")
+            return CommandResult(usage_error("config"))
         key = parts[1]
         spec = settings.setting_for(key)
         if spec is None:
@@ -37,9 +38,9 @@ def cmd_config(ctrl: Controller, args: str) -> CommandResult:
         return CommandResult(f"{key} = {shown}{tail}")
     if sub == "set":
         if len(parts) < 3:
-            return CommandResult("Usage: /config set <key> <value>")
+            return CommandResult(usage_error("config"))
         return ctrl._config_set(parts[1], parts[2])
-    return CommandResult("Usage: /config  |  /config get <key>  |  /config set <key> <value>")
+    return CommandResult(usage_error("config"))
 
 
 def cmd_preset(ctrl, args: str) -> CommandResult:
@@ -101,7 +102,7 @@ def cmd_sandbox(ctrl, args: str) -> CommandResult:
     elif choice in ("off", "local"):
         ctrl.config.execution.backend = "local"
     else:
-        return CommandResult("Usage: /sandbox docker|on|off")
+        return CommandResult(usage_error("sandbox"))
     ctrl._invalidate_runtime()  # backend changes require a rebuild
     return CommandResult(
         f"Execution backend set to {ctrl.config.execution.backend} (rebuilding). "

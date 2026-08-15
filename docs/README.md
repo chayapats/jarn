@@ -23,7 +23,7 @@ package-manager/source installs are advanced alternatives.
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Contributors | System diagram, subsystem table, turn lifecycle, design rationale, and key source files |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contributors | Dev setup, CI gates (ruff · mypy · full pytest collection), testing layers, and how-to guides for common changes |
 | [ROADMAP.md](ROADMAP.md) | Everyone | what is in the v1.0.9 candidate, what is planned, and known limitations |
-| [Hermes-aligned display standard](specs/2026-08-15-hermes-aligned-display-standard.md) | Contributors | Plan to make commands and live output as scannable as Hermes Agent — visual grammar, `/help`, toolbar, quiet tool stream |
+| [Hermes-aligned display standard](specs/2026-08-15-hermes-aligned-display-standard.md) | Contributors | Visual grammar SSOT: palette, layout helpers, `/help`, toolbar fill bar, quiet tool stream |
 | [OPEN_CORE.md](OPEN_CORE.md) | Everyone | Licensing (Apache-2.0) and the intended open-core business model — plans only, nothing commercial is shipped |
 | [WEB_UI.md](WEB_UI.md) | Contributors | Design notes for a future Web UI — **not built yet**; included so the core stays Web-UI-ready |
 | [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md) | Operators · Contributors | v0.10 setup, global config, security model, systemd deployment, and second-poller stand-down |

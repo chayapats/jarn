@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from rich.markup import escape as _escape_markup
 
+from jarn.commands.help import usage_error
 from jarn.controller.core import CommandResult
 
 if TYPE_CHECKING:
@@ -38,9 +39,7 @@ def cmd_clear(ctrl: Controller, args: str) -> CommandResult:
 def cmd_compact(ctrl: Controller, args: str) -> CommandResult:
     sub = args.strip().lower()
     if sub and sub != "status":
-        return CommandResult(
-            f"Unknown /compact subcommand: {sub!r}. Try /compact status."
-        )
+        return CommandResult(usage_error("compact", extra=f"Unknown /compact subcommand: {sub!r}."))
     ctx = ctrl.config.context
     if ctx.auto_compact:
         summarizer = (

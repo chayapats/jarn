@@ -452,49 +452,52 @@ runs as the next turn (never lost). Disable with `ui.steering: false` (hides the
 
 | Command | Description |
 |---|---|
-| `/help` | Show available commands and shortcuts. |
-| `/status` | Show the active directory, model, permissions, provider, and session state. |
-| `/init` | Create a JARN.md project context file. |
-| `/config` | View or edit settings: /config, /config get <key>, /config set <key> <value> (persists). |
-| `/model [/ref\|refresh]` | Show or switch the active model; /model refresh re-queries local endpoints. |
-| `/login` | Sign in or re-verify ChatGPT authentication (maps to `jarn auth login`). |
-| `/logout` | Sign out of ChatGPT authentication (maps to `jarn auth logout`). |
-| `/mode [plan\|ask\|auto-edit\|yolo]` | Show or switch the permission mode (plan/ask/auto-edit/yolo). |
-| `/theme [dark\|light\|high-contrast\|auto]` | Show or switch the color theme (dark/light/high-contrast/auto). |
-| `/sandbox [on\|off]` | Show or toggle the execution backend (local/sandbox). |
-| `/key [<key>]` | Set or replace the API key for the current provider (stored in the keychain). Codex subscription redirects to `jarn codex login`. |
-| `/preset [<preset-name>]` | Show or apply a preset — a shortcut that sets mode + sandbox at once. |
-| `/cost` | Show session token usage and cost. |
-| `/modules [active]` | Open the prompt-module picker; 'active' prints active module details. |
-| `/module [on <name> [turn\|session] \| off <name>]` | Open the prompt-module picker, or activate/deactivate a module directly. |
-| `/compact` | Summarize and compact the conversation context. |
-| `/expand` | Open the last turn's full tool output in the pager (same as Ctrl+O). |
-| `/clear` | Clear the conversation and start a fresh thread. |
-| `/new` | Start a fresh conversation (alias for /clear). |
-| `/sessions` | List and resume previous sessions. |
-| `/resume` | Pick a previous session to resume. |
-| `/rewind` | Rewind to an earlier turn and continue (forks a new thread); optionally restore files to that turn too. A second arrow-key confirm reverts the working tree to that turn's checkpoint (shown as a `git diff --stat` preview), so conversation and files rewind together. |
-| `/skill <name>` | Invoke a skill by name, injecting its instructions into the turn. |
-| `/skills` | List available skills. |
-| `/memory [search\|show\|add\|update\|delete\|dump] ...` | List, search, show, add, update, delete, or dump long-term memory. |
-| `/permissions` | Show current permission rules and allowlist. |
-| `/mcp [status\|refresh\|prompts\|prompt <server> <name>\|resources\|read <server> <uri>]` | Show MCP server health; list and invoke server prompts; list and read server resources. |
-| `/trust` | Trust this project root and lift the untrusted review-only floor. |
-| `/add-dir <path>` | Add a directory to this session's write scope (multi-root; approval-gated). |
-| `/queue [clear\|cancel <n>\|move <from> <to>\|steer <n>]` | Show or manage queued input lines (while a turn is running). |
+| `/help [name]` | Show commands, or details for one command. |
+| `/status` | Show directory, model, mode, context, and a local recap. |
+| `/model [name\|refresh]` | Show or switch the active model. |
+| `/mode [plan\|ask\|auto-edit\|yolo]` | Show or switch how much J.A.R.N. may change. |
+| `/theme [dark\|light\|high-contrast\|auto]` | Show or switch the color theme. |
+| `/cost` | Show session tokens and estimated cost (alias: /usage). |
+| `/context [all]` | Show what is filling the context window. |
+| `/verbose` | Cycle how much tool activity is shown. |
+| `/focus [on\|off\|status]` | Hide tool chrome and show only the answer. |
+| `/modules [active]` | Open the prompt-module picker. |
+| `/module [on <name> [turn\|session] \| off <name>]` | Activate or deactivate a prompt module. |
 | `/undo` | Revert the last agent turn's file changes. |
-| `/redo` | Re-apply the last undone agent turn's file changes. |
-| `/abort` | Cancel the running turn and roll back its file changes. |
-| `/commit` | Draft a commit message from the current diff and commit (with approval). |
-| `/review` | Review the current working-tree diff for bugs and quality (read-only). |
-| `/checkpoints` | List recent auto-checkpoints. |
-| `/ps [kill <id>]` | List or kill background processes (from run_in_background). |
-| `/quit` | Exit J.A.R.N. |
-| `/exit` | Exit J.A.R.N. (alias for /quit). |
-| `/map [focus] [--refresh]` | Show the ranked repo map (codebase overview). |
-| `/wiki [search <q>\|list]` | Search or list wiki knowledge-base pages. |
+| `/redo` | Re-apply the last undone file changes. |
+| `/abort` | Stop this turn and roll back its file changes. |
+| `/commit` | Draft a commit from the current diff (asks first). |
+| `/review` | Read-only review of the current diff. |
+| `/compact [status]` | Summarize and continue in a fresh thread. |
+| `/expand` | Show the last tool output in full. |
+| `/memory [search\|show\|add\|update\|delete\|dump] …` | List or edit long-term memory. |
+| `/clear` | Start a fresh conversation (alias: /new). |
+| `/config [get <key> \| set <key> <value>]` | View or edit settings. |
+| `/preset [<name>]` | Show or apply a mode+sandbox shortcut. |
+| `/sandbox [docker\|on\|off]` | Show or toggle where commands run. |
+| `/trust` | Trust this project and lift the read-only floor. |
+| `/add-dir <path>` | Add a directory to this session's write scope. |
+| `/mcp [status\|refresh\|prompts\|prompt <server> <name>\|resources\|read <server> <uri>]` | MCP server health, prompts, and resources. |
+| `/telemetry status` | Show telemetry opt-in and local sink stats. |
+| `/skill <name>` | Invoke a skill by name. |
+| `/skills` | List available skills. |
+| `/init` | Create a JARN.md project context file. |
+| `/permissions` | Show permission rules and the allowlist. |
+| `/key [<key>]` | Set the API key for the current provider (keychain). |
+| `/login` | Sign in to ChatGPT. |
+| `/logout` | Sign out of ChatGPT. |
 | `/doctor` | Diagnose configuration, providers, and keys. |
-| `/telemetry status` | Show telemetry opt-in status and local sink stats. |
+| `/tools` | List tools the agent can use this session. |
+| `/resume` | Pick a previous session to resume. |
+| `/rewind` | Rewind to an earlier turn (forks a new thread). |
+| `/sessions` | List previous sessions. |
+| `/title [text]` | Show or set this session's title. |
+| `/checkpoints` | List recent auto-checkpoints. |
+| `/ps [kill <id>]` | List or kill background processes. |
+| `/queue [clear\|cancel <n>\|move <from> <to>\|steer <n>]` | Show or manage queued input lines. |
+| `/map [focus] [--refresh]` | Show a map of this repository. |
+| `/wiki [search <q>\|list]` | Search or list wiki pages. |
+| `/quit` | Exit J.A.R.N. (alias: /exit). |
 
 ## Permission modes
 

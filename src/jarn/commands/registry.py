@@ -1,12 +1,17 @@
-"""Single source of truth for built-in slash-command metadata."""
+"""Single source of truth for built-in slash-command metadata.
+
+``/help``, completion, README parity, usage errors, and controller dispatch all
+read this module. Add a command here first; handlers and docs follow.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
 
+from jarn.tui.grammar import HELP_GROUP_ORDER, HelpGroup
+
 CommandLayer = Literal["ui", "core", "both"]
-HelpGroup = Literal["Daily", "Setup", "Session"]
 CommandRoute = Literal["controller", "repl", "agent_template"]
 
 
@@ -15,253 +20,504 @@ class CommandSpec:
     name: str
     description: str
     layer: CommandLayer
-    group: HelpGroup = "Daily"
+    group: HelpGroup = "Work"
     usage: str = ""
     interactive_only: bool = False
+    blurb: str = ""
+    examples: tuple[str, ...] = ()
+    related: tuple[str, ...] = ()
+    aliases: tuple[str, ...] = ()
+    alias_of: str = ""
+    index: bool = True
+    index_usage: str = ""
+
+
+def _c(
+    name: str,
+    description: str,
+    layer: CommandLayer,
+    *,
+    group: HelpGroup = "Work",
+    usage: str = "",
+    interactive_only: bool = False,
+    blurb: str = "",
+    examples: tuple[str, ...] = (),
+    related: tuple[str, ...] = (),
+    aliases: tuple[str, ...] = (),
+    alias_of: str = "",
+    index: bool = True,
+    index_usage: str = "",
+) -> CommandSpec:
+    return CommandSpec(
+        name,
+        description,
+        layer,
+        group=group,
+        usage=usage,
+        interactive_only=interactive_only,
+        blurb=blurb or description,
+        examples=examples,
+        related=related,
+        aliases=aliases,
+        alias_of=alias_of,
+        index=index,
+        index_usage=index_usage,
+    )
 
 
 COMMAND_SPECS: tuple[CommandSpec, ...] = (
-    CommandSpec("help", "Show available commands and shortcuts.", "core", group="Daily"),
-    CommandSpec(
+    _c(
+        "help",
+        "Show commands, or details for one command.",
+        "core",
+        usage="[name]",
+        examples=("/help", "/help compact"),
+        related=("status", "config"),
+        blurb="List every built-in command, grouped by what it is for. "
+        "Pass a name for syntax, examples, and related commands.",
+    ),
+    _c(
         "status",
-        "Show the active directory, model, permissions, provider, and session state.",
+        "Show directory, model, mode, context, and a local recap.",
         "core",
-        group="Daily",
+        group="Session",
+        related=("cost", "context", "model", "mode"),
+        blurb="Offline session summary: where you are, which model and "
+        "permission mode are active, how full the context window is, and a "
+        "short recap of recent tools and files. No model call.",
     ),
-    CommandSpec(
+    _c(
         "model",
-        "Show or switch the active model; /model refresh re-queries local endpoints.",
+        "Show or switch the active model.",
         "both",
-        usage="[/ref|refresh]",
-        group="Daily",
+        usage="[name|refresh]",
+        examples=("/model", "/model refresh"),
+        index_usage="[name]",
+        related=("status", "cost"),
+        blurb="With no argument, opens the model picker. "
+        "`/model refresh` re-queries local endpoints.",
     ),
-    CommandSpec(
-        "login",
-        "Sign in or re-verify ChatGPT authentication (maps to `jarn auth login`).",
-        "core",
-        group="Setup",
-    ),
-    CommandSpec(
-        "logout",
-        "Sign out of ChatGPT authentication (maps to `jarn auth logout`).",
-        "core",
-        group="Setup",
-    ),
-    CommandSpec(
+    _c(
         "mode",
-        "Show or switch the permission mode (plan/ask/auto-edit/yolo).",
+        "Show or switch how much J.A.R.N. may change.",
         "both",
         usage="[plan|ask|auto-edit|yolo]",
-        group="Daily",
+        examples=("/mode", "/mode ask"),
+        related=("permissions", "preset", "sandbox"),
+        blurb="plan = review only. ask = confirm changes (default). "
+        "auto-edit = edit the workspace. yolo = skip routine prompts; "
+        "the danger-guard still blocks catastrophic actions.",
     ),
-    CommandSpec(
+    _c(
         "theme",
-        "Show or switch the color theme (dark/light/high-contrast/auto).",
+        "Show or switch the color theme.",
         "ui",
         usage="[dark|light|high-contrast|auto]",
-        group="Daily",
+        related=("config",),
     ),
-    CommandSpec("cost", "Show session token usage and cost.", "core", group="Daily"),
-    CommandSpec(
+    _c(
+        "cost",
+        "Show session tokens and estimated cost (alias: /usage).",
+        "core",
+        group="Session",
+        aliases=("usage",),
+        related=("context", "status"),
+        blurb="Session spend, per-model totals, and cache reads. "
+        "`/usage` is the same command.",
+    ),
+    _c(
+        "usage",
+        "Show session tokens and estimated cost (alias for /cost).",
+        "core",
+        group="Session",
+        alias_of="cost",
+        index=False,
+        related=("cost", "context"),
+    ),
+    _c(
+        "context",
+        "Show what is filling the context window.",
+        "core",
+        group="Session",
+        usage="[all]",
+        related=("cost", "compact", "modules"),
+        blurb="Visual context-window gauge plus the token size of each active "
+        "prompt module. `/context all` includes inactive modules.",
+    ),
+    _c(
+        "verbose",
+        "Cycle how much tool activity is shown.",
+        "both",
+        related=("focus", "expand"),
+        blurb="Cycles off → new → all → verbose. "
+        "off hides tool lines. new is the default (one line per tool). "
+        "all includes live output tails. verbose keeps more argument detail. "
+        "Session-only; persist with /config set ui.tool_progress.",
+    ),
+    _c(
+        "focus",
+        "Hide tool chrome and show only the answer.",
+        "both",
+        usage="[on|off|status]",
+        examples=("/focus", "/focus off"),
+        related=("verbose", "expand"),
+        blurb="Display-only. Hidden tool lines are still in /expand. "
+        "Turning focus on remembers your /verbose setting and restores it after.",
+    ),
+    _c(
         "modules",
-        "Open the prompt-module picker; 'active' prints active module details.",
+        "Open the prompt-module picker.",
         "both",
         usage="[active]",
-        group="Daily",
+        related=("module", "skills", "context"),
+        blurb="No args opens the picker. `/modules active` prints modules "
+        "currently in the assembled prompt.",
     ),
-    CommandSpec(
+    _c(
         "module",
-        "Open the prompt-module picker, or activate/deactivate a module directly.",
+        "Activate or deactivate a prompt module.",
         "both",
         usage="[on <name> [turn|session] | off <name>]",
-        group="Daily",
+        index_usage="[on|off]",
+        related=("modules", "skill"),
     ),
-    CommandSpec("undo", "Revert the last agent turn's file changes.", "core", group="Daily"),
-    CommandSpec(
+    _c(
+        "undo",
+        "Revert the last agent turn's file changes.",
+        "core",
+        related=("redo", "abort", "checkpoints"),
+    ),
+    _c(
         "redo",
-        "Re-apply the last undone agent turn's file changes.",
+        "Re-apply the last undone file changes.",
         "core",
-        group="Daily",
+        related=("undo",),
     ),
-    CommandSpec("abort", "Cancel the running turn and roll back its file changes.", "ui", group="Daily"),
-    CommandSpec(
+    _c(
+        "abort",
+        "Stop this turn and roll back its file changes.",
+        "ui",
+        related=("undo", "queue"),
+    ),
+    _c(
         "commit",
-        "Draft a commit message from the current diff and commit (with approval).",
+        "Draft a commit from the current diff (asks first).",
         "ui",
-        group="Daily",
+        related=("review",),
     ),
-    CommandSpec(
+    _c(
         "review",
-        "Review the current working-tree diff for bugs and quality (read-only).",
+        "Read-only review of the current diff.",
         "ui",
-        group="Daily",
+        related=("commit",),
     ),
-    CommandSpec(
+    _c(
         "compact",
-        "Summarize and compact the conversation context.",
+        "Summarize and continue in a fresh thread.",
         "both",
-        group="Daily",
+        group="Session",
+        usage="[status]",
         interactive_only=True,
+        related=("clear", "context", "cost"),
+        blurb="Summarize this conversation and keep going in a new thread. "
+        "`/compact status` shows whether auto-compact is on.",
     ),
-    CommandSpec(
+    _c(
         "expand",
-        "Open the last turn's full tool output in the pager (same as Ctrl+O).",
+        "Show the last tool output in full.",
         "ui",
-        group="Daily",
+        related=("verbose", "focus"),
+        blurb="Opens the pager (same as Ctrl+O).",
     ),
-    CommandSpec(
+    _c(
         "memory",
-        "List, search, show, add, update, delete, or dump long-term memory.",
+        "List or edit long-term memory.",
         "core",
-        usage="[search|show|add|update|delete|dump] ...",
-        group="Daily",
+        usage="[search|show|add|update|delete|dump] …",
+        index_usage="[subcommand]",
+        examples=("/memory", "/memory search flaky tests"),
+        related=("skills", "wiki"),
     ),
-    CommandSpec("clear", "Clear the conversation and start a fresh thread.", "core", group="Daily"),
-    CommandSpec(
+    _c(
+        "clear",
+        "Start a fresh conversation (alias: /new).",
+        "core",
+        group="Session",
+        aliases=("new",),
+        related=("compact", "sessions"),
+    ),
+    _c(
         "new",
         "Start a fresh conversation (alias for /clear).",
         "core",
-        group="Daily",
+        group="Session",
+        alias_of="clear",
+        index=False,
+        related=("clear",),
     ),
-    CommandSpec(
+    _c(
         "config",
-        "View or edit settings: /config, /config get <key>, /config set <key> <value> (persists).",
+        "View or edit settings.",
         "both",
         group="Setup",
+        usage="[get <key> | set <key> <value>]",
+        index_usage="[get|set]",
+        examples=("/config", "/config set ui.theme light"),
+        related=("theme", "doctor"),
+        blurb="No args opens the settings panel. Changes persist to "
+        "~/.jarn/config.yaml.",
     ),
-    CommandSpec(
+    _c(
         "preset",
-        "Show or apply a preset — a shortcut that sets mode + sandbox at once.",
+        "Show or apply a mode+sandbox shortcut.",
         "core",
-        usage="[<preset-name>]",
         group="Setup",
+        usage="[<name>]",
+        related=("mode", "sandbox"),
     ),
-    CommandSpec(
+    _c(
         "sandbox",
-        "Show or toggle the execution backend (local/sandbox).",
+        "Show or toggle where commands run.",
         "core",
-        usage="[on|off]",
         group="Setup",
+        usage="[docker|on|off]",
+        related=("preset", "permissions"),
     ),
-    CommandSpec(
+    _c(
         "trust",
-        "Trust this project root and lift the untrusted review-only floor.",
+        "Trust this project and lift the read-only floor.",
         "core",
         group="Setup",
+        related=("permissions", "doctor"),
     ),
-    CommandSpec(
+    _c(
         "add-dir",
-        "Add a directory to this session's write scope (multi-root; approval-gated).",
+        "Add a directory to this session's write scope.",
         "ui",
+        group="Setup",
         usage="<path>",
-        group="Setup",
+        related=("trust",),
     ),
-    CommandSpec(
+    _c(
         "mcp",
-        "Show MCP server health; list and invoke server prompts; list and read server resources.",
+        "MCP server health, prompts, and resources.",
         "core",
+        group="Setup",
         usage="[status|refresh|prompts|prompt <server> <name>|resources|read <server> <uri>]",
-        group="Setup",
+        index_usage="[subcommand]",
+        related=("tools", "doctor"),
     ),
-    CommandSpec(
+    _c(
         "telemetry",
-        "Show telemetry opt-in status and local sink stats.",
+        "Show telemetry opt-in and local sink stats.",
         "core",
+        group="Setup",
         usage="status",
-        group="Setup",
     ),
-    CommandSpec(
+    _c(
         "skill",
-        "Invoke a skill by name, injecting its instructions into the turn.",
+        "Invoke a skill by name.",
         "core",
+        group="Setup",
         usage="<name>",
-        group="Setup",
+        related=("skills",),
+        blurb="Injects the skill body into this turn. Installed skills are also "
+        "slash commands: `/skill-name` works like `/skill skill-name`.",
     ),
-    CommandSpec("skills", "List available skills.", "core", group="Setup"),
-    CommandSpec("init", "Create a JARN.md project context file.", "core", group="Setup"),
-    CommandSpec("permissions", "Show current permission rules and allowlist.", "core", group="Setup"),
-    CommandSpec(
+    _c(
+        "skills",
+        "List available skills.",
+        "core",
+        group="Setup",
+        related=("skill", "modules"),
+    ),
+    _c(
+        "init",
+        "Create a JARN.md project context file.",
+        "core",
+        group="Setup",
+        related=("status",),
+    ),
+    _c(
+        "permissions",
+        "Show permission rules and the allowlist.",
+        "core",
+        group="Setup",
+        related=("mode", "trust"),
+    ),
+    _c(
         "key",
-        "Set or replace the API key for the current provider (stored in the keychain).",
+        "Set the API key for the current provider (keychain).",
         "ui",
-        usage="[<key>]",
         group="Setup",
+        usage="[<key>]",
+        related=("login", "doctor"),
     ),
-    CommandSpec(
+    _c(
+        "login",
+        "Sign in to ChatGPT.",
+        "core",
+        group="Setup",
+        related=("logout", "key"),
+        blurb="Run `jarn auth login` in a terminal. It shows the browser URL "
+        "or device code and reports success only after the account is verified.",
+    ),
+    _c(
+        "logout",
+        "Sign out of ChatGPT.",
+        "core",
+        group="Setup",
+        related=("login",),
+        blurb="Run `jarn auth logout`. Removes only Codex-managed ChatGPT "
+        "credentials; provider API keys are kept.",
+    ),
+    _c(
         "doctor",
         "Diagnose configuration, providers, and keys.",
         "core",
         group="Setup",
+        related=("status", "config"),
     ),
-    CommandSpec("resume", "Pick a previous session to resume.", "ui", group="Session"),
-    CommandSpec(
+    _c(
+        "tools",
+        "List tools the agent can use this session.",
+        "core",
+        group="Setup",
+        related=("mcp", "permissions"),
+    ),
+    _c(
+        "resume",
+        "Pick a previous session to resume.",
+        "ui",
+        group="Session",
+        related=("sessions", "title"),
+    ),
+    _c(
         "rewind",
-        "Rewind to an earlier turn and continue (forks a new thread); "
-        "optionally restore files to that turn too.",
+        "Rewind to an earlier turn (forks a new thread).",
         "ui",
         group="Session",
+        related=("undo", "sessions"),
+        blurb="Fork to an earlier turn and continue. Optionally restore files "
+        "to that turn's checkpoint too.",
     ),
-    CommandSpec("sessions", "List and resume previous sessions.", "core", group="Session"),
-    CommandSpec("checkpoints", "List recent auto-checkpoints.", "core", group="Session"),
-    CommandSpec(
+    _c(
+        "sessions",
+        "List previous sessions.",
+        "core",
+        group="Session",
+        related=("resume", "title"),
+    ),
+    _c(
+        "title",
+        "Show or set this session's title.",
+        "core",
+        group="Session",
+        usage="[text]",
+        examples=("/title", "/title fix toolbar wrap"),
+        related=("sessions", "status"),
+    ),
+    _c(
+        "checkpoints",
+        "List recent auto-checkpoints.",
+        "core",
+        group="Session",
+        related=("undo", "redo"),
+    ),
+    _c(
         "ps",
-        "List or kill background processes (from run_in_background).",
+        "List or kill background processes.",
         "core",
+        group="Session",
         usage="[kill <id>]",
-        group="Session",
+        related=("queue",),
     ),
-    CommandSpec(
+    _c(
         "queue",
-        "Show or manage queued input lines (while a turn is running).",
+        "Show or manage queued input lines.",
         "ui",
+        group="Session",
         usage="[clear|cancel <n>|move <from> <to>|steer <n>]",
-        group="Session",
+        index_usage="[subcommand]",
+        related=("abort",),
     ),
-    CommandSpec(
+    _c(
         "map",
-        "Show the ranked repo map (codebase overview).",
+        "Show a map of this repository.",
         "core",
+        group="Session",
         usage="[focus] [--refresh]",
-        group="Session",
+        related=("wiki",),
     ),
-    CommandSpec(
+    _c(
         "wiki",
-        "Search or list wiki knowledge-base pages.",
+        "Search or list wiki pages.",
         "core",
-        usage="[search <q>|list]",
         group="Session",
+        usage="[search <q>|list]",
+        index_usage="[subcommand]",
+        related=("memory", "map"),
     ),
-    CommandSpec("quit", "Exit J.A.R.N.", "core", group="Session"),
-    CommandSpec("exit", "Exit J.A.R.N. (alias for /quit).", "core", group="Session"),
+    _c(
+        "quit",
+        "Exit J.A.R.N. (alias: /exit).",
+        "core",
+        group="Session",
+        aliases=("exit",),
+        related=("clear",),
+    ),
+    _c(
+        "exit",
+        "Exit J.A.R.N. (alias for /quit).",
+        "core",
+        group="Session",
+        alias_of="quit",
+        index=False,
+        related=("quit",),
+    ),
 )
 
-# Keyed by the normalized (hyphen→underscore) name so hyphenated commands like
-# ``add-dir`` resolve regardless of the caller's separator (``spec_by_name``
-# normalizes its query the same way).
-_SPEC_BY_NAME: dict[str, CommandSpec] = {
-    spec.name.replace("-", "_"): spec for spec in COMMAND_SPECS
-}
 
-_HELP_GROUP_ORDER: tuple[HelpGroup, ...] = ("Daily", "Setup", "Session")
+def _norm(name: str) -> str:
+    return name.strip().lower().replace("-", "_")
 
-# Both-layer commands whose primary entry point is the REPL UI.
-_BOTH_REPL_ROUTE: frozenset[str] = frozenset({"model", "mode", "compact"})
+
+_SPEC_BY_NAME: dict[str, CommandSpec] = {}
+for _spec in COMMAND_SPECS:
+    _SPEC_BY_NAME[_norm(_spec.name)] = _spec
+    for _alias in _spec.aliases:
+        _SPEC_BY_NAME.setdefault(_norm(_alias), _spec)
 
 
 def spec_by_name(name: str) -> CommandSpec | None:
-    return _SPEC_BY_NAME.get(name.replace("-", "_"))
+    """Resolve a command, alias, hyphen/underscore, or case variant."""
+    return _SPEC_BY_NAME.get(_norm(name))
+
+
+def canonical_name(name: str) -> str | None:
+    spec = spec_by_name(name)
+    if spec is None:
+        return None
+    return spec.alias_of or spec.name
 
 
 def core_command_names() -> frozenset[str]:
-    return frozenset(spec.name for spec in COMMAND_SPECS if spec.layer in ("core", "both"))
+    return frozenset(
+        spec.name for spec in COMMAND_SPECS if spec.layer in ("core", "both")
+    )
 
 
 def ui_command_names() -> frozenset[str]:
-    return frozenset(spec.name for spec in COMMAND_SPECS if spec.layer in ("ui", "both"))
+    return frozenset(
+        spec.name for spec in COMMAND_SPECS if spec.layer in ("ui", "both")
+    )
+
+
+_BOTH_REPL_ROUTE: frozenset[str] = frozenset({"model", "mode", "compact"})
 
 
 def route_for_spec(spec: CommandSpec) -> CommandRoute:
-    """Map a registry entry to the legacy ``route`` field on :class:`BuiltinCommand`."""
+    """Map a registry entry to the legacy ``route`` field on BuiltinCommand."""
     if spec.layer == "core":
         return "controller"
     if spec.layer == "ui":
@@ -271,12 +527,29 @@ def route_for_spec(spec: CommandSpec) -> CommandRoute:
     return "controller"
 
 
-def grouped_specs() -> dict[str, list[CommandSpec]]:
+def grouped_specs(*, index_only: bool = False) -> dict[str, list[CommandSpec]]:
     grouped: dict[str, list[CommandSpec]] = {}
     for spec in COMMAND_SPECS:
+        if index_only and not spec.index:
+            continue
         grouped.setdefault(spec.group, []).append(spec)
     return grouped
 
 
 def help_group_order() -> tuple[HelpGroup, ...]:
-    return _HELP_GROUP_ORDER
+    return HELP_GROUP_ORDER
+
+
+def slash_usage(spec: CommandSpec) -> str:
+    """``/name`` or ``/name usage`` for detail pages, usage errors, and README."""
+    if spec.usage:
+        return f"/{spec.name} {spec.usage}"
+    return f"/{spec.name}"
+
+
+def slash_index(spec: CommandSpec) -> str:
+    """Shorter ``/help`` index form; falls back to :func:`slash_usage`."""
+    usage = spec.index_usage if spec.index_usage else spec.usage
+    if usage:
+        return f"/{spec.name} {usage}"
+    return f"/{spec.name}"

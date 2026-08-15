@@ -14,6 +14,8 @@ import random
 from dataclasses import dataclass
 from typing import Literal
 
+from jarn.tui.grammar import MODE_GLYPH as MODE_GLYPH  # SSOT; re-exported
+
 ThemeName = Literal["dark", "light", "high-contrast", "auto"]
 
 
@@ -62,6 +64,7 @@ class _Palette:
     cost_exceeded: str
     ctx_ok: str
     ctx_warn: str
+    ctx_hot: str
     ctx_exceeded: str
     textual: _TextualColors
 
@@ -84,8 +87,9 @@ _PALETTES: dict[ThemeName, _Palette] = {
         cost_ok="#9fb3b8",
         cost_warn="#ffb454",
         cost_exceeded="#ff6b6b",
-        ctx_ok="#9fb3b8",
+        ctx_ok="#3ee07a",
         ctx_warn="#ffb454",
+        ctx_hot="#ff8c42",
         ctx_exceeded="#ff6b6b",
         textual=_TextualColors(
             background="#0b1416",
@@ -113,8 +117,9 @@ _PALETTES: dict[ThemeName, _Palette] = {
         cost_ok="#475569",
         cost_warn="#d97706",
         cost_exceeded="#dc2626",
-        ctx_ok="#475569",
+        ctx_ok="#15803d",
         ctx_warn="#d97706",
+        ctx_hot="#c2410c",
         ctx_exceeded="#dc2626",
         textual=_TextualColors(
             background="#f6fafa",
@@ -142,8 +147,9 @@ _PALETTES: dict[ThemeName, _Palette] = {
         cost_ok="#cccccc",
         cost_warn="#ffb454",
         cost_exceeded="#ff6b6b",
-        ctx_ok="#cccccc",
+        ctx_ok="#00ff66",
         ctx_warn="#ffb454",
+        ctx_hot="#ff8c42",
         ctx_exceeded="#ff6b6b",
         textual=_TextualColors(
             background="#000000",
@@ -159,7 +165,6 @@ _PALETTES: dict[ThemeName, _Palette] = {
 _active: _Palette = _PALETTES["dark"]
 
 MODE_COLOR = _active.mode_color
-MODE_GLYPH = {"plan": "◇", "ask": "◆", "auto-edit": "⚡", "yolo": "⚠"}
 C_USER = _active.c_user
 C_TOOL = _active.c_tool
 C_NOTICE = _active.c_notice
@@ -177,6 +182,7 @@ COST_WARN = _active.cost_warn
 COST_EXCEEDED = _active.cost_exceeded
 CTX_OK = _active.ctx_ok
 CTX_WARN = _active.ctx_warn
+CTX_HOT = _active.ctx_hot
 CTX_EXCEEDED = _active.ctx_exceeded
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -248,7 +254,8 @@ def configure_ui(*, theme: str = "dark", accent: str = "cyan") -> None:
     """Apply theme and optional brand accent from config."""
     global _active, MODE_COLOR, C_USER, C_TOOL, C_NOTICE, C_ERROR, C_WARN
     global C_SUCCESS, C_DIM, CODE_THEME, TOOLBAR_BG, TOOLBAR_FG, TOOLBAR_SEP
-    global ACCENT, COST_OK, COST_WARN, COST_EXCEEDED, CTX_OK, CTX_WARN, CTX_EXCEEDED
+    global ACCENT, COST_OK, COST_WARN, COST_EXCEEDED
+    global CTX_OK, CTX_WARN, CTX_HOT, CTX_EXCEEDED
 
     name = theme if theme in _PALETTES else "dark"
     base = _PALETTES[name]  # type: ignore[index]
@@ -272,6 +279,7 @@ def configure_ui(*, theme: str = "dark", accent: str = "cyan") -> None:
         cost_exceeded=base.cost_exceeded,
         ctx_ok=base.ctx_ok,
         ctx_warn=base.ctx_warn,
+        ctx_hot=base.ctx_hot,
         ctx_exceeded=base.ctx_exceeded,
         textual=base.textual,
     )
@@ -293,6 +301,7 @@ def configure_ui(*, theme: str = "dark", accent: str = "cyan") -> None:
     COST_EXCEEDED = _active.cost_exceeded
     CTX_OK = _active.ctx_ok
     CTX_WARN = _active.ctx_warn
+    CTX_HOT = _active.ctx_hot
     CTX_EXCEEDED = _active.ctx_exceeded
 
 
@@ -300,5 +309,5 @@ def mode_label(mode: str) -> str:
     from jarn.permissions.labels import permission_mode_name
 
     color = MODE_COLOR.get(mode, ACCENT)
-    glyph = MODE_GLYPH.get(mode, "◆")
+    glyph = MODE_GLYPH.get(mode, MODE_GLYPH["ask"])
     return f"[{color}]{glyph} {permission_mode_name(mode)}[/{color}]"

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from jarn.commands.registry import COMMAND_SPECS, CommandSpec, core_command_names
+from jarn.commands.registry import COMMAND_SPECS, CommandSpec, canonical_name, core_command_names
 from jarn.controller.commands import config, diagnostics, memory, meta, session
 
 if TYPE_CHECKING:
@@ -31,12 +31,10 @@ _HANDLERS: dict[str, CommandHandler] = {
     # session
     "sessions": session.cmd_sessions,
     "clear": session.cmd_clear,
-    "new": session.cmd_clear,
     "compact": session.cmd_compact,
     "undo": session.cmd_undo,
     "redo": session.cmd_redo,
     "quit": session.cmd_quit,
-    "exit": session.cmd_quit,
     # memory
     "memory": memory.cmd_memory,
     "wiki": memory.cmd_wiki,
@@ -45,6 +43,11 @@ _HANDLERS: dict[str, CommandHandler] = {
     "status": diagnostics.cmd_status,
     "doctor": diagnostics.cmd_doctor,
     "cost": diagnostics.cmd_cost,
+    "context": diagnostics.cmd_context,
+    "verbose": diagnostics.cmd_verbose,
+    "focus": diagnostics.cmd_focus,
+    "tools": diagnostics.cmd_tools,
+    "title": diagnostics.cmd_title,
     "modules": diagnostics.cmd_modules,
     "module": diagnostics.cmd_module,
     "permissions": diagnostics.cmd_permissions,
@@ -54,10 +57,12 @@ _HANDLERS: dict[str, CommandHandler] = {
     "checkpoints": diagnostics.cmd_checkpoints,
 }
 
-REGISTRY: dict[str, CommandHandler] = {
-    spec.name: _HANDLERS[spec.name]
-    for spec in COMMAND_SPECS
-    if spec.name in core_command_names() and spec.name in _HANDLERS
-}
+REGISTRY: dict[str, CommandHandler] = {}
+for spec in COMMAND_SPECS:
+    if spec.name not in core_command_names():
+        continue
+    handler = _HANDLERS.get(canonical_name(spec.name) or spec.name)
+    if handler is not None:
+        REGISTRY[spec.name] = handler
 
 __all__ = ["CommandHandler", "CommandSpec", "REGISTRY"]

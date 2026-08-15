@@ -29,6 +29,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Never
 
+from jarn.tui import grammar, layout
 from jarn.util.process_env import external_command_env
 from jarn.version import __version__
 
@@ -2765,19 +2766,19 @@ def _cmd_login() -> int:
 
     if not result.changed:
         # Existing key kept — nothing to persist; don't rewrite the config.
-        console.print(f"[green]✔[/green]  Keeping your existing key ([b]{result.reference}[/b]).")
+        console.print(f"{layout.ok(grammar.GLYPH_OK)}  Keeping your existing key ([b]{result.reference}[/b]).")
         console.print(f"   Key tail: [dim]{result.masked_key}[/dim]")
         return 0
 
-    console.print(f"[green]✔[/green]  Logged in — key stored as [b]{result.reference}[/b]")
+    console.print(f"{layout.ok(grammar.GLYPH_OK)}  Logged in — key stored as [b]{result.reference}[/b]")
     console.print(f"   Key tail: [dim]{result.masked_key}[/dim]")
 
     # Write the reference into the OpenRouter provider in the global config.
     if _write_openrouter_key_ref(result.reference):
-        console.print("\n[green]✔[/green]  Config updated.  Launch [b]jarn[/b] to start coding.")
+        console.print(f"\n{layout.ok(grammar.GLYPH_OK)}  Config updated.  Launch [b]jarn[/b] to start coding.")
         return 0
     console.print(
-        f"\n[yellow]![/yellow]  The key is stored ([b]{result.reference}[/b]) but the "
+        f"\n{layout.warn('!')}  The key is stored ([b]{result.reference}[/b]) but the "
         "config was left untouched — set `providers.openrouter.api_key` manually."
     )
     return _emit_cli_failure(
@@ -2840,7 +2841,7 @@ def _cmd_auth(
             return
         if status.ready:
             console.print(
-                f"[green]✔[/green] ChatGPT connected"
+                f"{layout.ok(grammar.GLYPH_OK)} ChatGPT connected"
                 f" ([b]{status.plan_type or 'plan unknown'}[/b]); account verified."
             )
             return
@@ -2895,7 +2896,7 @@ def _cmd_auth(
                 if status.dependency.state is DependencyState.MISSING
                 else f"incompatible ({status.dependency.version or 'version unknown'})"
             )
-            console.print(f"\n[yellow]![/yellow] OpenAI Codex CLI is {reason}.")
+            console.print(f"\n{layout.warn('!')} OpenAI Codex CLI is {reason}.")
             console.print("[b]Purpose:[/b] ChatGPT subscription authentication and model access")
             console.print(f"[b]Version/channel:[/b] {plan.version} ({plan.channel})")
             console.print(f"[b]Source:[/b] {plan.source} — {plan.metadata_url}")
@@ -2917,7 +2918,7 @@ def _cmd_auth(
                     )
                 )
             else:
-                console.print("[yellow]Setup incomplete:[/yellow] Codex CLI was not changed.")
+                console.print(f"{layout.warn('Setup incomplete:')} Codex CLI was not changed.")
                 console.print(f"Manual official command: [b]{CODEX_OFFICIAL_INSTALL_COMMAND}[/b]")
             return False
 
@@ -2945,7 +2946,7 @@ def _cmd_auth(
                     )
                 )
             else:
-                console.print(f"[red]Setup incomplete:[/red] {exc}")
+                console.print(f"{layout.err('Setup incomplete:')} {exc}")
                 console.print(f"Manual official command: [b]{CODEX_OFFICIAL_INSTALL_COMMAND}[/b]")
             return False
         if as_json:
@@ -2958,7 +2959,7 @@ def _cmd_auth(
         else:
             action = "Installed" if result.changed else "Verified"
             console.print(
-                f"[green]✔[/green] {action} Codex CLI {result.smoke_version} at "
+                f"{layout.ok(grammar.GLYPH_OK)} {action} Codex CLI {result.smoke_version} at "
                 f"[b]{result.executable}[/b]"
             )
         service = (
@@ -3001,7 +3002,7 @@ def _cmd_auth(
                 if as_json:
                     emit(status)
                 else:
-                    console.print("[green]✔[/green] Codex-managed credentials removed.")
+                    console.print(f"{layout.ok(grammar.GLYPH_OK)} Codex-managed credentials removed.")
                 return 0
             emit(status)
             return EXIT_AUTH
@@ -3458,7 +3459,9 @@ def _prompt_project_trust(root: Path, danger: dict, status: str) -> bool:
 
     console = Console(stderr=True)
     console.print(
-        f"\n[yellow]⚠ This project's config[/yellow] ([dim]{root}/.jarn/config.yaml[/dim]) "
+        "\n"
+        + layout.warn(f"{grammar.GLYPH_WARN} This project's config")
+        + f" ([dim]{root}/.jarn/config.yaml[/dim]) "
         "declares settings that can run code or access secrets:"
     )
     labels = {
@@ -3475,7 +3478,7 @@ def _prompt_project_trust(root: Path, danger: dict, status: str) -> bool:
     for key in danger:
         console.print(f"  • {labels.get(key, key)}")
     if status == "changed":
-        console.print("[yellow]These changed since you last trusted this project.[/yellow]")
+        console.print(layout.warn("These changed since you last trusted this project."))
     console.print(
         "[dim]Trust only repositories you would run code from. If you decline, "
         "these settings are ignored and the session continues safely.[/dim]"

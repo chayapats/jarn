@@ -52,7 +52,7 @@ targets v1.0.9 GA; consult the release and package registries for publication st
 - [x] Session title from first prompt (sticky across turns)
 - [x] Multiline input (Enter submit, history, `/` commands, Esc cancel)
 - [x] Cyan/teal themes (dark / light / high-contrast) + ASCII splash
-- [x] Typed command registry (`BUILTINS`) — `/help`, completion, and docs share one source
+- [x] Typed command registry (`commands/registry.py`) — `/help`, usage errors, completion, and docs share one source
 - [x] Adaptive toolbar (model · mode · queue · context · cost) with width collapse
 - [x] Input queue UX — toolbar count + `/queue` list/clear/cancel/move
 - [x] Parallel tool-call correlation via `tool_call_id` per-call durations

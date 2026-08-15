@@ -348,13 +348,11 @@ class KeysMixin:
                 return
             new = self.controller.cycle_mode()
             self._armed = False
-            color = palette.MODE_COLOR.get(new, "#22d3ee")
-            glyph = palette.MODE_GLYPH.get(new, "◆")
-            # transient flash above the input (not a permanent scrollback line);
-            # the toolbar also reflects the new mode immediately.
+            color = palette.MODE_COLOR.get(new, palette.ACCENT)
+            glyph = palette.MODE_GLYPH.get(new, palette.MODE_GLYPH["ask"])
             self._flash(HTML(
                 f'<style fg="{color}"><b>{glyph} {new}</b></style> '
-                f'<style fg="#7c8f94">mode</style>'
+                f'<style fg="{palette.C_DIM}">mode</style>'
             ))
             event.app.invalidate()
 

@@ -6,10 +6,11 @@ from typing import TYPE_CHECKING, cast
 
 from rich.markup import escape as _escape_markup
 
+from jarn.commands.help import usage_error
 from jarn.controller.core import CommandResult
 from jarn.extensibility.mcp import load_mcp_tools, run_blocking
 from jarn.permissions.labels import PERMISSION_MODE_NAMES as _PERMISSION_LABELS
-from jarn.tui import palette
+from jarn.tui import grammar, layout, palette
 
 if TYPE_CHECKING:
     from jarn.agent.prompt_modules import PromptModuleScope
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
 def cmd_status(ctrl: Controller, args: str) -> CommandResult:
     """Return a concise, offline session summary for ``/status``."""
     if args.strip():
-        return CommandResult("Usage: /status")
+        return CommandResult(usage_error("status"))
     model = ctrl.config.resolved_main_model() or "not configured"
     provider = ctrl.current_provider() or "not configured"
     provider_config = ctrl.config.providers.get(provider)
@@ -45,27 +46,60 @@ def cmd_status(ctrl: Controller, args: str) -> CommandResult:
     mode_label = _PERMISSION_LABELS.get(mode, mode)
     trust = "trusted" if ctrl.project_trusted else "untrusted (read-only floor)"
     context = ctrl.context_status()
-    context_text = (
-        f"{context[0]:,}/{context[1]:,} tokens ({context[2] * 100:.0f}%)"
-        if context is not None
-        else "not measured"
-    )
-    return CommandResult(
-        "\n".join(
-            [
-                "[b]J.A.R.N. status[/b]",
-                f"  directory: {_escape_markup(str(ctrl.project_root))}",
-                f"  model: {_escape_markup(model)}",
-                f"  provider: {_escape_markup(provider)}",
-                f"  authentication: {_escape_markup(auth)}",
-                f"  reasoning: {_escape_markup(reasoning)}",
-                f"  permissions: {_escape_markup(mode_label)} [dim]({mode})[/dim]",
-                f"  workspace: {trust}",
-                f"  context: {context_text}",
-                f"  session: {_escape_markup(ctrl.thread_id)}",
-            ]
+    if context is not None:
+        used, window, frac = context
+        context_text = layout.context_gauge(frac, used=used, window=window)
+    else:
+        context_text = "not measured"
+    import time as _time
+
+    elapsed = layout.escape("")
+    try:
+        elapsed = grammar.format_duration(_time.monotonic() - ctrl.session_started_at)
+    except Exception:  # pragma: no cover - missing on very old controllers
+        elapsed = "—"
+    title = ""
+    for session in ctrl.sessions.list():
+        if session.thread_id == ctrl.thread_id:
+            title = session.title or ""
+            break
+    lines = [
+        layout.title("Status"),
+        "",
+        layout.kv("Directory", str(ctrl.project_root)),
+        layout.kv("Model", model),
+        layout.kv("Provider", f"{provider}  ·  {auth}"),
+        layout.kv("Reasoning", reasoning),
+        layout.kv("Permissions", f"{mode_label}  ·  {mode}"),
+        layout.kv("Workspace", trust),
+        layout.kv("Context", context_text),
+        layout.kv(
+            "Session",
+            f"{ctrl.thread_id}  ·  {elapsed}" + (f"  ·  {title}" if title else ""),
+        ),
+    ]
+    recap = _status_recap(ctrl)
+    if recap:
+        lines.append("")
+        lines.append(layout.title("Recap"))
+        lines.extend(recap)
+    return CommandResult("\n".join(lines))
+
+
+def _status_recap(ctrl: Controller) -> list[str]:
+    lines: list[str] = []
+    top = ctrl.tracker.top_tools()
+    if top:
+        tools = " · ".join(
+            f"{name} {usage.calls}" for name, usage in top[:5]
         )
-    )
+        lines.append(layout.kv("Tools", tools))
+    t = ctrl.tracker.total
+    if t.calls:
+        lines.append(
+            layout.kv("Calls", f"{t.calls}  ·  {t.total_tokens:,} tok  ·  ${t.cost_usd:.4f}")
+        )
+    return lines
 
 
 def cmd_doctor(ctrl: Controller, args: str) -> CommandResult:
@@ -114,7 +148,7 @@ def cmd_modules(ctrl: Controller, args: str) -> CommandResult:
     """Show registry state backed by the same assembly metadata the model sees."""
     sub = args.strip().lower()
     if sub not in ("", "active"):
-        return CommandResult("Usage: /modules [active]")
+        return CommandResult(usage_error("modules"))
     statuses, assembly = ctrl.prompt_module_statuses()
     lines = [f"[b]Prompt modules[/b] — assembled prompt {assembly.token_count:,} tok"]
     for status in statuses:
@@ -125,18 +159,14 @@ def cmd_modules(ctrl: Controller, args: str) -> CommandResult:
         # still shown here, satisfying actual-content observability.
         if status.kind == "skill" and not status.active:
             continue
-        mark = (
-            f"[{palette.C_SUCCESS}]●[/{palette.C_SUCCESS}]"
-            if status.active
-            else f"[{palette.C_DIM}]○[/{palette.C_DIM}]"
-        )
+        mark = layout.key_mark(status.active)
         if status.configured_budget is None:
             token_text = f"{status.token_count:,} tok"
         else:
             token_text = f"{status.token_count:,}/{status.configured_budget:,} tok"
         truncated = " · truncated" if status.truncated else ""
         lines.append(
-            f"  {mark} [cyan]{_escape_markup(status.name)}[/cyan] · "
+            f"  {mark} {layout.accent(status.name)} · "
             f"{status.scope} · {token_text}{truncated}"
         )
         lines.append(
@@ -155,7 +185,7 @@ def cmd_module(ctrl: Controller, args: str) -> CommandResult:
     """Activate/deactivate user-loadable module bodies."""
     parts = args.split()
     if not parts:
-        return CommandResult("Usage: /module on <name> [turn|session] | /module off <name>")
+        return CommandResult(usage_error("module"))
     action = parts[0].lower()
     if action == "on" and len(parts) in (2, 3):
         scope = parts[2].lower() if len(parts) == 3 else "turn"
@@ -164,7 +194,7 @@ def cmd_module(ctrl: Controller, args: str) -> CommandResult:
         return ctrl.activate_prompt_module(parts[1], cast("PromptModuleScope", scope))
     if action == "off" and len(parts) == 2:
         return ctrl.deactivate_prompt_module(parts[1])
-    return CommandResult("Usage: /module on <name> [turn|session] | /module off <name>")
+    return CommandResult(usage_error("module"))
 
 
 def cmd_permissions(ctrl, args: str) -> CommandResult:
@@ -207,10 +237,7 @@ def cmd_mcp(ctrl, args: str) -> CommandResult:
     if sub == "read":
         return _mcp_read(ctrl, rest)
     if sub not in ("", "status", "refresh") and "--refresh" not in parts:
-        return CommandResult(
-            "Usage: /mcp [status|refresh|prompts|prompt <server> <name> [k=v …]"
-            "|resources|read <server> <uri>]"
-        )
+        return CommandResult(usage_error("mcp"))
     return _mcp_status(ctrl, parts)
 
 
@@ -247,7 +274,7 @@ def _mcp_status(ctrl, parts: list[str]) -> CommandResult:
         mark = glyph.get(health, f"[{palette.C_DIM}]○[/{palette.C_DIM}]")
         transport = getattr(server, "transport", "") or ""
         detail = f" [dim]({_escape_markup(transport)})[/dim]" if transport else ""
-        line = f"  {mark} [cyan]{_escape_markup(server.name)}[/cyan]{detail} — {health}"
+        line = f"  {mark} {layout.accent(server.name)}{detail} — {health}"
         err = ctrl.mcp_errors.get(server.name)
         if err:
             line += f"\n      [dim]last error: {_escape_markup(err)}[/dim]"
@@ -307,7 +334,7 @@ def _mcp_prompts(ctrl) -> CommandResult:
                 else ""
             )
             desc = f" — {_escape_markup(cmd.description)}" if cmd.description else ""
-            lines.append(f"  [cyan]/{_escape_markup(name)}[/cyan]{args}{desc}")
+            lines.append(f"  {layout.accent('/' + name)}{args}{desc}")
     else:
         lines.append(f"[{palette.C_DIM}]No prompts available.[/{palette.C_DIM}]")
     _append_mcp_errors(lines, res.errors)
@@ -322,7 +349,7 @@ def _mcp_prompts(ctrl) -> CommandResult:
 def _mcp_prompt(ctrl, rest: list[str]) -> CommandResult:
     """Fetch a single prompt's text (and register it for direct invocation)."""
     if len(rest) < 2:
-        return CommandResult("Usage: /mcp prompt <server> <name> [key=value …]")
+        return CommandResult(usage_error("mcp"))
     server, pname = rest[0], rest[1]
     arg_str = " ".join(rest[2:])
     if not any(s.name == server and s.enabled for s in ctrl.config.mcp_servers):
@@ -370,7 +397,7 @@ def _mcp_resources(ctrl) -> CommandResult:
             )
             tail = f" — {label}" if label else ""
             lines.append(
-                f"  [cyan]{_escape_markup(r.server)}[/cyan] {_escape_markup(r.uri)}{mime}{tail}"
+                f"  {layout.accent(r.server)} {_escape_markup(r.uri)}{mime}{tail}"
             )
     else:
         lines.append(f"[{palette.C_DIM}]No resources available.[/{palette.C_DIM}]")
@@ -381,7 +408,7 @@ def _mcp_resources(ctrl) -> CommandResult:
 def _mcp_read(ctrl, rest: list[str]) -> CommandResult:
     """Read one resource's content into view."""
     if len(rest) < 2:
-        return CommandResult("Usage: /mcp read <server> <uri>")
+        return CommandResult(usage_error("mcp"))
     server, uri = rest[0], rest[1]
     from jarn.config.secrets import redact_secrets
     from jarn.extensibility.mcp import read_mcp_resource
@@ -404,7 +431,7 @@ def cmd_telemetry(ctrl, args: str) -> CommandResult:
     """Show telemetry opt-in status and local sink stats."""
     sub = args.strip().lower()
     if sub and sub != "status":
-        return CommandResult("Usage: /telemetry status")
+        return CommandResult(usage_error("telemetry"))
     summary = ctrl.telemetry.status_summary()
     enabled = "enabled" if summary["enabled"] else "disabled"
     install = "present" if summary["install_id_present"] else "absent"
@@ -433,7 +460,7 @@ def cmd_ps(ctrl, args: str) -> CommandResult:
     parts = args.split()
     if parts and parts[0] == "kill":
         if len(parts) < 2:
-            return CommandResult("Usage: /ps kill <id>")
+            return CommandResult(usage_error("ps"))
         ok = mgr.kill(parts[1])
         return CommandResult(
             f"Killed {parts[1]}." if ok else f"No background process {parts[1]!r}."
@@ -445,7 +472,7 @@ def cmd_ps(ctrl, args: str) -> CommandResult:
     for p in procs:
         state = "running" if p["running"] else f"exited ({p['exit_code']})"
         lines.append(
-            f"  [cyan]{p['id']}[/cyan] [dim][{state}][/dim] {_escape_markup(p['command'])}"
+            f"  {layout.accent(str(p['id']))} [dim][{state}][/dim] {_escape_markup(p['command'])}"
         )
     lines.append("[dim]/ps kill <id> to stop one[/dim]")
     return CommandResult("\n".join(lines))
@@ -489,3 +516,134 @@ def _context_injection_lines(ctrl) -> list[str]:
             f"  {status.name}: {status.token_count:,}{budget} tok · {status.scope}{truncated}"
         )
     return lines
+
+
+def cmd_context(ctrl: Controller, args: str) -> CommandResult:
+    show_all = args.strip().lower() in ("all", "--all")
+    if args.strip() and not show_all:
+        return CommandResult(usage_error("context"))
+    ctx = ctrl.context_status()
+    lines = [layout.title("Context"), ""]
+    if ctx is not None:
+        used, window, frac = ctx
+        lines.append(f"  {layout.context_gauge(frac, used=used, window=window)}")
+        lines.append(
+            layout.muted(
+                f"  {used:,} / {window:,} tokens · compact at {ctrl.config.context.compact_at_pct}%"
+            )
+        )
+    else:
+        lines.append(layout.muted("  Context window not measured yet."))
+    statuses, assembly = ctrl.prompt_module_statuses()
+    lines.append("")
+    lines.append(
+        layout.title("Prompt modules")
+        + f"  {layout.muted(f'{assembly.token_count:,} tok assembled')}"
+    )
+    for status in statuses:
+        if not show_all and not status.active:
+            continue
+        budget = f"/{status.configured_budget:,}" if status.configured_budget is not None else ""
+        mark = grammar.GLYPH_KEY_OK if status.active else grammar.GLYPH_KEY_OFF
+        truncated = " truncated" if status.truncated else ""
+        lines.append(
+            f"  {mark} {layout.accent(status.name)}  "
+            f"{status.token_count:,}{budget} tok · {status.scope}{truncated}"
+        )
+    return CommandResult("\n".join(lines))
+
+
+def cmd_verbose(ctrl: Controller, args: str) -> CommandResult:
+    from jarn.tui.grammar import TOOL_PROGRESS_VALUES, next_tool_progress
+
+    wanted = args.strip().lower()
+    if wanted:
+        if wanted not in TOOL_PROGRESS_VALUES:
+            return CommandResult(usage_error("verbose"))
+        ctrl.tool_progress = wanted
+    else:
+        ctrl.tool_progress = next_tool_progress(ctrl.tool_progress)
+    ctrl.focus_mode = False
+    ctrl._focus_saved_progress = None
+    return CommandResult(
+        f"Tool progress: {layout.accent(ctrl.tool_progress)}. "
+        f"{layout.muted('Session only — persist with /config set ui.tool_progress.')}"
+    )
+
+
+def cmd_focus(ctrl: Controller, args: str) -> CommandResult:
+    wanted = args.strip().lower()
+    if wanted in ("status",):
+        state = "on" if ctrl.focus_mode else "off"
+        return CommandResult(f"Focus is {layout.accent(state)}.")
+    turn_on = wanted in ("on",) or (wanted == "" and not ctrl.focus_mode)
+    turn_off = wanted in ("off",) or (wanted == "" and ctrl.focus_mode)
+    if turn_on:
+        if not ctrl.focus_mode:
+            ctrl._focus_saved_progress = ctrl.tool_progress
+            ctrl.tool_progress = "off"
+            ctrl.focus_mode = True
+        return CommandResult(
+            f"Focus {layout.accent('on')} — tool lines hidden. "
+            f"{layout.muted('/focus off to restore · /expand for full output.')}"
+        )
+    if turn_off:
+        if ctrl.focus_mode:
+            ctrl.tool_progress = ctrl._focus_saved_progress or "new"
+            ctrl._focus_saved_progress = None
+            ctrl.focus_mode = False
+        return CommandResult(
+            f"Focus {layout.accent('off')} — tool progress {ctrl.tool_progress}."
+        )
+    return CommandResult(usage_error("focus"))
+
+
+def cmd_tools(ctrl: Controller, args: str) -> CommandResult:
+    if args.strip():
+        return CommandResult(usage_error("tools"))
+    from jarn.agent.permissions_bridge import (
+        ASYNC_SUBAGENT_TOOLS,
+        BACKGROUND_CONTROL_TOOLS,
+        BACKGROUND_START_TOOL,
+        INTERNAL_TOOLS,
+        MUTATING_TOOLS,
+        READONLY_TOOLS,
+        WIKI_MUTATING_TOOLS,
+        WIKI_READONLY_TOOLS,
+    )
+
+    groups = [
+        ("Read", READONLY_TOOLS),
+        ("Edit / shell", MUTATING_TOOLS),
+        ("Internal", INTERNAL_TOOLS),
+    ]
+    if ctrl.config.policy.web_tools:
+        groups.append(("Web", ("web_search", "web_fetch")))
+    if ctrl.config.wiki.enabled:
+        groups.append(("Wiki", WIKI_READONLY_TOOLS + WIKI_MUTATING_TOOLS))
+    if ctrl.config.execution.background:
+        groups.append(("Background", (BACKGROUND_START_TOOL, *BACKGROUND_CONTROL_TOOLS)))
+    if ctrl.config.async_subagents:
+        groups.append(("Async subagents", ASYNC_SUBAGENT_TOOLS))
+    lines = [layout.title("Tools")]
+    for label, names in groups:
+        lines.append(layout.section(label))
+        for name in names:
+            lines.append(f"  {layout.accent(name)}")
+    return CommandResult("\n".join(lines))
+
+
+def cmd_title(ctrl: Controller, args: str) -> CommandResult:
+    text = args.strip()
+    current = ""
+    for session in ctrl.sessions.list():
+        if session.thread_id == ctrl.thread_id:
+            current = session.title or ""
+            break
+    if not text:
+        shown = current or "(untitled)"
+        return CommandResult(layout.kv("Title", shown))
+    import time as _time
+
+    ctrl.record_session_title(text, when=_time.time())
+    return CommandResult(f"Session titled {layout.accent(text)}.")

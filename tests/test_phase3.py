@@ -49,7 +49,7 @@ def test_format_help_is_valid_rich_markup():
     Console(file=buf, force_terminal=True, width=100).print(format_help())
     rendered = buf.getvalue()
     # Grouped sections replace the old flat "Built-in commands" header.
-    assert "Daily" in rendered
+    assert "Work" in rendered
     assert "Setup" in rendered
     assert "Session" in rendered
 
@@ -57,22 +57,21 @@ def test_format_help_is_valid_rich_markup():
 def test_format_help_groups_contain_expected_commands():
     """Commands appear under the correct group section."""
     body = format_help()
-    # Verify section ordering: Daily appears before Setup, Setup before Session.
-    assert body.index("[b]Daily[/b]") < body.index("[b]Setup[/b]")
-    assert body.index("[b]Setup[/b]") < body.index("[b]Session[/b]")
-    # Spot-check a few commands per group.
-    setup_pos = body.index("[b]Setup[/b]")
+    # Verify section ordering: Work, Session, Setup.
+    assert body.index("[b]Work[/b]") < body.index("[b]Session[/b]")
+    assert body.index("[b]Session[/b]") < body.index("[b]Setup[/b]")
     session_pos = body.index("[b]Session[/b]")
-    # Daily commands appear before Setup header.
-    assert body.index("/model") < setup_pos
-    assert body.index("/cost") < setup_pos
-    assert body.index("/clear") < setup_pos
-    # Setup commands appear between Setup and Session headers.
-    assert setup_pos < body.index("/config") < session_pos
-    assert setup_pos < body.index("/trust") < session_pos
-    # Session commands appear after Session header.
-    assert body.index("/resume") > session_pos
-    assert body.index("/queue") > session_pos
+    setup_pos = body.index("[b]Setup[/b]")
+    # Work commands appear before Session header.
+    assert body.index("/model") < session_pos
+    # Session commands appear between Session and Setup headers.
+    assert session_pos < body.index("/cost") < setup_pos
+    assert session_pos < body.index("/clear") < setup_pos
+    assert session_pos < body.index("/resume") < setup_pos
+    assert session_pos < body.index("/queue") < setup_pos
+    # Setup commands appear after Setup header.
+    assert body.index("/config") > setup_pos
+    assert body.index("/trust") > setup_pos
 
 
 def test_format_help_has_shortcuts_block():
@@ -83,9 +82,9 @@ def test_format_help_has_shortcuts_block():
 
 
 def test_format_help_has_toolbar_glyphs_legend():
-    """Toolbar glyphs legend block is rendered with the expected symbols."""
+    """Glyphs legend block is rendered with the expected symbols."""
     body = format_help()
-    assert "[b]Toolbar glyphs[/b]" in body
+    assert "[b]Glyphs[/b]" in body
     assert "◇" in body   # plan
     assert "◆" in body   # ask
     assert "⚡" in body  # auto-edit
@@ -100,7 +99,7 @@ def test_builtin_command_group_field():
     from jarn.extensibility.commands import BUILTINS
 
     for cmd in BUILTINS:
-        assert cmd.group in ("Daily", "Setup", "Session"), (
+        assert cmd.group in ("Work", "Setup", "Session"), (
             f"/{cmd.name} has unexpected group {cmd.group!r}"
         )
 
@@ -114,18 +113,25 @@ def test_profile_command_removed_in_v06():
 
 
 def test_readme_rows_cover_all_builtins():
+    from jarn.commands.registry import COMMAND_SPECS
+
     rows = readme_command_rows()
-    assert len(rows) == len(BUILTINS)
+    primaries = [spec for spec in COMMAND_SPECS if not spec.alias_of]
+    assert len(rows) == len(primaries)
     names = {row[0].split("`")[1].lstrip("/").split()[0] for row in rows}
-    assert names == set(builtin_names())
+    assert names == {spec.name for spec in primaries}
 
 
 def test_readme_commands_match_registry():
     """README built-in command table stays aligned with BUILTINS."""
+    from jarn.commands.registry import COMMAND_SPECS
+
     readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
-    for cmd in BUILTINS:
-        assert f"/{cmd.name}" in readme
-        assert cmd.description in readme, f"README missing description for /{cmd.name}"
+    for spec in COMMAND_SPECS:
+        if spec.alias_of:
+            continue
+        assert f"/{spec.name}" in readme
+        assert spec.description in readme, f"README missing description for /{spec.name}"
 
 
 def test_route_for_unknown():
@@ -247,6 +253,37 @@ def test_toolbar_untrusted_shows_warning_and_pointer():
     )
     assert "untrusted" in result.value
     assert "jarn trust" in result.value
+
+
+def test_toolbar_fill_bar_and_duration_when_wide():
+    result = render_toolbar(
+        model="gpt-5",
+        mode="ask",
+        cost_line="$0.06",
+        cost_status=BudgetStatus.OK,
+        context_frac=0.06,
+        context_used=12_400,
+        context_window=200_000,
+        elapsed_s=15 * 60,
+        context_bar=True,
+        width=180,
+    )
+    assert "12.4K/200K" in result.value
+    assert "6%" in result.value
+    assert "15m" in result.value
+    assert "ctx 6%" not in result.value
+
+
+def test_toolbar_yolo_badge_survives_narrow():
+    narrow = render_toolbar(
+        model="m",
+        mode="yolo",
+        cost_line="$0.00 · 1000 tok · 99 calls · very long cost line",
+        cost_status=BudgetStatus.OK,
+        width=40,
+    )
+    assert "YOLO" in narrow.value
+    assert "yolo" in narrow.value
 
 
 def test_toolbar_trust_segment_survives_narrow():

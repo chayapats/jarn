@@ -61,7 +61,7 @@ controller, turn runner, permission engine, and agent runtime.
 | `jarn.headless` | Headless one-shot entry point (`jarn -p`); fail-closed tool gating, JSON/structured output |
 | `jarn.gateway` | Transport-neutral daemon supervision, per-root workers and leases, durable sessions/approvals, private protocol, scheduler |
 | `jarn.telegram` | DM-only auth, aiogram long-poll transport, output/approval cards, media staging, poller exclusion, `jarn gateway` CLI |
-| `jarn.extensibility.commands` | Typed `BUILTINS` registry — single source for `/help`, completion, docs |
+| `jarn.commands.registry` | Typed `COMMAND_SPECS` — single source for `/help`, usage errors, completion, docs |
 | `jarn.observability` | Local rotating logs, opt-in LangSmith tracing |
 | `jarn.onboarding` | First-run wizard |
 | `jarn.cli` | `jarn` entry point and subcommands |
@@ -219,13 +219,14 @@ another root. Operational details are in [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.
 - `agent/permissions_bridge.py` — tool-name/args → `Action`, and the `interrupt_on` map.
 - `permissions/engine.py` + `permissions/guard.py` — the reliability core.
 - `config/trust.py` — project trust boundary (capability-key gating).
-- `extensibility/commands.py` — typed `BUILTINS` registry (`/help`, completion, README).
-- `repl.py` — terminal app (layout, keys, queue drain, command dispatch).
-- `repl_renderer.py` — `TurnRenderer` (streaming Markdown, per-tool durations).
-- `tui/toolbar.py` — adaptive bottom toolbar; `tui/input_queue.py` — FIFO input queue.
-- `tui/palette.py` — theme tokens + `configure_ui(theme, accent)`. Planned
-  Hermes-aligned visual grammar:
+- `commands/registry.py` — typed `COMMAND_SPECS` (`/help`, usage errors, completion, README).
+- `tui/grammar.py` — glyphs, spacing, context ramps, tool-progress modes.
+- `tui/layout.py` — Rich/HTML layout helpers; command pages must use these.
+- `tui/palette.py` — theme tokens + `configure_ui(theme, accent)`. Visual grammar:
   [display standard spec](specs/2026-08-15-hermes-aligned-display-standard.md).
+- `repl/` — terminal app (layout, keys, queue drain, command dispatch).
+- `repl_renderer.py` — `TurnRenderer` (streaming Markdown, per-tool durations, `ui.tool_progress`).
+- `tui/toolbar.py` — adaptive bottom toolbar; `tui/input_queue.py` — FIFO input queue.
 - `agent/os_sandbox.py` — macOS SBPL / Linux bwrap wrappers; path-injection guard.
 - `agent/checkpoint.py` — pre-turn snapshots via private git refs; undo/redo stack.
 - `agent/repomap.py` — AST + regex source parser; ranked map builder; token budgeting.

@@ -49,8 +49,10 @@ nightly workflow (see `evals/README.md`).
 If you touch anything under `npm/` (the `jarn-cli` launcher or the package-assembly
 script), run those two `node --test` files locally too.
 
-When adding a built-in command, update `BUILTINS` in `extensibility/commands.py` and
-keep `README.md`'s command table in sync — `tests/test_phase3.py` checks parity.
+When adding a built-in command, add a `CommandSpec` in `src/jarn/commands/registry.py`
+(not `extensibility/commands.py`). `/help`, usage errors, Tab completion, and the
+README command table all derive from that registry — `tests/test_phase3.py` checks
+parity.
 
 **Doc sync:** user-facing docs live in `README.md`, `JARN.md`, `SPEC.md`, and
 `docs/*.md`. Built-in command lists must match `BUILTINS`; test counts must match
@@ -100,11 +102,13 @@ uv run pytest --cov=src/jarn --cov-report=term-missing
 
 ## Adding a built-in command
 
-1. Add a `BuiltinCommand` entry to `BUILTINS` in `extensibility/commands.py`
-   (`route: controller` + `_cmd_*` handler, or `route: repl` for REPL-native).
-   `/help`, completion, and README parity tests derive from this registry.
-2. Implement `Controller._cmd_<name>` (`tui/controller.py`) returning a `CommandResult`.
-3. The REPL (`repl.py` / `Controller`) dispatches it automatically.
+1. Add a `CommandSpec` to `COMMAND_SPECS` in `src/jarn/commands/registry.py`
+   (`layer: core` → controller handler, `layer: ui` → REPL, `layer: both` → either).
+   `/help`, completion, usage errors, and README parity tests derive from this registry.
+2. Implement the handler in `controller/commands/*.py` (or a REPL mixin) and
+   register it in `controller/commands/__init__.py`.
+3. Dispatch is automatic: `Controller.handle_command` resolves aliases and
+   case-insensitive names from the registry.
 
 ---
 

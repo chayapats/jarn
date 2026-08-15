@@ -15,16 +15,17 @@ from jarn.agent.local_backend import CancellableLocalShellBackend
 from jarn.controller.commands.session import format_undo_preview
 from jarn.repl import turn as repl_turn
 from jarn.repl.turn import _apply_model_ref
-from jarn.tui import palette
+from jarn.commands.help import usage_error
+from jarn.tui import grammar, palette
 
-#: Plan-checklist glyphs — the SINGLE source shared by the live in-turn region
-#: (``app._live_todos_ansi``) and the committed end-of-turn render
-#: (``_render_todos``) so the styling never drifts between the two.
-_TODO_GLYPHS = {
-    "completed": "[#3ee07a]✔[/#3ee07a]",
-    "in_progress": "[#22d3ee]◐[/#22d3ee]",
-    "pending": "[#7c8f94]☐[/#7c8f94]",
-}
+#: Plan-checklist glyphs — derived from grammar + the active palette so theme
+#: switches retint the live and committed todo lists together.
+def _todo_glyphs() -> dict[str, str]:
+    return {
+        "completed": f"[{palette.C_SUCCESS}]{grammar.GLYPH_TODO_DONE}[/{palette.C_SUCCESS}]",
+        "in_progress": f"[{palette.ACCENT}]{grammar.GLYPH_TODO_RUN}[/{palette.ACCENT}]",
+        "pending": f"[{palette.C_DIM}]{grammar.GLYPH_TODO_WAIT}[/{palette.C_DIM}]",
+    }
 
 
 def _todo_item_line(todo: dict, truncate: int | None) -> str:
@@ -34,7 +35,8 @@ def _todo_item_line(todo: dict, truncate: int | None) -> str:
     line so a long todo can't wrap and blow the height budget; ``None`` (committed
     render) leaves it to wrap freely, preserving the pre-existing behaviour."""
     status = todo.get("status", "pending")
-    glyph = _TODO_GLYPHS.get(status, _TODO_GLYPHS["pending"])
+    glyphs = _todo_glyphs()
+    glyph = glyphs.get(status, glyphs["pending"])
     content = str(todo.get("content", ""))
     if truncate is not None:
         limit = max(8, truncate - 4)  # 2-space indent + glyph + space
@@ -58,7 +60,7 @@ def format_todos(todos: list[dict], width: int, *, cap: int | None = None) -> li
     overflow is elided behind a ``… +N more`` line. ``cap is None`` (committed
     render) shows every item, unwrapped, exactly as before.
     """
-    header = f"[{palette.C_TOOL}]⏺[/{palette.C_TOOL}] [bold]Todos[/bold]"
+    header = f"[{palette.C_TOOL}]{grammar.GLYPH_TOOL}[/{palette.C_TOOL}] [bold]Todos[/bold]"
     lines = [header]
     trunc = width if cap is not None else None
     if cap is None or len(todos) <= cap:
@@ -68,9 +70,10 @@ def format_todos(todos: list[dict], width: int, *, cap: int | None = None) -> li
     done = [t for t in todos if t.get("status") == "completed"]
     tail = [t for t in todos if t.get("status") != "completed"]  # in-progress + pending
     budget = cap
+    glyphs = _todo_glyphs()
     if done:
         lines.append(
-            f"  {_TODO_GLYPHS['completed']} [{palette.C_DIM}]{len(done)} done[/{palette.C_DIM}]"
+            f"  {glyphs['completed']} [{palette.C_DIM}]{len(done)} done[/{palette.C_DIM}]"
         )
         budget -= 1
     if len(tail) > budget:
@@ -173,7 +176,7 @@ class CommandMixin:
         if name == "add-dir":
             await self._cmd_add_dir(args)
             return
-        if name == "model" and args.strip() in ("refresh", "list"):
+        if name == "model" and args.strip() in ("refresh", "list", "ref"):
             await self._refresh_models()
             return
         if name == "theme":
@@ -408,7 +411,7 @@ class CommandMixin:
             try:
                 idx = int(parts[1])
             except ValueError:
-                c.print(f"[{palette.C_ERROR}]Usage: /queue cancel <n>[/{palette.C_ERROR}]")
+                c.print(usage_error("queue"), highlight=False)
                 return
             removed = q.cancel(idx)
             if removed is None:
@@ -423,9 +426,7 @@ class CommandMixin:
             try:
                 fr, to = int(parts[1]), int(parts[2])
             except ValueError:
-                c.print(
-                    f"[{palette.C_ERROR}]Usage: /queue move <from> <to>[/{palette.C_ERROR}]"
-                )
+                c.print(usage_error("queue"), highlight=False)
                 return
             if not q.move(fr, to):
                 c.print(f"[{palette.C_ERROR}]Invalid queue indices.[/{palette.C_ERROR}]")
@@ -438,16 +439,13 @@ class CommandMixin:
             try:
                 idx = int(parts[1])
             except ValueError:
-                c.print(f"[{palette.C_ERROR}]Usage: /queue steer <n>[/{palette.C_ERROR}]")
+                c.print(usage_error("queue"), highlight=False)
                 return
             ok, msg = self._steer_index(idx)
             color = palette.C_NOTICE if ok else palette.C_ERROR
             c.print(f"[{color}]{_rich_escape(msg)}[/{color}]")
             return
-        c.print(
-            f"[{palette.C_ERROR}]Usage: /queue [clear|cancel <n>|move <from> <to>|steer <n>]"
-            f"[/{palette.C_ERROR}]"
-        )
+        c.print(usage_error("queue"), highlight=False)
 
     # -- resume -------------------------------------------------------------
 

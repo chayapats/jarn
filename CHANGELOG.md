@@ -5,6 +5,24 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- One visual grammar for the terminal: glyphs, spacing, and context-pressure
+  colors live in `tui/grammar.py` / `tui/palette.py`; command pages are built
+  with `tui/layout.py`. `/help` is grouped Work / Session / Setup with
+  `/help <name>` detail pages. Usage errors, Tab completion, and the README
+  command table all read `commands/registry.py`.
+- Quieter default tool stream (`ui.tool_progress: new`). `/verbose` cycles
+  density for the session; `/focus` hides tool chrome. The toolbar shows a
+  context fill bar and session timer; YOLO stays sticky on narrow widths.
+
+### Added
+
+- `/context`, `/tools`, `/title`, `/usage` (alias of `/cost`), and case-insensitive
+  slash names. Skills can be invoked as `/skill-name`. New `ui.wrap_at`,
+  `ui.tool_progress`, `ui.show_reasoning`, `ui.statusbar`, and `ui.context_bar`
+  settings.
+
 ## [1.0.9] - 2026-08-14
 
 ### Fixed

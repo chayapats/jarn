@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from jarn.tui.grammar import SHOW_REASONING_VALUES, TOOL_PROGRESS_VALUES, WRAP_AT
+
 
 class PermissionMode(str, Enum):
     """Coarse trust level applied at the top of a session.
@@ -435,6 +437,10 @@ _VALID_SPLASH_VALUES: frozenset[str] = frozenset({"full", "compact", "off"})
 
 _VALID_NOTIFY_VALUES: frozenset[str] = frozenset({"off", "bell", "desktop", "both"})
 
+_VALID_TOOL_PROGRESS_VALUES: frozenset[str] = frozenset(TOOL_PROGRESS_VALUES)
+
+_VALID_SHOW_REASONING_VALUES: frozenset[str] = frozenset(SHOW_REASONING_VALUES)
+
 
 @dataclass(slots=True)
 class UIConfig:
@@ -463,6 +469,16 @@ class UIConfig:
     #: settled tool boundary). When False, the ``[s] steer now`` affordance is hidden
     #: and ``/queue steer`` errors politely.
     steering: bool = True
+    #: Wrap committed markdown at this column (0 = use the terminal width).
+    wrap_at: int = WRAP_AT
+    #: How much tool activity to print: off | new | all | verbose.
+    tool_progress: str = "new"
+    #: How thinking/reasoning is shown: collapsed | full | off.
+    show_reasoning: str = "collapsed"
+    #: Draw the bottom status bar.
+    statusbar: bool = True
+    #: Draw the context fill bar inside the status bar.
+    context_bar: bool = True
 
 
 @dataclass(slots=True)

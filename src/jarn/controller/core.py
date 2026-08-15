@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -234,6 +235,13 @@ class Controller:
         # Shell-escape output captured by ! commands; injected once into the next
         # turn via enrich_turn_input and then cleared.
         self.pending_shell_context: list[ShellNote] = []
+        # Display SSOT: session-scoped tool-progress / focus, seeded from config.
+        from jarn.tui.grammar import TOOL_PROGRESS_DEFAULT
+
+        self.session_started_at = time.monotonic()
+        self.tool_progress = getattr(config.ui, "tool_progress", TOOL_PROGRESS_DEFAULT)
+        self.focus_mode = False
+        self._focus_saved_progress: str | None = None
         # Diagnostics auto-fix chain round (T-3-3): 0 for a real user turn,
         # incremented when an auto-fix round is queued, reset on real user
         # input. Passed to each per-turn SessionDriver so the round cap holds
@@ -1983,23 +1991,25 @@ class Controller:
     # -- built-in commands --------------------------------------------------
 
     def handle_command(self, name: str, args: str) -> CommandResult:
-        import difflib
-
+        from jarn.commands.help import unknown_command
+        from jarn.commands.registry import canonical_name, spec_by_name
         from jarn.controller.commands import REGISTRY
+        from jarn.extensibility.skills import find_skill
 
-        normalized = name.replace("-", "_")
-        handler = REGISTRY.get(normalized)
+        spec = spec_by_name(name)
+        if spec is None:
+            skill = None
+            if self.runtime and self.runtime.skills:
+                skill = find_skill(self.runtime.skills, name)
+            if skill is not None:
+                from jarn.controller.commands.meta import cmd_skill
+
+                return cmd_skill(self, skill.name)
+            return CommandResult(unknown_command(name))
+        key = canonical_name(name) or spec.name
+        handler = REGISTRY.get(key) or REGISTRY.get(spec.name)
         if handler is None:
-            # Keep enough candidates to include common transposition typos such
-            # as ``/modle`` -> ``/model`` even when nearby real commands
-            # (``/mode``, ``/module``, ``/modules``) score similarly.
-            matches = difflib.get_close_matches(normalized, REGISTRY, n=5, cutoff=0.55)
-            suggestion = (
-                " Did you mean " + ", ".join(f"/{item.replace('_', '-')}" for item in matches) + "?"
-                if matches
-                else ""
-            )
-            return CommandResult(f"Unknown command: /{name}.{suggestion} Try /help.")
+            return CommandResult(unknown_command(name))
         return handler(self, args)
 
     def current_provider(self) -> str | None:

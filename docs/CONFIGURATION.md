@@ -559,6 +559,13 @@ ui:
                            # tool results are never re-run. If the turn ends first it runs as the
                            # next turn (never lost). Set false to hide the [s]
                            # affordance and make /queue steer decline politely.
+  wrap_at: 120             # wrap assistant markdown at this column (0 = terminal width)
+  tool_progress: new       # off | new | all | verbose — how much tool activity to print.
+                           # `/verbose` cycles this for the session only; persist with
+                           # `/config set ui.tool_progress`.
+  show_reasoning: collapsed  # collapsed | full | off — thinking display
+  statusbar: true          # draw the bottom status bar (model, mode, context, cost)
+  context_bar: true        # fill bar inside the status bar for context-window pressure
 
 # ── Git safety (auto-checkpoint + /undo /redo) ────────────────────────────────
 git:
