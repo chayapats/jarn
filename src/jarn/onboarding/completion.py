@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rich.console import Console
+
 from jarn.auth import AuthStatus
 from jarn.config.defaults import CLOUD_PROVIDERS
 from jarn.install_state import (

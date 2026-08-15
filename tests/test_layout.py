@@ -231,7 +231,8 @@ def test_live_stream_helpers_use_grammar_and_palette() -> None:
     assert grammar.GLYPH_RESULT in closed
     assert "1.2s" in closed
     assert layout.cancelled() == layout.muted("cancelled")
-    assert " · " in layout.sep()
+    assert "·" in layout.sep()
+    assert palette.C_DIM in layout.sep()
     rich = layout.host_shell("rm -rf /")
     html = layout.to_html(rich)
     assert "<span" not in html

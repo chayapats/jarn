@@ -18,6 +18,7 @@ from contextlib import suppress
 from typing import TextIO
 
 from rich.console import Console
+
 from jarn.auth.models import AuthStatus, LoginChallenge, LoginMethod
 from jarn.auth.service import CodexAuthService
 from jarn.tui import layout
