@@ -80,8 +80,8 @@ class CommandMixin:
         if name == "expand":  # same as Ctrl+O — reliable even if the key is eaten
             self._open_pager()
             return
-        if name == "resume":
-            await self._resume_picker()
+        if name in ("resume", "sessions"):
+            await self._resume_picker(query=args.strip())
             return
         if name == "rewind":
             await self._rewind_picker()
@@ -381,12 +381,16 @@ class CommandMixin:
 
     # -- resume -------------------------------------------------------------
 
-    async def _resume_picker(self) -> None:
+    async def _resume_picker(self, query: str = "") -> None:
+        from jarn.controller.commands.session import filter_sessions
         from jarn.memory.sessions import SessionInfo, session_label
 
-        sessions = self.controller.sessions.list()
+        sessions = filter_sessions(self.controller.sessions.list(), query)
         if not sessions:
-            self.console.print(layout.muted("No previous sessions."))
+            if query:
+                self.console.print(layout.muted(f"No sessions matching {query!r}."))
+            else:
+                self.console.print(layout.muted("No previous sessions."))
             return
         options: list[tuple[str, SessionInfo | None]] = [
             (session_label(s), s)

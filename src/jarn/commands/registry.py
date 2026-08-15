@@ -386,10 +386,23 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         related=("mcp", "permissions"),
     ),
     _c(
-        "resume",
-        "Pick a previous session to resume.",
-        "ui",
+        "sessions",
+        "Pick a previous session, or list them (alias: /resume).",
+        "core",
         group="Session",
+        usage="[q]",
+        aliases=("resume",),
+        related=("title", "rewind"),
+        blurb="In the REPL, opens the session picker. Pass a query to filter "
+        "by title or id. Non-TTY callers get a text list.",
+    ),
+    _c(
+        "resume",
+        "Pick a previous session to resume (alias for /sessions).",
+        "core",
+        group="Session",
+        alias_of="sessions",
+        index=False,
         related=("sessions", "title"),
     ),
     _c(
@@ -400,13 +413,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         related=("undo", "sessions"),
         blurb="Fork to an earlier turn and continue. Optionally restore files "
         "to that turn's checkpoint too.",
-    ),
-    _c(
-        "sessions",
-        "List previous sessions.",
-        "core",
-        group="Session",
-        related=("resume", "title"),
     ),
     _c(
         "title",

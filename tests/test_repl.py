@@ -1547,6 +1547,52 @@ async def test_resume_picker_attempts_pending_approval(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_sessions_picker_filters_query(tmp_path, monkeypatch):
+    """REPL /sessions [q] filters picker options by title / id prefix."""
+    from types import SimpleNamespace
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    keep = SimpleNamespace(
+        updated_human="now", title="Fix toolbar", thread_id="aaaa1111"
+    )
+    drop = SimpleNamespace(
+        updated_human="now", title="Unrelated", thread_id="bbbb2222"
+    )
+    monkeypatch.setattr(app.controller.sessions, "list", lambda: [keep, drop])
+    seen: list[list] = []
+
+    async def _pick(options, **kwargs):
+        seen.append(options)
+        return None
+
+    monkeypatch.setattr(app, "_pick_menu", _pick)
+
+    await app._resume_picker(query="toolbar")
+
+    assert seen
+    labels = [label for label, _ in seen[0] if _ is not None]
+    assert any("Fix toolbar" in label for label in labels)
+    assert not any("Unrelated" in label for label in labels)
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_sessions_and_resume_open_the_picker(tmp_path, monkeypatch):
+    """REPL /sessions and /resume both open the interactive picker."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    calls: list[str] = []
+
+    async def _picker(query: str = "") -> None:
+        calls.append(query)
+
+    monkeypatch.setattr(app, "_resume_picker", _picker)
+    await app._command("sessions", "toolbar")
+    await app._command("resume", "")
+    assert calls == ["toolbar", ""]
+    app.controller.close()
+
+
+@pytest.mark.asyncio
 async def test_resume_picker_prints_local_recap(tmp_path, monkeypatch):
     """After /resume, scrollback shows the local recap with no model call."""
     import json

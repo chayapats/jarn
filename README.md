@@ -430,8 +430,8 @@ preview appear inline.
 
 Assistant replies render as **Markdown** (headings, lists, syntax-highlighted code).
 
-`/model`, `/mode`, and `/resume` with no argument open an **arrow-key picker**
-(↑/↓ + Enter; Esc cancel). `/model` also offers a custom ref prompt.
+`/model`, `/mode`, and `/sessions` (alias `/resume`) with no argument open an **arrow-key picker**
+(↑/↓ + Enter; Esc cancel). `/model` also offers a custom ref prompt. `/sessions [q]` filters the list.
 
 While a turn is running, submitted lines are **queued** (shown in the toolbar as
 `queue N`); manage them with `/queue`, `/queue clear`, `/queue cancel <n>`, or
@@ -488,9 +488,8 @@ runs as the next turn (never lost). Disable with `ui.steering: false` (hides the
 | `/logout` | Sign out of ChatGPT. |
 | `/doctor` | Diagnose configuration, providers, and keys. |
 | `/tools` | List tools the agent can use this session. |
-| `/resume` | Pick a previous session to resume. |
 | `/rewind` | Rewind to an earlier turn (forks a new thread). |
-| `/sessions` | List previous sessions. |
+| `/sessions [q]` | Pick a previous session, or list them (alias: /resume). |
 | `/title [text]` | Show or set this session's title. |
 | `/checkpoints` | List recent auto-checkpoints. |
 | `/ps [kill <id>]` | List or kill background processes. |
