@@ -169,6 +169,9 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         # 's' promotes the last queued line. Opened briefly on each `» queued` echo so a
         # fresh message starting with 's' typed LATER is never swallowed (T-4-6 / I5).
         self._steer_armed_until: float = 0.0
+        # Interrupt-mode Enter-while-busy: hold drain so a leftover queued line
+        # cannot start between abort's cancelled ``_handle`` finally and the new turn.
+        self._defer_queue_drain = False
         self._resume_task: asyncio.Task | None = None
         self._extensions_task: asyncio.Task[None] | None = None
         self._extensions_started = False
@@ -1011,6 +1014,8 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
 
     def _drain_queue(self) -> None:
         """Start the next queued line as a new turn (mirrors the submit path)."""
+        if self._defer_queue_drain:
+            return
         if not self._busy():
             # A steer the (now-ended) turn never consumed (model finished before a
             # settled boundary) runs as the next normal turn — never lost (spec §3).

@@ -259,10 +259,11 @@ class Controller:
         # drivers are recreated each turn and would reset a per-driver flag).
         self.inline_images_disabled: bool = False
         # T-4-6 mid-turn steering: a single pending-steer slot the REPL writes (via
-        # [s] / /queue steer) and each per-turn SessionDriver pulls at a settled
-        # boundary. Controller-held (not per-driver) so it survives across the
-        # drivers minted per turn/retry; single-shot (cleared on pull) so a steer is
-        # never double-applied across a model-rotation retry.
+        # [s] / /queue steer / Enter-while-busy in steer mode) and each per-turn
+        # SessionDriver pulls at a settled boundary. Controller-held (not per-driver)
+        # so it survives across the drivers minted per turn/retry; single-shot
+        # (cleared on pull) so a steer is never double-applied across a model-rotation
+        # retry.
         self._steer_slot: str | None = None
         # Session-lifetime holder for the last injected date block. Drivers are
         # recreated per turn, so this ONE shared dict is passed to every per-turn
