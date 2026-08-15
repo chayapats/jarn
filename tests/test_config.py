@@ -83,6 +83,28 @@ def test_ui_steering_parsed_false(tmp_path):
     assert cfg.ui.steering is False
 
 
+def test_ui_busy_input_mode_default_queue(tmp_path):
+    cfg = load_config(
+        global_path=tmp_path / "missing-global.yaml",
+        project_path=tmp_path / "missing-project.yaml",
+    )
+    assert cfg.ui.busy_input_mode == "queue"
+
+
+def test_ui_busy_input_mode_parsed(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"ui": {"busy_input_mode": "steer"}})
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.ui.busy_input_mode == "steer"
+
+
+def test_ui_busy_input_mode_rejects_unknown(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"ui": {"busy_input_mode": "yell"}})
+    with pytest.raises(ConfigError, match="ui.busy_input_mode"):
+        load_config(global_path=gp, project_path=None)
+
+
 def test_global_loaded(tmp_path):
     gp = tmp_path / "g.yaml"
     _write(gp, {"default_profile": "anthropic", "permission_mode": "yolo"})

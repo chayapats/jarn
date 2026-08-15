@@ -22,6 +22,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -72,6 +73,17 @@ class BackgroundProc:
         return "\n".join(self.final_tail.splitlines()[-lines:])
 
 
+@dataclass(frozen=True, slots=True)
+class BackgroundExit:
+    """Snapshot published when a job is reaped (safe after tmpdir removal)."""
+
+    id: str
+    command: str
+    exit_code: int | None
+    tail: str
+    killed_reason: str | None = None
+
+
 def _tail(path: Path, lines: int) -> str:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -79,6 +91,26 @@ def _tail(path: Path, lines: int) -> str:
         return ""
     rows = text.splitlines()
     return "\n".join(rows[-lines:])
+
+
+def _one_line_tail(text: str) -> str:
+    """Last non-empty line, collapsed whitespace — for the finish panel."""
+    for line in reversed((text or "").splitlines()):
+        collapsed = " ".join(line.split())
+        if collapsed:
+            return collapsed
+    return ""
+
+
+def _exit_snapshot(proc: BackgroundProc) -> BackgroundExit:
+    raw = proc.final_tail if proc.final_tail is not None else proc.tail(8)
+    return BackgroundExit(
+        id=proc.id,
+        command=proc.command,
+        exit_code=proc.exit_code,
+        tail=_one_line_tail(raw),
+        killed_reason=proc.killed_reason,
+    )
 
 
 def _terminate(popen: subprocess.Popen) -> None:
@@ -124,6 +156,7 @@ class ProcessManager:
         self._interval = interval
         self.max_concurrent: int | None = None
         self.max_lifetime_secs: float | None = None
+        self._exit_listeners: list[Callable[[BackgroundExit], None]] = []
 
     def configure(
         self,
@@ -140,7 +173,35 @@ class ProcessManager:
             else max(0.5, min(5.0, max_lifetime_secs / 4))
         )
 
-    def _prune_exited(self) -> None:
+    def add_exit_listener(self, callback: Callable[[BackgroundExit], None]) -> None:
+        """Call *callback* (off-lock) when a job is reaped."""
+        with self._lock:
+            self._exit_listeners.append(callback)
+
+    def remove_exit_listener(self, callback: Callable[[BackgroundExit], None]) -> None:
+        with self._lock:
+            try:
+                self._exit_listeners.remove(callback)
+            except ValueError:
+                return
+
+    def _notify_exited(self, procs: list[BackgroundProc]) -> None:
+        """Invoke exit listeners outside the registry lock."""
+        if not procs:
+            return
+        with self._lock:
+            listeners = list(self._exit_listeners)
+        if not listeners:
+            return
+        for proc in procs:
+            snap = _exit_snapshot(proc)
+            for callback in listeners:
+                try:
+                    callback(snap)
+                except Exception:  # noqa: BLE001
+                    _log.exception("background exit listener failed for %s", proc.id)
+
+    def _prune_exited(self) -> list[BackgroundProc]:
         """Reap exited children, then retire records that have aged out.
 
         Two distinct jobs that used to be one. *Reaping* frees OS resources (the
@@ -148,8 +209,12 @@ class ProcessManager:
         *Retiring* forgets the job entirely and must not: the record is the only
         way ``check_background`` can report an exit code or a kill reason after
         the fact, so it survives for ``_RETAIN_SECS`` (bounded by ``_RETAIN_MAX``).
+
+        Returns newly reaped procs. Caller must invoke ``_notify_exited`` *after*
+        releasing ``_lock``.
         """
         now = time.monotonic()
+        newly: list[BackgroundProc] = []
         for proc in list(self._procs.values()):
             if proc.finished_at is not None or proc.popen.poll() is None:
                 continue
@@ -159,6 +224,7 @@ class ProcessManager:
             proc.finished_at = now
             # Set last: an observer waking on this must see cleanup completed.
             proc.reaped.set()
+            newly.append(proc)
 
         done = sorted(
             (p for p in self._procs.values() if p.finished_at is not None),
@@ -168,6 +234,7 @@ class ProcessManager:
         retire.update(p.id for p in done[: max(0, len(done) - _RETAIN_MAX)])
         for pid in retire:
             self._procs.pop(pid, None)
+        return newly
 
     def _check_limits(self, proc: BackgroundProc) -> None:
         """Kill *proc* if it has exceeded ``max_lifetime_secs``; set ``killed_reason``."""
@@ -189,8 +256,9 @@ class ProcessManager:
     def _sweep(self) -> None:
         """Reap exited children and enforce lifetime limits."""
         with self._lock:
-            self._prune_exited()
+            newly = self._prune_exited()
             procs = list(self._procs.values())
+        self._notify_exited(newly)
         # Process-group termination can block for its grace period, so it must
         # remain outside the registry lock.
         for proc in procs:
@@ -208,7 +276,10 @@ class ProcessManager:
             self._check_limits(p)
 
         with self._lock:
-            self._prune_exited()
+            newly = self._prune_exited()
+        self._notify_exited(newly)
+
+        with self._lock:
             alive = sum(1 for p in self._procs.values() if p.running())
             if self.max_concurrent is not None and alive >= self.max_concurrent:
                 raise RuntimeError(
@@ -305,6 +376,7 @@ class ProcessManager:
         if monitor is not None and monitor is not threading.current_thread():
             monitor.join(timeout=4.0)
         with self._lock:
+            self._exit_listeners.clear()
             procs = list(self._procs.values())
         for p in procs:
             _terminate(p.popen)

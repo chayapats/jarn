@@ -40,6 +40,15 @@ class KeysMixin:
 
         return expand_mentions(text, project_root=self.controller.project_root)
 
+    def _busy_input_mode(self) -> str:
+        """Session Enter-while-busy mode (queue / steer / interrupt).
+
+        Wired in P4-1. /busy mutates ``controller.busy_input_mode`` only.
+        """
+        return getattr(self.controller, "busy_input_mode", None) or getattr(
+            self.controller.config.ui, "busy_input_mode", "queue"
+        )
+
     def _build_keys(self) -> KeyBindings:
         kb = KeyBindings()
         # Input/editing keys only apply when no overlay is open; while a panel
@@ -117,8 +126,17 @@ class KeysMixin:
                     if self.controller.config.ui.steering:
                         steer_hint = "  ·  [s] steer now"
                         self._steer_armed_until = time.monotonic() + _STEER_ARM_WINDOW_S
+                    queued_display = (
+                        stripped
+                        if "\n" not in stripped
+                        else (
+                            stripped
+                            if layout.is_paste_token(stripped)
+                            else layout.paste_label(expanded)
+                        )
+                    )
                     self.console.print(
-                        layout.steer(stripped, queued=True, hint=steer_hint)
+                        layout.steer(queued_display, queued=True, hint=steer_hint)
                     )
                 else:
                     self.input.reset()
@@ -153,12 +171,9 @@ class KeysMixin:
                     self.console.print(layout.muted("expanding @git mention…"))
             send = self._expand_mentions(send)
             self._pastes.clear()
-            if stripped.startswith("!"):
-                # Host shell escape — echo in red with a clear marker so it's
-                # obvious this ran outside the agent (no approval).
-                self.console.print(layout.host_shell(stripped[1:].strip()))
-            else:
-                self.console.print(layout.prompt(stripped))
+            # Multiline paste / paste-token: one dim preview line in scrollback.
+            # Host-direct ``!`` stays red. The agent still receives ``send``.
+            self.console.print(layout.submitted_echo(stripped, send))
             # Real user input starts a fresh turn-chain: reset the diagnostics
             # auto-fix round counter (T-3-3 loop guard).
             self.controller._diag_chain_round = 0

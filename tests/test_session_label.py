@@ -78,6 +78,33 @@ def test_cmd_sessions_uses_session_label_and_current_marker() -> None:
     assert "gpt-4" in text
 
 
+def test_cmd_sessions_filters_by_query() -> None:
+    toolbar = SessionInfo(
+        thread_id="aaaaaaaa",
+        title="Fix toolbar",
+        updated_at=0.0,
+        state="complete",
+    )
+    other = SessionInfo(
+        thread_id="bbbbbbbb",
+        title="Unrelated work",
+        updated_at=0.0,
+        state="complete",
+    )
+    ctrl = SimpleNamespace(
+        sessions=SimpleNamespace(list=lambda: [toolbar, other]),
+        thread_id="aaaaaaaa",
+    )
+    text = cmd_sessions(ctrl, "toolbar").text
+    assert "Fix toolbar" in text
+    assert "Unrelated work" not in text
+    prefix = cmd_sessions(ctrl, "bbbb").text
+    assert "Unrelated work" in prefix
+    assert "Fix toolbar" not in prefix
+    empty = cmd_sessions(ctrl, "nope").text
+    assert "No sessions matching" in empty
+
+
 def test_cmd_sessions_escapes_markup_in_title_once() -> None:
     session = SessionInfo(
         thread_id="abcdefghij",

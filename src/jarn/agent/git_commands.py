@@ -108,6 +108,15 @@ def gather_diff(root: Path) -> GitDiff:
     )
 
 
+def diff_for_paths(root: Path, paths: list[str]) -> str:
+    """``git diff HEAD -- paths`` (staged + unstaged) for session files."""
+    cleaned = [p.strip() for p in paths if p and str(p).strip()]
+    if not cleaned:
+        return ""
+    _, out, _ = _run_git(root, "diff", "HEAD", "--", *cleaned)
+    return out
+
+
 def _clip(text: str) -> str:
     if len(text) <= _MAX_DIFF_CHARS:
         return text

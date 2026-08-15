@@ -143,3 +143,39 @@ def test_status_recap_omits_response_bucket(tmp_path, monkeypatch, base_config) 
     assert "(response)" not in text
     assert "Calls" in text
     ctrl.close()
+
+
+def test_resume_recap_reuses_status_scan_without_model(
+    tmp_path, monkeypatch, base_config
+) -> None:
+    """Resume recap is local: directory/model/mode + last-turn, no LLM."""
+    from jarn.controller.commands.diagnostics import format_resume_recap
+
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    transcript = ctrl.sessions.transcript_path(ctrl.thread_id)
+    _write_jsonl(
+        transcript,
+        [
+            {"ts": 1.0, "type": "user", "text": "Fix the flaky toolbar test"},
+            {
+                "ts": 2.0,
+                "type": "tool",
+                "name": "write_file",
+                "args": {"file_path": "src/jarn/tui/toolbar.py"},
+            },
+            {"ts": 3.0, "type": "assistant", "text": "Patched the priority sort"},
+        ],
+    )
+    assert ctrl.runtime is None
+    text = format_resume_recap(ctrl)
+    assert "Resumed" in text
+    assert "Directory" in text
+    assert str(ctrl.project_root) in text
+    assert "Model" in text
+    assert "Permissions" in text
+    assert "Last you" in text
+    assert "Fix the flaky toolbar test" in text
+    assert "Last J.A.R.N." in text
+    assert "Patched the priority sort" in text
+    assert ctrl.runtime is None
+    ctrl.close()

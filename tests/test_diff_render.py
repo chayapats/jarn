@@ -90,3 +90,94 @@ def test_rich_markup_in_content_not_interpreted():
     # Content must appear verbatim — brackets must not be consumed as markup
     assert "[bold]" in text.plain
     assert "[italic]" in text.plain
+
+
+def test_colorize_unified_diff_reuses_line_colors():
+    from jarn.tui.widgets.diff import colorize_unified_diff
+
+    raw = "\n".join(
+        [
+            "diff --git a/x b/x",
+            "--- a/x",
+            "+++ b/x",
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+        ]
+    )
+    text = colorize_unified_diff(raw)
+    assert "old" in text.plain
+    assert "new" in text.plain
+    generated = unified_diff_text("old", "new", filename="x")
+    colored = colorize_unified_diff(generated.plain)
+    assert "old" in colored.plain and "new" in colored.plain
+
+
+def _git_repo(root):
+    import subprocess
+
+    def g(*args):
+        subprocess.run(["git", *args], cwd=root, capture_output=True, check=True)
+
+    root.mkdir(parents=True, exist_ok=True)
+    g("init", "-b", "main")
+    g("config", "user.email", "test@jarn.test")
+    g("config", "user.name", "Jarn Test")
+    (root / "README.txt").write_text("init\n", encoding="utf-8")
+    g("add", "README.txt")
+    g("commit", "-m", "init")
+
+
+def test_cmd_diff_staged_all_and_unknown(tmp_path, monkeypatch, base_config):
+    from jarn.tui.controller import Controller
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    _git_repo(root)
+    (root / ".jarn").mkdir(parents=True)
+    (root / "README.txt").write_text("init\nchanged\n", encoding="utf-8")
+    ctrl = Controller(base_config, root)
+
+    unknown = ctrl.handle_command("diff", "nope")
+    assert "Usage:" in unknown.text
+
+    working = ctrl.handle_command("diff", "all")
+    assert "changed" in working.text or "+" in working.text
+
+    import subprocess
+
+    subprocess.run(["git", "add", "README.txt"], cwd=root, capture_output=True, check=True)
+    staged = ctrl.handle_command("diff", "")
+    assert "changed" in staged.text or "+" in staged.text
+    explicit = ctrl.handle_command("diff", "staged")
+    assert "changed" in explicit.text or "+" in explicit.text
+    ctrl.close()
+
+
+def test_cmd_diff_session_uses_recap_files(tmp_path, monkeypatch, base_config):
+    import json
+
+    from jarn.tui.controller import Controller
+
+    monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    root = tmp_path / "proj"
+    _git_repo(root)
+    (root / ".jarn").mkdir(parents=True)
+    (root / "README.txt").write_text("init\nsession-edit\n", encoding="utf-8")
+    ctrl = Controller(base_config, root)
+    path = ctrl.sessions.transcript_path(ctrl.thread_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "type": "tool",
+                "name": "write_file",
+                "args": {"file_path": "README.txt"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    text = ctrl.handle_command("diff", "session").text
+    assert "session-edit" in text or "README.txt" in text
+    ctrl.close()

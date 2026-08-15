@@ -430,8 +430,8 @@ preview appear inline.
 
 Assistant replies render as **Markdown** (headings, lists, syntax-highlighted code).
 
-`/model`, `/mode`, and `/resume` with no argument open an **arrow-key picker**
-(↑/↓ + Enter; Esc cancel). `/model` also offers a custom ref prompt.
+`/model`, `/mode`, and `/sessions` (alias `/resume`) with no argument open an **arrow-key picker**
+(↑/↓ + Enter; Esc cancel). `/model` also offers a custom ref prompt. `/sessions [q]` filters the list.
 
 While a turn is running, submitted lines are **queued** (shown in the toolbar as
 `queue N`); manage them with `/queue`, `/queue clear`, `/queue cancel <n>`, or
@@ -468,6 +468,7 @@ runs as the next turn (never lost). Disable with `ui.steering: false` (hides the
 | `/abort` | Stop this turn and roll back its file changes. |
 | `/commit` | Draft a commit from the current diff (asks first). |
 | `/review` | Read-only review of the current diff. |
+| `/diff [staged\|all\|session]` | Show a git diff of staged, working-tree, or session files. |
 | `/compact [status]` | Summarize and continue in a fresh thread. |
 | `/expand` | Show the last tool output in full. |
 | `/memory [search\|show\|add\|update\|delete\|dump] …` | List or edit long-term memory. |
@@ -488,13 +489,13 @@ runs as the next turn (never lost). Disable with `ui.steering: false` (hides the
 | `/logout` | Sign out of ChatGPT. |
 | `/doctor` | Diagnose configuration, providers, and keys. |
 | `/tools` | List tools the agent can use this session. |
-| `/resume` | Pick a previous session to resume. |
 | `/rewind` | Rewind to an earlier turn (forks a new thread). |
-| `/sessions` | List previous sessions. |
+| `/sessions [q]` | Pick a previous session, or list them (alias: /resume). |
 | `/title [text]` | Show or set this session's title. |
 | `/checkpoints` | List recent auto-checkpoints. |
 | `/ps [kill <id>]` | List or kill background processes. |
 | `/queue [clear\|cancel <n>\|move <from> <to>\|steer <n>]` | Show or manage queued input lines. |
+| `/busy [interrupt\|queue\|steer\|status]` | Set what Enter does while a turn is running. |
 | `/map [focus] [--refresh]` | Show a map of this repository. |
 | `/wiki [search <q>\|list]` | Search or list wiki pages. |
 | `/quit` | Exit J.A.R.N. (alias: /exit). |

@@ -439,6 +439,9 @@ _VALID_NOTIFY_VALUES: frozenset[str] = frozenset({"off", "bell", "desktop", "bot
 
 _VALID_TOOL_PROGRESS_VALUES: frozenset[str] = frozenset(TOOL_PROGRESS_VALUES)
 
+BUSY_INPUT_MODES: tuple[str, ...] = ("queue", "steer", "interrupt")
+_VALID_BUSY_INPUT_MODES: frozenset[str] = frozenset(BUSY_INPUT_MODES)
+
 _VALID_SHOW_REASONING_VALUES: frozenset[str] = frozenset(SHOW_REASONING_VALUES)
 
 
@@ -473,6 +476,9 @@ class UIConfig:
     wrap_at: int = WRAP_AT
     #: How much tool activity to print: off | new | all | verbose.
     tool_progress: str = "new"
+    #: Enter-while-busy: queue | steer | interrupt. Session overlay via /busy;
+    #: persist with /config set ui.busy_input_mode.
+    busy_input_mode: str = "queue"
     #: How thinking/reasoning is shown: collapsed | full | off.
     show_reasoning: str = "collapsed"
     #: Draw the bottom status bar.

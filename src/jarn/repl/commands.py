@@ -7,8 +7,6 @@ import asyncio
 import time
 from pathlib import Path
 
-from rich.markdown import Markdown
-
 from jarn.agent.checkpoint import RestorePreview
 from jarn.agent.local_backend import CancellableLocalShellBackend
 from jarn.commands.help import usage_error
@@ -80,8 +78,18 @@ class CommandMixin:
         if name == "expand":  # same as Ctrl+O — reliable even if the key is eaten
             self._open_pager()
             return
-        if name == "resume":
-            await self._resume_picker()
+        if name in ("resume", "sessions"):
+            await self._resume_picker(query=args.strip())
+            return
+        if name == "diff":
+            result = self.controller.handle_command("diff", args)
+            raw = result.text
+            if raw.startswith(("diff ", "--- ", "+++ ")) or "\n@@" in raw:
+                from jarn.tui.widgets.diff import colorize_unified_diff
+
+                c.print(colorize_unified_diff(raw))
+            else:
+                c.print(raw, highlight=False)
             return
         if name == "rewind":
             await self._rewind_picker()
@@ -381,12 +389,16 @@ class CommandMixin:
 
     # -- resume -------------------------------------------------------------
 
-    async def _resume_picker(self) -> None:
+    async def _resume_picker(self, query: str = "") -> None:
+        from jarn.controller.commands.session import filter_sessions
         from jarn.memory.sessions import SessionInfo, session_label
 
-        sessions = self.controller.sessions.list()
+        sessions = filter_sessions(self.controller.sessions.list(), query)
         if not sessions:
-            self.console.print(layout.muted("No previous sessions."))
+            if query:
+                self.console.print(layout.muted(f"No sessions matching {query!r}."))
+            else:
+                self.console.print(layout.muted("No previous sessions."))
             return
         options: list[tuple[str, SessionInfo | None]] = [
             (session_label(s), s)
@@ -403,6 +415,9 @@ class CommandMixin:
         self.controller.resume_thread(chosen.thread_id)
         self._last_todos_sig = None
         await self._replay_transcript()
+        from jarn.controller.commands.diagnostics import format_resume_recap
+
+        self.console.print(format_resume_recap(self.controller), highlight=False)
         # A selected thread may be parked on a checkpointed approval from a
         # cancelled or crashed process. Ask for the verdict immediately and
         # resume with a Command; ``pending_only`` is a no-op for settled threads,
@@ -768,7 +783,7 @@ class CommandMixin:
         if mtype == "human" and text:
             self.console.print(layout.prompt(text))
         elif mtype == "ai" and text:
-            self.console.print(Markdown(text, code_theme=palette.CODE_THEME))
+            layout.print_assistant_markdown(self.console, text)
         elif mtype == "tool" and text:
             first = text.splitlines()[0] if text else ""
             self.console.print(layout.tool_result(first[:80]))

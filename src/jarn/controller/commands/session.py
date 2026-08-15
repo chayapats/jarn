@@ -14,11 +14,30 @@ if TYPE_CHECKING:
     from jarn.controller.core import Controller
 
 
+def filter_sessions(sessions: list, query: str) -> list:
+    """Filter by ``session_label``, title, or thread-id prefix. Empty query = all."""
+    q = (query or "").strip().lower()
+    if not q:
+        return list(sessions)
+    matched = []
+    for session in sessions:
+        label = session_label(session).lower()
+        title = (getattr(session, "title", None) or "").lower()
+        thread_id = str(getattr(session, "thread_id", "")).lower()
+        if q in label or q in title or thread_id.startswith(q):
+            matched.append(session)
+    return matched
+
+
 def cmd_sessions(ctrl: Controller, args: str) -> CommandResult:
-    sessions = ctrl.sessions.list()
+    query = args.strip()
+    sessions = filter_sessions(ctrl.sessions.list(), query)
     if not sessions:
+        if query:
+            return CommandResult(f"No sessions matching {query!r}.")
         return CommandResult("No previous sessions.")
-    lines = [layout.heading("Recent sessions", "use /resume to pick one")]
+    hint = f"filter: {query}" if query else "filter: /sessions [q]"
+    lines = [layout.heading("Recent sessions", hint)]
     for s in sessions:
         marker = "→ " if s.thread_id == ctrl.thread_id else "  "
         project = f"  {layout.muted(s.project_root)}" if s.project_root else ""

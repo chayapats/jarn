@@ -784,6 +784,7 @@ class UIConfigModel(_StrictModel):
     steering: bool = True
     wrap_at: int = 120
     tool_progress: str = "new"
+    busy_input_mode: str = "queue"
     show_reasoning: str = "collapsed"
     statusbar: bool = True
     context_bar: bool = True
@@ -859,6 +860,18 @@ class UIConfigModel(_StrictModel):
         if raw not in _VALID_TOOL_PROGRESS_VALUES:
             raise ConfigValidationError(
                 f"ui.tool_progress must be one of {sorted(_VALID_TOOL_PROGRESS_VALUES)} (got {raw!r})."
+            )
+        return raw
+
+    @field_validator("busy_input_mode", mode="before")
+    @classmethod
+    def _busy_input_mode(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_BUSY_INPUT_MODES
+
+        raw = str(value)
+        if raw not in _VALID_BUSY_INPUT_MODES:
+            raise ConfigValidationError(
+                f"ui.busy_input_mode must be one of {sorted(_VALID_BUSY_INPUT_MODES)} (got {raw!r})."
             )
         return raw
 
@@ -1434,6 +1447,7 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             steering=model.ui.steering,
             wrap_at=model.ui.wrap_at,
             tool_progress=model.ui.tool_progress,
+            busy_input_mode=model.ui.busy_input_mode,
             show_reasoning=model.ui.show_reasoning,
             statusbar=model.ui.statusbar,
             context_bar=model.ui.context_bar,

@@ -78,4 +78,46 @@ async def test_placeholder_format(tmp_path, base_config):
     expanded = app._expand_pastes(token)
     assert expanded == content, "expand_pastes did not restore original content"
 
+    # Submitted echo is one dim preview line — not layout.prompt of the wall.
+    from jarn.tui import layout, palette
+
+    echo = layout.submitted_echo(token.strip(), expanded)
+    assert "\n" not in echo
+    assert "Pasted text" in echo
+    assert palette.C_DIM in echo
+    assert "line 1" not in echo
+    assert "line 12" not in echo
+    # Agent payload is still the full paste.
+    assert "line 1" in expanded and "line 12" in expanded
+
     app.controller.close()
+
+
+def test_submitted_echo_multiline_without_token_is_one_line():
+    """A 2-line paste (below the collapse threshold) still echos as one dim line."""
+    from jarn.tui import layout, palette
+
+    expanded = "first line\nsecond line"
+    echo = layout.submitted_echo(expanded, expanded)
+    assert "\n" not in echo
+    assert echo.count("[Pasted text") == 1
+    assert "+2 lines" in echo
+    assert palette.C_DIM in echo
+    assert "first line" not in echo
+
+
+def test_submitted_echo_single_line_stays_prompt():
+    from jarn.tui import grammar, layout, palette
+
+    echo = layout.submitted_echo("hello", "hello")
+    assert echo == layout.prompt("hello")
+    assert grammar.GLYPH_PROMPT in echo
+    assert palette.C_USER in echo
+
+
+def test_submitted_echo_host_direct_stays_red():
+    from jarn.tui import layout, palette
+
+    echo = layout.submitted_echo("! ls -la", "! ls -la")
+    assert echo == layout.host_shell("ls -la")
+    assert palette.C_ERROR in echo

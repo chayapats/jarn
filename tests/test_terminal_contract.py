@@ -95,6 +95,13 @@ def test_term_dumb_disables_rich_and_prompt_toolkit_color(
     assert "\x1b[" not in rendered
     assert "\x1b[" not in dimmed
     assert "plain" in rendered
+    assert "**" not in rendered
+
+    fenced = app._render_stream_md("say **bold**\n\n```\nkeep **stars**\n```\n- list item")
+    assert "**bold**" not in fenced
+    assert "keep **stars**" in fenced
+    # Rich still renders lists (dash becomes a bullet); the item text must remain.
+    assert "list item" in fenced
 
 
 @pytest.mark.asyncio

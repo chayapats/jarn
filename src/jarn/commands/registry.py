@@ -209,7 +209,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "review",
         "Read-only review of the current diff.",
         "ui",
-        related=("commit",),
+        related=("commit", "diff"),
+    ),
+    _c(
+        "diff",
+        "Show a git diff of staged, working-tree, or session files.",
+        "core",
+        usage="[staged|all|session]",
+        examples=("/diff", "/diff staged", "/diff session"),
+        related=("commit", "review"),
+        blurb="Default: staged if the index is dirty, otherwise the working tree. "
+        "`session` limits to files this thread edited.",
     ),
     _c(
         "compact",
@@ -386,10 +396,23 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         related=("mcp", "permissions"),
     ),
     _c(
-        "resume",
-        "Pick a previous session to resume.",
-        "ui",
+        "sessions",
+        "Pick a previous session, or list them (alias: /resume).",
+        "core",
         group="Session",
+        usage="[q]",
+        aliases=("resume",),
+        related=("title", "rewind"),
+        blurb="In the REPL, opens the session picker. Pass a query to filter "
+        "by title or id. Non-TTY callers get a text list.",
+    ),
+    _c(
+        "resume",
+        "Pick a previous session to resume (alias for /sessions).",
+        "core",
+        group="Session",
+        alias_of="sessions",
+        index=False,
         related=("sessions", "title"),
     ),
     _c(
@@ -400,13 +423,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         related=("undo", "sessions"),
         blurb="Fork to an earlier turn and continue. Optionally restore files "
         "to that turn's checkpoint too.",
-    ),
-    _c(
-        "sessions",
-        "List previous sessions.",
-        "core",
-        group="Session",
-        related=("resume", "title"),
     ),
     _c(
         "title",
@@ -439,7 +455,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         group="Session",
         usage="[clear|cancel <n>|move <from> <to>|steer <n>]",
         index_usage="[subcommand]",
-        related=("abort",),
+        related=("abort", "busy"),
+    ),
+    _c(
+        "busy",
+        "Set what Enter does while a turn is running.",
+        "both",
+        group="Session",
+        usage="[interrupt|queue|steer|status]",
+        examples=("/busy", "/busy steer", "/busy status"),
+        related=("queue", "verbose"),
+        blurb="Session-only. queue (default) holds the line until the turn "
+        "ends. steer injects via the existing steer slot (needs ui.steering). "
+        "interrupt aborts then runs the line. Persist with "
+        "/config set ui.busy_input_mode.",
     ),
     _c(
         "map",
