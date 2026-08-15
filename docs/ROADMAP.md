@@ -1,8 +1,9 @@
 # Roadmap
 
 > **Audience:** users curious about what is shipped versus planned, and contributors
-> choosing where to contribute. Items marked `[x]` are implemented and in the
-> current release; `[ ]` items are scaffolded or documented but not yet shipped.
+> choosing where to contribute. Items marked `[x]` are implemented. Hermes
+> display-parity close-out `[x]` rows are on `feat/hermes-parity-closeout`, not
+> a GitHub Release. `[ ]` items are scaffolded or documented but not yet shipped.
 
 Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-15** (this source line
 targets v1.0.9 GA; consult the release and package registries for publication status).
@@ -214,26 +215,48 @@ spacing — matching the clarity of Hermes Agent without copying its branding.
 - [x] **Wave K** — Telegram command layers (readonly pages ∪ session chrome)
 
 Wave F polish (`/diff`, `/busy`, paste preview, `/sessions` picker, compact-count,
-resume recap, background finish panel) did **not** fully land; remaining items
-are in the close-out below. P1–P5 of that close-out are **not** done.
+resume recap, background finish panel) did **not** fully land in #92. Remaining
+items are the close-out below.
 
-## Planned — Hermes display-parity close-out
+## Hermes display-parity close-out (2026-08-15)
 
-SSOT for remaining CLI + Telegram muscle memory:
+SSOT:
 [2026-08-15-hermes-parity-closeout.md](specs/2026-08-15-hermes-parity-closeout.md).
-Identity stays cyan/teal. Host-direct `!` stays red. Do not treat the rows
-below as shipped.
+Identity stays cyan/teal. Host-direct `!` stays red.
 
-- [ ] **P1 — CLI remaining** — paste preview, resume recap, toolbar compact-count
-  + title, `/sessions` picker, `/diff`, `/busy`, markdown-light on `NO_COLOR`,
-  background finish panel
-- [ ] **P2 — Telegram live turn** — opt-in `/verbose` progress bubble (default
+**Merged on `feat/hermes-parity-closeout`.** Not a GitHub Release. `[x]` here
+means the phase is in this branch, not that it is in the current published
+package on main.
+
+- [x] **P0 — Contract** — A–K marked landed; remaining work pointed here
+  ([#93](https://github.com/chayapats/jarn/pull/93))
+- [x] **P1 — CLI remaining** — paste preview, resume recap, toolbar
+  compact-count + title, `/sessions` picker, `/diff`, `/busy`, markdown-light
+  on `NO_COLOR`, background finish panel
+  ([#96](https://github.com/chayapats/jarn/pull/96))
+- [x] **P4-1 — CLI Enter-while-busy** — Enter follows session `/busy` mode
+  (queue / steer / interrupt); still one `InputQueue`
+  ([#97](https://github.com/chayapats/jarn/pull/97), onto P1)
+- [x] **P2 — Telegram live turn** — opt-in `/verbose` progress bubble (default
   stays quiet), working heartbeat, cleanup delete
-- [ ] **P3 — Telegram commands** — local `/model` `/mode` `/compact` `/undo`
+  ([#94](https://github.com/chayapats/jarn/pull/94))
+- [x] **P3 — Telegram commands** — local `/model` `/mode` `/compact` `/undo`
   `/sessions` `/resume <id>`; mutating names refused with a terminal hint
-- [ ] **P4 — Shared busy UX** — CLI `/busy` wraps queue/steer; Telegram second
-  text steers or queues (no second in-flight turn)
-- [ ] **P5 — Evidence** — UAT, mockups, config docs, parity checklist, changelog
+  ([#95](https://github.com/chayapats/jarn/pull/95), onto P2)
+- [x] **P4 — Telegram busy UX** — second DM steers (default) or queues; short
+  `Working…` ack; never a second in-flight turn
+  ([#98](https://github.com/chayapats/jarn/pull/98), onto P3)
+- [x] **P5 — Evidence** — UAT checklists, text mockups, config keys, parity
+  table, changelog. Live terminal/bot rows **Not run**. No `demo.gif` (`vhs`
+  not installed). No git tag.
+  ([#99](https://github.com/chayapats/jarn/pull/99))
+
+UAT: [UAT-HERMES-PARITY.md](assets/UAT-HERMES-PARITY.md).
+
+Optional / skipped (not blockers):
+
+- P4-4 `/background` — **Deferred** — `/ps` sufficient ([#98](https://github.com/chayapats/jarn/pull/98))
+- P4-5 Ctrl+S input stash — skipped
 
 ### Frozen non-goals (this close-out)
 

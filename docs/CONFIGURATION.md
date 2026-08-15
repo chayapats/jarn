@@ -560,6 +560,9 @@ ui:
                            # next turn (never lost). Set false to hide the [s]
                            # affordance and make /queue steer decline politely.
   wrap_at: 120             # wrap assistant markdown at this column (0 = terminal width)
+  busy_input_mode: queue   # queue | steer | interrupt — Enter while a CLI turn
+                           # is running. `/busy` is session-only; persist with
+                           # `/config set ui.busy_input_mode`.
   busy_ack_detail: false   # extra queued/steering paragraph on the short Working… ack
   tool_progress: new       # off | new | all | verbose — how much tool activity to print.
                            # `/verbose` cycles this for the session only; persist with
