@@ -8,6 +8,14 @@ unchanged and cannot be controlled through Telegram.
 For design decisions and acceptance scope, see
 [TELEGRAM_GATEWAY_PLAN.md](TELEGRAM_GATEWAY_PLAN.md) and
 [TELEGRAM_GATEWAY_PARITY.md](TELEGRAM_GATEWAY_PARITY.md).
+v1.1 display-parity (quiet default, opt-in `/verbose` bubble, local command
+layers, mutating refuse, second-DM steer) is **Implemented** on the stacked
+draft PRs listed in that checklist
+([#94](https://github.com/chayapats/jarn/pull/94),
+[#95](https://github.com/chayapats/jarn/pull/95),
+[#98](https://github.com/chayapats/jarn/pull/98)). Those PRs are **not**
+merged into this base and are **not** a GitHub Release. v1 still refuses
+voice notes, stays DM-only, and never grants remote ALWAYS.
 
 ## Install and configure
 

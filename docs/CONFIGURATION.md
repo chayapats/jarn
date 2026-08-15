@@ -560,6 +560,16 @@ ui:
                            # next turn (never lost). Set false to hide the [s]
                            # affordance and make /queue steer decline politely.
   wrap_at: 120             # wrap assistant markdown at this column (0 = terminal width)
+  # Hermes-parity close-out keys (P1 / P4). They are **not** in this base's
+  # Python — they ship in draft PRs #96 (P1 schema), #97 (P4-1 Enter wiring),
+  # and #98 (P4 Telegram ack). Schema + pydantic + defaults + SETTINGS land
+  # with those PRs. Documented here so operators can set them once the stack
+  # merges.
+  busy_input_mode: queue   # queue | steer | interrupt — Enter while a CLI turn
+                           # is running (P1-6 / P4-1). `/busy` is session-only;
+                           # persist with `/config set ui.busy_input_mode`.
+  busy_ack_detail: false   # extra queued/steering paragraph on the short
+                           # Working… ack (P4-3). Default off.
   tool_progress: new       # off | new | all | verbose — how much tool activity to print.
                            # `/verbose` cycles this for the session only; persist with
                            # `/config set ui.tool_progress`.
@@ -1007,6 +1017,15 @@ gateway:
   telegram:
     token: ${JARN_TELEGRAM_BOT_TOKEN}   # or keychain:/file:
     allowed_user_ids: [123456789]      # DM auth allowlist
+    # Close-out overlays (not in this base's Python). Ship in draft PRs
+    # #94 (P2) and #98 (P4). Unset/off tool_progress must **not** inherit
+    # CLI ui.tool_progress: new. Telegram busy_input_mode must **not**
+    # inherit CLI ui.busy_input_mode: queue.
+    tool_progress: off                 # off | new | all | verbose (P2-6)
+    tool_progress_cleanup: delete      # delete | keep (P2-5)
+    long_running_notifications: true   # Working — N min (P2-4)
+    busy_input_mode: steer             # steer | queue (P4-2)
+    busy_ack_detail: false             # extra Working… paragraph (P4-3)
   repos:                                # /repo allowlist
     - path: /srv/repos/myapp
       name: myapp
@@ -1022,6 +1041,11 @@ allowed user id. `/repo` can select only entries in `gateway.repos`.
 | `gateway.enabled` | bool | `false` | Enable the gateway daemon |
 | `gateway.telegram.token` | str | `""` | Bot token secret reference |
 | `gateway.telegram.allowed_user_ids` | list[int] | `[]` | Allowed Telegram user ids |
+| `gateway.telegram.tool_progress` | enum | `off` | Chat overlay (`off`, `new`, `all`, `verbose`). Unset/off stays quiet and does **not** inherit `ui.tool_progress`. `/verbose` is session-only. Ships in [#94](https://github.com/chayapats/jarn/pull/94) |
+| `gateway.telegram.tool_progress_cleanup` | enum | `delete` | After finalize: `delete` the progress bubble or `keep` it. Ships in [#94](https://github.com/chayapats/jarn/pull/94) |
+| `gateway.telegram.long_running_notifications` | bool | `true` | Show `Working — N min` after a quiet interval (~3 min) while a turn is in flight. Independent of draft keepalive. Ships in [#94](https://github.com/chayapats/jarn/pull/94) |
+| `gateway.telegram.busy_input_mode` | enum | `steer` | Second DM while a turn is in flight: `steer` (default) or `queue`. Does **not** inherit CLI `ui.busy_input_mode`. Ships in [#98](https://github.com/chayapats/jarn/pull/98) |
+| `gateway.telegram.busy_ack_detail` | bool | `false` | Extra queued/steering paragraph on the short `Working…` ack. Ships in [#98](https://github.com/chayapats/jarn/pull/98) |
 | `gateway.repos` | list | `[]` | `{path, name?}` allowlist for `/repo` |
 
 Non-empty environment values override the corresponding config fields:

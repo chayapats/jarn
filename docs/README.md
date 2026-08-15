@@ -25,10 +25,11 @@ package-manager/source installs are advanced alternatives.
 | [ROADMAP.md](ROADMAP.md) | Everyone | what is in the v1.0.9 candidate, what is planned, and known limitations |
 | [Hermes-aligned display standard](specs/2026-08-15-hermes-aligned-display-standard.md) | Contributors | Visual grammar SSOT: palette, layout helpers, `/help`, toolbar fill bar, quiet tool stream |
 | [Hermes display-parity close-out](specs/2026-08-15-hermes-parity-closeout.md) | Contributors | Remaining CLI + Telegram work until display/commands match Hermes scanability |
+| [Hermes-parity UAT](assets/UAT-HERMES-PARITY.md) | Contributors | P5 CLI + Telegram checklists (Covered / Not run; no Pass) |
 | [OPEN_CORE.md](OPEN_CORE.md) | Everyone | Licensing (Apache-2.0) and the intended open-core business model — plans only, nothing commercial is shipped |
 | [WEB_UI.md](WEB_UI.md) | Contributors | Design notes for a future Web UI — **not built yet**; included so the core stays Web-UI-ready |
 | [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md) | Operators · Contributors | v0.10 setup, global config, security model, systemd deployment, and second-poller stand-down |
-| [TELEGRAM_GATEWAY_PARITY.md](TELEGRAM_GATEWAY_PARITY.md) | Contributors | Shipped v1 acceptance record vs map #26 (Implemented · Deferred) |
+| [TELEGRAM_GATEWAY_PARITY.md](TELEGRAM_GATEWAY_PARITY.md) | Contributors | Shipped v1 + v1.1 display-parity vs map #26 (Implemented · Deferred) |
 | [TELEGRAM_GATEWAY_PLAN.md](TELEGRAM_GATEWAY_PLAN.md) | Contributors | Historical gateway decisions and completed task breakdown (#44) |
 
 ## Where to start

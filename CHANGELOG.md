@@ -5,6 +5,17 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+Hermes display-parity close-out (P1–P4 user-visible behavior) lives on a
+**stack of draft PRs**, not in this base and not as a GitHub Release:
+[#96](https://github.com/chayapats/jarn/pull/96) (P1),
+[#97](https://github.com/chayapats/jarn/pull/97) (P4-1 CLI Enter),
+[#94](https://github.com/chayapats/jarn/pull/94) (P2),
+[#95](https://github.com/chayapats/jarn/pull/95) (P3),
+[#98](https://github.com/chayapats/jarn/pull/98) (P4 Telegram).
+P5 evidence (UAT, mockups, these notes) is this docs PR. Advertised pytest
+collection count syncs when the stack is merged — branches disagree, so no
+single number is claimed here.
+
 ### Fixed
 
 - Treat host-absolute paths as valid when encoding systemd
@@ -37,13 +48,46 @@ All notable changes to J.A.R.N. are documented here. Format follows
 - Quieter default tool stream (`ui.tool_progress: new`). `/verbose` cycles
   density for the session; `/focus` hides tool chrome. The toolbar shows a
   context fill bar and session timer; YOLO stays sticky on narrow widths.
+- CLI `/sessions` is the interactive picker; `/resume` aliases it. Telegram
+  still gets a text list. `/sessions [q]` filters. After resume/continue, a
+  local `/status`-style recap prints (no model call).
+- Multiline paste still uses `[Pasted text #N +L lines]` in the input
+  buffer; submitted scrollback echo is one dim preview line. The agent still
+  receives the full text. Host-direct `!` stays red.
+- Toolbar drop order among named pieces is YOLO > model > bar > title.
+  Compact-count (from `compact_apply`) and session title show on a wide bar.
+- Telegram default turn stays quiet (#40 draft → finalize). `/verbose` (or
+  an explicit `gateway.telegram.tool_progress` overlay) shows one edited
+  HTML progress bubble that is deleted when the answer lands. Overlay unset
+  does not inherit CLI `ui.tool_progress: new`.
+- A second Telegram DM while a turn is in flight steers by default
+  (`gateway.telegram.busy_input_mode: steer`, does not inherit CLI queue) or
+  queues; never a second in-flight agent turn. Short `Working…` busy ack;
+  `ui.busy_ack_detail` / `gateway.telegram.busy_ack_detail` default off.
+- CLI Enter-while-busy follows session `/busy` mode: `queue` (default),
+  `steer`, or `interrupt`. `/busy` itself is session-only; persist with
+  `/config set ui.busy_input_mode`.
 
 ### Added
 
+- `/diff [staged|all|session]` and `/busy [interrupt|queue|steer|status]`.
+- Background-job finish panel in CLI scrollback (id, exit code, one-line
+  tail, `/ps` hint).
+- Dumb/`NO_COLOR` markdown-light: leaked `**` / `__` wrappers stripped
+  outside fences; TTY Rich markdown unchanged.
+- Telegram local `/model` `/mode` `/compact` `/undo` `/redo` `/sessions`
+  `/resume <id>` `/title` `/skill`. Trusted YOLO escalate is still a card.
+  Mutating names such as `/config set` are refused with a terminal / `jarn`
+  CLI hint (never an agent prompt). `/reset` aliases `/new`.
+- Quiet long Telegram turn: `Working — N min` after ~3 quiet minutes
+  (`gateway.telegram.long_running_notifications`, default true).
 - `/context`, `/tools`, `/title`, `/usage` (alias of `/cost`), and case-insensitive
   slash names. Skills can be invoked as `/skill-name`. New `ui.wrap_at`,
   `ui.tool_progress`, `ui.show_reasoning`, `ui.statusbar`, and `ui.context_bar`
-  settings.
+  settings. Close-out keys (draft PRs, not this base): `ui.busy_input_mode`,
+  `ui.busy_ack_detail`, `gateway.telegram.tool_progress`,
+  `tool_progress_cleanup`, `long_running_notifications`,
+  `gateway.telegram.busy_input_mode` (default `steer`).
 
 ## [1.0.9] - 2026-08-14
 
