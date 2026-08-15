@@ -37,6 +37,7 @@ from jarn.install_state import (
     default_manifest_path,
     load_actionable_install_record,
 )
+from jarn.tui import layout
 from jarn.util.atomic import atomic_write_text, file_lock
 from jarn.util.process_env import external_command_env
 from jarn.version import __version__
@@ -711,13 +712,22 @@ def _ownership_action(ownership: InstallOwnership, target: str) -> tuple[bool, s
 
 
 def _emit_preview(preview: UpdatePreview) -> None:
-    print("Update preview (no changes yet)")
-    print(f"  Version: {preview.current_version} -> {preview.target_version}")
-    print(
-        f"  Installation owner: {preview.ownership.kind} "
-        f"({preview.ownership.method}; {preview.ownership.source})"
-    )
-    print(f"  Release: {preview.release.title} ({preview.release.url})")
+    print(layout.title("Update preview (no changes yet)", dialect="plain"))
+    print("  " + layout.field(
+        "Version",
+        f"{preview.current_version} -> {preview.target_version}",
+        dialect="plain",
+    ))
+    print("  " + layout.field(
+        "Installation owner",
+        f"{preview.ownership.kind} ({preview.ownership.method}; {preview.ownership.source})",
+        dialect="plain",
+    ))
+    print("  " + layout.field(
+        "Release",
+        f"{preview.release.title} ({preview.release.url})",
+        dialect="plain",
+    ))
     if preview.release.notes:
         print("  Release notes:")
         for line in preview.release.notes.splitlines():
@@ -729,16 +739,22 @@ def _emit_preview(preview: UpdatePreview) -> None:
         for item in preview.release.breaking_changes:
             print(f"    - {item}")
     else:
-        print("  Breaking changes: none declared in the release metadata")
+        print("  " + layout.field("Breaking changes", "none declared in the release metadata", dialect="plain"))
     config = preview.config
-    print(
-        f"  Config: schema {config.source_version if config.source_version is not None else 'n/a'} "
-        f"-> {config.target_version} ({config.status})"
-    )
+    print("  " + layout.field(
+        "Config",
+        f"schema {config.source_version if config.source_version is not None else 'n/a'} "
+        f"-> {config.target_version} ({config.status})",
+        dialect="plain",
+    ))
     for step in config.migration_steps:
         print(f"    - {step}")
     if config.backup_required:
-        print(f"  Config backup before migration: {config.backup_path_pattern}")
+        print("  " + layout.field(
+            "Config backup before migration",
+            str(config.backup_path_pattern),
+            dialect="plain",
+        ))
     if config.recovery_required:
         print("  Config recovery review is required before the new version can use this file")
     print(
@@ -746,7 +762,7 @@ def _emit_preview(preview: UpdatePreview) -> None:
         if preview.rollback_available
         else "  Rollback: updater will retain the current verified executable before activation"
     )
-    print(f"  Action: {preview.action}")
+    print("  " + layout.field("Action", preview.action, dialect="plain"))
 
 
 def run_update(

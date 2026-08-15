@@ -52,7 +52,7 @@ node --test npm/jarn-cli/test/launcher.test.js
 node --test npm/test/build.test.mjs
 ```
 
-Keep README command tables synchronized with the typed `BUILTINS` registry. Update
+Keep README command tables synchronized with `src/jarn/commands/registry.py`. Update
 English/Thai/configuration/security docs when behavior or defaults change. Use
 `jarn doctor` to inspect loaded extensions, context budgets, provider health, and the
 active isolation level.

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from rich.markup import escape as _escape_markup
-
+from jarn.commands.help import usage_error
 from jarn.controller.core import CommandResult
+from jarn.memory.sessions import session_label
+from jarn.tui import layout
 
 if TYPE_CHECKING:
     from jarn.agent.checkpoint import RestorePreview
@@ -17,15 +18,15 @@ def cmd_sessions(ctrl: Controller, args: str) -> CommandResult:
     sessions = ctrl.sessions.list()
     if not sessions:
         return CommandResult("No previous sessions.")
-    lines = ["[b]Recent sessions[/b] [dim](use /resume to pick one)[/dim]"]
+    lines = [layout.heading("Recent sessions", "use /resume to pick one")]
     for s in sessions:
         marker = "→ " if s.thread_id == ctrl.thread_id else "  "
-        project = f"  [dim]{_escape_markup(s.project_root)}[/dim]" if s.project_root else ""
-        model = f"  [dim]{_escape_markup(s.model)}[/dim]" if s.model else ""
+        project = f"  {layout.muted(s.project_root)}" if s.project_root else ""
+        model = f"  {layout.muted(s.model)}" if s.model else ""
         state = "complete" if s.state == "complete" else "interrupted"
         lines.append(
-            f"{marker}{s.updated_human}  {_escape_markup(s.title)}  "
-            f"[dim]{s.thread_id[:8]} · {state}[/dim]{project}{model}"
+            f"{marker}{layout.escape(session_label(s))}  "
+            f"{layout.muted('· ' + state)}{project}{model}"
         )
     return CommandResult("\n".join(lines))
 
@@ -38,9 +39,7 @@ def cmd_clear(ctrl: Controller, args: str) -> CommandResult:
 def cmd_compact(ctrl: Controller, args: str) -> CommandResult:
     sub = args.strip().lower()
     if sub and sub != "status":
-        return CommandResult(
-            f"Unknown /compact subcommand: {sub!r}. Try /compact status."
-        )
+        return CommandResult(usage_error("compact", extra=f"Unknown /compact subcommand: {sub!r}."))
     ctx = ctrl.config.context
     if ctx.auto_compact:
         summarizer = (
@@ -70,8 +69,16 @@ def cmd_compact(ctrl: Controller, args: str) -> CommandResult:
     else:
         auto = "Auto-compaction is off."
     return CommandResult(
-        auto + " Run /compact to summarize now and continue in a fresh thread, "
-        "or /clear to start fresh without a summary."
+        "\n".join(
+            [
+                layout.heading("Compact"),
+                layout.kv("Status", auto),
+                layout.muted(
+                    "Run /compact to summarize now and continue in a fresh thread, "
+                    "or /clear to start fresh without a summary."
+                ),
+            ]
+        )
     )
 
 
@@ -80,14 +87,14 @@ def format_undo_preview(preview: RestorePreview) -> str:
     count = preview.file_count
     noun = "file" if count == 1 else "files"
     lines = [
-        f"Undo preview — {count} affected {noun}",
-        f"Checkpoint: {_escape_markup(preview.message)}",
+        layout.heading("Undo preview", f"{count} affected {noun}"),
+        layout.kv("Checkpoint", preview.message),
     ]
     if preview.files:
-        lines.append("Affected changes:")
-        lines.extend(f"  {_escape_markup(line)}" for line in preview.files)
+        lines.append(layout.muted("Affected changes:"))
+        lines.extend(f"  {layout.escape(line)}" for line in preview.files)
     else:
-        lines.append("Affected changes: none (the working tree already matches).")
+        lines.append(layout.muted("Affected changes: none (the working tree already matches)."))
     return "\n".join(lines)
 
 

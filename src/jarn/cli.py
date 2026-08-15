@@ -29,6 +29,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Never
 
+from jarn.tui import grammar, layout, palette
 from jarn.util.process_env import external_command_env
 from jarn.version import __version__
 
@@ -57,7 +58,68 @@ class JarnArgumentParser(argparse.ArgumentParser):
             retryable=False,
             action=f"Run `{self.prog} --help`, correct the command, and retry.",
         )
-        self.exit(2, detail.render() + "\n")
+        self.exit(2, detail.render(stream=sys.stderr) + "\n")
+
+    def format_help(self) -> str:
+        """Common commands (epilog) first, then grouped catalog and flags."""
+        formatter = self._get_formatter()
+        formatter.add_usage(self.usage, self._actions, self._mutually_exclusive_groups)
+        formatter.add_text(self.description)
+        formatter.add_text(self.epilog)
+        formatter.add_text(_format_cli_commands(self))
+        skip = {"positional arguments", "Commands"}
+        for action_group in self._action_groups:
+            if action_group.title in skip:
+                continue
+            formatter.start_section(action_group.title)
+            formatter.add_text(action_group.description)
+            formatter.add_arguments(action_group._group_actions)
+            formatter.end_section()
+        formatter.add_text("See `jarn <command> --help` for subcommand flags.")
+        return formatter.format_help()
+
+
+#: Exhaustive CLI subcommand grouping for ``jarn --help``. Help strings stay on
+#: the argparse parsers; this tuple is only membership + scan order.
+_CLI_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Start", ("setup", "init", "exec", "sessions")),
+    ("Account", ("auth", "login", "codex")),
+    ("Install", ("doctor", "config", "update", "rollback", "uninstall")),
+    ("Workspace", ("trust", "trust-hooks", "keys")),
+    ("Gateway", ("gateway",)),
+    ("Support", ("bug", "telemetry", "completions")),
+)
+
+
+def _format_cli_commands(parser: argparse.ArgumentParser) -> str:
+    """Grouped command catalog (plain dialect) — replaces argparse's brace dump."""
+    sub = next(
+        (action for action in parser._actions if isinstance(action, argparse._SubParsersAction)),
+        None,
+    )
+    if sub is None:
+        return ""
+    helps = {action.dest: (action.help or "") for action in sub._choices_actions}
+    lines = [layout.title("Commands", dialect="plain")]
+    for group, names in _CLI_COMMAND_GROUPS:
+        lines.append(layout.title(group, dialect="plain"))
+        for name in names:
+            lines.append(layout.row(name, helps.get(name, ""), dialect="plain"))
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _print_plain_fields(
+    title: str,
+    rows: list[tuple[str, str]],
+    *,
+    indent: str = "  ",
+) -> None:
+    """Human CLI page: ``Label: value`` rows in the layout plain dialect."""
+    if title:
+        print(layout.title(title, dialect="plain"))
+    for label, value in rows:
+        print(f"{indent}{layout.field(label, value, dialect='plain')}")
 
 
 def _auth_timeout_arg(value: str) -> float:
@@ -117,10 +179,12 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"jarn {__version__}")
-    parser.add_argument(
+
+    start = parser.add_argument_group("Start")
+    start.add_argument(
         "--resume", action="store_true", help="Pick a previous session to resume on launch"
     )
-    parser.add_argument(
+    start.add_argument(
         "--add-dir",
         dest="add_dir",
         action="append",
@@ -132,8 +196,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    # Headless one-shot flags (top-level, not a subcommand).
-    parser.add_argument(
+    oneshot = parser.add_argument_group("One-shot")
+    oneshot.add_argument(
         "-p",
         "--print",
         dest="headless_prompt",
@@ -143,7 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Pass '-' to read the prompt from stdin."
         ),
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--output-format",
         dest="headless_output_format",
         choices=["text", "json", "stream-json"],
@@ -157,7 +221,7 @@ def build_parser() -> argparse.ArgumentParser:
             "`claude -p --output-format stream-json`."
         ),
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--json",
         action="store_true",
         help=(
@@ -166,13 +230,13 @@ def build_parser() -> argparse.ArgumentParser:
             "{error: {kind, message}}."
         ),
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--model",
         dest="headless_model",
         metavar="REF",
         help="Override the active model for this headless run.",
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--mode",
         dest="headless_permission_mode",
         choices=["plan", "ask", "auto-edit", "yolo"],
@@ -183,13 +247,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     # Deprecated alias of --mode (hidden); still honoured.
-    parser.add_argument(
+    oneshot.add_argument(
         "--permission-mode",
         dest="headless_permission_mode",
         choices=["plan", "ask", "auto-edit", "yolo"],
         help=argparse.SUPPRESS,
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--preset",
         dest="preset",
         metavar="NAME",
@@ -198,7 +262,7 @@ def build_parser() -> argparse.ArgumentParser:
             "(trusted-repo|review-only|sandbox-required|ci|offline)."
         ),
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--max-turns",
         dest="headless_max_turns",
         type=int,
@@ -209,13 +273,13 @@ def build_parser() -> argparse.ArgumentParser:
             "invocation always runs exactly one complete model/tool graph turn."
         ),
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--cwd",
         dest="headless_cwd",
         metavar="PATH",
         help="Working directory for this headless run.",
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--ignore-project-config",
         dest="headless_ignore_project_config",
         action="store_true",
@@ -224,7 +288,7 @@ def build_parser() -> argparse.ArgumentParser:
             "files (safe for automation on untrusted checkouts)."
         ),
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--resume-session",
         dest="headless_resume_session",
         metavar="THREAD",
@@ -234,7 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
             "continues without a new user message."
         ),
     )
-    parser.add_argument(
+    oneshot.add_argument(
         "--output-schema",
         dest="headless_output_schema",
         metavar="FILE",
@@ -298,14 +362,27 @@ Stable exit codes:
   10 updated executable requires a fresh shell; 124 timeout; 130 cancelled.
 """
 
-    sub = parser.add_subparsers(dest="command")
+    sub = parser.add_subparsers(dest="command", metavar="COMMAND", title="Commands")
 
     # Stable, discoverable spelling for automation. The historical ``-p`` /
     # ``--print`` flags remain supported; both routes dispatch through exactly
     # the same headless implementation and output contract.
     p_exec = sub.add_parser("exec", help="Run one non-interactive agent turn")
-    p_exec.add_argument("headless_prompt", metavar="PROMPT", help="Task text, or '-' for stdin")
-    p_exec.add_argument(
+    exec_input = p_exec.add_argument_group("Input")
+    exec_input.add_argument(
+        "headless_prompt", metavar="PROMPT", help="Task text, or '-' for stdin"
+    )
+    exec_input.add_argument("--cwd", dest="headless_cwd", metavar="PATH")
+    exec_input.add_argument("--resume-session", dest="headless_resume_session", metavar="THREAD")
+    exec_input.add_argument(
+        "--add-dir",
+        dest="add_dir",
+        action="append",
+        metavar="DIR",
+        help="Add a directory to this run's write scope (repeatable)",
+    )
+    exec_output = p_exec.add_argument_group("Output")
+    exec_output.add_argument(
         "--output-format",
         dest="headless_output_format",
         choices=["text", "json", "stream-json"],
@@ -313,34 +390,26 @@ Stable exit codes:
         metavar="FORMAT",
         help="Output format: text, one JSON result, or streaming NDJSON",
     )
-    p_exec.add_argument(
+    exec_output.add_argument(
         "--json",
         action="store_true",
         help="Alias for --output-format json",
     )
-    p_exec.add_argument("--model", dest="headless_model", metavar="REF")
-    p_exec.add_argument(
+    exec_output.add_argument("--output-schema", dest="headless_output_schema", metavar="FILE")
+    exec_run = p_exec.add_argument_group("Run")
+    exec_run.add_argument("--model", dest="headless_model", metavar="REF")
+    exec_run.add_argument(
         "--mode",
         dest="headless_permission_mode",
         choices=["plan", "ask", "auto-edit", "yolo"],
         metavar="MODE",
     )
-    p_exec.add_argument("--preset", dest="preset", metavar="NAME")
-    p_exec.add_argument("--max-turns", dest="headless_max_turns", type=int, default=1)
-    p_exec.add_argument("--cwd", dest="headless_cwd", metavar="PATH")
-    p_exec.add_argument(
+    exec_run.add_argument("--preset", dest="preset", metavar="NAME")
+    exec_run.add_argument("--max-turns", dest="headless_max_turns", type=int, default=1)
+    exec_run.add_argument(
         "--ignore-project-config",
         dest="headless_ignore_project_config",
         action="store_true",
-    )
-    p_exec.add_argument("--resume-session", dest="headless_resume_session", metavar="THREAD")
-    p_exec.add_argument("--output-schema", dest="headless_output_schema", metavar="FILE")
-    p_exec.add_argument(
-        "--add-dir",
-        dest="add_dir",
-        action="append",
-        metavar="DIR",
-        help="Add a directory to this run's write scope (repeatable)",
     )
 
     p_setup = sub.add_parser("setup", help="Run the onboarding wizard")
@@ -352,41 +421,46 @@ Stable exit codes:
     p_init = sub.add_parser("init", help="Create a JARN.md project context file")
     p_init.add_argument("--force", action="store_true", help="Overwrite existing JARN.md")
     p_doctor = sub.add_parser("doctor", help="Diagnose configuration and providers")
-    p_doctor.add_argument("--json", action="store_true", help="Emit diagnostics as JSON")
-    p_doctor.add_argument(
+    doctor_repair = p_doctor.add_argument_group("Repair")
+    doctor_repair.add_argument(
         "--fix",
         action="store_true",
         help="Apply the allowlisted repair plan (backups and rollback are automatic)",
     )
-    p_doctor.add_argument(
+    doctor_repair.add_argument(
         "--dry-run",
         action="store_true",
         help="Preview the repair plan without changing files (implies --fix)",
     )
-    p_doctor.add_argument(
+    doctor_checks = p_doctor.add_argument_group("Checks")
+    doctor_checks.add_argument(
+        "--network",
+        action="store_true",
+        help="Opt in to bounded provider reachability checks (doctor is offline by default)",
+    )
+    doctor_output = p_doctor.add_argument_group("Output")
+    doctor_output.add_argument("--json", action="store_true", help="Emit diagnostics as JSON")
+    doctor_output.add_argument(
         "--report",
         nargs="?",
         const="jarn-support-report.json",
         metavar="FILE",
         help="Write a privacy-scanned support report (default: ./jarn-support-report.json)",
     )
-    p_doctor.add_argument(
-        "--network",
-        action="store_true",
-        help="Opt in to bounded provider reachability checks (doctor is offline by default)",
-    )
 
     p_config = sub.add_parser("config", help="Inspect or safely manage configuration")
     config_actions = p_config.add_subparsers(dest="config_action", required=True)
 
     def add_config_scope(command: argparse.ArgumentParser, *, json_output: bool = True) -> None:
-        command.add_argument(
+        scope = command.add_argument_group("Scope")
+        scope.add_argument(
             "--project",
             action="store_true",
             help="Use the current project's .jarn/config.yaml instead of the global file",
         )
         if json_output:
-            command.add_argument("--json", action="store_true", help="Emit stable JSON")
+            output = command.add_argument_group("Output")
+            output.add_argument("--json", action="store_true", help="Emit stable JSON")
 
     p_config_show = config_actions.add_parser("show", help="Show redacted configuration YAML")
     add_config_scope(p_config_show)
@@ -409,7 +483,8 @@ Stable exit codes:
         "reset", help="Back up and replace configuration with the shipped template"
     )
     add_config_scope(p_config_reset)
-    p_config_reset.add_argument(
+    reset_confirm = p_config_reset.add_argument_group("Confirm")
+    reset_confirm.add_argument(
         "--yes", action="store_true", help="Confirm replacement without prompting"
     )
 
@@ -421,23 +496,27 @@ Stable exit codes:
         ("off", "Opt out without deleting existing local data"),
     ):
         telemetry_parser = telemetry_actions.add_parser(telemetry_action, help=telemetry_help)
-        telemetry_parser.add_argument("--json", action="store_true", help="Emit stable JSON")
+        telemetry_out = telemetry_parser.add_argument_group("Output")
+        telemetry_out.add_argument("--json", action="store_true", help="Emit stable JSON")
 
     p_update = sub.add_parser("update", help="Check for or transactionally install an update")
-    p_update.add_argument("--check", action="store_true", help="Check only; do not install")
-    p_update.add_argument("--json", action="store_true", help="Emit stable JSON")
-    p_update.add_argument(
+    update_release = p_update.add_argument_group("Release")
+    update_release.add_argument(
         "--channel",
         choices=["stable", "beta"],
         default="stable",
         help="Release channel (default: stable)",
     )
-    p_update.add_argument(
-        "--dry-run", action="store_true", help="Download and preview the installer plan only"
-    )
-    p_update.add_argument(
+    update_release.add_argument(
         "--version", dest="update_version", metavar="VERSION", help="Install this exact version"
     )
+    update_mode = p_update.add_argument_group("Mode")
+    update_mode.add_argument("--check", action="store_true", help="Check only; do not install")
+    update_mode.add_argument(
+        "--dry-run", action="store_true", help="Download and preview the installer plan only"
+    )
+    update_output = p_update.add_argument_group("Output")
+    update_output.add_argument("--json", action="store_true", help="Emit stable JSON")
 
     p_rollback = sub.add_parser("rollback", help="Activate the retained previous version")
     p_rollback.add_argument("--json", action="store_true", help="Emit stable JSON")
@@ -450,9 +529,11 @@ Stable exit codes:
         default="list",
     )
     p_sessions.add_argument("thread_id", nargs="?", metavar="THREAD")
-    p_sessions.add_argument("--output", metavar="FILE", help="Export destination")
-    p_sessions.add_argument("--json", action="store_true", help="Emit a JSON session list")
-    p_sessions.add_argument(
+    sessions_output = p_sessions.add_argument_group("Output")
+    sessions_output.add_argument("--output", metavar="FILE", help="Export destination")
+    sessions_output.add_argument("--json", action="store_true", help="Emit a JSON session list")
+    sessions_confirm = p_sessions.add_argument_group("Confirm")
+    sessions_confirm.add_argument(
         "--yes", action="store_true", help="Confirm deletion without an interactive prompt"
     )
     p_keys = sub.add_parser(
@@ -493,7 +574,8 @@ Stable exit codes:
         actions = parent.add_subparsers(dest=dest, required=True)
 
         def add_timeout(command: argparse.ArgumentParser) -> None:
-            command.add_argument(
+            wait = command.add_argument_group("Wait")
+            wait.add_argument(
                 "--timeout",
                 type=_auth_timeout_arg,
                 metavar="SECONDS",
@@ -505,40 +587,48 @@ Stable exit codes:
 
         login = actions.add_parser("login", help="Sign in with your ChatGPT subscription")
         add_timeout(login)
-        method = login.add_mutually_exclusive_group()
-        method.add_argument(
+        method = login.add_argument_group("Method")
+        method_choice = method.add_mutually_exclusive_group()
+        method_choice.add_argument(
             "--device",
             action="store_true",
             help="Use a device code (best for SSH/headless hosts; selected automatically there)",
         )
-        method.add_argument(
+        method_choice.add_argument(
             "--browser",
             action="store_true",
             help="Force browser/loopback login on this host",
         )
-        login.add_argument("--json", action="store_true", help="Emit JSONL challenge + status")
-        login.add_argument(
+        login_output = login.add_argument_group("Output")
+        login_output.add_argument("--json", action="store_true", help="Emit JSONL challenge + status")
+        login_confirm = login.add_argument_group("Confirm")
+        login_confirm.add_argument(
             "--yes",
             action="store_true",
             help="Install/update the official standalone Codex dependency without prompting",
         )
         status = actions.add_parser("status", help="Verify auth mode, account, and dependency")
         add_timeout(status)
-        status.add_argument("--json", action="store_true", help="Emit the stable JSON status")
-        status.add_argument(
+        status_output = status.add_argument_group("Output")
+        status_output.add_argument("--json", action="store_true", help="Emit the stable JSON status")
+        status_refresh = status.add_argument_group("Refresh")
+        status_refresh.add_argument(
             "--refresh",
             action="store_true",
             help="Force Codex to refresh the managed ChatGPT token",
         )
         logout = actions.add_parser("logout", help="Remove only Codex-managed credentials")
         add_timeout(logout)
-        logout.add_argument("--json", action="store_true", help="Emit the stable JSON status")
+        logout_output = logout.add_argument_group("Output")
+        logout_output.add_argument("--json", action="store_true", help="Emit the stable JSON status")
         repair = actions.add_parser(
             "repair", help="Recheck the Codex dependency and refresh ChatGPT auth"
         )
         add_timeout(repair)
-        repair.add_argument("--json", action="store_true", help="Emit the stable JSON status")
-        repair.add_argument(
+        repair_output = repair.add_argument_group("Output")
+        repair_output.add_argument("--json", action="store_true", help="Emit the stable JSON status")
+        repair_confirm = repair.add_argument_group("Confirm")
+        repair_confirm.add_argument(
             "--yes",
             action="store_true",
             help="Install/update the official standalone Codex dependency without prompting",
@@ -619,7 +709,8 @@ Stable exit codes:
         default="run",
         help="Action to perform (default: run)",
     )
-    p_gateway.add_argument(
+    gateway_run = p_gateway.add_argument_group("Run")
+    gateway_run.add_argument(
         "--fake-backend",
         action="store_true",
         help=(
@@ -627,12 +718,13 @@ Stable exit codes:
             "Also set by JARN_TELEGRAM_FAKE_BACKEND=1."
         ),
     )
-    p_gateway.add_argument(
+    gateway_setup = p_gateway.add_argument_group("Setup")
+    gateway_setup.add_argument(
         "--token-stdin",
         action="store_true",
         help="Read the bot token from stdin (setup only; never place it in argv)",
     )
-    p_gateway.add_argument(
+    gateway_setup.add_argument(
         "--allowed-user",
         type=int,
         action="append",
@@ -640,27 +732,28 @@ Stable exit codes:
         metavar="ID",
         help="Allow a numeric Telegram user ID (setup only; repeatable)",
     )
-    p_gateway.add_argument(
+    gateway_setup.add_argument(
         "--no-service",
         action="store_true",
         help="Configure Telegram without offering a systemd user service",
     )
-    p_gateway.add_argument(
-        "--yes",
-        action="store_true",
-        help="Accept setup save/service confirmations",
-    )
-    p_gateway.add_argument(
-        "--force",
-        action="store_true",
-        help="Replace an existing Telegram bot/allowlist during setup",
-    )
-    p_gateway.add_argument(
+    gateway_setup.add_argument(
         "--timeout",
         type=float,
         default=120.0,
         metavar="SECONDS",
         help="Bounded wait for a new /start message during setup (default: 120)",
+    )
+    gateway_setup.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace an existing Telegram bot/allowlist during setup",
+    )
+    gateway_confirm = p_gateway.add_argument_group("Confirm")
+    gateway_confirm.add_argument(
+        "--yes",
+        action="store_true",
+        help="Accept setup save/service confirmations",
     )
 
     return parser
@@ -1600,15 +1693,15 @@ def _config_reset_preview(
 
 
 def _print_config_reset_preview(preview: dict[str, Any]) -> None:
-    print("Configuration reset preview:")
-    print(f"  Target: {preview['target']} ({preview['scope']})")
-    print(f"  Operation: {preview['operation']} default template")
-    for category in preview["replacedCategories"]:
-        print(f"  Replace: {category}")
-    for category in preview["preservedCategories"]:
-        print(f"  Preserve: {category}")
+    rows: list[tuple[str, str]] = [
+        ("Target", f"{preview['target']} ({preview['scope']})"),
+        ("Operation", f"{preview['operation']} default template"),
+    ]
+    rows.extend(("Replace", category) for category in preview["replacedCategories"])
+    rows.extend(("Preserve", category) for category in preview["preservedCategories"])
     if preview["backup"]:
-        print("  Recovery: create a byte-for-byte backup before activation")
+        rows.append(("Recovery", "create a byte-for-byte backup before activation"))
+    _print_plain_fields("Configuration reset preview:", rows)
 
 
 def _config_diagnostic_payload(path: Path) -> dict[str, Any]:
@@ -2120,9 +2213,21 @@ def _cmd_telemetry(*, action: str, as_json: bool = False) -> int:
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         else:
             state = "enabled" if enabled else "disabled"
-            print(f"Telemetry: {state} (local only; no network upload).")
-            print(f"Sink: {summary['path']}")
-            print(f"Events: {summary['valid_event_count']} valid; health: {summary['health']}")
+            _print_plain_fields(
+                "",
+                [
+                    (
+                        "Telemetry",
+                        f"{state} (local only; no network upload).",
+                    ),
+                    ("Sink", str(summary["path"])),
+                    (
+                        "Events",
+                        f"{summary['valid_event_count']} valid; health: {summary['health']}",
+                    ),
+                ],
+                indent="",
+            )
             if failure is not None:
                 print(failure.render(), file=sys.stderr)
             elif warning is not None:
@@ -2133,7 +2238,7 @@ def _cmd_telemetry(*, action: str, as_json: bool = False) -> int:
             if changed:
                 print(f"Configuration updated at {config_path}.")
                 if backup:
-                    print(f"Backup: {backup}")
+                    print(layout.field("Backup", str(backup), dialect="plain"))
             elif action in {"on", "off"}:
                 print("No change; telemetry already had the requested setting.")
         return EXIT_INTERNAL if failure is not None else EXIT_SUCCESS
@@ -2393,15 +2498,17 @@ def _cmd_doctor(
     render_doctor_console(console, result.diagnostics)
     if result.repair_result is not None:
         mode = "preview" if result.repair_result.dry_run else "result"
-        console.print(f"\n[b]Repair {mode}[/b]")
+        console.print(f"\n{layout.strong(f'Repair {mode}')}")
         for item in result.repair_result.applied:
             console.print(
-                f"  {item.get('status', 'planned')}: "
-                f"{item.get('description') or item.get('id') or 'repair'}",
-                markup=False,
+                "  "
+                + layout.field(
+                    str(item.get("status", "planned")),
+                    str(item.get("description") or item.get("id") or "repair"),
+                )
             )
         for reason in result.repair_result.skipped:
-            console.print(f"  skipped: {reason}", style="yellow", markup=False)
+            console.print("  " + layout.warn(f"skipped: {reason}"))
         if result.repair_result.error:
             detail = _error_detail_from_mapping(
                 result.repair_result.error,
@@ -2411,9 +2518,9 @@ def _cmd_doctor(
                 fallback_component="doctor repair",
                 fallback_action="Review the doctor report and retry.",
             )
-            console.print(detail.render(), style="red", markup=False)
+            console.print(detail.render(), markup=False)
     if result.report_path is not None:
-        console.print(f"\nSupport report: {result.report_path}", markup=False)
+        console.print("\n" + layout.field("Support report", str(result.report_path)))
     return result.exit_code
 
 
@@ -2726,8 +2833,8 @@ def _cmd_login() -> int:
 
     console = Console()
     console.print(
-        "\n[b cyan]OpenRouter login[/b cyan]  "
-        "[dim]— Opens your browser; close it here with Ctrl+C to abort.[/dim]\n"
+        f"\n{layout.accent('OpenRouter login', bold=True)}  "
+        f"{layout.muted('— Opens your browser; close it here with Ctrl+C to abort.')}\n"
     )
 
     try:
@@ -2765,19 +2872,19 @@ def _cmd_login() -> int:
 
     if not result.changed:
         # Existing key kept — nothing to persist; don't rewrite the config.
-        console.print(f"[green]✔[/green]  Keeping your existing key ([b]{result.reference}[/b]).")
-        console.print(f"   Key tail: [dim]{result.masked_key}[/dim]")
+        console.print(f"{layout.ok(grammar.GLYPH_OK)}  Keeping your existing key ({layout.strong(result.reference)}).")
+        console.print(f"   {layout.field('Key tail', result.masked_key)}")
         return 0
 
-    console.print(f"[green]✔[/green]  Logged in — key stored as [b]{result.reference}[/b]")
-    console.print(f"   Key tail: [dim]{result.masked_key}[/dim]")
+    console.print(f"{layout.ok(grammar.GLYPH_OK)}  Logged in — key stored as {layout.strong(result.reference)}")
+    console.print(f"   {layout.field('Key tail', result.masked_key)}")
 
     # Write the reference into the OpenRouter provider in the global config.
     if _write_openrouter_key_ref(result.reference):
-        console.print("\n[green]✔[/green]  Config updated.  Launch [b]jarn[/b] to start coding.")
+        console.print(f"\n{layout.ok(grammar.GLYPH_OK)}  Config updated.  Launch {layout.strong('jarn')} to start coding.")
         return 0
     console.print(
-        f"\n[yellow]![/yellow]  The key is stored ([b]{result.reference}[/b]) but the "
+        f"\n{layout.warn('!')}  The key is stored ({layout.strong(result.reference)}) but the "
         "config was left untouched — set `providers.openrouter.api_key` manually."
     )
     return _emit_cli_failure(
@@ -2832,7 +2939,7 @@ def _cmd_auth(
     def announce_wait(message: str) -> None:
         if not as_json:
             deadline = getattr(service, "timeout_seconds", timeout_seconds or 120.0)
-            console.print(f"[dim]{message} (timeout {deadline:g}s)…[/dim]")
+            console.print(layout.muted(f"{message} (timeout {deadline:g}s)…"))
 
     def emit(status) -> None:
         if as_json:
@@ -2840,8 +2947,8 @@ def _cmd_auth(
             return
         if status.ready:
             console.print(
-                f"[green]✔[/green] ChatGPT connected"
-                f" ([b]{status.plan_type or 'plan unknown'}[/b]); account verified."
+                f"{layout.ok(grammar.GLYPH_OK)} ChatGPT connected"
+                f" ({layout.strong(status.plan_type or 'plan unknown')}); account verified."
             )
             return
         if status.error is not None:
@@ -2853,7 +2960,7 @@ def _cmd_auth(
                 fallback_component="authentication",
                 fallback_action="Run `jarn auth repair`, then retry.",
             )
-            console.print(detail.render(), style="red", markup=False)
+            console.print(detail.render(), markup=False)
             return
         detail = error_detail(
             ErrorCode.AUTH_SIGNED_OUT,
@@ -2863,7 +2970,7 @@ def _cmd_auth(
             retryable=status.state is AuthState.SIGNED_OUT,
             action="Run `jarn auth login`, then verify with `jarn auth status`.",
         )
-        console.print(detail.render(), style="red", markup=False)
+        console.print(detail.render(), markup=False)
 
     def ensure_dependency(status):
         """Offer the reviewed standalone dependency and return a service using it."""
@@ -2895,12 +3002,12 @@ def _cmd_auth(
                 if status.dependency.state is DependencyState.MISSING
                 else f"incompatible ({status.dependency.version or 'version unknown'})"
             )
-            console.print(f"\n[yellow]![/yellow] OpenAI Codex CLI is {reason}.")
-            console.print("[b]Purpose:[/b] ChatGPT subscription authentication and model access")
-            console.print(f"[b]Version/channel:[/b] {plan.version} ({plan.channel})")
-            console.print(f"[b]Source:[/b] {plan.source} — {plan.metadata_url}")
-            console.print(f"[b]Destination:[/b] {plan.destination}")
-            console.print("[b]Verification:[/b] official metadata + SHA-256 manifest")
+            console.print(f"\n{layout.warn('!')} OpenAI Codex CLI is {reason}.")
+            console.print(layout.field("Purpose", "ChatGPT subscription authentication and model access"))
+            console.print(layout.field("Version/channel", f"{plan.version} ({plan.channel})"))
+            console.print(layout.field("Source", f"{plan.source} — {plan.metadata_url}"))
+            console.print(layout.field("Destination", plan.destination))
+            console.print(layout.field("Verification", "official metadata + SHA-256 manifest"))
 
         accepted = yes
         if not accepted and not as_json and sys.stdin.isatty():
@@ -2917,8 +3024,8 @@ def _cmd_auth(
                     )
                 )
             else:
-                console.print("[yellow]Setup incomplete:[/yellow] Codex CLI was not changed.")
-                console.print(f"Manual official command: [b]{CODEX_OFFICIAL_INSTALL_COMMAND}[/b]")
+                console.print(f"{layout.warn('Setup incomplete:')} Codex CLI was not changed.")
+                console.print(layout.field("Manual official command", CODEX_OFFICIAL_INSTALL_COMMAND))
             return False
 
         try:
@@ -2927,7 +3034,7 @@ def _cmd_auth(
                 on_progress=(
                     None
                     if as_json
-                    else lambda stage: console.print(f"[dim]Codex dependency: {stage}…[/dim]")
+                    else lambda stage: console.print(layout.muted(f"Codex dependency: {stage}…"))
                 ),
             )
         except CodexDependencyInstallError as exc:
@@ -2945,8 +3052,8 @@ def _cmd_auth(
                     )
                 )
             else:
-                console.print(f"[red]Setup incomplete:[/red] {exc}")
-                console.print(f"Manual official command: [b]{CODEX_OFFICIAL_INSTALL_COMMAND}[/b]")
+                console.print(f"{layout.err('Setup incomplete:')} {exc}")
+                console.print(layout.field("Manual official command", CODEX_OFFICIAL_INSTALL_COMMAND))
             return False
         if as_json:
             print(
@@ -2958,8 +3065,8 @@ def _cmd_auth(
         else:
             action = "Installed" if result.changed else "Verified"
             console.print(
-                f"[green]✔[/green] {action} Codex CLI {result.smoke_version} at "
-                f"[b]{result.executable}[/b]"
+                f"{layout.ok(grammar.GLYPH_OK)} {action} Codex CLI {result.smoke_version} at "
+                f"{layout.strong(result.executable)}"
             )
         service = (
             CodexAuthService(command=result.executable)
@@ -2980,9 +3087,10 @@ def _cmd_auth(
                 return EXIT_AUTH
             if not as_json:
                 console.print(
-                    "\n[b cyan]ChatGPT subscription login[/b cyan]  "
-                    "[dim]— credentials remain managed by Codex; "
-                    "J.A.R.N. never reads them.[/dim]"
+                    f"\n{layout.accent('ChatGPT subscription login', bold=True)}  "
+                    + layout.muted(
+                        "— credentials remain managed by Codex; J.A.R.N. never reads them."
+                    )
                 )
             method = detect_login_method(force_device=device, force_browser=browser)
             status = login_interactive(
@@ -3001,7 +3109,7 @@ def _cmd_auth(
                 if as_json:
                     emit(status)
                 else:
-                    console.print("[green]✔[/green] Codex-managed credentials removed.")
+                    console.print(f"{layout.ok(grammar.GLYPH_OK)} Codex-managed credentials removed.")
                 return 0
             emit(status)
             return EXIT_AUTH
@@ -3039,7 +3147,7 @@ def _cmd_auth(
                 )
             )
         else:
-            console.print("\n" + detail.render(), style="yellow", markup=False)
+            console.print("\n" + detail.render(), style=palette.C_WARN, markup=False)
         return EXIT_CANCELLED
     except AuthServiceError as exc:
         emit(exc.status)
@@ -3065,7 +3173,7 @@ def _cmd_auth(
                 )
             )
         else:
-            console.print(detail.render(), style="red", markup=False)
+            console.print(detail.render(), markup=False)
         return EXIT_AUTH
 
 
@@ -3458,7 +3566,9 @@ def _prompt_project_trust(root: Path, danger: dict, status: str) -> bool:
 
     console = Console(stderr=True)
     console.print(
-        f"\n[yellow]⚠ This project's config[/yellow] ([dim]{root}/.jarn/config.yaml[/dim]) "
+        "\n"
+        + layout.warn(f"{grammar.GLYPH_WARN} This project's config")
+        + f" ({layout.muted(str(root) + '/.jarn/config.yaml')}) "
         "declares settings that can run code or access secrets:"
     )
     labels = {
@@ -3475,10 +3585,12 @@ def _prompt_project_trust(root: Path, danger: dict, status: str) -> bool:
     for key in danger:
         console.print(f"  • {labels.get(key, key)}")
     if status == "changed":
-        console.print("[yellow]These changed since you last trusted this project.[/yellow]")
+        console.print(layout.warn("These changed since you last trusted this project."))
     console.print(
-        "[dim]Trust only repositories you would run code from. If you decline, "
-        "these settings are ignored and the session continues safely.[/dim]"
+        layout.muted(
+            "Trust only repositories you would run code from. If you decline, "
+            "these settings are ignored and the session continues safely."
+        )
     )
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print(

@@ -782,6 +782,11 @@ class UIConfigModel(_StrictModel):
     notify_min_secs: int = 10
     terminal_title: bool = True
     steering: bool = True
+    wrap_at: int = 120
+    tool_progress: str = "new"
+    show_reasoning: str = "collapsed"
+    statusbar: bool = True
+    context_bar: bool = True
 
     @field_validator("theme", mode="before")
     @classmethod
@@ -836,6 +841,48 @@ class UIConfigModel(_StrictModel):
     @classmethod
     def _steering(cls, value: Any) -> bool:
         return _normalize_bool(value, "ui.steering")
+
+    @field_validator("wrap_at", mode="before")
+    @classmethod
+    def _wrap_at(cls, value: Any) -> int:
+        raw = _coerce_int(value, "ui.wrap_at")
+        if raw < 0:
+            raise ConfigValidationError(f"ui.wrap_at must be >= 0 (got {raw}).")
+        return raw
+
+    @field_validator("tool_progress", mode="before")
+    @classmethod
+    def _tool_progress(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_TOOL_PROGRESS_VALUES
+
+        raw = str(value)
+        if raw not in _VALID_TOOL_PROGRESS_VALUES:
+            raise ConfigValidationError(
+                f"ui.tool_progress must be one of {sorted(_VALID_TOOL_PROGRESS_VALUES)} (got {raw!r})."
+            )
+        return raw
+
+    @field_validator("show_reasoning", mode="before")
+    @classmethod
+    def _show_reasoning(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_SHOW_REASONING_VALUES
+
+        raw = str(value)
+        if raw not in _VALID_SHOW_REASONING_VALUES:
+            raise ConfigValidationError(
+                f"ui.show_reasoning must be one of {sorted(_VALID_SHOW_REASONING_VALUES)} (got {raw!r})."
+            )
+        return raw
+
+    @field_validator("statusbar", mode="before")
+    @classmethod
+    def _statusbar(cls, value: Any) -> bool:
+        return _normalize_bool(value, "ui.statusbar")
+
+    @field_validator("context_bar", mode="before")
+    @classmethod
+    def _context_bar(cls, value: Any) -> bool:
+        return _normalize_bool(value, "ui.context_bar")
 
 
 class CompatConfigModel(_StrictModel):
@@ -1385,6 +1432,11 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             notify_min_secs=model.ui.notify_min_secs,
             terminal_title=model.ui.terminal_title,
             steering=model.ui.steering,
+            wrap_at=model.ui.wrap_at,
+            tool_progress=model.ui.tool_progress,
+            show_reasoning=model.ui.show_reasoning,
+            statusbar=model.ui.statusbar,
+            context_bar=model.ui.context_bar,
         ),
         compat=CompatConfig(
             context_files=list(model.compat.context_files),

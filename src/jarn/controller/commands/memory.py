@@ -6,12 +6,11 @@ import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rich.markup import escape as _escape_markup
-
 from jarn.agent.session import SuggestedMemory
+from jarn.commands.help import usage_error
 from jarn.controller.core import CommandResult
 from jarn.memory import MemoryStore, RecallHit
-from jarn.tui import palette
+from jarn.tui import layout
 
 if TYPE_CHECKING:
     from jarn.controller.core import Controller
@@ -42,15 +41,7 @@ def cmd_memory(ctrl, args: str) -> CommandResult:
         return _memory_delete(ctrl, parts[1:])
     if subcommand in ("dump", "context"):
         return _memory_dump(ctrl)
-    return CommandResult(
-        "Usage: /memory [search|show|add|update|delete|dump] ...\n"
-        "Examples:\n"
-        "  /memory dump\n"
-        "  /memory search pytest\n"
-        "  /memory add project project \"Test style\" \"Use pytest\" \"Prefer parametrized tests.\"\n"
-        "  /memory show project test-style\n"
-        "  /memory delete global test-style"
-    )
+    return CommandResult(usage_error("memory"))
 
 def cmd_wiki(ctrl, args: str) -> CommandResult:
     """List or search the wiki knowledge base.
@@ -81,20 +72,20 @@ def cmd_wiki(ctrl, args: str) -> CommandResult:
     if subcmd == "search":
         query = parts[1].strip() if len(parts) > 1 else ""
         if not query:
-            return CommandResult("Usage: /wiki search <query>")
+            return CommandResult(usage_error("wiki"))
         results = store.search(query)
         if not results:
             return CommandResult(f"No wiki pages matched {query!r}.")
-        lines = [f"[b]Wiki search:[/b] {_escape_markup(query)!r}"]
+        lines = [layout.heading("Wiki search", repr(query))]
         for slug, matched in results:
-            lines.append(f"\n  [cyan]{_escape_markup(slug)}[/cyan]")
+            lines.append(f"\n  {layout.accent(slug)}")
             for line in matched[:5]:
-                lines.append(f"    {_escape_markup(line)}")
+                lines.append(f"    {layout.escape(line)}")
             if len(matched) > 5:
-                lines.append(f"    [dim]… ({len(matched) - 5} more)[/dim]")
+                lines.append(f"    {layout.more(len(matched) - 5)}")
         return CommandResult("\n".join(lines))
 
-    return CommandResult("Usage: /wiki [search <q>|list]")
+    return CommandResult(usage_error("wiki"))
 
 def cmd_map(ctrl, args: str) -> CommandResult:
     """Build and display the ranked repo map.
@@ -130,22 +121,27 @@ def cmd_map(ctrl, args: str) -> CommandResult:
 
 def _memory_list(ctrl) -> CommandResult:
     stores = _memory_read_stores(ctrl)
-    lines = ["[b]Long-term memory[/b] [dim](use /memory search <query>)[/dim]"]
+    lines = [layout.heading("Long-term memory", "use /memory search <query>")]
     found = False
     for scope, store in stores:
         memories = store.load_all()
         if not memories:
             continue
         found = True
-        lines.append(f"\n[b]{scope}[/b]")
+        lines.append(layout.section(scope))
         for memory in memories:
             lines.append(
-                f"  [cyan]{_escape_markup(memory.name)}[/cyan] "
-                f"([dim]{_escape_markup(memory.type)}[/dim]) — "
-                f"{_escape_markup(memory.description)}"
+                f"  {layout.accent(memory.name)} "
+                f"({layout.muted(memory.type)}) — "
+                f"{layout.escape(memory.description)}"
             )
     if not ctrl.project_trusted and ctrl.project_root is not None:
-        lines.append("\n[dim]Project memory skipped until this project is trusted (`jarn trust`).[/dim]")
+        lines.append(
+            "\n"
+            + layout.muted(
+                "Project memory skipped until this project is trusted (`jarn trust`)."
+            )
+        )
     if not found:
         return CommandResult(
             "No long-term memories yet. Try /memory add project project "
@@ -155,16 +151,16 @@ def _memory_list(ctrl) -> CommandResult:
 
 def _memory_search(ctrl, query: str) -> CommandResult:
     if not query:
-        return CommandResult("Usage: /memory search <query>")
+        return CommandResult(usage_error("memory"))
     hits = _memory_search_hits(ctrl, query, k=5)
     if not hits:
         return CommandResult(f"No memories matched: {query!r}")
-    lines = [f"[b]Recall for[/b] {_escape_markup(query)!r}"]
+    lines = [layout.heading("Recall for", repr(query))]
     for scope, hit in hits:
         lines.append(
-            f"  [cyan]{_escape_markup(hit.memory.name)}[/cyan] "
-            f"[dim]({scope}, {hit.score:.2f})[/dim] — "
-            f"{_escape_markup(hit.memory.description)}"
+            f"  {layout.accent(hit.memory.name)} "
+            f"{layout.muted(f'({scope}, {hit.score:.2f})')} — "
+            f"{layout.escape(hit.memory.description)}"
         )
         if hit.memory.body:
             lines.append(_format_memory_body(hit.memory.body))
@@ -175,36 +171,34 @@ def _memory_dump(ctrl) -> CommandResult:
     from jarn.memory import MemoryStore
     from jarn.memory.context import DEFAULT_CONTEXT_FILES, project_context_text
 
-    sep = f"[{palette.C_DIM}]{'─' * 48}[/{palette.C_DIM}]"
-    lines: list[str] = ["[b]Memory context dump[/b] [dim](what the agent sees)[/dim]"]
+    sep = layout.muted("─" * 48)
+    lines: list[str] = [layout.heading("Memory context dump", "what the agent sees")]
 
     # 1. Global MEMORY.md index
     lines.append(f"\n{sep}")
-    lines.append(f"[b][{palette.C_NOTICE}]Global memory index[/{palette.C_NOTICE}][/b]")
+    lines.append(layout.notice("Global memory index"))
     global_store = MemoryStore.global_store()
     global_index = global_store.index_text().strip()
     if global_index and "—" in global_index:
-        lines.append(_escape_markup(global_index))
+        lines.append(layout.escape(global_index))
     else:
-        lines.append(f"[{palette.C_DIM}](empty)[/{palette.C_DIM}]")
+        lines.append(layout.muted("(empty)"))
 
     # 2. Project MEMORY.md index
     lines.append(f"\n{sep}")
-    lines.append(f"[b][{palette.C_NOTICE}]Project memory index[/{palette.C_NOTICE}][/b]")
+    lines.append(layout.notice("Project memory index"))
     if not ctrl.project_trusted and ctrl.project_root is not None:
-        lines.append(
-            f"[{palette.C_DIM}]Skipped — project untrusted (`jarn trust` to enable).[/{palette.C_DIM}]"
-        )
+        lines.append(layout.muted("Skipped — project untrusted (`jarn trust` to enable)."))
     else:
         project_store = MemoryStore.project_store(ctrl.project_root)
         if project_store:
             project_index = project_store.index_text().strip()
             if project_index and "—" in project_index:
-                lines.append(_escape_markup(project_index))
+                lines.append(layout.escape(project_index))
             else:
-                lines.append(f"[{palette.C_DIM}](empty)[/{palette.C_DIM}]")
+                lines.append(layout.muted("(empty)"))
         else:
-            lines.append(f"[{palette.C_DIM}](no project root)[/{palette.C_DIM}]")
+            lines.append(layout.muted("(no project root)"))
 
     # 3. Loaded context file (JARN.md / AGENTS.md / CLAUDE.md)
     lines.append(f"\n{sep}")
@@ -222,23 +216,19 @@ def _memory_dump(ctrl) -> CommandResult:
                 ctx_filename = name
                 break
     label = f"Context file ({ctx_filename})" if ctx_filename else "Context file"
-    lines.append(f"[b][{palette.C_NOTICE}]{_escape_markup(label)}[/{palette.C_NOTICE}][/b]")
+    lines.append(layout.notice(label))
     if ctx_text:
-        lines.append(_escape_markup(ctx_text.strip()))
+        lines.append(layout.escape(ctx_text.strip()))
     elif not ctrl.project_trusted and ctrl.project_root is not None:
-        lines.append(
-            f"[{palette.C_DIM}]Skipped — project untrusted.[/{palette.C_DIM}]"
-        )
+        lines.append(layout.muted("Skipped — project untrusted."))
     else:
-        lines.append(f"[{palette.C_DIM}](no context file found — run /init to create JARN.md)[/{palette.C_DIM}]")
+        lines.append(layout.muted("(no context file found — run /init to create JARN.md)"))
 
     # 4. Top-k recall — what recall_block(...) would surface per turn. Real
     # injection is query-dependent (enrich_turn_input), so we recall against a
     # representative query built from the stored memories to show live hits.
     lines.append(f"\n{sep}")
-    lines.append(
-        f"[b][{palette.C_NOTICE}]Top-k recall (representative)[/{palette.C_NOTICE}][/b]"
-    )
+    lines.append(layout.notice("Top-k recall (representative)"))
     query = " ".join(
         f"{m.name} {m.description}"
         for _scope, store in _memory_read_stores(ctrl)
@@ -250,18 +240,18 @@ def _memory_dump(ctrl) -> CommandResult:
     if recall_hits:
         for scope, hit in recall_hits:
             lines.append(
-                f"  [cyan]{_escape_markup(hit.memory.name)}[/cyan] "
-                f"[dim]({scope}, {hit.score:.2f})[/dim] — "
-                f"{_escape_markup(hit.memory.description)}"
+                f"  {layout.accent(hit.memory.name)} "
+                f"{layout.muted(f'({scope}, {hit.score:.2f})')} — "
+                f"{layout.escape(hit.memory.description)}"
             )
     else:
-        lines.append(f"[{palette.C_DIM}](no memories to recall)[/{palette.C_DIM}]")
+        lines.append(layout.muted("(no memories to recall)"))
 
     return CommandResult("\n".join(lines))
 
 def _memory_show(ctrl, parts: list[str]) -> CommandResult:
     if not parts:
-        return CommandResult("Usage: /memory show [global|project] <name-or-slug>")
+        return CommandResult(usage_error("memory"))
     explicit_scope = parts[0].lower() in ("global", "project")
     if explicit_scope:
         scope = parts[0].lower()
@@ -274,14 +264,14 @@ def _memory_show(ctrl, parts: list[str]) -> CommandResult:
         name = " ".join(parts).strip()
         candidates = list(reversed(_memory_read_stores(ctrl)))
     if not name:
-        return CommandResult("Usage: /memory show [global|project] <name-or-slug>")
+        return CommandResult(usage_error("memory"))
     for scope, store in candidates:
         memory = store.get(name)
         if memory is None:
             continue
         lines = [
-            f"[b]{_escape_markup(memory.name)}[/b] [dim]({scope}, {memory.type})[/dim]",
-            _escape_markup(memory.description),
+            f"{layout.title(memory.name)} {layout.muted(f'({scope}, {memory.type})')}",
+            layout.escape(memory.description),
         ]
         if memory.body:
             lines.append(_format_memory_body(memory.body))
@@ -294,9 +284,7 @@ def _memory_add(ctrl, parts: list[str]) -> CommandResult:
     scope, idx = _memory_scope_from_parts(ctrl, parts)
     remaining = parts[idx:]
     if len(remaining) < 3:
-        return CommandResult(
-            "Usage: /memory add [global|project] <type> <name> <description> [body]"
-        )
+        return CommandResult(usage_error("memory"))
     mem_type, name, description = remaining[:3]
     if mem_type not in MEMORY_TYPES:
         return CommandResult(f"Unknown memory type {mem_type!r}; choose one of: {', '.join(MEMORY_TYPES)}")
@@ -311,7 +299,7 @@ def _memory_update(ctrl, parts: list[str]) -> CommandResult:
     scope, idx = _memory_scope_from_parts(ctrl, parts)
     remaining = parts[idx:]
     if len(remaining) < 2:
-        return CommandResult("Usage: /memory update [global|project] <name-or-slug> <description> [body]")
+        return CommandResult(usage_error("memory"))
     name, description = remaining[:2]
     store, error = _memory_store_for_scope(ctrl, scope, write=True)
     if error or store is None:
@@ -329,7 +317,7 @@ def _memory_delete(ctrl, parts: list[str]) -> CommandResult:
     scope, idx = _memory_scope_from_parts(ctrl, parts)
     name = " ".join(parts[idx:]).strip()
     if not name:
-        return CommandResult("Usage: /memory delete [global|project] <name-or-slug>")
+        return CommandResult(usage_error("memory"))
     store, error = _memory_store_for_scope(ctrl, scope, write=True)
     if error or store is None:
         return CommandResult(error or "Memory store unavailable.")
@@ -415,7 +403,7 @@ def save_suggested_memory(ctrl, suggestion: SuggestedMemory) -> tuple[bool, str]
     return True, f"Saved {scope} memory: {path.name}"
 
 def _format_memory_body(body: str) -> str:
-    escaped = _escape_markup(body.strip())
+    escaped = layout.escape(body.strip())
     return "\n".join(f"    {line}" for line in escaped.splitlines())
 
 

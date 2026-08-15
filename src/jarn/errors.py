@@ -8,6 +8,8 @@ all strings behind the central secret redactor.
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
@@ -97,7 +99,18 @@ class ErrorDetail:
     def to_dict(self, *, known_secrets: set[str] | None = None) -> dict[str, Any]:
         return _redact_structure(asdict(self), known=known_secrets)
 
-    def render(self, *, known_secrets: set[str] | None = None) -> str:
+    def render(
+        self,
+        *,
+        known_secrets: set[str] | None = None,
+        stream: Any | None = None,
+    ) -> str:
+        """Plain anatomy for pipes / ``NO_COLOR``; TTY adds spacing and color.
+
+        Non-TTY text is the stable support contract (JSON, CI, ``TERM=dumb``).
+        A TTY colors the code (error) and ``Next:`` (accent) and inserts a blank
+        line between fields so the brick is scannable.
+        """
         safe = self.to_dict(known_secrets=known_secrets)
         retry = "yes" if safe["retryable"] else "no"
         lines = [
@@ -115,7 +128,44 @@ class ErrorDetail:
             )
         if safe.get("report_path"):
             lines.append(f"Report: {safe['report_path']}")
-        return "\n".join(lines)
+
+        target = stream if stream is not None else sys.stderr
+        if not _error_tty_color(target):
+            return "\n".join(lines)
+
+        from jarn.tui import palette
+
+        painted: list[str] = []
+        for line in lines:
+            if line.startswith(f"{safe['code']}:"):
+                painted.append(
+                    f"{_ansi_fg(palette.C_ERROR, str(safe['code']))}: {safe['summary']}"
+                )
+            elif line.startswith("Next:"):
+                painted.append(f"{_ansi_fg(palette.ACCENT, 'Next:')} {safe['action']}")
+            else:
+                painted.append(line)
+        return "\n\n".join(painted)
+
+
+def _error_tty_color(stream: Any) -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("TERM", "").lower() == "dumb":
+        return False
+    isatty = getattr(stream, "isatty", None)
+    return bool(callable(isatty) and isatty())
+
+
+def _ansi_fg(hex_color: str, text: str) -> str:
+    raw = hex_color.lstrip("#")
+    if len(raw) != 6:
+        return text
+    try:
+        r, g, b = int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16)
+    except ValueError:
+        return text
+    return f"\x1b[38;2;{r};{g};{b}m{text}\x1b[0m"
 
 
 def error_detail(

@@ -18,10 +18,10 @@ from contextlib import suppress
 from typing import TextIO
 
 from rich.console import Console
-from rich.markup import escape
 
 from jarn.auth.models import AuthStatus, LoginChallenge, LoginMethod
 from jarn.auth.service import CodexAuthService
+from jarn.tui import layout
 
 
 def detect_login_method(
@@ -94,27 +94,26 @@ def render_login_challenge(
         )
         return
 
-    url = escape(challenge.url)
     if challenge.method is LoginMethod.DEVICE_CODE:
-        console.print("\n[b cyan]Sign in to ChatGPT[/b cyan]")
-        console.print(f"1. Open this link on any device:\n   [link={url}]{url}[/link]")
+        console.print("\n" + layout.accent("Sign in to ChatGPT", bold=True))
+        console.print(f"1. Open this link on any device:\n   {layout.link(challenge.url)}")
         if challenge.user_code:
             console.print(
-                f"2. Enter this one-time code: [b yellow]{escape(challenge.user_code)}[/b yellow]"
+                f"2. Enter this one-time code: {layout.warn(challenge.user_code)}"
             )
     else:
         # Always print the fallback URL.  Browser launch is best effort and can
         # silently fail in minimal desktop environments.
-        console.print("\n[b cyan]Sign in to ChatGPT[/b cyan]")
-        console.print(f"Open this link in your browser:\n  [link={url}]{url}[/link]")
+        console.print("\n" + layout.accent("Sign in to ChatGPT", bold=True))
+        console.print(f"Open this link in your browser:\n  {layout.link(challenge.url)}")
         if open_browser:
             with suppress(OSError, webbrowser.Error):
                 webbrowser.open(challenge.url)
     if challenge.expires_in_seconds:
         console.print(
-            f"[dim]This sign-in challenge expires in {challenge.expires_in_seconds}s.[/dim]"
+            layout.muted(f"This sign-in challenge expires in {challenge.expires_in_seconds}s.")
         )
-    console.print("[dim]Waiting for sign-in… Press Ctrl+C to cancel.[/dim]")
+    console.print(layout.muted("Waiting for sign-in… Press Ctrl+C to cancel."))
 
 
 def login_interactive(
@@ -137,7 +136,7 @@ def login_interactive(
                 flush=True,
             )
         elif stage == "verifying_account":
-            console.print("[dim]Sign-in received; verifying the ChatGPT account…[/dim]")
+            console.print(layout.muted("Sign-in received; verifying the ChatGPT account…"))
 
     return service.login(
         method,

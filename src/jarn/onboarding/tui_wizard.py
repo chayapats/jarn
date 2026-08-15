@@ -59,6 +59,7 @@ from jarn.providers import (
     strip_profile,
     suggest_slug,
 )
+from jarn.tui import grammar, layout
 from jarn.tui.logo import TAGLINE
 from jarn.tui.theme import ALL_THEMES, theme_name_for
 
@@ -129,7 +130,7 @@ class SetupApp(App):
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="card"):
-            yield Static(f"[b]{TAGLINE}[/b]", id="brand")
+            yield Static(layout.strong(TAGLINE), id="brand")
             yield Static("", id="crumbs")
             yield Static("", id="title")
             yield Vertical(id="step")
@@ -358,7 +359,7 @@ class SetupApp(App):
         body = self.query_one("#step", Vertical)
         await body.remove_children()
         if self._secret_notice:
-            await body.mount(Static(f"[yellow]{self._secret_notice}[/yellow]"))
+            await body.mount(Static(layout.warn(self._secret_notice)))
             self._secret_notice = None
         await body.mount(widget)
         widget.focus()
@@ -373,7 +374,7 @@ class SetupApp(App):
         opts = []
         highlight_idx: int | None = None
         for idx, (key, label) in enumerate(items):
-            mark = "[cyan]●[/cyan] " if key == current else "  "
+            mark = f"{layout.ok(grammar.GLYPH_KEY_OK)} " if key == current else "  "
             opts.append(Option(f"{mark}{label}", id=f"opt:{key}"))
             if highlight is not None and key == highlight:
                 highlight_idx = idx
@@ -389,7 +390,7 @@ class SetupApp(App):
 
     async def _step_provider(self) -> None:
         local_note = (
-            f"  [green](found {', '.join(self.local_providers)})[/green]"
+            f"  {layout.ok('(found ' + ', '.join(self.local_providers) + ')')}"
             if self.local_providers
             else ""
         )
@@ -398,7 +399,7 @@ class SetupApp(App):
                 "codex_subscription",
                 "Continue with ChatGPT  (subscription; no API key)"
                 + (
-                    "  [yellow]★ recommended — already signed in[/yellow]"
+                    f"  {layout.warn('★ recommended — already signed in')}"
                     if self.chatgpt_ready
                     else ""
                 ),
@@ -407,7 +408,7 @@ class SetupApp(App):
                 "anthropic",
                 "Use Anthropic"
                 + (
-                    "  [yellow]★ recommended — key found[/yellow]"
+                    f"  {layout.warn('★ recommended — key found')}"
                     if self.recommended == "anthropic"
                     else ""
                 ),
@@ -464,7 +465,7 @@ class SetupApp(App):
         # If the key is already in the environment, the env reference is the
         # recommended default; otherwise nudge the keychain (paste-now) path.
         if self._env_key_present(prov):
-            env_label = f"Read from ${env} [green](found in your environment)[/green]"
+            env_label = f"Read from ${env} {layout.ok('(found in your environment)')}"
         else:
             env_label = f"Read from ${env} — set it before launching"
         # OAuth exchanges persist their token immediately, so transactional
@@ -661,7 +662,6 @@ class SetupApp(App):
 
     async def _step_confirm(self) -> None:
         a = self.answers
-        base_line = f"base_url: [b]{a['base_url']}[/b]\n" if a.get("base_url") else ""
         if a.get("_credential_pending"):
             key_ref = "(pasted; held in memory until verified commit)"
         else:
@@ -685,41 +685,49 @@ class SetupApp(App):
                 env_var=env,
             )
             if text:
-                notice = f"\n[yellow]{text}[/yellow]\n"
-        advanced = ""
-        if a.get("_provider_group") == "advanced":
-            from jarn.permissions.labels import permission_mode_name
-
-            advanced = (
-                f"reasoning: [b]{a.get('reasoning_effort', 'provider default')}[/b]\n"
-                f"subagent: [b]{a.get('routing_subagent', a.get('model', ''))}[/b]\n"
-                f"summary:  [b]{a.get('routing_summarizer', a.get('model', ''))}[/b]\n"
-                f"fallback: [b]{a.get('routing_fallback') or '(none)'}[/b]\n"
-                f"budget:   [b]${a.get('budget_per_session_usd', '5.00')}[/b] "
-                f"(warn {a.get('budget_warn_at_pct', '80')}%, "
-                f"hard stop {a.get('budget_hard_stop', 'true')})\n"
-                "access:   [b]"
-                f"{permission_mode_name(a.get('permission_mode', 'ask'))}[/b]\n"
+                notice = f"\n{layout.warn(text)}\n"
+        rows = [
+            layout.field(
+                "provider",
+                "ChatGPT" if a["provider"] == "codex_subscription" else a["provider"],
             )
-        catalog_line = ""
+        ]
+        if a.get("base_url"):
+            rows.append(layout.field("base_url", a["base_url"]))
+        rows.append(
+            layout.field("model", a.get("model") or "account default (checked before save)")
+        )
         if a.get("_model_catalog_provenance"):
             catalog_state = (
                 "verified" if a.get("_model_catalog_verified") == "true" else "unverified"
             )
-            catalog_line = (
-                f"catalog:  [b]{catalog_state}[/b] — "
-                f"{a['_model_catalog_provenance']}\n"
+            rows.append(
+                f"{layout.field('catalog', catalog_state)} — {a['_model_catalog_provenance']}"
             )
-        summary = (
-            f"provider: [b]{'ChatGPT' if a['provider'] == 'codex_subscription' else a['provider']}[/b]\n"
-            f"{base_line}"
-            f"model:    [b]{a.get('model') or 'account default (checked before save)'}[/b]\n"
-            f"{catalog_line}"
-            f"key:      [b]{key_ref}[/b]\n"
-            f"{advanced}"
-            f"theme:    [b]{a.get('theme', 'dark')}[/b]\n"
-            f"{notice}"
-        )
+        rows.append(layout.field("key", key_ref))
+        if a.get("_provider_group") == "advanced":
+            from jarn.permissions.labels import permission_mode_name
+
+            rows.extend(
+                [
+                    layout.field(
+                        "reasoning", a.get("reasoning_effort", "provider default") or ""
+                    ),
+                    layout.field("subagent", a.get("routing_subagent", a.get("model", "")) or ""),
+                    layout.field(
+                        "summary", a.get("routing_summarizer", a.get("model", "")) or ""
+                    ),
+                    layout.field("fallback", a.get("routing_fallback") or "(none)"),
+                    f"{layout.field('budget', '$' + str(a.get('budget_per_session_usd', '5.00')))} "
+                    f"(warn {a.get('budget_warn_at_pct', '80')}%, "
+                    f"hard stop {a.get('budget_hard_stop', 'true')})",
+                    layout.field(
+                        "access", permission_mode_name(a.get("permission_mode", "ask"))
+                    ),
+                ]
+            )
+        rows.append(layout.field("theme", a.get("theme", "dark")))
+        summary = "\n".join(rows) + (f"\n{notice}" if notice else "")
         body = Vertical(
             Static(summary),
             self._option_list([("save", "Save configuration"), ("back", "Go back")], None),
@@ -1008,7 +1016,7 @@ def run_setup_tui(*, force: bool = False, propagate_errors: bool = False) -> Pat
         proceed = confirm_overwrite(force=force)
     except (KeyboardInterrupt, EOFError):
         mark_setup_incomplete()
-        rc.print("\n[yellow]Setup incomplete (cancelled).[/yellow] Resume with [b]jarn setup[/b].")
+        rc.print(f"\n{layout.warn('Setup incomplete (cancelled).')} Resume with {layout.strong('jarn setup')}.")
         return return_or_raise_setup_failure(
             SetupCommandError("The setup prompt was cancelled.", kind=SetupFailureKind.CANCELLED),
             propagate_errors=propagate_errors,
@@ -1023,7 +1031,7 @@ def run_setup_tui(*, force: bool = False, propagate_errors: bool = False) -> Pat
     try:
         set_setup_progress("in_progress")
     except SetupFlowError as exc:
-        rc.print(f"[red]Setup incomplete (install state):[/red] {exc}")
+        rc.print(f"{layout.err('Setup incomplete (install state):')} {exc}")
         return return_or_raise_setup_failure(exc, propagate_errors=propagate_errors)
 
     from jarn.onboarding.wizard import _chatgpt_session_ready, _detect_local_providers
@@ -1035,10 +1043,10 @@ def run_setup_tui(*, force: bool = False, propagate_errors: bool = False) -> Pat
             f"Resume setup from {saved.stage} (saved {saved.updated_at})?", default=True
         ):
             resume = saved
-            rc.print(f"[green]✓[/green] Resuming at [b]{saved.stage}[/b].")
+            rc.print(f"{layout.ok(grammar.GLYPH_OK)} Resuming at {layout.strong(saved.stage)}.")
     except (KeyboardInterrupt, EOFError):
         mark_setup_incomplete()
-        rc.print("\n[yellow]Setup incomplete (cancelled).[/yellow] Resume with [b]jarn setup[/b].")
+        rc.print(f"\n{layout.warn('Setup incomplete (cancelled).')} Resume with {layout.strong('jarn setup')}.")
         return return_or_raise_setup_failure(
             SetupCommandError("Setup resume was cancelled.", kind=SetupFailureKind.CANCELLED),
             propagate_errors=propagate_errors,
@@ -1053,8 +1061,8 @@ def run_setup_tui(*, force: bool = False, propagate_errors: bool = False) -> Pat
         app.run()
     except (KeyboardInterrupt, EOFError, OSError) as exc:
         mark_setup_incomplete()
-        rc.print(f"\n[red]Setup incomplete:[/red] {exc or 'terminal closed'}")
-        rc.print("Your progress is saved. Resume with [b]jarn setup[/b].")
+        rc.print(f"\n{layout.err('Setup incomplete:')} {exc or 'terminal closed'}")
+        rc.print(f"Your progress is saved. Resume with {layout.strong('jarn setup')}.")
         kind = (
             SetupFailureKind.CANCELLED
             if isinstance(exc, (KeyboardInterrupt, EOFError))
@@ -1066,14 +1074,14 @@ def run_setup_tui(*, force: bool = False, propagate_errors: bool = False) -> Pat
         )
     if app._cancelled:
         mark_setup_incomplete()
-        rc.print("\n[yellow]Setup incomplete (cancelled).[/yellow] Resume with [b]jarn setup[/b].")
+        rc.print(f"\n{layout.warn('Setup incomplete (cancelled).')} Resume with {layout.strong('jarn setup')}.")
         return return_or_raise_setup_failure(
             SetupCommandError("Setup was cancelled by the user.", kind=SetupFailureKind.CANCELLED),
             propagate_errors=propagate_errors,
         )
     if app.result_path is None:
         mark_setup_incomplete()
-        rc.print("\n[red]Setup incomplete:[/red] no configuration was confirmed.")
+        rc.print(f"\n{layout.err('Setup incomplete:')} no configuration was confirmed.")
         return return_or_raise_setup_failure(
             SetupCommandError(
                 "The setup UI exited without a confirmed configuration.",
@@ -1091,8 +1099,8 @@ def run_setup_tui(*, force: bool = False, propagate_errors: bool = False) -> Pat
     except (SetupFlowError, KeyboardInterrupt) as exc:
         mark_setup_incomplete()
         message = str(exc) if str(exc) else "setup cancelled"
-        rc.print(f"\n[red]Setup incomplete at verification:[/red] {message}")
-        rc.print("No configuration was changed. Retry with [b]jarn setup[/b].")
+        rc.print(f"\n{layout.err('Setup incomplete at verification:')} {message}")
+        rc.print(f"No configuration was changed. Retry with {layout.strong('jarn setup')}.")
         failure = (
             exc
             if isinstance(exc, SetupCommandError)

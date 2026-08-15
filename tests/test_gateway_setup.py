@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -322,8 +323,14 @@ def test_service_unit_contains_no_token_and_uses_owner_service(tmp_path, monkeyp
     assert "UMask=0077" in unit
     assert "BOT_TOKEN" not in unit
     assert "token" not in unit.lower()
-    assert str(tmp_path / ".jarn") in unit
-    assert f"WorkingDirectory={tmp_path}\n" in unit
+    assert GatewayServiceManager._quote("JARN_HOME=" + str(tmp_path / ".jarn")) in unit
+    working = (
+        str(tmp_path)
+        .replace("%", "%%")
+        .replace("\\", "\\\\")
+        .replace(" ", "\\x20")
+    )
+    assert f"WorkingDirectory={working}\n" in unit
     assert f'WorkingDirectory="{tmp_path}"' not in unit
 
 
@@ -340,8 +347,21 @@ def test_service_unit_escapes_working_directory_without_value_quotes(
 
     unit = manager.unit_text()
 
-    assert "WorkingDirectory=" + str(home).replace("%", "%%").replace(" ", "\\x20") in unit
+    expected = (
+        str(home)
+        .replace("%", "%%")
+        .replace("\\", "\\\\")
+        .replace(" ", "\\x20")
+    )
+    assert "WorkingDirectory=" + expected in unit
     assert "WorkingDirectory=\"" not in unit
+    if sys.platform != "win32":
+        # Python 3.13+ Windows isabs() rejects a leading slash without a drive.
+        assert GatewayServiceManager._working_directory("/home/owner home%folder") == (
+            "/home/owner\\x20home%%folder"
+        )
+    with pytest.raises(ValueError, match="must be absolute"):
+        GatewayServiceManager._working_directory("relative")
 
 
 def test_service_start_failure_includes_bounded_systemctl_diagnostic(
@@ -536,6 +556,7 @@ def test_service_status_fails_closed_when_user_manager_is_unavailable(tmp_path, 
 
 def test_user_service_install_is_atomic_token_free_and_verified(tmp_path, monkeypatch):
     monkeypatch.setenv("JARN_HOME", str(tmp_path / ".jarn"))
+    monkeypatch.setenv("USER", "operator")
     monkeypatch.setattr("jarn.telegram.setup.shutil.which", lambda name: f"/bin/{name}")
     calls: list[list[str]] = []
     started = False
@@ -566,7 +587,8 @@ def test_user_service_install_is_atomic_token_free_and_verified(tmp_path, monkey
     unit = manager.unit_path.read_text(encoding="utf-8")
     assert "ExecStart=" in unit
     assert "token" not in unit.lower()
-    assert manager.unit_path.stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":
+        assert manager.unit_path.stat().st_mode & 0o777 == 0o600
     assert ["systemctl", "--user", "daemon-reload"] in calls
     assert [
         "systemctl",

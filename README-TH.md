@@ -300,44 +300,52 @@ Reply ของ assistant render เป็น **Markdown** (heading, list, code 
 
 | Command | คำอธิบาย |
 |---|---|
-| `/help` | แสดง command และ shortcut ที่ใช้ได้ |
-| `/init` | สร้างไฟล์ JARN.md สำหรับ project context |
-| `/config` | ดูหรือแก้ settings: /config, /config get <key>, /config set <key> <value> (เซฟถาวร) |
-| `/model [/ref\|refresh]` | ดูหรือเปลี่ยน model ที่ใช้งานอยู่; /model refresh re-query local endpoint |
-| `/mode [plan\|ask\|auto-edit\|yolo]` | ดูหรือเปลี่ยน permission mode (plan/ask/auto-edit/yolo) |
-| `/theme [dark\|light\|high-contrast\|auto]` | ดูหรือเปลี่ยน color theme (dark/light/high-contrast/auto) |
-| `/sandbox [on\|off]` | ดูหรือ toggle execution backend (local/sandbox) |
-| `/key [<key>]` | ตั้ง/เปลี่ยน API key ของ provider ปัจจุบัน (keychain); Codex subscription จะพาไป `jarn codex login` |
-| `/preset [<preset-name>]` | ดูหรือ apply preset — shortcut ที่ตั้ง mode + sandbox พร้อมกัน |
-| `/cost` | ดู token usage และ cost ของ session |
-| `/modules [active]` | เปิดหน้าจอเลือก prompt module; เติม `active` เพื่อพิมพ์รายละเอียด module ที่เปิดอยู่ |
-| `/module [on <name> [turn\|session] \| off <name>]` | เปิดหน้าจอเลือก หรือเปิด/ปิด module โดยพิมพ์คำสั่งตรงๆ |
-| `/compact` | สรุปและบีบอัด conversation context |
-| `/expand` | เปิด tool output เต็มของ turn ล่าสุดใน pager (เหมือน Ctrl+O) |
-| `/clear` | ล้าง conversation และเริ่ม thread ใหม่ |
-| `/sessions` | รายการ session เก่า พร้อมเลือก resume |
-| `/resume` | เลือก session เก่าเพื่อ resume |
-| `/rewind` | ย้อนไป turn ก่อนหน้าแล้วทำต่อ (fork เป็น thread ใหม่) มี confirm ที่ restore working tree กลับไปที่ checkpoint ของ turn นั้นได้ด้วย เพื่อให้ conversation กับไฟล์ย้อนพร้อมกัน |
-| `/skill <name>` | เรียก skill ตามชื่อและ inject instruction เข้า turn แบบมีขอบเขต token |
-| `/skills` | รายการ skill ที่ใช้ได้ |
-| `/memory [search\|show\|add\|update\|delete\|dump] ...` | จัดการ long-term memory: list, search, show, add, update, delete, dump |
-| `/permissions` | ดู permission rule และ allowlist ปัจจุบัน |
-| `/mcp [status\|refresh\|prompts\|prompt <server> <name>\|resources\|read <server> <uri>]` | ดู health ของ MCP server, เรียก prompt และอ่าน resource จาก server |
-| `/trust` | trust project root นี้ เพื่อยกเลิก review-only floor ของ repo ที่ยังไม่ trust |
-| `/add-dir <path>` | เพิ่ม directory เข้า write scope ของ session นี้ (multi-root; ต้องอนุมัติ) |
-| `/queue [clear\|cancel <n>\|move <from> <to>\|steer <n>]` | ดูหรือจัดการ input ที่ queue ไว้ (ขณะ turn รันอยู่) |
-| `/undo` | ย้อนกลับ file change ของ agent turn ล่าสุด |
+| `/help [name]` | แสดงคำสั่งทั้งหมด หรือรายละเอียดของคำสั่งหนึ่ง |
+| `/status` | แสดง directory, model, mode, context และ recap ของ session |
+| `/model [name\|refresh]` | ดูหรือเปลี่ยน model ที่ใช้งานอยู่ |
+| `/mode [plan\|ask\|auto-edit\|yolo]` | ดูหรือเปลี่ยนว่า J.A.R.N. เปลี่ยนไฟล์ได้มากแค่ไหน |
+| `/theme [dark\|light\|high-contrast\|auto]` | ดูหรือเปลี่ยน color theme |
+| `/cost` | ดู token และ cost ของ session (alias: /usage) |
+| `/context [all]` | ดูว่าอะไรกำลังกิน context window |
+| `/verbose` | วนระดับการแสดง tool activity |
+| `/focus [on\|off\|status]` | ซ่อน tool chrome เหลือแค่คำตอบ |
+| `/modules [active]` | เปิดหน้าจอเลือก prompt module |
+| `/module [on <name> [turn\|session] \| off <name>]` | เปิดหรือปิด prompt module |
+| `/undo` | ย้อน file change ของ agent turn ล่าสุด |
 | `/redo` | ทำ file change ที่ undo ไปซ้ำอีกครั้ง |
-| `/abort` | ยกเลิก turn ที่กำลังรันและ roll back file change ของมัน |
-| `/commit` | ร่าง commit message จาก diff ปัจจุบันแล้ว commit (ขออนุมัติก่อน) |
-| `/review` | review diff ของ working-tree ปัจจุบันหาบั๊ก/คุณภาพ (read-only) |
+| `/abort` | หยุด turn นี้และ roll back ไฟล์ |
+| `/commit` | ร่าง commit จาก diff ปัจจุบัน (ถามก่อน) |
+| `/review` | review diff แบบ read-only |
+| `/compact [status]` | สรุปแล้วทำต่อใน thread ใหม่ |
+| `/expand` | เปิด tool output เต็มของ turn ล่าสุด |
+| `/memory [search\|show\|add\|update\|delete\|dump] …` | จัดการ long-term memory |
+| `/clear` | เริ่ม conversation ใหม่ (alias: /new) |
+| `/config [get <key> \| set <key> <value>]` | ดูหรือแก้ settings |
+| `/preset [<name>]` | ดูหรือ apply preset mode+sandbox |
+| `/sandbox [docker\|on\|off]` | ดูหรือเปลี่ยนที่ที่คำสั่งรัน |
+| `/trust` | trust โปรเจกต์นี้และยกเลิก read-only floor |
+| `/add-dir <path>` | เพิ่ม directory เข้า write scope ของ session |
+| `/mcp [status\|refresh\|prompts\|prompt <server> <name>\|resources\|read <server> <uri>]` | health / prompt / resource ของ MCP server |
+| `/telemetry status` | ดูสถานะ telemetry opt-in และสถิติ local sink |
+| `/skill <name>` | เรียก skill ตามชื่อ |
+| `/skills` | รายการ skill ที่ใช้ได้ |
+| `/init` | สร้างไฟล์ JARN.md สำหรับ project context |
+| `/permissions` | ดู permission rule และ allowlist |
+| `/key [<key>]` | ตั้ง API key ของ provider ปัจจุบัน (keychain) |
+| `/login` | เข้าสู่ระบบ ChatGPT |
+| `/logout` | ออกจากระบบ ChatGPT |
+| `/doctor` | ตรวจ configuration, provider, และ key |
+| `/tools` | รายการ tool ที่ agent ใช้ได้ใน session นี้ |
+| `/resume` | เลือก session เก่าเพื่อ resume |
+| `/rewind` | ย้อนไป turn ก่อนหน้า (fork เป็น thread ใหม่) |
+| `/sessions` | รายการ session เก่า |
+| `/title [text]` | ดูหรือตั้งชื่อ session |
 | `/checkpoints` | รายการ auto-checkpoint ล่าสุด |
-| `/ps [kill <id>]` | ดูหรือ kill background process (จาก run_in_background) |
-| `/quit` | ออกจาก J.A.R.N. |
-| `/map [focus] [--refresh]` | แสดง repo map ที่ rank แล้ว (ภาพรวม codebase) |
-| `/wiki [search <q>\|list]` | ค้นหาหรือแสดงรายการหน้า wiki knowledge base |
-| `/doctor` | ตรวจสอบ configuration, provider, และ key |
-| `/telemetry status` | ดูสถานะ telemetry opt-in และสถิติไฟล์ local sink |
+| `/ps [kill <id>]` | ดูหรือ kill background process |
+| `/queue [clear\|cancel <n>\|move <from> <to>\|steer <n>]` | ดูหรือจัดการ input ที่ queue ไว้ |
+| `/map [focus] [--refresh]` | แสดง repo map |
+| `/wiki [search <q>\|list]` | ค้นหาหรือแสดงรายการหน้า wiki |
+| `/quit` | ออกจาก J.A.R.N. (alias: /exit) |
 
 ## Permission modes (โหมดการอนุญาต)
 
@@ -397,7 +405,7 @@ API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${EN
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                 # 3070 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 3118 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts   # lint
 uv run mypy src/              # type-check (CI-gated)
 uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)

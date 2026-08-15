@@ -38,12 +38,11 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.markup import escape as _rich_escape
 
 from jarn.config.schema import Config
 from jarn.extensibility.commands import completion_catalog, parse_input
 from jarn.repl import turn as repl_turn
-from jarn.repl.commands import CommandMixin, format_todos
+from jarn.repl.commands import CommandMixin
 from jarn.repl.completer import _ShellEscapeLexer, _SlashFileCompleter
 from jarn.repl.keys import KeysMixin
 from jarn.repl.overlays import OverlayMixin
@@ -53,11 +52,11 @@ from jarn.repl_renderer import (
     _current_width,
 )
 from jarn.repl_renderer import esc as _esc
-from jarn.tui import palette
+from jarn.tui import grammar, layout, palette
 from jarn.tui.completion import CompletionProvider
 from jarn.tui.controller import Controller
 from jarn.tui.input_queue import InputQueue
-from jarn.tui.logo import SHORTCUT_HINT, splash, splash_compact
+from jarn.tui.logo import SHORTCUT_HINT, display_folder, splash, splash_compact, splash_info_strip
 from jarn.tui.notify import notify, set_title
 from jarn.tui.toolbar import render_toolbar
 from jarn.version import __version__
@@ -76,6 +75,21 @@ _LIVE_TODOS_CAP = 8
 # controller's bounded background/thread paths and is still single-flighted if
 # the user submits immediately.
 _DEFERRED_RUNTIME_DELAY_SECONDS = 0.05
+
+
+def _startup_info_strip(app) -> str:
+    """Model / folder / mode strip printed under every splash variant."""
+    cfg = app.controller.config
+    model = cfg.resolved_main_model() or "unconfigured"
+    skills = None
+    if app.controller.runtime and app.controller.runtime.skills:
+        skills = len(app.controller.runtime.skills)
+    return splash_info_strip(
+        model=model,
+        folder=display_folder(app.controller.project_root),
+        mode=cfg.permission_mode.value,
+        skills=skills,
+    )
 
 
 class _GhostAutoSuggestion(AppendAutoSuggestion):
@@ -237,8 +251,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             c.print(splash_compact(__version__))
         else:  # off
             c.print(SHORTCUT_HINT)
-        c.print(f"[{palette.C_DIM}]terminal mode · Enter send · Shift+Enter newline · "
-                f"Shift+Tab mode · Esc interrupt · Ctrl+O or /expand · Ctrl+C exit[/{palette.C_DIM}]")
+        c.print(_startup_info_strip(self))
         # Startup notice: name the context file whose bounded excerpt was loaded.
         if self.controller.project_trusted and self.controller.project_root is not None:
             from jarn.memory.context import resolve_context_file
@@ -247,21 +260,23 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 context_files=self.config.compat.context_files,
             )
             if _ctx_path is not None:
-                c.print(
-                    f"[{palette.C_DIM}]context: {_ctx_path.name}[/{palette.C_DIM}]"
-                )
+                c.print(layout.muted(f"context: {_ctx_path.name}"))
         # One-time untrusted-project notice: the review-only floor is active and
         # capability keys were stripped. Surfaced once in scrollback (not per turn)
         # so the user knows why modes are clamped and how to unlock.
         if not self.controller.project_trusted and self.controller.project_root is not None:
             c.print(
-                f"[{palette.C_WARN}]⚠ This project is untrusted[/{palette.C_WARN}] "
-                f"[{palette.C_DIM}]— review-only floor active (modes clamped to plan; "
-                f"project hooks/MCP/providers ignored). Run [/{palette.C_DIM}]"
-                f"[{palette.C_NOTICE}]/trust[/{palette.C_NOTICE}]"
-                f"[{palette.C_DIM}] or [/{palette.C_DIM}]"
-                f"[{palette.C_NOTICE}]jarn trust[/{palette.C_NOTICE}]"
-                f"[{palette.C_DIM}] to unlock.[/{palette.C_DIM}]"
+                layout.warn(grammar.GLYPH_WARN + " This project is untrusted")
+                + " "
+                + layout.muted(
+                    "— review-only floor active (modes clamped to plan; "
+                    "project hooks/MCP/providers ignored). Run"
+                )
+                + " "
+                + layout.notice("/trust")
+                + layout.muted(" or ")
+                + layout.notice("jarn trust")
+                + layout.muted(" to unlock.")
             )
         # Background update-available check — never blocks the first prompt.
         from jarn.update_check import maybe_start_update_check
@@ -329,8 +344,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             await self.controller.ensure_runtime()
         except Exception as exc:  # noqa: BLE001
             self.console.print(
-                f"[{palette.C_WARN}]extensions not loaded:[/{palette.C_WARN}] {exc}  "
-                f"[{palette.C_DIM}]· send a message or run jarn setup[/{palette.C_DIM}]"
+                layout.warn("extensions not loaded:")
+                + f" {layout.escape(str(exc))} "
+                + layout.sep()
+                + layout.muted("send a message or run jarn setup")
             )
 
     def _warm_pricing_catalog(self) -> None:
@@ -344,8 +361,9 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             return
         if not network_fetch_enabled(config_network=self.config.pricing.network):
             self.console.print(
-                f"[{palette.C_DIM}]Network pricing catalog disabled "
-                f"— using bundled/override prices.[/{palette.C_DIM}]"
+                layout.muted(
+                    "Network pricing catalog disabled — using bundled/override prices."
+                )
             )
             return
         import threading
@@ -376,7 +394,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             BufferControl(
                 self.input,
                 input_processors=[
-                    BeforeInput("› ", style="bold"),
+                    BeforeInput(f"{grammar.GLYPH_PROMPT} ", style="bold"),
                     # Ghost autosuggest: renders the upcoming suggestion suffix in
                     # a dim colour after the cursor.  Hidden when the completion
                     # dropdown is open so both UI layers never appear together.
@@ -386,8 +404,11 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             ),
             height=Dimension(min=1, max=10), wrap_lines=True, dont_extend_height=True,
         )
-        toolbar = Window(
-            FormattedTextControl(self._toolbar), height=1, style="class:bottom-toolbar",
+        toolbar = ConditionalContainer(
+            Window(
+                FormattedTextControl(self._toolbar), height=1, style="class:bottom-toolbar",
+            ),
+            filter=Condition(lambda: self.controller.config.ui.statusbar),
         )
         # In-app pager overlay (Ctrl+O / /expand): a scrollable read-only view of
         # the last turn's full tool output, toggled with Ctrl+O. Rendered by the
@@ -500,13 +521,11 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self.controller._steer_slot = None
         killed = self.controller.terminate_shells()
         if killed:
-            self.console.print(f"[{palette.C_DIM}]stopped {killed} running command(s)[/{palette.C_DIM}]")
+            self.console.print(layout.muted(f"stopped {killed} running command(s)"))
         if note_edits and self._turn_made_edits():
             note = self.controller.cancel_edit_note()
             if note:
-                self.console.print(
-                    f"[{palette.C_DIM}]{_rich_escape(note)}[/{palette.C_DIM}]", highlight=False
-                )
+                self.console.print(layout.muted(note), highlight=False)
 
     def _turn_made_edits(self) -> bool:
         """Whether the just-cancelled turn applied a file edit (write/edit) —
@@ -570,7 +589,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             width=width,
             file=buf,
         )
-        cap.print(f"[{palette.C_DIM}]{_rich_escape(text)}[/{palette.C_DIM}]", end="")
+        cap.print(layout.muted(text), end="")
         return buf.getvalue().rstrip("\n")
 
     def _stream_height(self) -> Dimension:
@@ -655,7 +674,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             return ""
         width = _current_width()
         self.console.width = width
-        lines = format_todos(self._live_todos, width, cap=_LIVE_TODOS_CAP)
+        lines = layout.format_todos(self._live_todos, width, cap=_LIVE_TODOS_CAP)
         buf = io.StringIO()
         plain_terminal = palette.no_color()
         cap = Console(
@@ -686,11 +705,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             width=width,
             file=buf,
         )
-        cap.print(
-            f"[{palette.C_TOOL}]{frame}[/{palette.C_TOOL}] "
-            f"[{palette.C_DIM}]{_rich_escape(text)}[/{palette.C_DIM}]",
-            end="",
-        )
+        cap.print(layout.spinner(frame, text), end="")
         return buf.getvalue().rstrip("\n")
 
     def _flash(self, html: HTML, secs: float = 2.0) -> None:
@@ -729,7 +744,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         for i, (label, _) in enumerate(self._menu_options):
             if i == self._menu_index:
                 lines.append(
-                    f'<style fg="{palette.C_USER}"><b>› {_esc(label)}</b></style>'
+                    f'<style fg="{palette.C_USER}"><b>{grammar.GLYPH_PROMPT} {_esc(label)}</b></style>'
                 )
             else:
                 lines.append(f'<style fg="{palette.C_DIM}">  {_esc(label)}</style>')
@@ -823,10 +838,13 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 auth = "API key"
         tracker = self.controller.tracker
         ctx_frac: float | None = None
+        ctx_used: int | None = None
+        ctx_window: int | None = None
         ctx = self.controller.context_status()
         if ctx is not None:
-            _tokens, _window, ctx_frac = ctx
+            ctx_used, ctx_window, ctx_frac = ctx
         width = shutil.get_terminal_size((100, 24)).columns
+        elapsed = time.monotonic() - self.controller.session_started_at
         return render_toolbar(
             model=model,
             mode=cfg.permission_mode.value,
@@ -839,6 +857,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             trusted=self.controller.project_trusted,
             queue_count=len(self._input_queue),
             context_frac=ctx_frac,
+            context_used=ctx_used,
+            context_window=ctx_window,
+            elapsed_s=elapsed,
+            context_bar=cfg.ui.context_bar,
             width=width,
         )
 
@@ -853,8 +875,9 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         mcp_servers = [
             s.name for s in self.config.mcp_servers if s.enabled
         ]
+        skills = self.controller.runtime.skills if self.controller.runtime else None
         return CompletionProvider(
-            command_catalog=completion_catalog(custom),
+            command_catalog=completion_catalog(custom, skills=skills),
             project_root=self.controller.project_root,
             model_refs=model_refs or None,
             session_titles=session_titles or None,
@@ -880,9 +903,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                     rel = path
                 at_ref = rel.as_posix() if hasattr(rel, "as_posix") else str(rel).replace("\\", "/")
                 self.input.insert_text(f"@{at_ref} ")
-                self.console.print(
-                    f"[{palette.C_NOTICE}]📎 attached {_rich_escape(at_ref)}[/{palette.C_NOTICE}]"
-                )
+                self.console.print(layout.notice(f"📎 attached {at_ref}"))
             if self.app is not None:
                 self.app.invalidate()
 
@@ -926,7 +947,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             return
         self.controller._steer_slot = line.payload
         self.console.print(
-            f"[{palette.C_DIM}]› (steered) {_rich_escape(line.display)}[/{palette.C_DIM}]"
+            layout.muted(f"{grammar.GLYPH_PROMPT} (steered) {line.display}")
         )
         if self.app is not None:
             self.app.invalidate()
@@ -945,7 +966,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         if line is None:
             return (False, f"No item at {n}.")
         self.controller._steer_slot = line.payload
-        return (True, f"› (steered) {line.display}")
+        return (True, f"{grammar.GLYPH_PROMPT} (steered) {line.display}")
 
     def _drain_queue(self) -> None:
         """Start the next queued line as a new turn (mirrors the submit path)."""
@@ -1038,15 +1059,14 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             logging.getLogger("jarn").error("turn failed", exc_info=exc)
             from jarn.config import paths
 
-            self.console.print(
-                f"[{palette.C_ERROR}]{_rich_escape(str(exc))}[/{palette.C_ERROR}]"
-            )
+            self.console.print(layout.err(str(exc)))
             # soft_wrap so a long log path isn't word-wrapped mid-token (that split
             # ".../jarn.log" across a line on narrow / CI-width terminals).
             self.console.print(
-                f"[{palette.C_DIM}]full traceback → "
-                f"{paths.global_logs_dir() / 'jarn.log'}"
-                f" — report: jarn bug[/{palette.C_DIM}]",
+                layout.muted(
+                    f"full traceback → {paths.global_logs_dir() / 'jarn.log'} "
+                    "— report: jarn bug"
+                ),
                 soft_wrap=True,
                 highlight=False,
             )

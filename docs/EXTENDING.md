@@ -146,19 +146,15 @@ reports the exact body tokens, scope, source, and truncation state as plain text
 
 ### Built-in commands
 
-Shipped commands are declared in `src/jarn/extensibility/commands.py` as typed
-`BuiltinCommand` entries in the `BUILTINS` tuple (`route: controller` →
-`Controller._cmd_*`, or `route: repl` → handled in `repl.py`). `/help`, Tab
-completion, and the README command table all derive from this registry — when adding
-a built-in, update `BUILTINS` and keep `README.md` in sync
+Shipped commands are declared in `src/jarn/commands/registry.py` as typed
+`CommandSpec` entries (`layer: core` / `ui` / `both`). `extensibility/commands.py`
+exposes a `BUILTINS` facade for completion and older call sites. `/help`, usage
+errors, Tab completion, and the README command table all derive from the registry —
+when adding a built-in, update `COMMAND_SPECS` and keep `README.md` in sync
 (`tests/test_phase3.py::test_readme_commands_match_registry`).
 
-Current built-ins: `/help`, `/init`, `/config`, `/model`, `/mode`, `/sandbox`,
-`/preset`, `/cost`, `/modules`, `/module`, `/compact`, `/expand`, `/clear`,
-`/sessions`, `/resume`, `/skill`, `/skills`, `/memory`, `/permissions`, `/mcp`,
-`/trust`, `/queue`, `/undo`, `/redo`, `/checkpoints`, `/map`, `/wiki`, `/quit`. The README command table is the
-authoritative list (kept in sync by the parity test). See
-[README.md § Built-in commands](../README.md#built-in-commands).
+The README command table is the authoritative list (kept in sync by the parity
+test). See [README.md § Built-in commands](../README.md#built-in-commands).
 
 ### Custom commands
 

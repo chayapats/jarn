@@ -52,7 +52,7 @@ targets v1.0.9 GA; consult the release and package registries for publication st
 - [x] Session title from first prompt (sticky across turns)
 - [x] Multiline input (Enter submit, history, `/` commands, Esc cancel)
 - [x] Cyan/teal themes (dark / light / high-contrast) + ASCII splash
-- [x] Typed command registry (`BUILTINS`) — `/help`, completion, and docs share one source
+- [x] Typed command registry (`commands/registry.py`) — `/help`, usage errors, completion, and docs share one source
 - [x] Adaptive toolbar (model · mode · queue · context · cost) with width collapse
 - [x] Input queue UX — toolbar count + `/queue` list/clear/cancel/move
 - [x] Parallel tool-call correlation via `tool_call_id` per-call durations
@@ -188,6 +188,25 @@ multi-agent review. See the design spec under `docs/superpowers/specs/`.
 - [x] **Wiki knowledge base** — `~/.jarn/wiki` + `<project>/.jarn/wiki`; tools
   `wiki_search` / `wiki_read` / `wiki_write` / `wiki_append`; `/wiki` command;
   `wiki.enabled` (default `false`); project tier gated by trust
+
+## Planned — Hermes-aligned display & command standard
+
+Design spec: [2026-08-15-hermes-aligned-display-standard.md](specs/2026-08-15-hermes-aligned-display-standard.md).
+
+Goal: slash commands, live turn output, toolbar, `jarn --help`, and `jarn doctor`
+share one visual grammar — plain-language copy, palette-only colors, consistent
+spacing — matching the clarity of Hermes Agent without copying its branding.
+
+- [ ] **Wave A** — one palette + `tui/layout.py` helpers; doctor/config/module
+  panels stop using hardcoded `[green]` / hex
+- [ ] **Wave B** — readable `/help` (columns, `/help <cmd>`, case-insensitive
+  names, skills as slash commands, usage-error helper)
+- [ ] **Wave C** — splash info strip, toolbar fill bar + duration + sticky YOLO,
+  quiet default tool stream (`/verbose`, `/focus`)
+- [ ] **Wave D** — restyle `/status` (local recap), split `/context` from `/cost`,
+  `/tools`, `/title`
+- [ ] **Wave E** — grouped `jarn --help`, TTY-friendly errors, Telegram HTML
+  dialect of the same helpers
 
 ## v2+ / launch-gated (scaffolded + documented, not shipped)
 

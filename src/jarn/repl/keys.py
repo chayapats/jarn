@@ -10,10 +10,9 @@ from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
-from rich.markup import escape as _rich_escape
 
 from jarn.extensibility.commands import parse_input
-from jarn.tui import palette
+from jarn.tui import grammar, layout, palette
 
 #: Seconds the ``[s]`` steer fastkey stays armed after a ``» queued`` echo. Long
 #: enough to press ``s`` right after queuing (the hint says "[s] steer now"), short
@@ -76,9 +75,7 @@ class KeysMixin:
                 # the transcript.  The history picker is identified by
                 # _menu_filter being not None (it is "" when no chars typed yet).
                 if self._menu_filter is None:
-                    self.console.print(
-                        f"[{palette.C_DIM}]› {_rich_escape(label)}[/{palette.C_DIM}]"
-                    )
+                    self.console.print(layout.muted(f"{grammar.GLYPH_PROMPT} {label}"))
                 self._menu_future.set_result(value)
                 return
             text = self.input.text
@@ -86,7 +83,7 @@ class KeysMixin:
             if self._line_future is not None and not self._line_future.done():
                 self.input.reset()
                 if text.strip():
-                    self.console.print(f"[{palette.C_DIM}]› {_rich_escape(text.strip())}[/{palette.C_DIM}]")
+                    self.console.print(layout.muted(f"{grammar.GLYPH_PROMPT} {text.strip()}"))
                 self._line_future.set_result(text)
                 return
             stripped = text.strip()
@@ -97,7 +94,7 @@ class KeysMixin:
             if self._busy() and parse_input(stripped).name == "abort":
                 self.input.append_to_history()
                 self.input.reset()
-                self.console.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(stripped)}")
+                self.console.print(layout.prompt(stripped))
                 asyncio.create_task(self._command("abort", ""))
                 return
             if self._busy():
@@ -121,8 +118,7 @@ class KeysMixin:
                         steer_hint = "  ·  [s] steer now"
                         self._steer_armed_until = time.monotonic() + _STEER_ARM_WINDOW_S
                     self.console.print(
-                        f"[{palette.C_DIM}]» queued: {_rich_escape(stripped)}"
-                        f"{steer_hint}[/{palette.C_DIM}]"
+                        layout.steer(stripped, queued=True, hint=steer_hint)
                     )
                 else:
                     self.input.reset()
@@ -134,9 +130,9 @@ class KeysMixin:
                 if not self._hinted:
                     self._hinted = True
                     self.console.print(
-                        f"[{palette.C_DIM}]type a message"
-                        f" · / commands · @ files · Esc Esc rewind"
-                        f"[/{palette.C_DIM}]"
+                        layout.muted(
+                            "type a message · / commands · @ files · Esc Esc rewind"
+                        )
                     )
                 return
             # Echo the submitted line into the scrollback transcript (the
@@ -154,22 +150,15 @@ class KeysMixin:
                     m.group(1) == "git" and m.group(2) in _GIT_ALLOWLIST
                     for m in _MENTION_EXPAND_RE.finditer(send)
                 ):
-                    self.console.print(
-                        f"[{palette.C_DIM}]expanding @git mention…[/{palette.C_DIM}]"
-                    )
+                    self.console.print(layout.muted("expanding @git mention…"))
             send = self._expand_mentions(send)
             self._pastes.clear()
             if stripped.startswith("!"):
                 # Host shell escape — echo in red with a clear marker so it's
                 # obvious this ran outside the agent (no approval).
-                cmd = _rich_escape(stripped[1:].strip())
-                self.console.print(
-                    f"[{palette.C_ERROR}]![/{palette.C_ERROR}] "
-                    f"[{palette.C_ERROR}]{cmd}[/{palette.C_ERROR}] "
-                    f"[{palette.C_DIM}](host shell)[/{palette.C_DIM}]"
-                )
+                self.console.print(layout.host_shell(stripped[1:].strip()))
             else:
-                self.console.print(f"[{palette.C_USER}]›[/{palette.C_USER}] {_rich_escape(stripped)}")
+                self.console.print(layout.prompt(stripped))
             # Real user input starts a fresh turn-chain: reset the diagnostics
             # auto-fix round counter (T-3-3 loop guard).
             self.controller._diag_chain_round = 0
@@ -268,9 +257,7 @@ class KeysMixin:
                         (lbl for lbl, v in self._menu_options if v is value),
                         char,
                     )
-                    self.console.print(
-                        f"[{palette.C_DIM}]› {_rich_escape(label)}[/{palette.C_DIM}]"
-                    )
+                    self.console.print(layout.muted(f"{grammar.GLYPH_PROMPT} {label}"))
                     self._menu_future.set_result(value)
                     return
                 if self._menu_filter is not None:
@@ -348,13 +335,11 @@ class KeysMixin:
                 return
             new = self.controller.cycle_mode()
             self._armed = False
-            color = palette.MODE_COLOR.get(new, "#22d3ee")
-            glyph = palette.MODE_GLYPH.get(new, "◆")
-            # transient flash above the input (not a permanent scrollback line);
-            # the toolbar also reflects the new mode immediately.
+            color = palette.MODE_COLOR.get(new, palette.ACCENT)
+            glyph = palette.MODE_GLYPH.get(new, palette.MODE_GLYPH["ask"])
             self._flash(HTML(
                 f'<style fg="{color}"><b>{glyph} {new}</b></style> '
-                f'<style fg="#7c8f94">mode</style>'
+                f'<style fg="{palette.C_DIM}">mode</style>'
             ))
             event.app.invalidate()
 
@@ -539,6 +524,6 @@ class KeysMixin:
                 event.app.exit()  # second consecutive Ctrl+C exits
             else:
                 self._armed = True
-                self.console.print(f"[{palette.C_DIM}]press Ctrl+C again to exit[/{palette.C_DIM}]")
+                self.console.print(layout.muted("press Ctrl+C again to exit"))
 
         return kb

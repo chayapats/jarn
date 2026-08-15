@@ -207,6 +207,13 @@ def test_parse_input_help_still_command():
     assert p.is_shell is False
 
 
+def test_parse_input_is_case_insensitive():
+    p = parse_input("/HELP compact")
+    assert p.is_command is True
+    assert p.name == "help"
+    assert p.args == "compact"
+
+
 def test_parse_input_plain_chat_not_shell():
     p = parse_input("hello world")
     assert p.is_command is False and p.is_shell is False

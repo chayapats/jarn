@@ -6,11 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from jarn.agent.prompt_modules import PromptModuleScope, PromptModuleStatus
-
-_C_ACCENT = "#22d3ee"
-_C_DIM = "#7c8f94"
-_C_ON = "#3fb950"
-_C_ERR = "#f85149"
+from jarn.tui import grammar, palette
 
 _FRIENDLY_NAMES = {
     "mode.plan": "Plan guidance",
@@ -177,13 +173,13 @@ class ModulePanel:
     def _state(status: PromptModuleStatus) -> tuple[str, str]:
         if status.user_activatable:
             if not status.active:
-                return _C_DIM, "○ Off"
+                return palette.C_DIM, f"{grammar.GLYPH_KEY_OFF} Off"
             if status.scope == "session":
-                return _C_ON, "● Session"
-            return _C_ON, "● Next turn"
+                return palette.C_SUCCESS, f"{grammar.GLYPH_KEY_OK} Session"
+            return palette.C_SUCCESS, f"{grammar.GLYPH_KEY_OK} Next turn"
         if status.active:
-            return _C_ON, "● Auto on"
-        return _C_DIM, "○ Auto off"
+            return palette.C_SUCCESS, f"{grammar.GLYPH_KEY_OK} Auto on"
+        return palette.C_DIM, f"{grammar.GLYPH_KEY_OFF} Auto off"
 
     def _visible_range(self) -> tuple[int, int]:
         total = len(self.statuses)
@@ -200,20 +196,20 @@ class ModulePanel:
         optional = sum(status.user_activatable for status in self.statuses)
         out: list[tuple[str, str]] = [
             ("bold", "  ◫  Prompt modules"),
-            (_C_DIM, "   esc/q to close\n"),
+            (palette.C_DIM, "   esc/q to close\n"),
             (
-                _C_DIM,
+                palette.C_DIM,
                 f"   {active} active · {optional} optional skill"
                 f"{'s' if optional != 1 else ''}\n\n",
             ),
         ]
         if not self.statuses:
-            out.append((_C_DIM, "   No prompt modules are available.\n"))
+            out.append((palette.C_DIM, "   No prompt modules are available.\n"))
             return out
 
         start, end = self._visible_range()
         if start:
-            out.append((_C_DIM, f"   ↑ {start} more\n"))
+            out.append((palette.C_DIM, f"   ↑ {start} more\n"))
 
         visible = self.statuses[start:end]
         previous_kind: str | None = None
@@ -221,7 +217,7 @@ class ModulePanel:
         for absolute_index, status in enumerate(visible, start=start):
             kind = "Optional skills" if status.user_activatable else "Automatic"
             if kind != previous_kind:
-                out.append((_C_ACCENT, f"   {kind.upper()}\n"))
+                out.append((palette.ACCENT, f"   {kind.upper()}\n"))
                 previous_kind = kind
             selected = absolute_index == self.item_index
             label = self._label(status).ljust(label_width)
@@ -236,20 +232,20 @@ class ModulePanel:
 
         hidden = len(self.statuses) - end
         if hidden:
-            out.append((_C_DIM, f"   ↓ {hidden} more\n"))
+            out.append((palette.C_DIM, f"   ↓ {hidden} more\n"))
 
         status = self.current()
-        out.append((_C_DIM, "\n   " + "─" * 58 + "\n"))
+        out.append((palette.C_DIM, "\n   " + "─" * 58 + "\n"))
         out.append(("bold", f"   {self._label(status)}  "))
-        out.append((_C_DIM, f"{status.name}\n"))
+        out.append((palette.C_DIM, f"{status.name}\n"))
         out.append(("", f"   {self._description(status)}\n"))
         out.append(
-            (_C_DIM, f"   Why: {self._short(status.activation_reason, 120)}\n")
+            (palette.C_DIM, f"   Why: {self._short(status.activation_reason, 120)}\n")
         )
         if status.configured_budget is not None:
             out.append(
                 (
-                    _C_DIM,
+                    palette.C_DIM,
                     f"   Prompt size: {status.token_count:,}/"
                     f"{status.configured_budget:,} tokens\n",
                 )
@@ -257,14 +253,14 @@ class ModulePanel:
         if status.user_activatable:
             out.append(
                 (
-                    _C_ACCENT,
+                    palette.ACCENT,
                     "   Space/Enter next turn or off · s keep for session · x off\n",
                 )
             )
         else:
-            out.append((_C_DIM, "   Managed automatically · cannot be toggled here\n"))
-        out.append((_C_DIM, "   ↑/↓ move · Esc/q close\n"))
+            out.append((palette.C_DIM, "   Managed automatically · cannot be toggled here\n"))
+        out.append((palette.C_DIM, "   ↑/↓ move · Esc/q close\n"))
         if self.message:
-            style, glyph = (_C_ON, "✓") if self.message_ok else (_C_ERR, "!")
+            style, glyph = (palette.C_SUCCESS, grammar.GLYPH_OK) if self.message_ok else (palette.C_ERROR, grammar.GLYPH_FAIL)
             out.append((style, f"   {glyph} {self.message}\n"))
         return out

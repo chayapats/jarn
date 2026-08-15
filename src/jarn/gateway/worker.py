@@ -374,11 +374,40 @@ class GatewayWorker:
             self.controller.bind_turn_task(None)
             self._touch()
 
+    async def _try_local_slash(self, frame: TurnFrame) -> bool:
+        """Run registry display commands locally — same pages as the REPL."""
+        from jarn.commands.registry import is_gateway_local_command, parse_slash_line
+        from jarn.controller.core import CommandResult
+
+        parsed = parse_slash_line(frame.text)
+        if parsed is None:
+            return False
+        name, args = parsed
+        if not is_gateway_local_command(name):
+            return False
+        handler = getattr(self.controller, "handle_command", None)
+        if not callable(handler):
+            return False
+        result = handler(name, args)
+        if not isinstance(result, CommandResult) or result.seed_turn:
+            return False
+        await self.aemit(
+            EventFrame(
+                thread_id=frame.thread_id,
+                kind="notice",
+                text=result.text or "",
+            )
+        )
+        await self.aemit(EventFrame(thread_id=frame.thread_id, kind="done"))
+        return True
+
     async def _run_turn(self, frame: TurnFrame) -> None:
         thread_id = frame.thread_id
         try:
             self.controller.resume_thread(thread_id)
             await self.controller.ensure_runtime()
+            if not frame.media and await self._try_local_slash(frame):
+                return
             enriched = await asyncio.to_thread(self.controller.enrich_turn_input, frame.text)
             approver = self._make_park_approver(
                 thread_id,

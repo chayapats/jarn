@@ -44,6 +44,7 @@ from jarn.onboarding.credentials import (
 )
 from jarn.onboarding.outcome import SetupCommandError, SetupFailureKind
 from jarn.onboarding.state import clear_setup_state, save_setup_state
+from jarn.tui import grammar, layout
 
 
 class SetupFlowError(SetupCommandError):
@@ -266,9 +267,9 @@ def finalize_setup(
                         parsed = config_to_dataclass(parse_config_model(staged.candidate))
                         configured_provider = parsed.providers[provider]
                         console.print(
-                            f"[green]✔[/green] Using provider-reported default "
-                            f"[b]{selected.display_name}[/b] "
-                            f"[dim]({snapshot.provenance_label})[/dim]"
+                            f"{layout.ok(grammar.GLYPH_OK)} Using provider-reported default "
+                            f"{layout.strong(selected.display_name)} "
+                            f"{layout.muted('(' + snapshot.provenance_label + ')')}"
                         )
                 if selected is None:
                     raise SetupFlowError(
@@ -280,7 +281,7 @@ def finalize_setup(
                 if not valid:
                     raise SetupFlowError(detail, kind=SetupFailureKind.MODEL)
             console.print(
-                "\n[yellow]Required readiness validation (may be billable)[/yellow]: "
+                f"\n{layout.warn('Required readiness validation (may be billable)')}: "
                 "sends one real model request and may consume provider credits."
             )
             if not Confirm.ask("Send the validation request and finish setup?", default=False):

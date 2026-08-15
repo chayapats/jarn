@@ -481,6 +481,15 @@ class SessionInfo:
         return time.strftime("%Y-%m-%d %H:%M", time.localtime(self.updated_at))
 
 
+def session_label(session: Any) -> str:
+    """Compact label shared by `/sessions` and the `/resume` picker.
+
+    ``{updated}  {title}  {thread_id[:8]}`` — plain text, no markup.
+    """
+    title = getattr(session, "title", "") or "(untitled)"
+    return f"{session.updated_human}  {title}  {str(session.thread_id)[:8]}"
+
+
 class SessionIndex:
     """A tiny side-table mapping thread ids to human titles/timestamps.
 

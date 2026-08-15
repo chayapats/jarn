@@ -265,6 +265,11 @@ ui:
   accent: cyan
   splash: compact       # full | compact (default) | off
   approval_diff_lines: 40   # max diff lines inline before "View full diff" in an approval
+  wrap_at: 120          # 0 = terminal width
+  tool_progress: new    # off | new | all | verbose
+  show_reasoning: collapsed  # collapsed | full | off
+  statusbar: true
+  context_bar: true
 
 # ── Cross-vendor interop ──────────────────────────────────────────────────────
 # Controls which context file is auto-loaded and whether ~/.claude / .claude/

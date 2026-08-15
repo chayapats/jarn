@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import stat
@@ -60,6 +61,22 @@ def test_parser_exposes_ga_admin_surface_and_exit_taxonomy() -> None:
     help_text = parser.format_help()
     assert "Stable exit codes:" in help_text
     assert "3 auth" in help_text and "7 update/rollback failed" in help_text
+    assert "Start:" in help_text
+    assert "One-shot:" in help_text
+    assert help_text.index("Start and common commands:") < help_text.index("Start:")
+    assert "See `jarn <command> --help`" in help_text
+    assert "positional arguments" not in help_text
+    assert "COMMAND" in help_text
+    assert "\nCommands\n" in help_text or help_text.startswith("Commands") or "\nCommands" in help_text
+    from jarn import cli as cli_mod
+
+    listed = [name for _, names in cli_mod._CLI_COMMAND_GROUPS for name in names]
+    sub = next(
+        action for action in parser._actions if action.__class__.__name__ == "_SubParsersAction"
+    )
+    assert set(listed) == set(sub.choices)
+    for name in listed:
+        assert name in help_text
 
 
 def test_top_level_help_is_offline_complete_plain_and_non_mutating(tmp_path: Path) -> None:
@@ -92,6 +109,7 @@ socket.getaddrinfo = denied
         encoding="utf-8",
     )
     jarn_home = tmp_path / "missing-jarn-home"
+    src = str(Path(__file__).resolve().parents[1] / "src")
     env = dict(os.environ)
     env.update(
         {
@@ -101,7 +119,9 @@ socket.getaddrinfo = denied
             "JARN_HOME": str(jarn_home),
             "NO_COLOR": "1",
             "PYTHONPATH": os.pathsep.join(
-                part for part in (str(guard_dir), env.get("PYTHONPATH", "")) if part
+                part
+                for part in (str(guard_dir), src, env.get("PYTHONPATH", ""))
+                if part
             ),
             "TERM": "dumb",
         }
@@ -151,6 +171,42 @@ socket.getaddrinfo = denied
         assert detail in help_text
     assert len(help_text.splitlines()) <= 160
     assert len(help_text) <= 12_000
+
+
+def _subparser(parser: argparse.ArgumentParser, *names: str) -> argparse.ArgumentParser:
+    current = parser
+    for name in names:
+        sub = next(
+            action
+            for action in current._actions
+            if action.__class__.__name__ == "_SubParsersAction"
+        )
+        current = sub.choices[name]
+    return current
+
+
+def test_busy_subcommand_help_uses_argument_groups() -> None:
+    """Busy CLIs scan like Hermes: flags sit in named groups, dests unchanged."""
+    parser = cli.build_parser()
+    exec_help = _subparser(parser, "exec").format_help()
+    assert "Input:" in exec_help and "Output:" in exec_help and "Run:" in exec_help
+    doctor_help = _subparser(parser, "doctor").format_help()
+    assert "Repair:" in doctor_help and "Checks:" in doctor_help and "Output:" in doctor_help
+    update_help = _subparser(parser, "update").format_help()
+    assert "Release:" in update_help and "Mode:" in update_help and "Output:" in update_help
+    sessions_help = _subparser(parser, "sessions").format_help()
+    assert "Output:" in sessions_help and "Confirm:" in sessions_help
+    gateway_help = _subparser(parser, "gateway").format_help()
+    assert "Run:" in gateway_help and "Setup:" in gateway_help and "Confirm:" in gateway_help
+    assert "fake-backend" in gateway_help
+    login_help = _subparser(parser, "auth", "login").format_help()
+    assert "Method:" in login_help and "Wait:" in login_help and "Output:" in login_help
+    reset_help = _subparser(parser, "config", "reset").format_help()
+    assert "Scope:" in reset_help and "Confirm:" in reset_help
+    parsed = parser.parse_args(["exec", "do the thing", "--json", "--max-turns", "2"])
+    assert parsed.headless_prompt == "do the thing"
+    assert parsed.json is True
+    assert parsed.headless_max_turns == 2
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")

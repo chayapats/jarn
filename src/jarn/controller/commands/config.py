@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from jarn.commands.help import usage_error
 from jarn.config.schema import PermissionMode
 from jarn.controller.core import CommandResult
-from jarn.tui import palette
+from jarn.tui import layout
 
 if TYPE_CHECKING:
     from jarn.controller.core import Controller
@@ -23,7 +24,7 @@ def cmd_config(ctrl: Controller, args: str) -> CommandResult:
     sub = parts[0]
     if sub == "get":
         if len(parts) < 2:
-            return CommandResult("Usage: /config get <key>")
+            return CommandResult(usage_error("config"))
         key = parts[1]
         spec = settings.setting_for(key)
         if spec is None:
@@ -33,13 +34,13 @@ def cmd_config(ctrl: Controller, args: str) -> CommandResult:
         tail = ""
         if spec.choices:
             opts = ", ".join(c if c else "(none)" for c in spec.choices)
-            tail = f"  [{palette.C_DIM}](choices: {opts})[/{palette.C_DIM}]"
+            tail = f"  {layout.muted('(choices: ' + opts + ')')}"
         return CommandResult(f"{key} = {shown}{tail}")
     if sub == "set":
         if len(parts) < 3:
-            return CommandResult("Usage: /config set <key> <value>")
+            return CommandResult(usage_error("config"))
         return ctrl._config_set(parts[1], parts[2])
-    return CommandResult("Usage: /config  |  /config get <key>  |  /config set <key> <value>")
+    return CommandResult(usage_error("config"))
 
 
 def cmd_preset(ctrl, args: str) -> CommandResult:
@@ -84,8 +85,13 @@ def cmd_sandbox(ctrl, args: str) -> CommandResult:
     current = ctrl.config.execution.backend
     if not args.strip():
         return CommandResult(
-            f"Execution backend: {current} · isolation: {ctrl.isolation_level()}. "
-            "Use /sandbox docker|on|off."
+            "\n".join(
+                [
+                    layout.kv("Backend", current),
+                    layout.kv("Isolation", ctrl.isolation_level()),
+                    layout.muted("Use /sandbox docker|on|off."),
+                ]
+            )
         )
     # Untrusted projects can't weaken isolation at runtime (defence in depth
     # alongside the untrusted-mode floor); viewing it (no-arg) stays allowed.
@@ -101,7 +107,7 @@ def cmd_sandbox(ctrl, args: str) -> CommandResult:
     elif choice in ("off", "local"):
         ctrl.config.execution.backend = "local"
     else:
-        return CommandResult("Usage: /sandbox docker|on|off")
+        return CommandResult(usage_error("sandbox"))
     ctrl._invalidate_runtime()  # backend changes require a rebuild
     return CommandResult(
         f"Execution backend set to {ctrl.config.execution.backend} (rebuilding). "
@@ -113,7 +119,9 @@ def cmd_sandbox(ctrl, args: str) -> CommandResult:
 
 def cmd_model(ctrl, args: str) -> CommandResult:
     if not args.strip():
-        return CommandResult(f"Current model: {ctrl.config.resolved_main_model()}")
+        return CommandResult(
+            layout.kv("Model", str(ctrl.config.resolved_main_model() or ""))
+        )
     ctrl.config.routing.main = args.strip()
     ctrl.config.default_model = args.strip()
     ctrl._invalidate_runtime()  # force rebuild on next turn
@@ -233,8 +241,11 @@ def cmd_trust(ctrl, args: str) -> CommandResult:
     note = ""
     if danger:
         note = (
-            "\n[dim]Project hooks / MCP servers / providers from "
-            ".jarn/config.yaml are now active.[/dim]"
+            "\n"
+            + layout.muted(
+                "Project hooks / MCP servers / providers from "
+                ".jarn/config.yaml are now active."
+            )
         )
     return CommandResult(
         f"Trusted {root}. Review-only floor lifted; "

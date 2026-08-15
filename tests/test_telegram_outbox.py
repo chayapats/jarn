@@ -67,6 +67,9 @@ def test_tool_card_has_once_session_deny_no_always():
     )
     assert "Approve" in text
     assert "execute" in text
+    assert "<code>execute</code>" in text
+    assert "<pre>" in text
+    assert "<span" not in text
     labels = [
         btn["text"]
         for row in markup["inline_keyboard"]
@@ -77,16 +80,20 @@ def test_tool_card_has_once_session_deny_no_always():
 
 
 def test_memory_and_skill_save_decline():
-    _, m = build_approval_card(
+    mem_text, m = build_approval_card(
         token="m1",
         suggested_memory={"name": "n", "body": "b", "description": "d"},
     )
     assert [b["text"] for r in m["inline_keyboard"] for b in r] == ["Save", "Decline"]
-    _, s = build_approval_card(
+    assert "<pre>" in mem_text
+    assert "<span" not in mem_text
+    skill_text, s = build_approval_card(
         token="s1",
         suggested_skill={"name": "n", "body": "b", "description": "d"},
     )
     assert [b["text"] for r in s["inline_keyboard"] for b in r] == ["Save", "Decline"]
+    assert "<pre>" in skill_text
+    assert "<span" not in skill_text
 
 
 def test_plan_three_way_and_yolo():
@@ -106,7 +113,36 @@ def test_media_refusal_card_html():
     )
     assert "Media not accepted" in html
     assert "voice" in html
-    assert "note.ogg" in html
+    assert "<code>note.ogg</code>" in html
+    assert "<span" not in html
+
+
+def test_cards_do_not_double_escape_user_text():
+    text, _ = build_approval_card(
+        token="tok1",
+        action="bash <x>",
+        description="run a & b",
+        args={"cmd": "echo <hi>"},
+        target="path & file",
+    )
+    assert "<code>bash &lt;x&gt;</code>" in text
+    assert "run a &amp; b" in text
+    assert "<code>path &amp; file</code>" in text
+    assert "&amp;amp;" not in text
+    assert "&amp;lt;" not in text
+    assert "<span" not in text
+    mem, _ = build_approval_card(
+        token="m1",
+        suggested_memory={
+            "name": "n&n",
+            "body": "<script>",
+            "description": "a < b",
+        },
+    )
+    assert "n&amp;n" in mem
+    assert "&lt;script&gt;" in mem
+    assert "a &lt; b" in mem
+    assert "&amp;amp;" not in mem
 
 
 @pytest.mark.asyncio
@@ -150,3 +186,16 @@ async def test_subagent_inner_stream_dropped():
     out = Outbox(sender=sender)
     await out.on_event(1, kind="text", text="secret", data={"agent": "worker-1"})
     assert sender.drafts == []
+
+
+@pytest.mark.asyncio
+async def test_layout_notice_is_sent_as_telegram_html():
+    from jarn.tui import layout
+
+    sender = FakeSender()
+    out = Outbox(sender=sender)
+    await out.on_event(1, kind="notice", text=layout.title("Status"))
+    assert sender.messages
+    assert "<b>Status</b>" in sender.messages[0]["text"]
+    assert "[b]" not in sender.messages[0]["text"]
+    assert sender.messages[0]["parse_mode"] == "HTML"

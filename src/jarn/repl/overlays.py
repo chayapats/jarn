@@ -10,13 +10,12 @@ from typing import TypeVar, cast
 
 from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import HTML
-from rich.markup import escape as _rich_escape
 
 from jarn.agent.session import ApprovalReply, ApprovalRequest
 from jarn.permissions import RememberScope
 from jarn.repl import turn as repl_turn
 from jarn.repl.turn import _editable_field
-from jarn.tui import palette
+from jarn.tui import grammar, layout, palette
 
 _MenuT = TypeVar("_MenuT")
 
@@ -105,9 +104,11 @@ class OverlayMixin:
         # ask renders in the faint region above the input, which is easy to miss;
         # the user must clearly see this is a y/N decision.
         self.console.print(
-            f"[{palette.C_ERROR}]⚠  Entering YOLO mode[/{palette.C_ERROR}] "
-            f"[{palette.C_DIM}]— no approval prompts; the danger-guard still blocks "
-            f"catastrophic actions.[/{palette.C_DIM}]"
+            layout.err(f"{grammar.GLYPH_WARN}  Entering YOLO mode")
+            + " "
+            + layout.muted(
+                "— no approval prompts; the danger-guard still blocks catastrophic actions."
+            )
         )
         answer = await self._ask("Type 'y' to confirm yolo, anything else to cancel [y/N]: ")
         return answer.strip().lower() in ("y", "yes")
@@ -139,15 +140,15 @@ class OverlayMixin:
             confirm=self._confirm_yolo,
         )
         if "cancelled" in result.text.lower() or "requires confirmation" in result.text.lower():
-            self.console.print(f"[{palette.C_DIM}]{result.text}[/{palette.C_DIM}]")
+            self.console.print(layout.muted(result.text))
             return
         new = self.controller.config.permission_mode.value
         self._armed = False
-        color = palette.MODE_COLOR.get(new, "#22d3ee")
-        glyph = palette.MODE_GLYPH.get(new, "◆")
+        color = palette.MODE_COLOR.get(new, palette.ACCENT)
+        glyph = palette.MODE_GLYPH.get(new, palette.MODE_GLYPH["ask"])
         self._flash(HTML(
             f'<style fg="{color}"><b>{glyph} {new}</b></style> '
-            f'<style fg="#7c8f94">mode</style>'
+            f'<style fg="{palette.C_DIM}">mode</style>'
         ))
         if self.app is not None:
             self.app.invalidate()
@@ -158,7 +159,7 @@ class OverlayMixin:
         if not self._last_tool_outputs:
             return None
         return "\n\n".join(
-            f"⏺ {name}\n{'─' * 40}\n{full or '(empty)'}"
+            f"{grammar.GLYPH_TOOL} {name}\n{'─' * 40}\n{full or '(empty)'}"
             for name, full in self._last_tool_outputs
         )
 
@@ -167,7 +168,7 @@ class OverlayMixin:
         mid-turn (reads whatever has accumulated so far). Ctrl+O toggles it shut."""
         text = self._expanded_text()
         if text is None:
-            self._flash(HTML('<style fg="#7c8f94">nothing to expand yet</style>'))
+            self._flash(HTML(f'<style fg="{palette.C_DIM}">nothing to expand yet</style>'))
             return
         self._pager_buffer.set_document(Document(text, 0), bypass_readonly=True)
         self._expanded = True
@@ -239,20 +240,17 @@ class OverlayMixin:
         non-interactive — the in-graph summarization middleware handles it; see
         ``build_runtime``.)"""
         c = self.console
-        c.print(f"[{palette.C_DIM}]compacting…[/{palette.C_DIM}]")
+        c.print(layout.muted("compacting…"))
         try:
             summary = await self.controller.compact_preview()
         except Exception as exc:  # noqa: BLE001
-            c.print(
-                f"[{palette.C_ERROR}]compact failed: {_rich_escape(str(exc))}"
-                f"[/{palette.C_ERROR}]"
-            )
+            c.print(layout.err(f"compact failed: {exc}"))
             return
         if not summary:
             c.print("Nothing to compact yet.")
             return
-        c.print(f"[{palette.C_NOTICE}]Proposed compaction:[/{palette.C_NOTICE}]")
-        c.print(_rich_escape(summary))
+        c.print(layout.notice("Proposed compaction:"))
+        c.print(layout.escape(summary))
         answer = (await self._ask("Apply this compaction? [y/N/edit] ")).strip().lower()
         if answer in ("e", "edit"):
             from prompt_toolkit.application import run_in_terminal
@@ -261,21 +259,18 @@ class OverlayMixin:
                 lambda: repl_turn._edit_text_in_editor(summary, suffix=".md")
             )
             if edited is None:  # editor aborted — keep the original context intact
-                c.print(f"[{palette.C_DIM}]Compaction cancelled.[/{palette.C_DIM}]")
+                c.print(layout.muted("Compaction cancelled."))
                 return
             summary = edited
         elif answer not in ("y", "yes"):
-            c.print(f"[{palette.C_DIM}]Compaction cancelled.[/{palette.C_DIM}]")
+            c.print(layout.muted("Compaction cancelled."))
             return
         try:
             await self.controller.compact_apply(summary)
         except Exception as exc:  # noqa: BLE001
-            c.print(
-                f"[{palette.C_ERROR}]compact failed: {_rich_escape(str(exc))}"
-                f"[/{palette.C_ERROR}]"
-            )
+            c.print(layout.err(f"compact failed: {exc}"))
             return
-        c.print(f"[{palette.C_NOTICE}]Compacted.[/{palette.C_NOTICE}]")
+        c.print(layout.notice("Compacted."))
 
     def _config_render(self):
         """FormattedTextControl source for the settings panel."""
@@ -435,10 +430,12 @@ class OverlayMixin:
                 self.app.invalidate()
 
     def _pager_header(self) -> HTML:
-        base = (' <b>full output</b> '
-                '<style fg="#7c8f94">— ↑/↓ PgUp/PgDn scroll · Ctrl+O / q / Esc close</style>')
+        base = (
+            f' <b>full output</b> '
+            f'<style fg="{palette.C_DIM}">— ↑/↓ PgUp/PgDn scroll · Ctrl+O / q / Esc close</style>'
+        )
         if self._busy():  # the turn keeps running behind the overlay — show it
             frame = palette.SPINNER_FRAMES[int(time.monotonic() * 5) % len(palette.SPINNER_FRAMES)]
             elapsed = int(time.monotonic() - (self._turn_start or time.monotonic()))
-            base += f' <style fg="#5fb8d8">{frame} still working… ({elapsed}s)</style>'
+            base += f' <style fg="{palette.C_TOOL}">{frame} still working… ({elapsed}s)</style>'
         return HTML(base)

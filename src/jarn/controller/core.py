@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -44,7 +45,7 @@ from jarn.memory import (
     new_thread_id,
 )
 from jarn.permissions import PermissionEngine
-from jarn.tui import palette
+from jarn.tui import grammar, layout, palette
 
 if TYPE_CHECKING:
     from jarn.catalog import ModelCatalogEntry, ModelCatalogSnapshot
@@ -234,6 +235,13 @@ class Controller:
         # Shell-escape output captured by ! commands; injected once into the next
         # turn via enrich_turn_input and then cleared.
         self.pending_shell_context: list[ShellNote] = []
+        # Display SSOT: session-scoped tool-progress / focus, seeded from config.
+        from jarn.tui.grammar import TOOL_PROGRESS_DEFAULT
+
+        self.session_started_at = time.monotonic()
+        self.tool_progress = getattr(config.ui, "tool_progress", TOOL_PROGRESS_DEFAULT)
+        self.focus_mode = False
+        self._focus_saved_progress: str | None = None
         # Diagnostics auto-fix chain round (T-3-3): 0 for a real user turn,
         # incremented when an auto-fix round is queued, reset on real user
         # input. Passed to each per-turn SessionDriver so the round cap holds
@@ -1801,8 +1809,9 @@ class Controller:
             "auto-edit": "auto edits + web fetch/search, confirm shell",
             "yolo": "no prompts (danger-guard still applies)",
         }
+        fallback = grammar.MODE_GLYPH["ask"]
         return [
-            (m.value, f"{palette.MODE_GLYPH.get(m.value, '◆')} {hints[m.value]}")
+            (m.value, f"{palette.MODE_GLYPH.get(m.value, fallback)} {hints[m.value]}")
             for m in PermissionMode
         ]
 
@@ -1953,53 +1962,55 @@ class Controller:
             self.runtime.main_model_ref if self.runtime else None
         ) or self.config.resolved_main_model()
         glyph = {
-            "ok": f"[{palette.C_SUCCESS}]●[/{palette.C_SUCCESS}] ",
+            "ok": f"{layout.ok(grammar.GLYPH_KEY_OK)} ",
             "error": (
-                f"[{palette.C_ERROR}]✗ key[/{palette.C_ERROR}]"
-                f" [{palette.C_DIM}]·[/{palette.C_DIM}]"
-                f" [{palette.C_ERROR}]/doctor[/{palette.C_ERROR}] "
+                f"{layout.err(f'{grammar.GLYPH_FAIL} key')}"
+                f"{layout.sep()}"
+                f"{layout.err('/doctor')} "
             ),
-            "degraded": f"[{palette.C_WARN}]⚠[/{palette.C_WARN}] ",
+            "degraded": f"{layout.warn(grammar.GLYPH_WARN)} ",
             "unknown": "",
         }.get(self.health, "")
-        sep = f" [{palette.C_DIM}]·[/{palette.C_DIM}] "
+        sep = layout.sep()
         mode = palette.mode_label(self.config.permission_mode.value)
         # Make the isolation level visible: positively flag a real sandbox, and
         # never let the host (no-isolation) state hide — so nobody assumes they
         # are safe when the permission engine is the only thing standing guard.
         level = self.isolation_level()
         if level == "docker":
-            backend = f"{sep}[{palette.C_SUCCESS}]docker[/{palette.C_SUCCESS}]"
+            backend = f"{sep}{layout.ok('docker')}"
         elif level == "os-sandbox":
-            backend = f"{sep}[{palette.C_SUCCESS}]os-sandbox[/{palette.C_SUCCESS}]"
+            backend = f"{sep}{layout.ok('os-sandbox')}"
         elif level == "remote-sandbox":
-            backend = f"{sep}[{palette.C_SUCCESS}]sandbox[/{palette.C_SUCCESS}]"
+            backend = f"{sep}{layout.ok('sandbox')}"
         elif self.health == "degraded":
-            backend = f"{sep}[{palette.C_WARN}]host (no sandbox)[/{palette.C_WARN}]"
+            backend = f"{sep}{layout.warn('host (no sandbox)')}"
         else:
-            backend = f"{sep}[{palette.C_DIM}]host[/{palette.C_DIM}]"
+            backend = f"{sep}{layout.muted('host')}"
         return f"{glyph}{model or 'unconfigured'}{sep}{mode}{backend}{sep}{self.tracker.summary_line()}"
 
     # -- built-in commands --------------------------------------------------
 
     def handle_command(self, name: str, args: str) -> CommandResult:
-        import difflib
-
+        from jarn.commands.help import unknown_command
+        from jarn.commands.registry import canonical_name, spec_by_name
         from jarn.controller.commands import REGISTRY
+        from jarn.extensibility.skills import find_skill
 
-        normalized = name.replace("-", "_")
-        handler = REGISTRY.get(normalized)
+        spec = spec_by_name(name)
+        if spec is None:
+            skill = None
+            if self.runtime and self.runtime.skills:
+                skill = find_skill(self.runtime.skills, name)
+            if skill is not None:
+                from jarn.controller.commands.meta import cmd_skill
+
+                return cmd_skill(self, skill.name)
+            return CommandResult(unknown_command(name))
+        key = canonical_name(name) or spec.name
+        handler = REGISTRY.get(key) or REGISTRY.get(spec.name)
         if handler is None:
-            # Keep enough candidates to include common transposition typos such
-            # as ``/modle`` -> ``/model`` even when nearby real commands
-            # (``/mode``, ``/module``, ``/modules``) score similarly.
-            matches = difflib.get_close_matches(normalized, REGISTRY, n=5, cutoff=0.55)
-            suggestion = (
-                " Did you mean " + ", ".join(f"/{item.replace('_', '-')}" for item in matches) + "?"
-                if matches
-                else ""
-            )
-            return CommandResult(f"Unknown command: /{name}.{suggestion} Try /help.")
+            return CommandResult(unknown_command(name))
         return handler(self, args)
 
     def current_provider(self) -> str | None:

@@ -197,6 +197,24 @@ async def test_commands_stop_new_repo():
 
 
 @pytest.mark.asyncio
+async def test_help_uses_command_catalog_html_and_does_not_submit_a_turn():
+    backend = InMemoryGatewayBackend()
+    fake = FakeBot()
+    app = TelegramBotApp(token="fake", allowed_user_ids=[1], backend=backend)
+    app._bot = None
+    app._outbox = Outbox(sender=fake)
+    await app.handle_update(_update_message(uid=1, user_id=1, chat_id=1, text="/help"))
+    await app.handle_update(_update_message(uid=2, user_id=1, chat_id=1, text="/help compact"))
+    assert backend.turns == []
+    bodies = [sent[1] for sent in fake.sent]
+    joined = "\n".join(bodies)
+    assert "<b>Work</b>" in joined
+    assert "/compact" in joined
+    assert "<span" not in joined
+    assert any(sent[2].get("parse_mode") == "HTML" for sent in fake.sent)
+
+
+@pytest.mark.asyncio
 async def test_callback_verdicts_tool_memory_plan_yolo():
     backend = InMemoryGatewayBackend()
     app = TelegramBotApp(token="fake", allowed_user_ids=[5], backend=backend)

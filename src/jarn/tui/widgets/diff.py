@@ -7,6 +7,15 @@ from typing import Any
 
 from rich.text import Text
 
+from jarn.tui import palette
+
+_DEL = palette.C_ERROR
+_ADD = palette.C_SUCCESS
+_HUNK = palette.ACCENT
+_MUTED = palette.C_DIM
+_DEL_EMPH = f"bold reverse {palette.C_ERROR}"
+_ADD_EMPH = f"bold reverse {palette.C_SUCCESS}"
+
 _EMPHASIS_MAX_LINE = 200   # lines longer than this skip intraline emphasis
 _EMPHASIS_MIN_RATIO = 0.3  # SequenceMatcher.ratio() below this → plain
 
@@ -26,21 +35,21 @@ def _emphasize_pair(del_content: str, add_content: str) -> tuple[Text, Text] | N
         return None
 
     del_text = Text()
-    del_text.append("-", style="red")
+    del_text.append("-", style=_DEL)
     add_text = Text()
-    add_text.append("+", style="green")
+    add_text.append("+", style=_ADD)
 
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
-            del_text.append(del_content[i1:i2], style="red")
-            add_text.append(add_content[j1:j2], style="green")
+            del_text.append(del_content[i1:i2], style=_DEL)
+            add_text.append(add_content[j1:j2], style=_ADD)
         elif tag == "replace":
-            del_text.append(del_content[i1:i2], style="bold reverse red")
-            add_text.append(add_content[j1:j2], style="bold reverse green")
+            del_text.append(del_content[i1:i2], style=_DEL_EMPH)
+            add_text.append(add_content[j1:j2], style=_ADD_EMPH)
         elif tag == "delete":
-            del_text.append(del_content[i1:i2], style="bold reverse red")
+            del_text.append(del_content[i1:i2], style=_DEL_EMPH)
         elif tag == "insert":
-            add_text.append(add_content[j1:j2], style="bold reverse green")
+            add_text.append(add_content[j1:j2], style=_ADD_EMPH)
 
     return del_text, add_text
 
@@ -83,7 +92,7 @@ def unified_diff_text(
             text.append(line + "\n", style="bold")
             i += 1
         elif line.startswith("@@"):
-            text.append(line + "\n", style="cyan")
+            text.append(line + "\n", style=_HUNK)
             i += 1
         elif line.startswith("-"):
             # Collect an adjacent run of deletions …
@@ -108,27 +117,27 @@ def unified_diff_text(
                         text.append_text(add_t)
                         text.append("\n")
                     else:
-                        text.append(dl + "\n", style="red")
-                        text.append(al + "\n", style="green")
+                        text.append(dl + "\n", style=_DEL)
+                        text.append(al + "\n", style=_ADD)
             else:
                 # Unequal counts: plain line-level rendering.
                 for dl in del_lines:
-                    text.append(dl + "\n", style="red")
+                    text.append(dl + "\n", style=_DEL)
                 for al in add_lines:
-                    text.append(al + "\n", style="green")
+                    text.append(al + "\n", style=_ADD)
             i = k
         elif line.startswith("+"):
             # Unpaired addition (no preceding deletion run).
-            text.append(line + "\n", style="green")
+            text.append(line + "\n", style=_ADD)
             i += 1
         else:
-            text.append(line + "\n", style="dim")
+            text.append(line + "\n", style=_MUTED)
             i += 1
 
     if hidden:
-        text.append(f"… (+{hidden} more lines)\n", style="dim")
+        text.append(f"… (+{hidden} more lines)\n", style=_MUTED)
     if not text.plain:
-        text.append("(no textual change)\n", style="dim")
+        text.append("(no textual change)\n", style=_MUTED)
     return text
 
 
@@ -147,7 +156,7 @@ def diff_from_edit_args(
 
     if filename and is_multimodal_path(filename):
         t = Text()
-        t.append(f"({modality_of(filename)} file — binary, diff not shown)\n", style="dim")
+        t.append(f"({modality_of(filename)} file — binary, diff not shown)\n", style=_MUTED)
         return t
     if "old_string" in args and "new_string" in args:
         return unified_diff_text(

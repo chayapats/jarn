@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rich.console import Console
-from rich.markup import escape
 
 from jarn.auth import AuthStatus
 from jarn.config.defaults import CLOUD_PROVIDERS
@@ -20,6 +19,7 @@ from jarn.install_state import (
     load_actionable_install_record,
 )
 from jarn.permissions.labels import permission_mode_summary
+from jarn.tui import layout
 from jarn.util.process_env import external_command_env
 from jarn.version import __version__
 
@@ -229,33 +229,35 @@ def render_setup_completion(console: Console, summary: SetupCompletion) -> None:
     """Render only facts verified before the successful commit."""
 
     install_label = "verified" if summary.install.verified else "unverified"
-    console.print("\n[bold green]Setup complete.[/bold green]")
+    console.print("\n" + layout.banner_ok("Setup complete."))
     console.print(
-        f"  J.A.R.N.: [b]{escape(summary.install.version)}[/b] · "
-        f"{escape(summary.install.method)} · {install_label}"
+        f"  {layout.field('J.A.R.N.', summary.install.version)} · "
+        f"{layout.escape(summary.install.method)} · {install_label}"
     )
-    console.print(f"  Executable: [b]{escape(summary.install.executable)}[/b]")
-    console.print(f"  Config: [b]{escape(str(summary.config_path))}[/b]")
+    console.print(f"  {layout.field('Executable', summary.install.executable)}")
+    console.print(f"  {layout.field('Config', str(summary.config_path))}")
     if summary.backup_path is not None:
-        console.print(f"  Previous config backup: {escape(str(summary.backup_path))}")
-    console.print(f"  Provider: [b]{escape(summary.provider)}[/b]")
+        console.print(f"  {layout.field('Previous config backup', str(summary.backup_path))}")
+    console.print(f"  {layout.field('Provider', summary.provider)}")
     if summary.auth_mode:
-        console.print(f"  Authentication: [b]{escape(summary.auth_mode)}[/b]")
+        console.print(f"  {layout.field('Authentication', summary.auth_mode)}")
     if summary.auth_plan:
-        console.print(f"  ChatGPT plan: [b]{escape(summary.auth_plan)}[/b]")
+        console.print(f"  {layout.field('ChatGPT plan', summary.auth_plan)}")
     if summary.auth_workspace:
-        console.print(f"  Workspace: [b]{escape(summary.auth_workspace)}[/b]")
+        console.print(f"  {layout.field('Workspace', summary.auth_workspace)}")
     console.print(
-        f"  Model: [b]{escape(summary.model_display)}[/b] [dim]({escape(summary.model)})[/dim]"
+        f"  {layout.field('Model', summary.model_display)} {layout.muted('(' + summary.model + ')')}"
     )
     if summary.reasoning_effort:
-        console.print(f"  Reasoning: [b]{escape(summary.reasoning_effort)}[/b]")
+        console.print(f"  {layout.field('Reasoning', summary.reasoning_effort)}")
     console.print(
-        f"  Permission: [b]{escape(permission_mode_summary(summary.permission_mode))}[/b]"
+        f"  {layout.field('Permission', permission_mode_summary(summary.permission_mode))}"
     )
-    console.print(f"  Working directory: [b]{escape(str(summary.cwd))}[/b]")
-    console.print(f"  Provider validation: {escape(summary.validation)}")
-    console.print(f"\n  Next command: [bold cyan]{escape(summary.next_command)}[/bold cyan]")
+    console.print(f"  {layout.field('Working directory', str(summary.cwd))}")
+    console.print(f"  {layout.field('Provider validation', summary.validation)}")
+    console.print(
+        f"\n  {layout.field('Next command')} {layout.accent(summary.next_command, bold=True)}"
+    )
 
 
 __all__ = [

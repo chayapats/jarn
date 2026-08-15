@@ -5,9 +5,8 @@ from __future__ import annotations
 import contextlib
 from typing import TYPE_CHECKING
 
-from rich.markup import escape as _escape_markup
-
 from jarn.config.schema import PermissionMode
+from jarn.tui import grammar, layout
 
 if TYPE_CHECKING:
     from jarn.controller.core import CommandResult, Controller
@@ -102,7 +101,7 @@ def set_setting(ctrl: Controller, key: str, raw: str) -> tuple[bool, str]:
     msg = f"saved {key} = {shown}"
     note = next((w.message for w in new_warnings if w.involves(key)), None)
     if note:
-        msg += f"  ⚠ {note}"
+        msg += f"  {grammar.GLYPH_WARN} {note}"
     return True, msg
 
 
@@ -112,7 +111,7 @@ def _config_set(ctrl: Controller, key: str, raw: str) -> CommandResult:
     ok, msg = set_setting(ctrl, key, raw)
     if ok:
         return CommandResult(f"{msg} → ~/.jarn/config.yaml (rebuilding).", rebuilt=True)
-    return CommandResult(_escape_markup(msg))
+    return CommandResult(layout.escape(msg))
 
 
 def set_provider_key(
@@ -156,7 +155,7 @@ def set_provider_key(
     try:
         stored = store_secret("jarn", prov, secret)
     except ValueError as exc:
-        return CommandResult(f"Couldn't store the key: {_escape_markup(str(exc))}")
+        return CommandResult(f"Couldn't store the key: {layout.escape(str(exc))}")
     ref = stored.reference
     # Update the live config and persist the *reference* (not the secret) so a
     # restart still finds the key. Best-effort persistence: even if the file

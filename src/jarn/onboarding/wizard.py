@@ -51,6 +51,7 @@ from jarn.onboarding.outcome import (
     return_or_raise_setup_failure,
 )
 from jarn.providers import qualify_model_ref, strip_profile
+from jarn.tui import grammar, layout, palette
 from jarn.tui.logo import TAGLINE, WORDMARK
 
 console = Console()
@@ -109,7 +110,7 @@ def _detect_local_providers() -> tuple[str, ...]:
         snapshot = load_setup_catalog(
             name,
             base_url=PROVIDER_BASE_URLS.get(name),
-            on_wait=lambda message: console.print(f"[dim]{message}[/dim]"),
+            on_wait=lambda message: console.print(layout.muted(message)),
         )
         return bool(selectable_setup_models(snapshot))
 
@@ -189,7 +190,7 @@ def confirm_overwrite(*, force: bool = False) -> bool:
         default=False,
     ):
         return True
-    console.print("[yellow]Keeping existing config.[/yellow]")
+    console.print(layout.warn("Keeping existing config."))
     return False
 
 
@@ -216,7 +217,7 @@ def _plain_menu(prompt: str, choices: list[str], *, default: str) -> str:
 
 def _plain_text(prompt: str, *, default: str = "", password: bool = False) -> str:
     value = Prompt.ask(
-        f"{prompt} [dim](type /back or /cancel)[/dim]",
+        f"{prompt} {layout.muted('(type /back or /cancel)')}",
         default=default,
         password=password,
     )
@@ -310,7 +311,7 @@ def _catalog_for_answers(
         credential=credential,
         base_url=answers.get("base_url") or PROVIDER_BASE_URLS.get(provider),
         include_hidden=answers.get("_provider_group") == "advanced",
-        on_wait=lambda message: console.print(f"[dim]{message}[/dim]"),
+            on_wait=lambda message: console.print(layout.muted(message)),
     )
 
 
@@ -380,7 +381,7 @@ def run_wizard(
     except (KeyboardInterrupt, EOFError):
         mark_setup_incomplete()
         console.print(
-            "\n[yellow]Setup incomplete (cancelled).[/yellow] Resume with [b]jarn setup[/b]."
+            f"\n{layout.warn('Setup incomplete (cancelled).')} Resume with {layout.strong('jarn setup')}."
         )
         return return_or_raise_setup_failure(
             SetupCommandError("The setup prompt was cancelled.", kind=SetupFailureKind.CANCELLED),
@@ -400,14 +401,17 @@ def run_wizard(
     paths.global_home().mkdir(parents=True, exist_ok=True)
 
     console.print(
-        Panel.fit(f"[b cyan]{WORDMARK}[/b cyan]\n[dim]{TAGLINE}[/dim]", border_style="cyan")
+        Panel.fit(
+            f"{layout.accent(WORDMARK, bold=True)}\n{layout.muted(TAGLINE)}",
+            border_style=palette.ACCENT,
+        )
     )
-    console.print("Let's get you set up. This writes [b]~/.jarn/config.yaml[/b].\n")
+    console.print(f"Let's get you set up. This writes {layout.strong('~/.jarn/config.yaml')}.\n")
 
     try:
         set_setup_progress("in_progress")
     except SetupFlowError as exc:
-        console.print(f"[red]Setup incomplete (install state):[/red] {exc}")
+        console.print(f"{layout.err('Setup incomplete (install state):')} {exc}")
         return return_or_raise_setup_failure(exc, propagate_errors=propagate_errors)
 
     # -- probes and resumable non-secret progress -------------------------
@@ -429,7 +433,7 @@ def run_wizard(
     except (KeyboardInterrupt, EOFError):
         mark_setup_incomplete()
         console.print(
-            "\n[yellow]Setup incomplete (cancelled).[/yellow] Resume with [b]jarn setup[/b]."
+            f"\n{layout.warn('Setup incomplete (cancelled).')} Resume with {layout.strong('jarn setup')}."
         )
         return return_or_raise_setup_failure(
             SetupCommandError("Setup resume was cancelled.", kind=SetupFailureKind.CANCELLED),
@@ -443,7 +447,7 @@ def run_wizard(
         ):
             answers.pop("_credential_pending", None)
             stage = "key"
-        console.print(f"[green]✓[/green] Resuming at [b]{stage}[/b].")
+        console.print(f"{layout.ok(grammar.GLYPH_OK)} Resuming at {layout.strong(stage)}.")
     else:
         save_setup_state("provider", answers)
 
@@ -485,7 +489,7 @@ def run_wizard(
                 console.print("  cloud     — Use another cloud provider")
                 console.print(f"  local     — Use a local model{local_note}")
                 console.print(
-                    "  [dim]Advanced: choose 'advanced' for custom endpoints and the full registry.[/dim]"
+                    f"  {layout.muted('Advanced: choose \'advanced\' for custom endpoints and the full registry.')}"
                 )
                 connection = _plain_menu(
                     "How do you want to connect?",
@@ -561,7 +565,7 @@ def run_wizard(
                 env_var = PROVIDER_ENV_VARS.get(provider, f"{provider.upper()}_API_KEY")
                 if env_hit is not None and env_hit[0] == provider:
                     console.print(
-                        f"[green]✓[/green] Using [b]${env_var}[/b] from your environment."
+                        f"{layout.ok(grammar.GLYPH_OK)} Using {layout.strong('$' + env_var)} from your environment."
                     )
                     answers["storage"] = "env"
                     pending_credentials.discard(provider)
@@ -597,7 +601,7 @@ def run_wizard(
                 else:
                     if method == "env":
                         console.print(
-                            f"[yellow]${env_var} is not set.[/yellow] Paste the key now; "
+                            f"{layout.warn('$' + env_var + ' is not set.')} Paste the key now; "
                             "only its secure-store reference will be saved."
                         )
                     stage = "key"
@@ -608,7 +612,7 @@ def run_wizard(
                 value = _plain_text(f"Paste the {provider} API key", password=True).strip()
                 if not value:
                     console.print(
-                        "[yellow]A key is required to finish this provider setup.[/yellow]"
+                        layout.warn("A key is required to finish this provider setup.")
                     )
                     continue
                 pending_credentials.set(provider, value)
@@ -635,7 +639,7 @@ def run_wizard(
                         _plain_text(f"API base URL for {provider}", default=default_url),
                     )
                 except ValueError as exc:
-                    console.print(f"[yellow]{exc}[/yellow]")
+                    console.print(layout.warn(str(exc)))
                     continue
                 stage = (
                     "model"
@@ -664,21 +668,21 @@ def run_wizard(
                             verified=True,
                         )
                         console.print(
-                            f"[green]✓[/green] Using model [b]{answers['model']}[/b] "
+                            f"{layout.ok(grammar.GLYPH_OK)} Using model {layout.strong(answers['model'])} "
                             "reported by the local server."
                         )
                         stage = "reasoning" if group == "advanced" else "theme"
                         save_setup_state(stage, answers)
                         continue
                     console.print(
-                        f"[yellow]{setup_catalog_status(snapshot)}.[/yellow] "
+                        f"{layout.warn(setup_catalog_status(snapshot) + '.')} "
                         "Start/download a model, enter one manually, or go back."
                     )
 
                 if group == "advanced" and discovered:
                     ids = [entry.model_id for entry in discovered]
                     console.print(
-                        f"[green]✓[/green] {snapshot.provenance_label}. "
+                        f"{layout.ok(grammar.GLYPH_OK)} {snapshot.provenance_label}. "
                         "Choose a reported model or enter one manually."
                     )
                     picked = _plain_menu(
@@ -702,7 +706,7 @@ def run_wizard(
                         continue
                 elif group == "advanced":
                     console.print(
-                        f"[yellow]{setup_catalog_status(snapshot)}.[/yellow] "
+                        f"{layout.warn(setup_catalog_status(snapshot) + '.')} "
                         "Advanced manual entry is allowed, but must pass final validation."
                     )
 
@@ -782,7 +786,7 @@ def run_wizard(
                         raise ValueError
                 except ValueError:
                     console.print(
-                        "[yellow]Enter a finite number greater than or equal to 0.[/yellow]"
+                        layout.warn("Enter a finite number greater than or equal to 0.")
                     )
                     continue
                 answers["budget_per_session_usd"] = raw
@@ -800,7 +804,7 @@ def run_wizard(
                     if not 0 <= warn_value <= 100:
                         raise ValueError
                 except ValueError:
-                    console.print("[yellow]Enter a whole number from 0 through 100.[/yellow]")
+                    console.print(layout.warn("Enter a whole number from 0 through 100."))
                     continue
                 answers["budget_warn_at_pct"] = raw
                 stage = "budget_stop"
@@ -851,9 +855,9 @@ def run_wizard(
 
             console.print("\nReady to finish:")
             console.print(
-                f"  Provider: [b]{'ChatGPT' if provider == 'codex_subscription' else provider}[/b]"
+                f"  {layout.field('Provider', 'ChatGPT' if provider == 'codex_subscription' else provider)}"
             )
-            console.print(f"  Model: [b]{answers.get('model', 'account default')}[/b]")
+            console.print(f"  {layout.field('Model', answers.get('model', 'account default') or '')}")
             if answers.get("_model_catalog_provenance"):
                 status = (
                     "verified"
@@ -861,24 +865,26 @@ def run_wizard(
                     else "unverified"
                 )
                 console.print(
-                    f"  Catalog: [b]{status}[/b] — {answers['_model_catalog_provenance']}"
+                    f"  {layout.field('Catalog', status)} — {answers['_model_catalog_provenance']}"
                 )
-            console.print(f"  Theme: [b]{answers.get('theme', 'dark')}[/b]")
+            console.print(f"  {layout.field('Theme', answers.get('theme', 'dark'))}")
             if group == "advanced":
-                console.print(f"  Subagent: [b]{answers.get('routing_subagent')}[/b]")
-                console.print(f"  Summarizer: [b]{answers.get('routing_summarizer')}[/b]")
-                console.print(f"  Fallbacks: [b]{answers.get('routing_fallback') or '(none)'}[/b]")
+                console.print(f"  {layout.field('Subagent', answers.get('routing_subagent') or '')}")
                 console.print(
-                    "  Budget: [b]$"
-                    f"{answers.get('budget_per_session_usd', '5.00')}[/b] "
+                    f"  {layout.field('Summarizer', answers.get('routing_summarizer') or '')}"
+                )
+                console.print(
+                    f"  {layout.field('Fallbacks', answers.get('routing_fallback') or '(none)')}"
+                )
+                console.print(
+                    f"  {layout.field('Budget', '$' + str(answers.get('budget_per_session_usd', '5.00')))} "
                     f"(warn {answers.get('budget_warn_at_pct', '80')}%, "
                     f"hard stop {answers.get('budget_hard_stop', 'true')})"
                 )
                 from jarn.permissions.labels import permission_mode_name
 
                 console.print(
-                    "  Permissions: [b]"
-                    f"{permission_mode_name(answers.get('permission_mode', 'ask'))}[/b]"
+                    f"  {layout.field('Permissions', permission_mode_name(answers.get('permission_mode', 'ask')))}"
                 )
             choice = _plain_menu("Finish setup?", ["save"], default="save")
             if choice == "save":
@@ -892,7 +898,7 @@ def run_wizard(
         if previous == "cancel":
             mark_setup_incomplete()
             console.print(
-                "\n[yellow]Setup incomplete (cancelled).[/yellow] Resume with [b]jarn setup[/b]."
+                f"\n{layout.warn('Setup incomplete (cancelled).')} Resume with {layout.strong('jarn setup')}."
             )
             return return_or_raise_setup_failure(
                 SetupCommandError(
@@ -914,7 +920,7 @@ def run_wizard(
         save_setup_state(stage, answers)
         mark_setup_incomplete()
         console.print(
-            "\n[yellow]Setup incomplete (cancelled).[/yellow] Resume with [b]jarn setup[/b]."
+            f"\n{layout.warn('Setup incomplete (cancelled).')} Resume with {layout.strong('jarn setup')}."
         )
         return return_or_raise_setup_failure(
             SetupCommandError("Setup was cancelled by the user.", kind=SetupFailureKind.CANCELLED),
@@ -923,8 +929,8 @@ def run_wizard(
     except (SetupFlowError, InstallStateError, OSError) as exc:
         save_setup_state(stage, answers)
         mark_setup_incomplete()
-        console.print(f"\n[red]Setup incomplete at {stage}:[/red] {exc}")
-        console.print("No configuration was changed. Retry with [b]jarn setup[/b].")
+        console.print(f"\n{layout.err('Setup incomplete at ' + stage + ':')} {exc}")
+        console.print(f"No configuration was changed. Retry with {layout.strong('jarn setup')}.")
         failure: SetupCommandError
         if isinstance(exc, SetupCommandError):
             failure = exc
@@ -966,22 +972,22 @@ def _configure_key(
     """
     if profile == "codex_subscription":
         console.print(
-            "[dim]codex_subscription uses Codex-managed ChatGPT login — no API key.[/dim]"
+            layout.muted("codex_subscription uses Codex-managed ChatGPT login — no API key.")
         )
         return None
 
     if profile not in _CLOUD:
-        console.print(f"[dim]{profile} is local — no API key needed.[/dim]")
+        console.print(layout.muted(f"{profile} is local — no API key needed."))
         return None
 
     env_var = PROVIDER_ENV_VARS.get(profile, f"{profile.upper()}_API_KEY")
 
     # If the detected env key belongs to this provider, use it as a reference.
     if env_hit is not None and env_hit[0] == profile:
-        console.print(f"  [dim]J.A.R.N. will read the key from ${{{env_var}}}.[/dim]")
+        console.print("  " + layout.muted(f"J.A.R.N. will read the key from ${{{env_var}}}."))
         return f"${{{env_var}}}"
 
-    console.print(f"\nHow should J.A.R.N. read your [b]{profile}[/b] API key?")
+    console.print(f"\nHow should J.A.R.N. read your {layout.strong(profile)} API key?")
 
     if profile == "openrouter":
         choices = ["oauth", "env", "keychain"]
@@ -999,20 +1005,20 @@ def _configure_key(
         console.print("  Opening your browser for OpenRouter login…")
         try:
             result: LoginResult = login_openrouter()
-            console.print(f"  [green]✔[/green] Logged in — key stored as {result.reference}")
+            console.print(f"  {layout.ok(grammar.GLYPH_OK)} Logged in — key stored as {result.reference}")
             return result.reference
         except Exception as exc:  # noqa: BLE001
             from jarn.config.secrets import redact_secrets
 
             console.print(
-                f"  [yellow]![/yellow] Browser login failed: "
+                f"  {layout.warn(grammar.GLYPH_WARN)} Browser login failed: "
                 f"{redact_secrets(str(exc))}. Falling back to manual key entry."
             )
             # Fall through to keychain paste.
             method = "keychain"
 
     if method == "env":
-        console.print(f"  [dim]J.A.R.N. will read it from ${env_var}.[/dim]")
+        console.print("  " + layout.muted(f"J.A.R.N. will read it from ${env_var}."))
         return f"${{{env_var}}}"
 
     key = Prompt.ask("  paste API key", password=True)
@@ -1020,9 +1026,9 @@ def _configure_key(
         stored = store_secret("jarn", profile, key)
         notice = file_fallback_notice(stored, provider=profile, env_var=env_var)
         if notice:
-            console.print(f"[yellow]{notice}[/yellow]")
+            console.print(layout.warn(notice))
         else:
-            console.print(f"  [green]✔[/green] stored in OS keychain (jarn/{profile})")
+            console.print(f"  {layout.ok(grammar.GLYPH_OK)} stored in OS keychain (jarn/{profile})")
         return stored.reference
     return f"${{{env_var}}}"
 
@@ -1037,7 +1043,7 @@ def _configure_base_url(profile: str) -> str:
         try:
             return normalize_base_url(profile, raw)
         except ValueError as exc:
-            console.print(f"  [yellow]![/yellow] {exc}")
+            console.print(f"  {layout.warn(grammar.GLYPH_WARN)} {exc}")
 
 
 def _build_config_dict(
@@ -1442,7 +1448,7 @@ def validate_config(
 
     try:
         with console.status(
-            "[cyan]validating[/cyan] — the model may need to load first "
+            f"{layout.accent('validating')} — the model may need to load first "
             "(can take ~1 min); Ctrl+C to skip"
         ):
             response_chars = _run_validation_request(
@@ -1451,27 +1457,29 @@ def validate_config(
                 config,
                 timeout=timeout,
             )
-        console.print(f"  [green]✔[/green] model responded ({response_chars} chars)")
+        console.print(f"  {layout.ok(grammar.GLYPH_OK)} model responded ({response_chars} chars)")
         return True
     except KeyboardInterrupt:
         console.print(
-            "  [dim]skipped — the isolated validation worker was stopped; "
-            "retry setup when ready.[/dim]"
+            "  "
+            + layout.muted(
+                "skipped — the isolated validation worker was stopped; retry setup when ready."
+            )
         )
         return False
     except TimeoutError:
         console.print(
-            f"  [yellow]![/yellow] validation timed out after {timeout:.0f}s — the "
+            f"  {layout.warn(grammar.GLYPH_WARN)} validation timed out after {timeout:.0f}s — the "
             "isolated request was stopped and can be retried safely."
         )
-        console.print("  [dim]Adjust the key/model later in ~/.jarn/config.yaml if needed.[/dim]")
+        console.print("  " + layout.muted("Adjust the key/model later in ~/.jarn/config.yaml if needed."))
         return False
     except Exception as exc:  # noqa: BLE001
         provider_raw = config.get("providers", {}).get(profile, {})
         raw_key = provider_raw.get("api_key") if isinstance(provider_raw, dict) else None
         known = {raw_key} if isinstance(raw_key, str) and raw_key else None
         console.print(
-            f"  [yellow]![/yellow] validation failed: {redact_secrets(str(exc), known=known)}"
+            f"  {layout.warn(grammar.GLYPH_WARN)} validation failed: {redact_secrets(str(exc), known=known)}"
         )
-        console.print("  [dim]You can fix the key/model later in ~/.jarn/config.yaml.[/dim]")
+        console.print("  " + layout.muted("You can fix the key/model later in ~/.jarn/config.yaml."))
         return False

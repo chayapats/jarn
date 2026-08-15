@@ -5,16 +5,22 @@ from __future__ import annotations
 import json
 
 from rich.console import Console
-from rich.markup import escape as _escape
+
+from jarn.tui import grammar, layout
 
 
 def _esc(value: object) -> str:
     """Escape a value for Rich markup; ``None`` becomes empty."""
+    return layout.escape(_plain(value))
+
+
+def _plain(value: object) -> str:
+    """Redact secrets without Rich escaping (for layout helpers that escape)."""
     if value is None:
         return ""
     from jarn.config.secrets import redact_secrets
 
-    return _escape(redact_secrets(str(value)))
+    return redact_secrets(str(value))
 
 
 def doctor_to_json(diag: dict) -> str:
@@ -26,7 +32,7 @@ def doctor_to_json(diag: dict) -> str:
 
 def doctor_lines(diag: dict) -> list[str]:
     """Return Rich-markup lines for doctor diagnostics."""
-    lines: list[str] = ["[b]jarn doctor[/b]"]
+    lines: list[str] = [layout.title("jarn doctor")]
 
     append_inventory_lines(lines, diag)
 
@@ -34,30 +40,30 @@ def doctor_lines(diag: dict) -> list[str]:
     present = diag.get("global_config_present", False)
     lines.append(
         f"global config: {_esc(gpath)} "
-        f"{'[green]✔[/green]' if present else '[red]missing[/red]'}"
+        f"{layout.ok(grammar.GLYPH_OK) if present else layout.err('missing')}"
     )
     if diag.get("jarn_home_warning"):
-        lines.append(f"[yellow]{_esc(diag['jarn_home_warning'])}[/yellow]")
+        lines.append(layout.warn(diag['jarn_home_warning']))
     if diag.get("jarn_home_mode_warning"):
-        lines.append(f"[yellow]{_esc(diag['jarn_home_mode_warning'])}[/yellow]")
+        lines.append(layout.warn(diag['jarn_home_mode_warning']))
     root = diag.get("project_root")
-    lines.append(f"project root: {_esc(root) if root else '[dim]none[/dim]'}")
+    lines.append(f"project root: {_esc(root) if root else layout.muted('none')}")
     # Added (--add-dir / /add-dir) roots beyond the primary, if any.
     added_roots = [r for r in diag.get("roots", []) if r != (str(root) if root else None)]
     if added_roots:
         lines.append(
             "added roots: " + ", ".join(_esc(r) for r in added_roots)
-            + " [dim](write scope only — checkpoint/context stay primary)[/dim]"
+            + f" {layout.muted('(write scope only — checkpoint/context stay primary)')}"
         )
     if diag.get("project_trusted") is False and diag.get("project_stripped_keys"):
         keys = ", ".join(diag["project_stripped_keys"])
         lines.append(
-            f"[yellow]project untrusted — stripped keys: {_esc(keys)}[/yellow]"
-            " [dim](run `jarn trust <root>` to enable)[/dim]"
+            f"{layout.warn('project untrusted — stripped keys: ' + _esc(keys))}"
+            f" {layout.muted('(run `jarn trust <root>` to enable)')}"
         )
 
     if not present:
-        lines.append("\n[yellow]No config — run [b]jarn setup[/b].[/yellow]")
+        lines.append("\n" + layout.warn("No config — run jarn setup."))
         append_error_lines(lines, diag.get("errors") or [])
         return lines
 
@@ -78,16 +84,16 @@ def doctor_lines(diag: dict) -> list[str]:
     sbx_avail = sbx.get("available", False)
     sbx_mode = sbx.get("mode", "off")
     if sbx_avail:
-        sbx_status = f"[green]{_esc(sbx_backend)} available[/green]"
+        sbx_status = f"{layout.ok(_esc(sbx_backend) + ' available')}"
     else:
-        sbx_status = "[dim]unavailable[/dim]"
+        sbx_status = layout.muted("unavailable")
     lines.append(f"sandbox: {sbx_status} · mode {sbx_mode}")
 
     ex = diag.get("execution") or {}
     ex_backend = ex.get("backend", "local")
     if ex_backend == "docker" or ex.get("docker_image"):
         docker_ok = ex.get("docker_available", False)
-        docker_status = "[green]available[/green]" if docker_ok else "[dim]unavailable[/dim]"
+        docker_status = layout.ok("available") if docker_ok else layout.muted("unavailable")
         lines.append(
             f"execution backend: {_esc(ex_backend)} · docker: {docker_status}"
             f" · image {_esc(ex.get('docker_image') or '')}"
@@ -122,27 +128,26 @@ def doctor_lines(diag: dict) -> list[str]:
         )
     if module_diag.get("error"):
         lines.append(
-            f"[yellow]prompt module diagnostics unavailable: "
-            f"{_esc(module_diag['error'])}[/yellow]"
+            f"{layout.warn('prompt module diagnostics unavailable: ' + _esc(module_diag['error']))}"
         )
 
-    lines.append("\n[b]Providers[/b]")
+    lines.append("\n" + layout.title("Providers"))
     for entry in diag.get("providers") or []:
         if entry.get("key_ok"):
-            key_state = "[green]key ok[/green]"
+            key_state = layout.ok("key ok")
         else:
-            key_state = f"[yellow]{_esc(entry.get('key_state', ''))}[/yellow]"
+            key_state = layout.warn(entry.get("key_state", ""))
         lines.append(
             f"  {_esc(entry.get('name', ''))} "
             f"({_esc(entry.get('type', ''))}): {key_state}"
         )
 
-    lines.append("\n[b]Main model build[/b]")
+    lines.append("\n" + layout.title("Main model build"))
     if diag.get("main_model_builds"):
-        lines.append("  [green]✔ model constructs[/green]")
+        lines.append(f"  {layout.ok(grammar.GLYPH_OK + ' model constructs')}")
     else:
         lines.append(
-            f"  [red]✗ {_esc(diag.get('main_model_error') or '')}[/red]"
+            f"  {layout.err(grammar.GLYPH_FAIL + ' ' + _esc(diag.get('main_model_error') or ''))}"
         )
 
     append_extension_lines(lines, diag.get("extensions") or {})
@@ -150,12 +155,20 @@ def doctor_lines(diag: dict) -> list[str]:
     append_error_lines(lines, diag.get("errors") or [])
 
     for warning in diag.get("warnings") or []:
-        lines.append(f"[yellow]⚠ {_esc(warning)}[/yellow]")
+        lines.append(layout.warn(f"{grammar.GLYPH_WARN} {_esc(warning)}"))
 
     ok = diag.get("ok", False)
-    lines.append(
-        f"\n{'[green]All good.[/green]' if ok else '[yellow]Issues found above.[/yellow]'}"
-    )
+    issue_n = len(diag.get("errors") or []) + len(diag.get("warnings") or [])
+    if ok:
+        cta = layout.banner_ok("All good.")
+    else:
+        n = issue_n or 1
+        noun = "issue" if n == 1 else "issues"
+        cta = layout.banner_warn(
+            f"{n} {noun} — see above. "
+            "Run jarn doctor --fix --dry-run to preview repairs."
+        )
+    lines.append(f"\n{cta}")
     return lines
 
 
@@ -171,26 +184,26 @@ def append_inventory_lines(lines: list[str], diag: dict) -> None:
         )
         lines.append(
             "active executable: "
-            + (f"[green]found[/green] {_esc(active)}" if active else "[red]missing[/red]")
+            + (f"{layout.ok('found')} {_esc(active)}" if active else layout.err("missing"))
         )
         for shadow in jarn.get("shadowed") or []:
-            lines.append(f"  [yellow]shadowing candidate:[/yellow] {_esc(shadow)}")
+            lines.append(f"  {layout.warn('shadowing candidate:')} {_esc(shadow)}")
         for candidate in jarn.get("candidate_inventory") or []:
             if not isinstance(candidate, dict) or candidate.get("active") or candidate.get("on_path"):
                 continue
             sources = ", ".join(str(value) for value in candidate.get("sources") or [])
             lines.append(
-                "  [yellow]other installation (off PATH):[/yellow] "
+                f"  {layout.warn('other installation (off PATH):')} "
                 f"{_esc(candidate.get('path'))} · {_esc(sources or 'unknown owner')}"
             )
         if install.get("canonical_record_error"):
             lines.append(
-                "  [red]install record invalid:[/red] "
+                f"  {layout.err('install record invalid:')} "
                 f"{_esc(install['canonical_record_error'])}"
             )
         if install.get("active_matches_record") is False:
             lines.append(
-                "  [red]activation mismatch:[/red] active executable differs from metadata"
+                f"  {layout.err('activation mismatch:')} active executable differs from metadata"
             )
 
     host = diag.get("platform") or {}
@@ -232,7 +245,7 @@ def append_inventory_lines(lines: list[str], diag: dict) -> None:
     if dependencies:
         for name in ("uv", "codex"):
             item = dependencies.get(name) or {}
-            state = "[green]ok[/green]" if item.get("ok") else "[red]unavailable[/red]"
+            state = layout.ok("ok") if item.get("ok") else layout.err("unavailable")
             lines.append(
                 f"{name}: {state} · {_esc(item.get('version') or 'version unknown')} · "
                 f"{_esc(item.get('path') or 'not on PATH')}"
@@ -284,10 +297,10 @@ def append_error_lines(lines: list[str], errors: list[dict]) -> None:
     """Render stable error anatomy without exposing a Python traceback."""
     if not errors:
         return
-    lines.append("\n[b]Actionable errors[/b]")
+    lines.append("\n" + layout.title("Actionable errors"))
     for item in errors:
         lines.append(
-            f"  [red]✗ {_esc(item.get('code') or 'JARN-INTERNAL-001')}:[/red] "
+            f"  {layout.err(grammar.GLYPH_FAIL + ' ' + _esc(item.get('code') or 'JARN-INTERNAL-001') + ':')} "
             f"{_esc(item.get('summary') or 'Check failed.')}"
         )
         lines.append(f"    cause: {_esc(item.get('cause') or 'unknown')}")
@@ -304,10 +317,10 @@ def append_error_lines(lines: list[str], errors: list[dict]) -> None:
 def append_extension_lines(lines: list[str], ext: dict) -> None:
     """Append the doctor Extensions block as Rich-markup lines."""
     counts = ext.get("counts") or {}
-    lines.append("\n[b]Extensions[/b]")
+    lines.append("\n" + layout.title("Extensions"))
     if ext.get("project_trusted") is False:
         lines.append(
-            "  [yellow]project untrusted — project-tier files/config skipped[/yellow]"
+            f"  {layout.warn('project untrusted — project-tier files/config skipped')}"
         )
     lines.append(
         "  "
@@ -320,7 +333,7 @@ def append_extension_lines(lines: list[str], ext: dict) -> None:
     )
 
     for warning in ext.get("warnings") or []:
-        lines.append(f"  [yellow]⚠ {_esc(warning)}[/yellow]")
+        lines.append(f"  {layout.warn(grammar.GLYPH_WARN + ' ' + _esc(warning))}")
 
     for kind, label in (
         ("skills", "Skills"),
@@ -331,32 +344,32 @@ def append_extension_lines(lines: list[str], ext: dict) -> None:
         active = [r for r in rows if r.get("status") in ("active", "renamed_builtin")]
         if not active:
             continue
-        lines.append(f"\n  [b]{label}[/b]")
+        lines.append(f"\n  {layout.title(label)}")
         for row in active:
             scope = _esc(row.get("scope", ""))
             name = _esc(row.get("name", ""))
             detail = _esc(row.get("detail", ""))
             suffix = f" — {detail}" if detail else ""
-            lines.append(f"    [green]✔[/green] {name} ({scope}){suffix}")
+            lines.append(f"    {layout.ok(grammar.GLYPH_OK)} {name} ({scope}){suffix}")
 
     hooks = [h for h in ext.get("hooks") or [] if h.get("status") == "active"]
     if hooks:
-        lines.append("\n  [b]Hooks[/b]")
+        lines.append("\n  " + layout.title("Hooks"))
         for hook in hooks:
             blocking = "blocking" if hook.get("blocking") else "non-blocking"
             lines.append(
-                f"    [green]✔[/green] "
+                f"    {layout.ok(grammar.GLYPH_OK)} "
                 f"{_esc(hook.get('event') or '')} ({blocking}): "
                 f"{_esc(hook.get('command') or '')}"
             )
 
     servers = [s for s in ext.get("mcp_servers") or [] if s.get("status") == "active"]
     if servers:
-        lines.append("\n  [b]MCP servers[/b]")
+        lines.append("\n  " + layout.title("MCP servers"))
         for server in servers:
             health = server.get("health") or "unknown"
             lines.append(
-                f"    [green]✔[/green] "
+                f"    {layout.ok(grammar.GLYPH_OK)} "
                 f"{_esc(server.get('name') or '')} "
                 f"({_esc(server.get('transport') or '')}, health={_esc(health)})"
             )
@@ -368,17 +381,20 @@ def append_extension_lines(lines: list[str], ext: dict) -> None:
         if r.get("status") == "shadowed"
     ]
     if shadowed:
-        lines.append("\n  [dim]Shadowed (not loaded):[/dim]")
+        lines.append("\n  " + layout.muted("Shadowed (not loaded):"))
         for row in shadowed:
             lines.append(
-                f"    [dim]{_esc(row.get('name') or '')} "
-                f"({_esc(row.get('scope') or '')}) — "
-                f"{_esc(row.get('detail', ''))}[/dim]"
+                "    "
+                +                 layout.muted(
+                    f"{_plain(row.get('name') or '')} "
+                    f"({_plain(row.get('scope') or '')}) — "
+                    f"{_plain(row.get('detail', ''))}"
+                )
             )
 
 
 def render_doctor_console(console: Console, diag: dict) -> None:
     """Print doctor diagnostics to a Rich console."""
-    console.rule("[b]jarn doctor[/b]")
+    console.rule(layout.title("jarn doctor"))
     for line in doctor_lines(diag)[1:]:
         console.print(line)

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+import shutil
 from typing import TYPE_CHECKING
 
-from rich.markup import escape as _escape_markup
-
+from jarn.commands.help import format_help, format_help_detail, usage_error
 from jarn.controller.core import CommandResult
-from jarn.extensibility.commands import format_help
 from jarn.extensibility.skills import find_skill, render_skill_invocation
 from jarn.memory import write_jarn_md
+from jarn.tui import layout
 
 if TYPE_CHECKING:
     from jarn.controller.core import Controller
@@ -17,10 +17,21 @@ if TYPE_CHECKING:
 
 def cmd_help(ctrl: Controller, args: str) -> CommandResult:
     custom = ctrl.runtime.commands if ctrl.runtime else None
+    topic = args.strip()
+    if topic:
+        return CommandResult(
+            format_help_detail(
+                topic,
+                custom,
+                custom_description=lambda c: getattr(c, "description", ""),
+            )
+        )
+    columns = shutil.get_terminal_size((80, 24)).columns
     return CommandResult(
         format_help(
             custom,
             custom_description=lambda c: getattr(c, "description", ""),
+            columns=columns,
         )
     )
 
@@ -36,9 +47,9 @@ def cmd_init(ctrl: Controller, args: str) -> CommandResult:
 def cmd_login(ctrl: Controller, args: str) -> CommandResult:
     """Map the in-session spelling to the verified terminal auth ceremony."""
     if args.strip():
-        return CommandResult("Usage: /login")
+        return CommandResult(usage_error("login"))
     return CommandResult(
-        "Run [b]jarn auth login[/b] in a terminal. It will show the browser URL "
+        f"Run {layout.strong('jarn auth login')} in a terminal. It will show the browser URL "
         "or device code and will report success only after the account is verified."
     )
 
@@ -46,9 +57,9 @@ def cmd_login(ctrl: Controller, args: str) -> CommandResult:
 def cmd_logout(ctrl: Controller, args: str) -> CommandResult:
     """Map the in-session spelling to scoped Codex-managed logout."""
     if args.strip():
-        return CommandResult("Usage: /logout")
+        return CommandResult(usage_error("logout"))
     return CommandResult(
-        "Run [b]jarn auth logout[/b] in a terminal. This removes only "
+        f"Run {layout.strong('jarn auth logout')} in a terminal. This removes only "
         "Codex-managed ChatGPT credentials; provider API keys are preserved."
     )
 
@@ -63,9 +74,7 @@ def cmd_skill(ctrl: Controller, args: str) -> CommandResult:
     """
     name = args.strip()
     if not name:
-        return CommandResult(
-            "Usage: /skill <name> — invoke a skill by name. Run /skills to list them."
-        )
+        return CommandResult(usage_error("skill"))
     if not ctrl.runtime or not ctrl.runtime.skills:
         return CommandResult("No skills loaded. Run /skills to see what's available.")
     skill = find_skill(ctrl.runtime.skills, name)
@@ -91,11 +100,8 @@ def cmd_skill(ctrl: Controller, args: str) -> CommandResult:
 def cmd_skills(ctrl: Controller, args: str) -> CommandResult:
     if not ctrl.runtime or not ctrl.runtime.skills:
         return CommandResult("No skills loaded.")
-    lines = ["[b]Skills[/b]"]
+    lines = [layout.heading("Skills")]
     for s in ctrl.runtime.skills.values():
         trig = "manual" if s.is_manual else "auto"
-        lines.append(
-            f"  [cyan]{_escape_markup(s.name)}[/cyan] "
-            f"([dim]{trig}, {s.scope}[/dim]) — {_escape_markup(s.description)}"
-        )
+        lines.append(f"  {layout.item(s.name, s.description, meta=f'{trig}, {s.scope}')}")
     return CommandResult("\n".join(lines))
