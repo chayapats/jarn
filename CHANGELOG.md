@@ -12,7 +12,8 @@ Hermes display-parity close-out (P1–P4 user-visible behavior) lives on a
 [#94](https://github.com/chayapats/jarn/pull/94) (P2),
 [#95](https://github.com/chayapats/jarn/pull/95) (P3),
 [#98](https://github.com/chayapats/jarn/pull/98) (P4 Telegram).
-P5 evidence (UAT, mockups, these notes) is this docs PR. Advertised pytest
+P5 evidence (UAT, mockups, these notes) is
+[#99](https://github.com/chayapats/jarn/pull/99). Advertised pytest
 collection count syncs when the stack is merged — branches disagree, so no
 single number is claimed here.
 

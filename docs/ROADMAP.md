@@ -227,8 +227,8 @@ Identity stays cyan/teal. Host-direct `!` stays red.
 
 **Not a GitHub Release.** P1–P4 Python is **not merged** into this base
 (`feat/hermes-parity-closeout`) or into main. Each phase is a draft PR. P5
-evidence is this docs PR. `[x]` here means the phase PR exists, not that the
-code is in the current published package.
+evidence is [#99](https://github.com/chayapats/jarn/pull/99). `[x]` here means
+the phase PR exists, not that the code is in the current published package.
 
 - [x] **P0 — Contract** — A–K marked landed; remaining work pointed here
   ([#93](https://github.com/chayapats/jarn/pull/93))
@@ -251,6 +251,7 @@ code is in the current published package.
 - [x] **P5 — Evidence** — UAT checklists, text mockups, config keys, parity
   table, changelog. Live terminal/bot rows **Not run**. No `demo.gif` (`vhs`
   not installed). No git tag.
+  ([#99](https://github.com/chayapats/jarn/pull/99))
 
 UAT: [UAT-HERMES-PARITY.md](assets/UAT-HERMES-PARITY.md).
 

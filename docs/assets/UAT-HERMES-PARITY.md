@@ -23,7 +23,7 @@ Code is a **stack of draft PRs** (not merged into `feat/hermes-parity-closeout`)
 | P2 Telegram live turn | [#94](https://github.com/chayapats/jarn/pull/94) | `cursor/telegram-p2-live-turn-8286` |
 | P3 Telegram commands | [#95](https://github.com/chayapats/jarn/pull/95) | `cursor/telegram-p3-commands-385b` (onto P2) |
 | P4 Telegram busy UX | [#98](https://github.com/chayapats/jarn/pull/98) | `cursor/telegram-p4-busy-ux-7326` (onto P3) |
-| P5 evidence | this PR | `cursor/hermes-p5-evidence-29f0` |
+| P5 evidence | [#99](https://github.com/chayapats/jarn/pull/99) | `cursor/hermes-p5-evidence-29f0` |
 
 Text mockups: [cli-paste-preview.md](cli-paste-preview.md),
 [cli-sessions-picker.md](cli-sessions-picker.md),
