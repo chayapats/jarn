@@ -209,7 +209,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "review",
         "Read-only review of the current diff.",
         "ui",
-        related=("commit",),
+        related=("commit", "diff"),
+    ),
+    _c(
+        "diff",
+        "Show a git diff of staged, working-tree, or session files.",
+        "core",
+        usage="[staged|all|session]",
+        examples=("/diff", "/diff staged", "/diff session"),
+        related=("commit", "review"),
+        blurb="Default: staged if the index is dirty, otherwise the working tree. "
+        "`session` limits to files this thread edited.",
     ),
     _c(
         "compact",

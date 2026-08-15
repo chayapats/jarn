@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from jarn.commands.registry import COMMAND_SPECS, CommandSpec, canonical_name, core_command_names
-from jarn.controller.commands import config, diagnostics, memory, meta, session
+from jarn.controller.commands import config, diagnostics, diffcmd, memory, meta, session
 
 if TYPE_CHECKING:
     from jarn.controller.core import CommandResult, Controller
@@ -28,6 +28,7 @@ _HANDLERS: dict[str, CommandHandler] = {
     "model": config.cmd_model,
     "mode": config.cmd_mode,
     "trust": config.cmd_trust,
+    "diff": diffcmd.cmd_diff,
     # session
     "sessions": session.cmd_sessions,
     "clear": session.cmd_clear,

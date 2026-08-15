@@ -83,6 +83,16 @@ class CommandMixin:
         if name in ("resume", "sessions"):
             await self._resume_picker(query=args.strip())
             return
+        if name == "diff":
+            result = self.controller.handle_command("diff", args)
+            raw = result.text
+            if raw.startswith(("diff ", "--- ", "+++ ")) or "\n@@" in raw:
+                from jarn.tui.widgets.diff import colorize_unified_diff
+
+                c.print(colorize_unified_diff(raw))
+            else:
+                c.print(raw, highlight=False)
+            return
         if name == "rewind":
             await self._rewind_picker()
             return
