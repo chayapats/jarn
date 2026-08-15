@@ -255,6 +255,65 @@ def test_event_to_frame_maps_kind():
     assert frame.text == "hi"
 
 
+def test_event_to_frame_stamps_session_progress():
+    ev = Event(EventKind.TOOL_START, text="bash", data={"args": {}})
+    frame = event_to_frame(ev, thread_id="thr", progress="new")
+    assert frame.kind == "tool_start"
+    assert frame.progress == "new"
+
+
+def test_worker_seeds_telegram_progress_off_not_ui_new(isolated_home: Path, tmp_path: Path):
+    from types import SimpleNamespace
+
+    from jarn.telegram.outbox import should_drop_event
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    ctrl = _stub_controller(root=root)
+    ctrl.tool_progress = "new"
+    ctrl.config = SimpleNamespace(
+        execution=SimpleNamespace(inline_images="off"),
+        ui=SimpleNamespace(tool_progress="new"),
+        gateway=SimpleNamespace(telegram=SimpleNamespace(tool_progress="off")),
+    )
+    worker = GatewayWorker(
+        root=root,
+        controller=ctrl,
+        stdin=_Stdin(),
+        stdout=_Stdout(),
+        heartbeat_interval=60.0,
+        approval_store=PendingApprovalMap(isolated_home / "pending.json"),
+    )
+    assert worker.controller.tool_progress == "off"
+    assert should_drop_event("tool_start", progress=worker._session_progress())
+
+
+def test_worker_overlay_new_seeds_session(isolated_home: Path, tmp_path: Path):
+    from types import SimpleNamespace
+
+    from jarn.telegram.outbox import should_drop_event
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    ctrl = _stub_controller(root=root)
+    ctrl.tool_progress = "off"
+    ctrl.config = SimpleNamespace(
+        execution=SimpleNamespace(inline_images="off"),
+        ui=SimpleNamespace(tool_progress="off"),
+        gateway=SimpleNamespace(telegram=SimpleNamespace(tool_progress="new")),
+    )
+    worker = GatewayWorker(
+        root=root,
+        controller=ctrl,
+        stdin=_Stdin(),
+        stdout=_Stdout(),
+        heartbeat_interval=60.0,
+        approval_store=PendingApprovalMap(isolated_home / "pending.json"),
+    )
+    assert worker.controller.tool_progress == "new"
+    assert not should_drop_event("tool_start", progress=worker._session_progress())
+
+
 # ---------------------------------------------------------------------------
 # Handshake / status / loop
 # ---------------------------------------------------------------------------
@@ -368,6 +427,74 @@ async def test_turn_emits_events(isolated_home: Path, tmp_path: Path):
     events = _frames_of(stdout, EventFrame)
     assert any(e.kind == "text" and "hello" in e.text for e in events)
     assert any(e.kind == "done" and e.thread_id == "thr-1" for e in events)
+    stdin.push(encode_line(ShutdownFrame()))
+    await asyncio.wait_for(task, timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_verbose_then_tool_start_is_not_dropped(isolated_home: Path, tmp_path: Path):
+    from jarn.controller.commands.diagnostics import cmd_verbose
+    from jarn.controller.core import CommandResult
+    from jarn.telegram.outbox import should_drop_event
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    yaml_path = isolated_home / "config.yaml"
+    yaml_path.write_text("ui:\n  tool_progress: new\n", encoding="utf-8")
+    original = yaml_path.read_text(encoding="utf-8")
+
+    async def run_turn(driver, text, **kwargs):
+        yield Event(EventKind.TOOL_START, text="bash", data={"args": {"cmd": "ls"}})
+        yield Event(EventKind.DONE)
+
+    stdin, stdout = _Stdin(), _Stdout()
+    ctrl = _stub_controller(root=root, run_turn=run_turn)
+    ctrl.tool_progress = "off"
+    ctrl.focus_mode = False
+    ctrl._focus_saved_progress = None
+
+    def handle(name, args):
+        if name == "verbose":
+            return cmd_verbose(ctrl, args)
+        return CommandResult("")
+
+    ctrl.handle_command = handle
+    worker = GatewayWorker(
+        root=root,
+        controller=ctrl,
+        stdin=stdin,
+        stdout=stdout,
+        heartbeat_interval=60.0,
+        approval_store=PendingApprovalMap(isolated_home / "pending.json"),
+    )
+    assert worker.controller.tool_progress == "off"
+    task = asyncio.create_task(worker.run())
+    stdin.push(encode_line(HandshakeFrame(schema_version=SCHEMA_VERSION)))
+    await asyncio.sleep(0.05)
+    stdin.push(encode_line(TurnFrame(thread_id="thr-v", text="/verbose")))
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        if any(isinstance(f, EventFrame) and f.kind == "done" for f in stdout.frames()):
+            break
+        await asyncio.sleep(0.02)
+    else:
+        pytest.fail(f"no done after /verbose; got {stdout.frames()!r}")
+    assert ctrl.tool_progress == "new"
+    assert yaml_path.read_text(encoding="utf-8") == original
+
+    stdin.push(encode_line(TurnFrame(thread_id="thr-v", text="go")))
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        starts = [
+            f for f in stdout.frames() if isinstance(f, EventFrame) and f.kind == "tool_start"
+        ]
+        if starts:
+            break
+        await asyncio.sleep(0.02)
+    else:
+        pytest.fail(f"no tool_start; got {stdout.frames()!r}")
+    assert starts[0].progress == "new"
+    assert not should_drop_event(starts[0].kind, starts[0].data, progress=starts[0].progress)
     stdin.push(encode_line(ShutdownFrame()))
     await asyncio.wait_for(task, timeout=2)
 

@@ -119,6 +119,7 @@ def redact_outbound_frame(frame: OutboundFrame) -> OutboundFrame:
             kind=frame.kind,
             text=redact_secrets(frame.text or ""),
             data=redact_outbound_value(frame.data or {}),
+            progress=frame.progress,
         )
     if isinstance(frame, ApprovalAskFrame):
         mem: dict[str, Any] | None = None
@@ -152,7 +153,7 @@ def redact_outbound_frame(frame: OutboundFrame) -> OutboundFrame:
     return frame
 
 
-def event_to_frame(event: Event, *, thread_id: str) -> EventFrame:
+def event_to_frame(event: Event, *, thread_id: str, progress: str | None = None) -> EventFrame:
     """Map an agent :class:`Event` to a private pipe :class:`EventFrame`."""
     kind = event.kind.value if isinstance(event.kind, EventKind) else str(event.kind)
     return EventFrame(
@@ -160,6 +161,7 @@ def event_to_frame(event: Event, *, thread_id: str) -> EventFrame:
         kind=kind,
         text=event.text or "",
         data=dict(event.data or {}),
+        progress=progress,
     )
 
 
@@ -238,6 +240,28 @@ class GatewayWorker:
         self._turn_thread_id: str | None = None
         self._last_activity = self._clock()
         self._emit_lock = asyncio.Lock()
+        self._seed_telegram_tool_progress()
+
+    def _seed_telegram_tool_progress(self) -> None:
+        """Telegram quiet default: overlay or ``off``, never CLI ``ui.tool_progress``."""
+        from jarn.telegram.outbox import effective_telegram_tool_progress
+
+        value = effective_telegram_tool_progress(getattr(self.controller, "config", None))
+        try:
+            self.controller.tool_progress = value
+        except Exception:  # noqa: BLE001 — stub controllers may reject assignment
+            _log.debug("could not seed controller.tool_progress", exc_info=True)
+
+    def _session_progress(self) -> str:
+        from jarn.tui.grammar import TOOL_PROGRESS_VALUES
+
+        raw = getattr(self.controller, "tool_progress", "off")
+        if isinstance(raw, str) and raw in TOOL_PROGRESS_VALUES:
+            return raw
+        return "off"
+
+    def _event_frame(self, event: Event, *, thread_id: str) -> EventFrame:
+        return event_to_frame(event, thread_id=thread_id, progress=self._session_progress())
 
     @classmethod
     def from_root(
@@ -396,9 +420,16 @@ class GatewayWorker:
                 thread_id=frame.thread_id,
                 kind="notice",
                 text=result.text or "",
+                progress=self._session_progress(),
             )
         )
-        await self.aemit(EventFrame(thread_id=frame.thread_id, kind="done"))
+        await self.aemit(
+            EventFrame(
+                thread_id=frame.thread_id,
+                kind="done",
+                progress=self._session_progress(),
+            )
+        )
         return True
 
     async def _run_turn(self, frame: TurnFrame) -> None:
@@ -415,7 +446,7 @@ class GatewayWorker:
             )
 
             async def on_event(event: Event) -> None:
-                await self.aemit(event_to_frame(event, thread_id=thread_id))
+                await self.aemit(self._event_frame(event, thread_id=thread_id))
 
             result = await run_agent_turn(
                 self.controller,
@@ -505,7 +536,7 @@ class GatewayWorker:
                 plan_mode_target=frame.plan_mode_target,
                 store=self.approval_store,
             ):
-                await self.aemit(event_to_frame(event, thread_id=thread_id))
+                await self.aemit(self._event_frame(event, thread_id=thread_id))
         except ApprovalParked:
             _log.info("approval parked again thread=%s", thread_id)
         except asyncio.CancelledError:

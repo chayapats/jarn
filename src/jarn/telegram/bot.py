@@ -229,6 +229,9 @@ class TelegramBotApp:
     project_root: Path | None = None
     notify_chat_id: int | None = None
     poll_timeout: int = 25
+    tool_progress: str = "off"
+    tool_progress_cleanup: str = "delete"
+    long_running_notifications: bool = True
     _bot: Any = field(default=None, repr=False)
     _outbox: Outbox | None = field(default=None, repr=False)
     _offset: int | None = field(default=None, repr=False)
@@ -271,7 +274,12 @@ class TelegramBotApp:
             except TokenValidationError as exc:
                 _log.error("invalid Telegram bot token: %s", exc)
                 return EXIT_UNAUTHORIZED
-            self._outbox = Outbox(sender=self._bot)
+            self._outbox = Outbox(
+                sender=self._bot,
+                progress=self.tool_progress,
+                tool_progress_cleanup=self.tool_progress_cleanup,
+                long_running_notifications=self.long_running_notifications,
+            )
             binder = getattr(self.backend, "bind_outbox", None)
             if callable(binder):
                 binder(self._outbox, loop=asyncio.get_running_loop())
@@ -587,6 +595,9 @@ async def run_gateway_bot(
     backend: GatewayBackend,
     project_root: Path | None = None,
     notify_chat_id: int | None = None,
+    tool_progress: str = "off",
+    tool_progress_cleanup: str = "delete",
+    long_running_notifications: bool = True,
 ) -> int:
     """Convenience entry used by ``python -m jarn.telegram``."""
     app = TelegramBotApp(
@@ -595,5 +606,8 @@ async def run_gateway_bot(
         backend=backend,
         project_root=project_root,
         notify_chat_id=notify_chat_id,
+        tool_progress=tool_progress,
+        tool_progress_cleanup=tool_progress_cleanup,
+        long_running_notifications=long_running_notifications,
     )
     return await app.start()

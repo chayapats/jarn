@@ -31,6 +31,15 @@ class _FakeSender:
         self.messages.append({"chat_id": chat_id, "text": text, **kwargs})
         return {"message_id": len(self.messages)}
 
+    async def edit_message(self, chat_id, message_id, text, **kwargs):
+        self.messages.append(
+            {"chat_id": chat_id, "message_id": message_id, "text": text, "edit": True, **kwargs}
+        )
+        return {"message_id": message_id}
+
+    async def delete_message(self, chat_id, message_id, **kwargs):
+        return True
+
 
 @pytest.mark.asyncio
 async def test_submit_verdict_routes_to_active_root(tmp_path: Path, monkeypatch):

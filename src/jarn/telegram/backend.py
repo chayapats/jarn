@@ -267,7 +267,10 @@ class SessionRouterBackend:
 
     async def _deliver_frame(self, chat_id: int, frame: OutboundFrame) -> None:
         outbox = self._outbox
-        if outbox is None or isinstance(frame, StatusFrame):
+        if outbox is None:
+            return
+        if isinstance(frame, StatusFrame):
+            await outbox.maybe_long_running(chat_id, turn_in_flight=frame.turn_in_flight)
             return
         if isinstance(frame, EventFrame):
             await outbox.on_event(
@@ -275,6 +278,7 @@ class SessionRouterBackend:
                 kind=frame.kind,
                 text=frame.text,
                 data=dict(frame.data),
+                progress=frame.progress,
             )
             return
         if isinstance(frame, ErrorFrame):
