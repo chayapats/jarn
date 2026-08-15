@@ -744,6 +744,10 @@ def test_gateway_defaults(tmp_path):
     assert cfg.gateway.enabled is False
     assert cfg.gateway.telegram.token == ""
     assert cfg.gateway.telegram.allowed_user_ids == []
+    assert cfg.gateway.telegram.tool_progress == "off"
+    assert cfg.gateway.telegram.tool_progress_cleanup == "delete"
+    assert cfg.gateway.telegram.long_running_notifications is True
+    assert cfg.ui.tool_progress == "new"
     assert cfg.gateway.repos == []
 
 
@@ -820,6 +824,43 @@ def test_gateway_enabled_is_settable():
     from jarn.config.settings import is_settable
 
     assert is_settable("gateway.enabled")
+    assert is_settable("gateway.telegram.tool_progress")
+    assert is_settable("gateway.telegram.tool_progress_cleanup")
+    assert is_settable("gateway.telegram.long_running_notifications")
+
+
+def test_gateway_telegram_tool_progress_overlay_does_not_inherit_ui(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"ui": {"tool_progress": "new"}})
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.ui.tool_progress == "new"
+    assert cfg.gateway.telegram.tool_progress == "off"
+
+
+def test_gateway_telegram_progress_keys_validated(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"gateway": {"telegram": {"tool_progress": "loud"}}})
+    with pytest.raises(ConfigError, match="tool_progress"):
+        load_config(global_path=gp, project_path=None)
+    _write(gp, {"gateway": {"telegram": {"tool_progress_cleanup": "archive"}}})
+    with pytest.raises(ConfigError, match="tool_progress_cleanup"):
+        load_config(global_path=gp, project_path=None)
+    _write(
+        gp,
+        {
+            "gateway": {
+                "telegram": {
+                    "tool_progress": "verbose",
+                    "tool_progress_cleanup": "keep",
+                    "long_running_notifications": False,
+                }
+            }
+        },
+    )
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.gateway.telegram.tool_progress == "verbose"
+    assert cfg.gateway.telegram.tool_progress_cleanup == "keep"
+    assert cfg.gateway.telegram.long_running_notifications is False
 
 
 def test_ensure_personal_root_creates_git_repo(tmp_path, monkeypatch):

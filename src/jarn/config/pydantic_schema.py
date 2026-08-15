@@ -1056,6 +1056,9 @@ class UpdatesConfigModel(_StrictModel):
 class GatewayTelegramConfigModel(_StrictModel):
     token: str = ""
     allowed_user_ids: list[int] = Field(default_factory=list)
+    tool_progress: str = "off"
+    tool_progress_cleanup: str = "delete"
+    long_running_notifications: bool = True
 
     @field_validator("token", mode="before")
     @classmethod
@@ -1080,6 +1083,41 @@ class GatewayTelegramConfigModel(_StrictModel):
                 )
             out.append(item)
         return out
+
+    @field_validator("tool_progress", mode="before")
+    @classmethod
+    def _tg_tool_progress(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_TOOL_PROGRESS_VALUES
+
+        if value is None or value == "":
+            return "off"
+        raw = str(value)
+        if raw not in _VALID_TOOL_PROGRESS_VALUES:
+            raise ConfigValidationError(
+                "gateway.telegram.tool_progress must be one of "
+                f"{sorted(_VALID_TOOL_PROGRESS_VALUES)} (got {raw!r})."
+            )
+        return raw
+
+    @field_validator("tool_progress_cleanup", mode="before")
+    @classmethod
+    def _tg_tool_progress_cleanup(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_TOOL_PROGRESS_CLEANUP
+
+        if value is None or value == "":
+            return "delete"
+        raw = str(value)
+        if raw not in _VALID_TOOL_PROGRESS_CLEANUP:
+            raise ConfigValidationError(
+                "gateway.telegram.tool_progress_cleanup must be one of "
+                f"{sorted(_VALID_TOOL_PROGRESS_CLEANUP)} (got {raw!r})."
+            )
+        return raw
+
+    @field_validator("long_running_notifications", mode="before")
+    @classmethod
+    def _tg_long_running_notifications(cls, value: Any) -> bool:
+        return _normalize_bool(value, "gateway.telegram.long_running_notifications")
 
 
 class GatewayRepoModel(_StrictModel):
@@ -1466,6 +1504,9 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             telegram=GatewayTelegramConfig(
                 token=model.gateway.telegram.token,
                 allowed_user_ids=list(model.gateway.telegram.allowed_user_ids),
+                tool_progress=model.gateway.telegram.tool_progress,
+                tool_progress_cleanup=model.gateway.telegram.tool_progress_cleanup,
+                long_running_notifications=model.gateway.telegram.long_running_notifications,
             ),
             repos=[
                 GatewayRepo(path=r.path, name=r.name) for r in model.gateway.repos

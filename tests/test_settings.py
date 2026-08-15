@@ -17,6 +17,8 @@ def test_coerce_types():
     assert settings.coerce("wiki.enabled", "off") is False
     assert settings.coerce("ui.theme", "light") == "light"
     assert settings.coerce("execution.docker_image", "node:22") == "node:22"
+    assert settings.coerce("gateway.telegram.tool_progress", "off") == "off"
+    assert settings.coerce("gateway.telegram.tool_progress_cleanup", "keep") == "keep"
 
 
 def test_coerce_rejects_bad_values():
@@ -33,6 +35,9 @@ def test_coerce_rejects_bad_values():
 def test_get_value_reads_nested_and_enum(base_config):
     assert settings.get_value(base_config, "permission_mode") == base_config.permission_mode.value
     assert settings.get_value(base_config, "ui.theme") == base_config.ui.theme
+    assert settings.get_value(base_config, "gateway.telegram.tool_progress") == "off"
+    assert settings.get_value(base_config, "gateway.telegram.tool_progress_cleanup") == "delete"
+    assert settings.get_value(base_config, "gateway.telegram.long_running_notifications") is True
 
 
 # -- ConfigStore round-trip -------------------------------------------------
