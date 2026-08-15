@@ -585,6 +585,8 @@ GATEWAY_READONLY_COMMANDS = frozenset(
         "doctor",
         "skills",
         "help",
+        "map",
+        "wiki",
     }
 )
 

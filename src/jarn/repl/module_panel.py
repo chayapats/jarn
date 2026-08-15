@@ -173,13 +173,13 @@ class ModulePanel:
     def _state(status: PromptModuleStatus) -> tuple[str, str]:
         if status.user_activatable:
             if not status.active:
-                return palette.C_DIM, "○ Off"
+                return palette.C_DIM, f"{grammar.GLYPH_KEY_OFF} Off"
             if status.scope == "session":
-                return palette.C_SUCCESS, "● Session"
-            return palette.C_SUCCESS, "● Next turn"
+                return palette.C_SUCCESS, f"{grammar.GLYPH_KEY_OK} Session"
+            return palette.C_SUCCESS, f"{grammar.GLYPH_KEY_OK} Next turn"
         if status.active:
-            return palette.C_SUCCESS, "● Auto on"
-        return palette.C_DIM, "○ Auto off"
+            return palette.C_SUCCESS, f"{grammar.GLYPH_KEY_OK} Auto on"
+        return palette.C_DIM, f"{grammar.GLYPH_KEY_OFF} Auto off"
 
     def _visible_range(self) -> tuple[int, int]:
         total = len(self.statuses)

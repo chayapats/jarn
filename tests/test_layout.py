@@ -185,6 +185,8 @@ def test_parse_slash_line_and_gateway_local() -> None:
     assert is_gateway_local_command("status")
     assert is_gateway_local_command("usage")
     assert is_gateway_local_command("verbose")
+    assert is_gateway_local_command("map")
+    assert is_gateway_local_command("wiki")
     assert not is_gateway_local_command("quit")
     assert not is_gateway_local_command("nope")
     assert not is_gateway_local_command("config")
@@ -264,9 +266,11 @@ def test_todo_spinner_banner_and_link_helpers() -> None:
     assert palette.C_TOOL in spin
     assert "Working…" in spin
     banner = layout.host_shell_banner()
-    assert "⚡ host shell" in banner
+    assert grammar.GLYPH_HOST_SHELL in banner
+    assert f"{grammar.GLYPH_HOST_SHELL} host shell" in banner
     assert palette.C_ERROR in banner
     assert "danger-guard skipped" in banner
+    assert grammar.MODE_GLYPH["auto-edit"] == grammar.GLYPH_HOST_SHELL
     steered = layout.steer("next", queued=True, hint="  ·  [s] steer now")
     assert "queued:" in steered
     assert "steer now" in steered
@@ -277,3 +281,75 @@ def test_todo_spinner_banner_and_link_helpers() -> None:
     html_link = layout.link("https://example.test/a", dialect="html")
     assert "<a href=" in html_link
     assert "<span" not in html_link
+
+
+def test_truncate_bullet_rule_item_helpers() -> None:
+    assert layout.truncate("hello", 10) == "hello"
+    assert layout.truncate("abcdefghij", 8) == "abcdefg…"
+    assert layout.truncate("x", 1) == "x"
+    assert layout.truncate("xy", 1) == "…"
+    dotted = layout.bullet("install deps")
+    assert "·" in dotted
+    assert "install deps" in dotted
+    assert "\\[x]" in layout.bullet("[x]")
+    ruled = layout.rule("Status")
+    assert "──" in ruled
+    assert "Status" in ruled
+    assert palette.C_DIM in ruled
+    bare = layout.rule()
+    assert bare == layout.muted("──")
+    row = layout.item("bash", "run a command", meta="tool")
+    assert palette.ACCENT in row
+    assert "bash" in row
+    assert "run a command" in row
+    assert "tool" in row
+    assert palette.C_DIM in row
+    assert "\\[n]" in layout.item("[n]")
+    named = layout.item("only")
+    assert "only" in named
+    assert palette.ACCENT in named
+
+
+def test_code_and_pre_html_has_no_span() -> None:
+    html_code = layout.code("rm -rf", dialect="html")
+    assert "<code>" in html_code
+    assert "rm -rf" in html_code
+    assert "<span" not in html_code
+    html_pre = layout.pre("a < b", dialect="html")
+    assert "<pre>" in html_pre
+    assert "&lt;" in html_pre
+    assert "<span" not in html_pre
+    rich_code = layout.code("x")
+    assert palette.ACCENT in rich_code
+    assert "x" in rich_code
+    assert layout.code("x", dialect="plain") == "x"
+    assert layout.pre("x", dialect="plain") == "x"
+    assert "\\[b]" in layout.code("[b]")
+    assert "\\[b]" in layout.pre("[b]")
+
+
+def test_format_todos_and_host_shell_banner_glyphs() -> None:
+    todos = [
+        {"content": "done", "status": "completed"},
+        {"content": "active", "status": "in_progress"},
+        {"content": "wait", "status": "pending"},
+    ]
+    lines = layout.format_todos(todos, 80)
+    joined = "\n".join(lines)
+    assert "Todos" in joined
+    assert "active" in joined
+    assert grammar.GLYPH_TODO_RUN in joined
+    overflow = (
+        [{"content": f"d{i}", "status": "completed"} for i in range(3)]
+        + [{"content": "go", "status": "in_progress"}]
+        + [{"content": f"p{i}", "status": "pending"} for i in range(16)]
+    )
+    capped = layout.format_todos(overflow, 80, cap=8)
+    body = capped[1:]
+    assert len(body) <= 8
+    assert any("more" in line for line in body)
+    assert any("… +" in line and "more" in line for line in body)
+    banner = layout.host_shell_banner()
+    assert grammar.GLYPH_HOST_SHELL in banner
+    assert grammar.GLYPH_PLAY == "▶"
+    assert grammar.GLYPH_PROMPT == "›"

@@ -31,8 +31,6 @@ from jarn.telegram.htmlutil import (
     TELEGRAM_MESSAGE_MAX,
     chunk_html,
     escape_html,
-    format_code,
-    format_pre,
 )
 from jarn.tui import grammar, layout
 
@@ -150,9 +148,10 @@ def build_approval_card(
         body = str(suggested_memory.get("body") or "")
         desc = str(suggested_memory.get("description") or description or "")
         text = (
-            f"{layout.strong('Save memory?', dialect='html')} {escape_html(name)}\n"
-            f"{escape_html(desc)}\n"
-            f"{format_pre(body[:1500])}"
+            f"{layout.strong('Save memory?', dialect='html')} "
+            f"{layout.escape(name, dialect='html')}\n"
+            f"{layout.escape(desc, dialect='html')}\n"
+            f"{layout.pre(body[:1500], dialect='html')}"
         )
         markup = _inline_keyboard(
             [
@@ -169,9 +168,10 @@ def build_approval_card(
         body = str(suggested_skill.get("body") or "")
         desc = str(suggested_skill.get("description") or description or "")
         text = (
-            f"{layout.strong('Save skill?', dialect='html')} {escape_html(name)}\n"
-            f"{escape_html(desc)}\n"
-            f"{format_pre(body[:1500])}"
+            f"{layout.strong('Save skill?', dialect='html')} "
+            f"{layout.escape(name, dialect='html')}\n"
+            f"{layout.escape(desc, dialect='html')}\n"
+            f"{layout.pre(body[:1500], dialect='html')}"
         )
         markup = _inline_keyboard(
             [
@@ -184,7 +184,10 @@ def build_approval_card(
         return text, markup
 
     if plan is not None:
-        text = f"{layout.strong('Plan ready', dialect='html')}\n{escape_html(plan[:3000])}"
+        text = (
+            f"{layout.strong('Plan ready', dialect='html')}\n"
+            f"{layout.escape(plan[:3000], dialect='html')}"
+        )
         markup = _inline_keyboard(
             [
                 [
@@ -203,16 +206,18 @@ def build_approval_card(
         try:
             args_blob = json.dumps(safe_args, ensure_ascii=False, indent=2)[:1200]
         except (TypeError, ValueError):
-            args_blob = escape_html(str(safe_args)[:1200])
+            args_blob = str(safe_args)[:1200]
     danger = f" {grammar.GLYPH_WARN}" if dangerous else ""
-    title = escape_html(action or "tool")
-    lines = [f"{layout.strong(f'Approve{danger}', dialect='html')} {format_code(title)}"]
+    lines = [
+        f"{layout.strong(f'Approve{danger}', dialect='html')} "
+        f"{layout.code(action or 'tool', dialect='html')}"
+    ]
     if target:
-        lines.append(f"target: {format_code(target)}")
+        lines.append(f"target: {layout.code(target, dialect='html')}")
     if description:
-        lines.append(escape_html(description))
+        lines.append(layout.escape(description, dialect="html"))
     if args_blob:
-        lines.append(format_pre(args_blob))
+        lines.append(layout.pre(args_blob, dialect="html"))
     text = "\n".join(lines)
     markup = _inline_keyboard(
         [
@@ -230,7 +235,10 @@ def build_yolo_confirm_card(*, token: str = "yolo") -> tuple[str, dict[str, Any]
     """Controller-owned yolo escalate confirm (#59 / #39)."""
     text = (
         f"{layout.strong('Enable yolo mode?', dialect='html')}\n"
-        "No prompts except danger-guard. Confirm only if you trust this root."
+        + layout.escape(
+            "No prompts except danger-guard. Confirm only if you trust this root.",
+            dialect="html",
+        )
     )
     markup = _inline_keyboard(
         [
@@ -254,10 +262,10 @@ def build_media_refusal_card(
     parts = [layout.strong("Media not accepted", dialect="html")]
     if modality or reason:
         meta = " · ".join(p for p in (modality, reason) if p)
-        parts.append(escape_html(meta))
+        parts.append(layout.escape(meta, dialect="html"))
     if filename:
-        parts.append(format_code(filename))
-    parts.append(escape_html(message))
+        parts.append(layout.code(filename, dialect="html"))
+    parts.append(layout.escape(message, dialect="html"))
     return "\n".join(parts)
 
 

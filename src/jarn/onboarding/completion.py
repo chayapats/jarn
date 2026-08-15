@@ -237,7 +237,7 @@ def render_setup_completion(console: Console, summary: SetupCompletion) -> None:
     console.print(f"  {layout.field('Executable', summary.install.executable)}")
     console.print(f"  {layout.field('Config', str(summary.config_path))}")
     if summary.backup_path is not None:
-        console.print(f"  Previous config backup: {layout.escape(str(summary.backup_path))}")
+        console.print(f"  {layout.field('Previous config backup', str(summary.backup_path))}")
     console.print(f"  {layout.field('Provider', summary.provider)}")
     if summary.auth_mode:
         console.print(f"  {layout.field('Authentication', summary.auth_mode)}")
@@ -254,8 +254,10 @@ def render_setup_completion(console: Console, summary: SetupCompletion) -> None:
         f"  {layout.field('Permission', permission_mode_summary(summary.permission_mode))}"
     )
     console.print(f"  {layout.field('Working directory', str(summary.cwd))}")
-    console.print(f"  Provider validation: {layout.escape(summary.validation)}")
-    console.print(f"\n  Next command: {layout.accent(summary.next_command, bold=True)}")
+    console.print(f"  {layout.field('Provider validation', summary.validation)}")
+    console.print(
+        f"\n  {layout.field('Next command')} {layout.accent(summary.next_command, bold=True)}"
+    )
 
 
 __all__ = [

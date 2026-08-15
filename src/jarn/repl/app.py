@@ -42,7 +42,7 @@ from rich.markdown import Markdown
 from jarn.config.schema import Config
 from jarn.extensibility.commands import completion_catalog, parse_input
 from jarn.repl import turn as repl_turn
-from jarn.repl.commands import CommandMixin, format_todos
+from jarn.repl.commands import CommandMixin
 from jarn.repl.completer import _ShellEscapeLexer, _SlashFileCompleter
 from jarn.repl.keys import KeysMixin
 from jarn.repl.overlays import OverlayMixin
@@ -394,7 +394,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             BufferControl(
                 self.input,
                 input_processors=[
-                    BeforeInput("› ", style="bold"),
+                    BeforeInput(f"{grammar.GLYPH_PROMPT} ", style="bold"),
                     # Ghost autosuggest: renders the upcoming suggestion suffix in
                     # a dim colour after the cursor.  Hidden when the completion
                     # dropdown is open so both UI layers never appear together.
@@ -674,7 +674,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             return ""
         width = _current_width()
         self.console.width = width
-        lines = format_todos(self._live_todos, width, cap=_LIVE_TODOS_CAP)
+        lines = layout.format_todos(self._live_todos, width, cap=_LIVE_TODOS_CAP)
         buf = io.StringIO()
         plain_terminal = palette.no_color()
         cap = Console(
@@ -744,7 +744,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         for i, (label, _) in enumerate(self._menu_options):
             if i == self._menu_index:
                 lines.append(
-                    f'<style fg="{palette.C_USER}"><b>› {_esc(label)}</b></style>'
+                    f'<style fg="{palette.C_USER}"><b>{grammar.GLYPH_PROMPT} {_esc(label)}</b></style>'
                 )
             else:
                 lines.append(f'<style fg="{palette.C_DIM}">  {_esc(label)}</style>')
@@ -966,7 +966,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         if line is None:
             return (False, f"No item at {n}.")
         self.controller._steer_slot = line.payload
-        return (True, f"› (steered) {line.display}")
+        return (True, f"{grammar.GLYPH_PROMPT} (steered) {line.display}")
 
     def _drain_queue(self) -> None:
         """Start the next queued line as a new turn (mirrors the submit path)."""

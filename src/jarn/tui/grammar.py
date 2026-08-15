@@ -13,6 +13,7 @@ from typing import Literal
 # ── Glyphs (frozen set — new glyphs need a spec amendment) ──────────────────
 
 GLYPH_PROMPT = "›"
+GLYPH_PLAY = "▶"  # plan / memory / skill notice titles
 GLYPH_STEER = "»"
 GLYPH_TOOL = "⏺"
 GLYPH_RESULT = "⎿"
@@ -28,6 +29,9 @@ GLYPH_TODO_RUN = "◐"
 GLYPH_TODO_WAIT = "☐"
 GLYPH_BAR_FILL = "█"
 GLYPH_BAR_EMPTY = "░"
+#: Host-shell banner. Same character as ``MODE_GLYPH["auto-edit"]``; that overlap
+#: is intentional (both mean "runs without asking").
+GLYPH_HOST_SHELL = "⚡"
 
 MODE_GLYPH: dict[str, str] = {
     "plan": "◇",

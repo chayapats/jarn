@@ -128,7 +128,7 @@ def _memory_list(ctrl) -> CommandResult:
         if not memories:
             continue
         found = True
-        lines.append(f"\n{layout.title(scope)}")
+        lines.append(layout.section(scope))
         for memory in memories:
             lines.append(
                 f"  {layout.accent(memory.name)} "

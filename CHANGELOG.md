@@ -31,7 +31,9 @@ All notable changes to J.A.R.N. are documented here. Format follows
   vs session chrome (`/verbose` `/focus` `/title`); mutating `/config`
   `/preset` `/memory` `/sandbox` stay off the local shortcut. Busy CLI
   subcommands (`exec`, `doctor`, `gateway`, `config`, `auth`, `sessions`,
-  `update`) group flags the same way as `jarn --help`.
+  `update`) group flags the same way as `jarn --help`. List/page primitives
+  (`item`, `rule`, `code`/`pre`, `format_todos`) live in `layout.py`;
+  Telegram cards no longer compose HTML tags outside that module.
 - Quieter default tool stream (`ui.tool_progress: new`). `/verbose` cycles
   density for the session; `/focus` hides tool chrome. The toolbar shows a
   context fill bar and session timer; YOLO stays sticky on narrow widths.

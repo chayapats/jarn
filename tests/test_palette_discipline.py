@@ -1,4 +1,4 @@
-"""Fail CI if named Rich colors, [dim], [b]/[bold], or brand hex leak outside the SSOT."""
+"""Fail CI if named Rich colors, [dim], [b]/[bold], hex, or raw hex tags leak outside the SSOT."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ REPO = Path(__file__).resolve().parents[1]
 SRC = REPO / "src" / "jarn"
 
 _ALLOW_COLOR = {"palette.py"}
+_ALLOW_HEX = {"palette.py"}
+_ALLOW_HEX_TAG = {"layout.py"}
 _ALLOW_BOLD = {"palette.py", "layout.py"}
 _ALLOW_RICH_ESCAPE = {"layout.py"}
 _ALLOW_PALETTE_TAGS = {"layout.py"}
@@ -19,10 +21,8 @@ _NAMED = re.compile(
     r"|border_style\s*=\s*['\"](?:cyan|green|red|yellow|blue|magenta)['\"]"
     r"|style\s*=\s*['\"](?:(?:bold|reverse)\s+)*(?:green|red|yellow|cyan|blue|magenta|dim)\b"
 )
-_HEX = re.compile(
-    r"#(?:22d3ee|7c8f94|3ee07a|3fb950|f85149|d29922)\b",
-    re.IGNORECASE,
-)
+_HEX = re.compile(r"#[0-9A-Fa-f]{6}\b")
+_HEX_TAG = re.compile(r"\[(?:/)?(?:bold\s+)?#[0-9A-Fa-f]{6}\]", re.IGNORECASE)
 _BOLD = re.compile(r"\[(?:/)?(?:bold|b)(?:\s|\])")
 _PALETTE_TAG = re.compile(r"\[\{?(?:palette|_p)\.")
 _RICH_ESCAPE_IMPORT = re.compile(r"from rich\.markup import escape")
@@ -36,7 +36,11 @@ def test_no_named_rich_colors_or_hardcoded_brand_hex_outside_palette() -> None:
         for i, line in enumerate(text.splitlines(), 1):
             if line.lstrip().startswith("#"):
                 continue
-            if path.name not in _ALLOW_COLOR and (_NAMED.search(line) or _HEX.search(line)):
+            if path.name not in _ALLOW_COLOR and _NAMED.search(line):
+                offenders.append(f"{rel}:{i}:{line.strip()}")
+            if path.name not in _ALLOW_HEX and _HEX.search(line):
+                offenders.append(f"{rel}:{i}:{line.strip()}")
+            if path.name not in _ALLOW_HEX_TAG and _HEX_TAG.search(line):
                 offenders.append(f"{rel}:{i}:{line.strip()}")
             if path.name not in _ALLOW_BOLD and _BOLD.search(line):
                 offenders.append(f"{rel}:{i}:{line.strip()}")

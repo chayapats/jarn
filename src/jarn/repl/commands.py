@@ -16,56 +16,7 @@ from jarn.controller.commands.session import format_undo_preview
 from jarn.repl import turn as repl_turn
 from jarn.repl.turn import _apply_model_ref
 from jarn.tui import grammar, layout, palette
-
-
-def _todo_item_line(todo: dict, truncate: int | None) -> str:
-    """One Rich-markup checklist line: ``  <glyph> <content>`` (completed dimmed).
-
-    ``truncate`` (the live region's terminal width) bounds the content to a single
-    line so a long todo can't wrap and blow the height budget; ``None`` (committed
-    render) leaves it to wrap freely, preserving the pre-existing behaviour."""
-    return layout.todo_item(
-        str(todo.get("content", "")),
-        str(todo.get("status", "pending")),
-        truncate=truncate,
-    )
-
-
-def format_todos(todos: list[dict], width: int, *, cap: int | None = None) -> list[str]:
-    """Render a plan checklist to Rich-markup lines: ``["⏺ Todos", <item>, …]``.
-
-    Shared by BOTH the live in-turn region and the committed end-of-turn render so
-    glyphs and layout stay identical.
-
-    ``cap`` (live region only) bounds the body to ``cap`` lines so a long plan
-    can't push the input off-screen: completed items collapse to one ``✔ N done``
-    summary, the in-progress + upcoming items fill the remaining budget, and any
-    overflow is elided behind a ``… +N more`` line. ``cap is None`` (committed
-    render) shows every item, unwrapped, exactly as before.
-    """
-    header = f"{layout.tool()} {layout.strong('Todos')}"
-    lines = [header]
-    trunc = width if cap is not None else None
-    if cap is None or len(todos) <= cap:
-        lines.extend(_todo_item_line(t, trunc) for t in todos)
-        return lines
-    # Windowed live block: keep it focused on what is happening *now*.
-    done = [t for t in todos if t.get("status") == "completed"]
-    tail = [t for t in todos if t.get("status") != "completed"]  # in-progress + pending
-    budget = cap
-    if done:
-        lines.append(
-            f"  {layout.todo_glyph('completed')} {layout.muted(f'{len(done)} done')}"
-        )
-        budget -= 1
-    if len(tail) > budget:
-        show = max(1, budget - 1)  # reserve a line for the "… +N more" summary
-        lines.extend(_todo_item_line(t, trunc) for t in tail[:show])
-        hidden = len(tail) - show
-        lines.append(f"  {layout.muted(f'… +{hidden} more')}")
-    else:
-        lines.extend(_todo_item_line(t, trunc) for t in tail)
-    return lines
+from jarn.tui.layout import format_todos  # re-export for tests / live checklist
 
 
 class CommandMixin:

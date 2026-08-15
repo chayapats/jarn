@@ -2238,7 +2238,7 @@ def _cmd_telemetry(*, action: str, as_json: bool = False) -> int:
             if changed:
                 print(f"Configuration updated at {config_path}.")
                 if backup:
-                    print(f"Backup: {backup}")
+                    print(layout.field("Backup", str(backup), dialect="plain"))
             elif action in {"on", "off"}:
                 print("No change; telemetry already had the requested setting.")
         return EXIT_INTERNAL if failure is not None else EXIT_SUCCESS
@@ -2501,12 +2501,14 @@ def _cmd_doctor(
         console.print(f"\n{layout.strong(f'Repair {mode}')}")
         for item in result.repair_result.applied:
             console.print(
-                f"  {item.get('status', 'planned')}: "
-                f"{item.get('description') or item.get('id') or 'repair'}",
-                markup=False,
+                "  "
+                + layout.field(
+                    str(item.get("status", "planned")),
+                    str(item.get("description") or item.get("id") or "repair"),
+                )
             )
         for reason in result.repair_result.skipped:
-            console.print(f"  skipped: {reason}", style=palette.C_WARN, markup=False)
+            console.print("  " + layout.warn(f"skipped: {reason}"))
         if result.repair_result.error:
             detail = _error_detail_from_mapping(
                 result.repair_result.error,
@@ -2518,7 +2520,7 @@ def _cmd_doctor(
             )
             console.print(detail.render(), markup=False)
     if result.report_path is not None:
-        console.print(f"\nSupport report: {result.report_path}", markup=False)
+        console.print("\n" + layout.field("Support report", str(result.report_path)))
     return result.exit_code
 
 
@@ -2871,11 +2873,11 @@ def _cmd_login() -> int:
     if not result.changed:
         # Existing key kept — nothing to persist; don't rewrite the config.
         console.print(f"{layout.ok(grammar.GLYPH_OK)}  Keeping your existing key ({layout.strong(result.reference)}).")
-        console.print(f"   Key tail: {layout.muted(result.masked_key)}")
+        console.print(f"   {layout.field('Key tail', result.masked_key)}")
         return 0
 
     console.print(f"{layout.ok(grammar.GLYPH_OK)}  Logged in — key stored as {layout.strong(result.reference)}")
-    console.print(f"   Key tail: {layout.muted(result.masked_key)}")
+    console.print(f"   {layout.field('Key tail', result.masked_key)}")
 
     # Write the reference into the OpenRouter provider in the global config.
     if _write_openrouter_key_ref(result.reference):
@@ -3001,11 +3003,11 @@ def _cmd_auth(
                 else f"incompatible ({status.dependency.version or 'version unknown'})"
             )
             console.print(f"\n{layout.warn('!')} OpenAI Codex CLI is {reason}.")
-            console.print(f"{layout.field('Purpose')} ChatGPT subscription authentication and model access")
-            console.print(f"{layout.field('Version/channel')} {plan.version} ({plan.channel})")
-            console.print(f"{layout.field('Source')} {plan.source} — {plan.metadata_url}")
-            console.print(f"{layout.field('Destination')} {plan.destination}")
-            console.print(f"{layout.field('Verification')} official metadata + SHA-256 manifest")
+            console.print(layout.field("Purpose", "ChatGPT subscription authentication and model access"))
+            console.print(layout.field("Version/channel", f"{plan.version} ({plan.channel})"))
+            console.print(layout.field("Source", f"{plan.source} — {plan.metadata_url}"))
+            console.print(layout.field("Destination", plan.destination))
+            console.print(layout.field("Verification", "official metadata + SHA-256 manifest"))
 
         accepted = yes
         if not accepted and not as_json and sys.stdin.isatty():
@@ -3023,7 +3025,7 @@ def _cmd_auth(
                 )
             else:
                 console.print(f"{layout.warn('Setup incomplete:')} Codex CLI was not changed.")
-                console.print(f"Manual official command: {layout.strong(CODEX_OFFICIAL_INSTALL_COMMAND)}")
+                console.print(layout.field("Manual official command", CODEX_OFFICIAL_INSTALL_COMMAND))
             return False
 
         try:
@@ -3051,7 +3053,7 @@ def _cmd_auth(
                 )
             else:
                 console.print(f"{layout.err('Setup incomplete:')} {exc}")
-                console.print(f"Manual official command: {layout.strong(CODEX_OFFICIAL_INSTALL_COMMAND)}")
+                console.print(layout.field("Manual official command", CODEX_OFFICIAL_INSTALL_COMMAND))
             return False
         if as_json:
             print(

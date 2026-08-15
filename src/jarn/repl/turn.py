@@ -468,7 +468,7 @@ async def _approve_plan(
     from rich.markdown import Markdown
 
     plan = request.plan or ""
-    console.print("\n" + layout.notice("▶ Plan ready for review"))
+    console.print("\n" + layout.notice(f"{grammar.GLYPH_PLAY} Plan ready for review"))
     if plan.strip():
         console.print(Markdown(plan))
     if not controller.project_trusted:
@@ -533,7 +533,7 @@ async def _approve_suggested_memory(
     suggestion = request.suggested_memory
     assert suggestion is not None
     console.print(
-        f"\n{layout.notice('▶ Suggested memory')} "
+        f"\n{layout.notice(f'{grammar.GLYPH_PLAY} Suggested memory')} "
         f"{layout.muted('(' + suggestion.scope + ', ' + suggestion.type + ')')}"
     )
     console.print(f"  {layout.strong(suggestion.name)} — {layout.escape(suggestion.description)}")
@@ -600,7 +600,7 @@ async def _approve_suggested_skill(
     suggestion = request.suggested_skill
     assert suggestion is not None
     console.print(
-        f"\n{layout.notice('▶ Suggested skill')} "
+        f"\n{layout.notice(f'{grammar.GLYPH_PLAY} Suggested skill')} "
         f"{layout.muted('(trigger=' + suggestion.trigger + ')')}"
     )
     console.print(

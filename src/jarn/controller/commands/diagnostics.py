@@ -62,7 +62,7 @@ def cmd_status(ctrl: Controller, args: str) -> CommandResult:
             title = session.title or ""
             break
     lines = [
-        layout.title("Status"),
+        layout.heading("Status"),
         "",
         layout.kv("Directory", str(ctrl.project_root)),
         layout.kv("Model", model),
@@ -78,8 +78,7 @@ def cmd_status(ctrl: Controller, args: str) -> CommandResult:
     ]
     recap = _status_recap(ctrl)
     if recap:
-        lines.append("")
-        lines.append(layout.title("Recap"))
+        lines.append(layout.section("Recap"))
         lines.extend(recap)
     return CommandResult("\n".join(lines))
 
@@ -121,7 +120,7 @@ def cmd_cost(ctrl, args: str) -> CommandResult:
     t = ctrl.tracker
     lines = [
         layout.heading("Session usage", t.summary_line()),
-        f"status: {t.status().value}",
+        layout.kv("status", t.status().value),
     ]
     if t.total.cache_read_tokens or t.total.cache_creation_tokens:
         lines.append(
@@ -269,7 +268,7 @@ def _mcp_status(ctrl, parts: list[str]) -> CommandResult:
         "ok": layout.key_mark(True),
         "error": layout.err(grammar.GLYPH_FAIL),
     }
-    lines = [layout.title("MCP servers")]
+    lines = [layout.heading("MCP servers")]
     for server in servers:
         health = ctrl.mcp_health.get(server.name, server.health or "unknown")
         glyph = mark.get(health, layout.key_mark(False))
@@ -318,7 +317,7 @@ def _mcp_prompts(ctrl) -> CommandResult:
 
     res = run_blocking(load_mcp_prompts(servers, ctrl.config.permissions.network))
     _register_prompt_commands(ctrl, res.prompts)
-    lines = [layout.title("MCP prompts")]
+    lines = [layout.heading("MCP prompts")]
     if res.prompts:
         lines.append(layout.muted("invoke with /<name> — injects the prompt into your turn"))
         for name in sorted(res.prompts):
@@ -379,7 +378,7 @@ def _mcp_resources(ctrl) -> CommandResult:
     from jarn.extensibility.mcp import list_mcp_resources
 
     res = run_blocking(list_mcp_resources(servers, ctrl.config.permissions.network))
-    lines = [layout.title("MCP resources")]
+    lines = [layout.heading("MCP resources")]
     if res.resources:
         lines.append(layout.muted("read with /mcp read <server> <uri>"))
         for r in res.resources:
@@ -411,7 +410,7 @@ def _mcp_read(ctrl, rest: list[str]) -> CommandResult:
         return CommandResult(redact_secrets(f"Failed to read {uri} from {server}: {exc}"))
     if not content.strip():
         return CommandResult(f"Resource {uri} on {server} returned no content.")
-    header = f"{layout.title(server)} {layout.muted(uri)}"
+    header = layout.heading(server, uri)
     return CommandResult(f"{header}\n{layout.escape(content)}")
 
 
@@ -425,7 +424,7 @@ def cmd_telemetry(ctrl, args: str) -> CommandResult:
     install = "present" if summary["install_id_present"] else "absent"
     size_kb = summary["size_bytes"] / 1024
     lines = [
-        layout.title("Telemetry"),
+        layout.heading("Telemetry"),
         layout.kv("status", enabled),
         layout.kv("file", summary["path"] or "(none)"),
         layout.kv("size", f"{size_kb:.1f} KB ({summary['size_bytes']:,} bytes)"),
@@ -453,13 +452,10 @@ def cmd_ps(ctrl, args: str) -> CommandResult:
     procs = mgr.list()
     if not procs:
         return CommandResult("No background processes.")
-    lines = [layout.title("Background processes")]
+    lines = [layout.heading("Background processes")]
     for p in procs:
         state = "running" if p["running"] else f"exited ({p['exit_code']})"
-        lines.append(
-            f"  {layout.accent(str(p['id']))} {layout.muted(state)} "
-            f"{layout.escape(p['command'])}"
-        )
+        lines.append(f"  {layout.item(str(p['id']), p['command'], meta=state)}")
     lines.append(layout.muted("/ps kill <id> to stop one"))
     return CommandResult("\n".join(lines))
 
@@ -509,7 +505,7 @@ def cmd_context(ctrl: Controller, args: str) -> CommandResult:
     if args.strip() and not show_all:
         return CommandResult(usage_error("context"))
     ctx = ctrl.context_status()
-    lines = [layout.title("Context"), ""]
+    lines = [layout.heading("Context"), ""]
     if ctx is not None:
         used, window, frac = ctx
         lines.append(f"  {layout.context_gauge(frac, used=used, window=window)}")
@@ -523,8 +519,7 @@ def cmd_context(ctrl: Controller, args: str) -> CommandResult:
     statuses, assembly = ctrl.prompt_module_statuses()
     lines.append("")
     lines.append(
-        layout.title("Prompt modules")
-        + f"  {layout.muted(f'{assembly.token_count:,} tok assembled')}"
+        layout.heading("Prompt modules", f"{assembly.token_count:,} tok assembled")
     )
     for status in statuses:
         if not show_all and not status.active:
@@ -552,8 +547,12 @@ def cmd_verbose(ctrl: Controller, args: str) -> CommandResult:
     ctrl.focus_mode = False
     ctrl._focus_saved_progress = None
     return CommandResult(
-        f"Tool progress: {layout.accent(ctrl.tool_progress)}. "
-        f"{layout.muted('Session only — persist with /config set ui.tool_progress.')}"
+        "\n".join(
+            [
+                layout.kv("Tool progress", ctrl.tool_progress),
+                layout.muted("Session only — persist with /config set ui.tool_progress."),
+            ]
+        )
     )
 
 
@@ -561,7 +560,7 @@ def cmd_focus(ctrl: Controller, args: str) -> CommandResult:
     wanted = args.strip().lower()
     if wanted in ("status",):
         state = "on" if ctrl.focus_mode else "off"
-        return CommandResult(f"Focus is {layout.accent(state)}.")
+        return CommandResult(layout.kv("Focus", state))
     turn_on = wanted in ("on",) or (wanted == "" and not ctrl.focus_mode)
     turn_off = wanted in ("off",) or (wanted == "" and ctrl.focus_mode)
     if turn_on:
@@ -611,7 +610,7 @@ def cmd_tools(ctrl: Controller, args: str) -> CommandResult:
         groups.append(("Background", (BACKGROUND_START_TOOL, *BACKGROUND_CONTROL_TOOLS)))
     if ctrl.config.async_subagents:
         groups.append(("Async subagents", ASYNC_SUBAGENT_TOOLS))
-    lines = [layout.title("Tools")]
+    lines = [layout.heading("Tools")]
     for label, names in groups:
         lines.append(layout.section(label))
         for name in names:

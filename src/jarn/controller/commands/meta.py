@@ -97,11 +97,8 @@ def cmd_skill(ctrl: Controller, args: str) -> CommandResult:
 def cmd_skills(ctrl: Controller, args: str) -> CommandResult:
     if not ctrl.runtime or not ctrl.runtime.skills:
         return CommandResult("No skills loaded.")
-    lines = [layout.title("Skills")]
+    lines = [layout.heading("Skills")]
     for s in ctrl.runtime.skills.values():
         trig = "manual" if s.is_manual else "auto"
-        lines.append(
-            f"  {layout.accent(s.name)} "
-            f"({layout.muted(f'{trig}, {s.scope}')}) — {layout.escape(s.description)}"
-        )
+        lines.append(f"  {layout.item(s.name, s.description, meta=f'{trig}, {s.scope}')}")
     return CommandResult("\n".join(lines))

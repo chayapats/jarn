@@ -42,6 +42,7 @@ from jarn.onboarding.credentials import (
     credential_storage_notice,
     rollback_activated_credential,
 )
+from jarn.tui import layout
 from jarn.util.atomic import atomic_write_text
 from jarn.util.process_env import external_command_env
 
@@ -804,10 +805,18 @@ def run_gateway_setup(
                 operator_ids = _select_operator(operators, input_fn=input_fn)
 
         print("\nReady to save:")
-        print(f"  Bot: @{identity.username}")
-        print("  Allowed operator ID(s): " + ", ".join(map(str, operator_ids)))
-        print(f"  Config: {config_path}")
-        print("  Token: OS keychain when available; private file fallback otherwise")
+        print("  " + layout.field("Bot", f"@{identity.username}", dialect="plain"))
+        print("  " + layout.field(
+            "Allowed operator ID(s)",
+            ", ".join(map(str, operator_ids)),
+            dialect="plain",
+        ))
+        print("  " + layout.field("Config", str(config_path), dialect="plain"))
+        print("  " + layout.field(
+            "Token",
+            "OS keychain when available; private file fallback otherwise",
+            dialect="plain",
+        ))
         if not assume_yes:
             answer = input_fn("Save this Telegram gateway configuration? [Y/n]: ")
             if not _yes(answer, default=True):
@@ -960,16 +969,44 @@ def run_gateway_status(*, service_manager: GatewayServiceManager | None = None) 
         tg = cfg.gateway.telegram
         manager = service_manager or GatewayServiceManager()
         status = manager.status()
-        print("Telegram gateway status")
-        print(f"  Config enabled: {'yes' if cfg.gateway.enabled else 'no'}")
-        print(f"  Bot token reference: {'configured' if tg.token else 'missing'}")
-        print(f"  Allowed operators: {len(tg.allowed_user_ids)}")
+        print(layout.title("Telegram gateway status", dialect="plain"))
+        print("  " + layout.field(
+            "Config enabled",
+            "yes" if cfg.gateway.enabled else "no",
+            dialect="plain",
+        ))
+        print("  " + layout.field(
+            "Bot token reference",
+            "configured" if tg.token else "missing",
+            dialect="plain",
+        ))
+        print("  " + layout.field(
+            "Allowed operators",
+            str(len(tg.allowed_user_ids)),
+            dialect="plain",
+        ))
         if status.available:
-            print(f"  User service installed: {'yes' if status.installed else 'no'}")
-            print(f"  User service enabled: {'yes' if status.enabled else 'no'}")
-            print(f"  User service active: {'yes' if status.active else 'no'}")
+            print("  " + layout.field(
+                "User service installed",
+                "yes" if status.installed else "no",
+                dialect="plain",
+            ))
+            print("  " + layout.field(
+                "User service enabled",
+                "yes" if status.enabled else "no",
+                dialect="plain",
+            ))
+            print("  " + layout.field(
+                "User service active",
+                "yes" if status.active else "no",
+                dialect="plain",
+            ))
             if status.linger is not None:
-                print(f"  Runs after logout (linger): {'yes' if status.linger else 'no'}")
+                print("  " + layout.field(
+                    "Runs after logout (linger)",
+                    "yes" if status.linger else "no",
+                    dialect="plain",
+                ))
         else:
             print("  User service: unavailable (run `jarn gateway` in foreground)")
         if not cfg.gateway.enabled or not tg.token or not tg.allowed_user_ids:

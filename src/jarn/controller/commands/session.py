@@ -68,8 +68,16 @@ def cmd_compact(ctrl: Controller, args: str) -> CommandResult:
     else:
         auto = "Auto-compaction is off."
     return CommandResult(
-        auto + " Run /compact to summarize now and continue in a fresh thread, "
-        "or /clear to start fresh without a summary."
+        "\n".join(
+            [
+                layout.heading("Compact"),
+                layout.kv("Status", auto),
+                layout.muted(
+                    "Run /compact to summarize now and continue in a fresh thread, "
+                    "or /clear to start fresh without a summary."
+                ),
+            ]
+        )
     )
 
 

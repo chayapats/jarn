@@ -1809,8 +1809,9 @@ class Controller:
             "auto-edit": "auto edits + web fetch/search, confirm shell",
             "yolo": "no prompts (danger-guard still applies)",
         }
+        fallback = grammar.MODE_GLYPH["ask"]
         return [
-            (m.value, f"{palette.MODE_GLYPH.get(m.value, '◆')} {hints[m.value]}")
+            (m.value, f"{palette.MODE_GLYPH.get(m.value, fallback)} {hints[m.value]}")
             for m in PermissionMode
         ]
 

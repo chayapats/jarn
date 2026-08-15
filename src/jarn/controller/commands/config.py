@@ -85,8 +85,13 @@ def cmd_sandbox(ctrl, args: str) -> CommandResult:
     current = ctrl.config.execution.backend
     if not args.strip():
         return CommandResult(
-            f"Execution backend: {current} · isolation: {ctrl.isolation_level()}. "
-            "Use /sandbox docker|on|off."
+            "\n".join(
+                [
+                    layout.kv("Backend", current),
+                    layout.kv("Isolation", ctrl.isolation_level()),
+                    layout.muted("Use /sandbox docker|on|off."),
+                ]
+            )
         )
     # Untrusted projects can't weaken isolation at runtime (defence in depth
     # alongside the untrusted-mode floor); viewing it (no-arg) stays allowed.
@@ -114,7 +119,9 @@ def cmd_sandbox(ctrl, args: str) -> CommandResult:
 
 def cmd_model(ctrl, args: str) -> CommandResult:
     if not args.strip():
-        return CommandResult(f"Current model: {ctrl.config.resolved_main_model()}")
+        return CommandResult(
+            layout.kv("Model", str(ctrl.config.resolved_main_model() or ""))
+        )
     ctrl.config.routing.main = args.strip()
     ctrl.config.default_model = args.strip()
     ctrl._invalidate_runtime()  # force rebuild on next turn

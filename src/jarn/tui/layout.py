@@ -148,6 +148,66 @@ def row(
     return f"  {accent(visible, dialect=dialect)}{pad}{escape(description, dialect=dialect)}"
 
 
+def truncate(text: str, width: int) -> str:
+    """Shorten *text* to *width* characters, appending ``…`` when it overflows.
+
+    Operates on raw text (no markup) so callers can paint/escape afterwards
+    without double-escaping. Width is ``len()``, matching ``row`` / ``todo_item``.
+    """
+    value = "" if text is None else str(text)
+    n = max(1, int(width))
+    if len(value) <= n:
+        return value
+    if n == 1:
+        return "…"
+    return value[: n - 1] + "…"
+
+
+def bullet(text: str, *, glyph: str = "·", dialect: Dialect = "rich") -> str:
+    """``· text`` list line. *text* is escaped; *glyph* is frozen punctuation."""
+    return f"{escape(glyph, dialect=dialect)} {escape(text, dialect=dialect)}"
+
+
+def rule(title: str = "", *, dialect: Dialect = "rich") -> str:
+    """Muted ``── title ──`` separator, or ``──`` when *title* is empty."""
+    body = f"── {title} ──" if title else "──"
+    return muted(body, dialect=dialect)
+
+
+def item(
+    name: str,
+    description: str = "",
+    *,
+    meta: str = "",
+    dialect: Dialect = "rich",
+) -> str:
+    """Accent *name*, optional muted *meta*, then *description*."""
+    head = accent(name, dialect=dialect)
+    if meta:
+        head = f"{head} {muted(meta, dialect=dialect)}"
+    if description == "":
+        return head
+    return f"{head}  {escape(description, dialect=dialect)}"
+
+
+def code(text: str, *, dialect: Dialect = "rich") -> str:
+    """Inline code: accent (Rich), ``<code>`` (HTML), escaped as-is (plain)."""
+    body = escape(text, dialect=dialect)
+    if dialect == "html":
+        return f"<code>{body}</code>"
+    if dialect == "plain":
+        return body
+    return paint(palette.ACCENT, body, dialect=dialect)
+
+
+def pre(text: str, *, dialect: Dialect = "rich") -> str:
+    """Preformatted block: ``<pre>`` in HTML; escaped text in Rich/plain."""
+    body = escape(text, dialect=dialect)
+    if dialect == "html":
+        return f"<pre>{body}</pre>"
+    return body
+
+
 def usage_block(
     command: str,
     syntax: str,
@@ -324,6 +384,49 @@ def todo_item(
     return f"  {todo_glyph(status, dialect=dialect)} {painted}"
 
 
+def format_todos(todos: list[dict], width: int, *, cap: int | None = None) -> list[str]:
+    """Render a plan checklist to Rich-markup lines: ``["⏺ Todos", <item>, …]``.
+
+    Shared by BOTH the live in-turn region and the committed end-of-turn render so
+    glyphs and layout stay identical.
+
+    ``cap`` (live region only) bounds the body to ``cap`` lines so a long plan
+    can't push the input off-screen: completed items collapse to one ``✔ N done``
+    summary, the in-progress + upcoming items fill the remaining budget, and any
+    overflow is elided behind a ``… +N more`` line. ``cap is None`` (committed
+    render) shows every item, unwrapped, exactly as before.
+    """
+    header = f"{tool()} {strong('Todos')}"
+    lines = [header]
+    trunc = width if cap is not None else None
+
+    def _line(todo: dict) -> str:
+        return todo_item(
+            str(todo.get("content", "")),
+            str(todo.get("status", "pending")),
+            truncate=trunc,
+        )
+
+    if cap is None or len(todos) <= cap:
+        lines.extend(_line(t) for t in todos)
+        return lines
+    # Windowed live block: keep it focused on what is happening *now*.
+    done = [t for t in todos if t.get("status") == "completed"]
+    tail = [t for t in todos if t.get("status") != "completed"]  # in-progress + pending
+    budget = cap
+    if done:
+        lines.append(f"  {todo_glyph('completed')} {muted(f'{len(done)} done')}")
+        budget -= 1
+    if len(tail) > budget:
+        show = max(1, budget - 1)  # reserve a line for the "… +N more" summary
+        lines.extend(_line(t) for t in tail[:show])
+        hidden = len(tail) - show
+        lines.append(f"  {muted(f'… +{hidden} more')}")
+    else:
+        lines.extend(_line(t) for t in tail)
+    return lines
+
+
 def spinner(frame: str, text: str, *, dialect: Dialect = "rich") -> str:
     """Live thinking/working line: tool-colored frame + dim status text."""
     return f"{tool(frame, dialect=dialect)} {muted(text, dialect=dialect)}"
@@ -332,7 +435,7 @@ def spinner(frame: str, text: str, *, dialect: Dialect = "rich") -> str:
 def host_shell_banner(*, dialect: Dialect = "rich") -> str:
     """One-line reminder that ``!`` is host-direct (danger-guard skipped)."""
     return (
-        f"{err('⚡ host shell', dialect=dialect)} "
+        f"{err(f'{grammar.GLYPH_HOST_SHELL} host shell', dialect=dialect)} "
         + muted(
             "— runs on your machine directly; no agent, no approval, danger-guard skipped",
             dialect=dialect,
