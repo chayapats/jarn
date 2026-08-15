@@ -5610,3 +5610,229 @@ class _DoneTask:
 
 class _NeverTask(_DoneTask):
     pass
+
+
+# -- P4-1: Enter-while-busy honors session /busy mode -------------------------
+
+
+def test_busy_enter_queue_enqueues_without_steer(tmp_path, monkeypatch):
+    """Default ``/busy queue`` (and YAML default) is today's InputQueue path."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    assert app.controller.busy_input_mode == "queue"
+    app._turn_task = _DoneTask()
+
+    app.input.text = "next please"
+    _submit_handler(app)(event=None)
+
+    assert app.controller._steer_slot is None
+    assert len(app._input_queue) == 1
+    item = app._input_queue.list()[0]
+    assert item.display == "next please"
+    assert item.payload == "next please"
+    assert not item.internal
+    out = app.console.file.getvalue()
+    assert "queued" in out
+    assert "next please" in out
+    assert not app.input.text
+    app.controller.close()
+
+
+def test_busy_enter_steer_sets_slot_not_queue(tmp_path, monkeypatch):
+    """``/busy steer`` then Enter during a turn writes ``_steer_slot``, not the queue."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.controller.config.ui.steering = True
+    result = app.controller.handle_command("busy", "steer")
+    assert app.controller.busy_input_mode == "steer"
+    assert "steer" in result.text.lower()
+    app._turn_task = _DoneTask()
+
+    app.input.text = "use pathlib"
+    _submit_handler(app)(event=None)
+
+    assert app.controller._steer_slot == "use pathlib"
+    assert len(app._input_queue) == 0
+    assert "steered" in app.console.file.getvalue()
+    assert "queued:" not in app.console.file.getvalue()
+    assert not app.input.text
+    app.controller.close()
+
+
+def test_busy_enter_reads_session_mode_not_yaml(tmp_path, monkeypatch):
+    """Enter follows ``controller.busy_input_mode``, not YAML ``ui.busy_input_mode``."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.controller.config.ui.steering = True
+    app.controller.config.ui.busy_input_mode = "queue"
+    app.controller.handle_command("busy", "steer")
+    assert app.controller.busy_input_mode == "steer"
+    assert app.controller.config.ui.busy_input_mode == "queue"
+    app._turn_task = _DoneTask()
+
+    app.input.text = "session wins"
+    _submit_handler(app)(event=None)
+
+    assert app.controller._steer_slot == "session wins"
+    assert len(app._input_queue) == 0
+    app.controller.close()
+
+
+def test_busy_enter_steer_without_steering_falls_back_to_queue(tmp_path, monkeypatch):
+    """Steer mode with ``ui.steering`` off must not drop the line — queue it."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.controller.busy_input_mode = "steer"
+    app.controller.config.ui.steering = False
+    app._turn_task = _DoneTask()
+
+    app.input.text = "keep me"
+    _submit_handler(app)(event=None)
+
+    assert app.controller._steer_slot is None
+    assert len(app._input_queue) == 1
+    assert app._input_queue.list()[0].payload == "keep me"
+    assert "queued" in app.console.file.getvalue()
+    app.controller.close()
+
+
+def test_busy_enter_steer_overwrites_slot(tmp_path, monkeypatch):
+    """A second Enter in steer mode overwrites the single-shot slot (same as [s])."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.controller.config.ui.steering = True
+    app.controller.busy_input_mode = "steer"
+    app._turn_task = _DoneTask()
+    submit = _submit_handler(app)
+
+    app.input.text = "first-payload"
+    submit(event=None)
+    app.input.text = "newest-payload"
+    submit(event=None)
+
+    assert app.controller._steer_slot == "newest-payload"
+    assert len(app._input_queue) == 0
+    app.controller.close()
+
+
+@pytest.mark.parametrize("mode", ["queue", "steer", "interrupt"])
+def test_busy_enter_empty_line_clears_input(tmp_path, monkeypatch, mode):
+    """Empty Enter while busy only clears the buffer, in every busy mode."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.controller.busy_input_mode = mode
+    app.controller.config.ui.steering = True
+    app._turn_task = _DoneTask()
+    app.input.text = "   "
+
+    _submit_handler(app)(event=None)
+
+    assert not app.input.text
+    assert len(app._input_queue) == 0
+    assert app.controller._steer_slot is None
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_busy_enter_interrupt_aborts_then_runs_line(tmp_path, monkeypatch):
+    """``/busy interrupt`` then Enter aborts the in-flight turn and runs the line."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.controller.handle_command("busy", "interrupt")
+    assert app.controller.busy_input_mode == "interrupt"
+
+    async def _never():
+        await asyncio.sleep(3600)
+
+    app._turn_task = asyncio.create_task(_never())
+    turn_task = app._turn_task
+    seen: list[str] = []
+
+    async def _fake_handle(text):
+        seen.append(text)
+
+    app._handle = _fake_handle  # type: ignore[assignment]
+
+    app.input.text = "do this instead"
+    _submit_handler(app)(event=None)
+    await _drain_background_tasks(turn_task)
+
+    assert turn_task.cancelled() or turn_task.done()
+    assert seen == ["do this instead"]
+    assert len(app._input_queue) == 0
+    assert app.controller._steer_slot is None
+    assert not app.input.text
+    out = app.console.file.getvalue()
+    assert "do this instead" in out
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_busy_enter_interrupt_holds_existing_queue(tmp_path, monkeypatch):
+    """Interrupt-mode Enter runs the new line first; already-queued items wait."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.controller.busy_input_mode = "interrupt"
+    app._input_queue.append("already queued", "already queued")
+
+    async def _never():
+        await asyncio.sleep(3600)
+
+    app._turn_task = asyncio.create_task(_never())
+    turn_task = app._turn_task
+    seen: list[str] = []
+
+    async def _fake_handle(text):
+        seen.append(text)
+
+    app._handle = _fake_handle  # type: ignore[assignment]
+
+    app.input.text = "interrupt line"
+    _submit_handler(app)(event=None)
+    await _drain_background_tasks(turn_task)
+
+    assert seen == ["interrupt line"]
+    remaining = app._input_queue.list()
+    assert len(remaining) == 1 and remaining[0].payload == "already queued"
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_drain_queue_defers_while_interrupt_holds(tmp_path, monkeypatch):
+    """``_defer_queue_drain`` skips drain so abort's finally cannot steal the line."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app._input_queue.append("queued", "queued")
+    app._defer_queue_drain = True
+    app._turn_task = None
+
+    async def _noop(_text: str) -> None:
+        return None
+
+    app._handle = _noop  # type: ignore[assignment]
+    app._drain_queue()
+
+    assert len(app._input_queue) == 1
+    app._defer_queue_drain = False
+    app._drain_queue()
+    assert len(app._input_queue) == 0
+    if app._turn_task is not None:
+        await app._turn_task
+    app.controller.close()
+
+
+@pytest.mark.asyncio
+async def test_busy_enter_abort_slash_still_aborts_in_steer_mode(tmp_path, monkeypatch):
+    """``/abort`` is not steered or queued — it still cancels the running turn."""
+    app = _make_inline_app(tmp_path, monkeypatch)
+    app.controller.config.ui.steering = True
+    app.controller.busy_input_mode = "steer"
+
+    async def _never():
+        await asyncio.sleep(3600)
+
+    app._turn_task = asyncio.create_task(_never())
+    turn_task = app._turn_task
+    assert app._busy()
+
+    app.input.text = "/abort"
+    _submit_handler(app)(event=None)
+    await _drain_background_tasks(turn_task)
+
+    assert turn_task.cancelled() or turn_task.done()
+    assert app.controller._steer_slot is None
+    assert len(app._input_queue) == 0
+    assert not app.input.text
+    app.controller.close()
+

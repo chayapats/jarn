@@ -43,11 +43,91 @@ class KeysMixin:
     def _busy_input_mode(self) -> str:
         """Session Enter-while-busy mode (queue / steer / interrupt).
 
-        Wired in P4-1. /busy mutates ``controller.busy_input_mode`` only.
+        Reads ``controller.busy_input_mode`` (session overlay from ``/busy``).
+        YAML ``ui.busy_input_mode`` is only the seed — persist via ``/config set``.
         """
         return getattr(self.controller, "busy_input_mode", None) or getattr(
             self.controller.config.ui, "busy_input_mode", "queue"
         )
+
+    def _busy_line_display(self, stripped: str, expanded: str) -> str:
+        """One-line scrollback label for a busy submit (paste token stays collapsed)."""
+        if "\n" not in stripped:
+            return stripped
+        if layout.is_paste_token(stripped):
+            return stripped
+        return layout.paste_label(expanded)
+
+    def _begin_user_turn(self, send: str) -> None:
+        """Start a real user line as a fresh turn (idle submit and interrupt-after-abort)."""
+        self.controller._diag_chain_round = 0
+        self._input_queue.drop_internal()
+        self._turn_start = time.monotonic()
+        self._turn_stream_chars = 0
+        self._turn_base_output = self.controller.tracker.total.output_tokens
+        self._turn_base_input = self.controller.tracker.total.input_tokens
+        self._first_token_at = None
+        self._turn_task = asyncio.create_task(self._handle(send))
+
+    def _busy_queue_line(self, stripped: str, expanded: str) -> None:
+        """Today's InputQueue path: hold the line until the running turn finishes."""
+        self._input_queue.append(stripped, expanded)
+        # While steering is on, advertise the [s] fastkey on the echo so
+        # the user can promote this line into the running turn (T-4-6).
+        # Arm [s] only for a short window after this echo so a fresh
+        # message starting with 's' typed later is not swallowed (I5).
+        steer_hint = ""
+        if self.controller.config.ui.steering:
+            steer_hint = "  ·  [s] steer now"
+            self._steer_armed_until = time.monotonic() + _STEER_ARM_WINDOW_S
+        self.console.print(
+            layout.steer(
+                self._busy_line_display(stripped, expanded),
+                queued=True,
+                hint=steer_hint,
+            )
+        )
+
+    def _busy_steer_line(self, stripped: str, expanded: str) -> None:
+        """Inject into the running turn via the existing ``_steer_slot`` path."""
+        self.controller._steer_slot = expanded
+        self.console.print(
+            layout.muted(
+                f"{grammar.GLYPH_PROMPT} (steered) "
+                f"{self._busy_line_display(stripped, expanded)}"
+            )
+        )
+        if self.app is not None:
+            self.app.invalidate()
+
+    async def _busy_interrupt_line(self, stripped: str, expanded: str) -> None:
+        """Abort the in-flight turn (reuse ``controller.abort``), then run the line.
+
+        Holds ``_drain_queue`` so a leftover queued item cannot start between
+        abort's cancelled ``_handle`` finally and this new turn.
+        """
+        self._defer_queue_drain = True
+        try:
+            await self._command("abort", "")
+        finally:
+            self._defer_queue_drain = False
+        if self._busy():
+            # Abort did not clear the turn (should not happen); do not drop the line.
+            self._busy_queue_line(stripped, expanded)
+            return
+        self.console.print(layout.submitted_echo(stripped, expanded))
+        self._begin_user_turn(expanded)
+
+    def _submit_while_busy(self, stripped: str, expanded: str) -> None:
+        """Dispatch Enter-while-busy according to the session ``/busy`` mode."""
+        mode = self._busy_input_mode()
+        if mode == "steer" and self.controller.config.ui.steering:
+            self._busy_steer_line(stripped, expanded)
+            return
+        if mode == "interrupt":
+            asyncio.create_task(self._busy_interrupt_line(stripped, expanded))
+            return
+        self._busy_queue_line(stripped, expanded)
 
     def _build_keys(self) -> KeyBindings:
         kb = KeyBindings()
@@ -107,37 +187,17 @@ class KeysMixin:
                 asyncio.create_task(self._command("abort", ""))
                 return
             if self._busy():
-                # A turn is running; queue the line (echoed dim) to run when it
-                # finishes. Empty lines just clear the input.
+                # A turn is running. Empty lines just clear the input. Otherwise
+                # Enter follows the session ``/busy`` mode (queue / steer / interrupt).
                 if stripped:
                     self.input.append_to_history()
                     self.input.reset()
-                    # Store (collapsed display, expanded payload) so the dequeued
+                    # Store (collapsed display, expanded payload) so a queued
                     # echo stays tidy while the agent still receives the full paste.
                     expanded = self._expand_pastes(stripped)
                     expanded = self._expand_mentions(expanded)
                     self._pastes.clear()
-                    self._input_queue.append(stripped, expanded)
-                    # While steering is on, advertise the [s] fastkey on the echo so
-                    # the user can promote this line into the running turn (T-4-6).
-                    # Arm [s] only for a short window after this echo so a fresh
-                    # message starting with 's' typed later is not swallowed (I5).
-                    steer_hint = ""
-                    if self.controller.config.ui.steering:
-                        steer_hint = "  ·  [s] steer now"
-                        self._steer_armed_until = time.monotonic() + _STEER_ARM_WINDOW_S
-                    queued_display = (
-                        stripped
-                        if "\n" not in stripped
-                        else (
-                            stripped
-                            if layout.is_paste_token(stripped)
-                            else layout.paste_label(expanded)
-                        )
-                    )
-                    self.console.print(
-                        layout.steer(queued_display, queued=True, hint=steer_hint)
-                    )
+                    self._submit_while_busy(stripped, expanded)
                 else:
                     self.input.reset()
                 return
@@ -174,17 +234,7 @@ class KeysMixin:
             # Multiline paste / paste-token: one dim preview line in scrollback.
             # Host-direct ``!`` stays red. The agent still receives ``send``.
             self.console.print(layout.submitted_echo(stripped, send))
-            # Real user input starts a fresh turn-chain: reset the diagnostics
-            # auto-fix round counter (T-3-3 loop guard).
-            self.controller._diag_chain_round = 0
-            # A real user line supersedes pending auto-diagnostics rounds.
-            self._input_queue.drop_internal()
-            self._turn_start = time.monotonic()
-            self._turn_stream_chars = 0
-            self._turn_base_output = self.controller.tracker.total.output_tokens
-            self._turn_base_input = self.controller.tracker.total.input_tokens
-            self._first_token_at = None
-            self._turn_task = asyncio.create_task(self._handle(send))
+            self._begin_user_turn(send)
 
         # [s] steer now (T-4-6): promote the most recently queued NON-internal line
         # into the running turn. The full gate lives in _steer_key_armed() (busy +
