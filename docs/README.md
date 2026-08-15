@@ -24,6 +24,7 @@ package-manager/source installs are advanced alternatives.
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contributors | Dev setup, CI gates (ruff · mypy · full pytest collection), testing layers, and how-to guides for common changes |
 | [ROADMAP.md](ROADMAP.md) | Everyone | what is in the v1.0.9 candidate, what is planned, and known limitations |
 | [Hermes-aligned display standard](specs/2026-08-15-hermes-aligned-display-standard.md) | Contributors | Visual grammar SSOT: palette, layout helpers, `/help`, toolbar fill bar, quiet tool stream |
+| [Hermes display-parity close-out](specs/2026-08-15-hermes-parity-closeout.md) | Contributors | Remaining CLI + Telegram work until display/commands match Hermes scanability |
 | [OPEN_CORE.md](OPEN_CORE.md) | Everyone | Licensing (Apache-2.0) and the intended open-core business model — plans only, nothing commercial is shipped |
 | [WEB_UI.md](WEB_UI.md) | Contributors | Design notes for a future Web UI — **not built yet**; included so the core stays Web-UI-ready |
 | [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md) | Operators · Contributors | v0.10 setup, global config, security model, systemd deployment, and second-poller stand-down |
