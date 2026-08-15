@@ -5,6 +5,12 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Treat host-absolute paths as valid when encoding systemd
+  `WorkingDirectory=` (Windows CI was rejecting drive-absolute pytest
+  paths). The Telegram user service remains Linux-only.
+
 ### Changed
 
 - One visual grammar for the terminal: glyphs, spacing, and context-pressure

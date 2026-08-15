@@ -323,7 +323,13 @@ def test_service_unit_contains_no_token_and_uses_owner_service(tmp_path, monkeyp
     assert "BOT_TOKEN" not in unit
     assert "token" not in unit.lower()
     assert str(tmp_path / ".jarn") in unit
-    assert f"WorkingDirectory={tmp_path}\n" in unit
+    working = (
+        str(tmp_path)
+        .replace("%", "%%")
+        .replace("\\", "\\\\")
+        .replace(" ", "\\x20")
+    )
+    assert f"WorkingDirectory={working}\n" in unit
     assert f'WorkingDirectory="{tmp_path}"' not in unit
 
 
@@ -340,8 +346,19 @@ def test_service_unit_escapes_working_directory_without_value_quotes(
 
     unit = manager.unit_text()
 
-    assert "WorkingDirectory=" + str(home).replace("%", "%%").replace(" ", "\\x20") in unit
+    expected = (
+        str(home)
+        .replace("%", "%%")
+        .replace("\\", "\\\\")
+        .replace(" ", "\\x20")
+    )
+    assert "WorkingDirectory=" + expected in unit
     assert "WorkingDirectory=\"" not in unit
+    assert GatewayServiceManager._working_directory("/home/owner home%folder") == (
+        "/home/owner\\x20home%%folder"
+    )
+    with pytest.raises(ValueError, match="must be absolute"):
+        GatewayServiceManager._working_directory("relative")
 
 
 def test_service_start_failure_includes_bounded_systemctl_diagnostic(

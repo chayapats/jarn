@@ -423,9 +423,14 @@ class GatewayServiceManager:
         value.  Ubuntu 22.04 consequently treated ``"/home/user"`` as a
         relative path and rejected the whole unit.  C-style escapes are part
         of the unit-file syntax and preserve spaces without adding quotes.
+
+        Absolute-path validation uses ``Path.is_absolute()`` rather than a
+        leading ``/`` so Windows CI hosts can still generate unit text from
+        drive-absolute pytest paths.  The user service itself remains
+        Linux-only; on POSIX this check is equivalent to ``startswith("/")``.
         """
 
-        if not value.startswith("/"):
+        if not Path(value).is_absolute():
             raise ValueError("the service working directory must be absolute")
         if any(character in value for character in ("\n", "\r", "\0")):
             raise ValueError("service paths must not contain control characters")
