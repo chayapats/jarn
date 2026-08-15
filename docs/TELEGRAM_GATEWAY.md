@@ -8,6 +8,11 @@ unchanged and cannot be controlled through Telegram.
 For design decisions and acceptance scope, see
 [TELEGRAM_GATEWAY_PLAN.md](TELEGRAM_GATEWAY_PLAN.md) and
 [TELEGRAM_GATEWAY_PARITY.md](TELEGRAM_GATEWAY_PARITY.md).
+v1.1 display-parity (opt-in `/verbose` bubble, local command layers, mutating
+refuse) is **planned** in that parity checklist and the
+[Hermes display-parity close-out](specs/2026-08-15-hermes-parity-closeout.md);
+it is not shipped yet. v1 still refuses voice notes, stays DM-only, and never
+grants remote ALWAYS.
 
 ## Install and configure
 

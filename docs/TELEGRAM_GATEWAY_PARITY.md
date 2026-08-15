@@ -7,9 +7,11 @@ Acceptance table for the shipped **VPS long-poll DM appliance** against map
 This scope shipped in **v0.10.0** on 2026-08-08. The table remains the acceptance
 record; operators should use [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md).
 
-Statuses: **Implemented** (v1 done), **Partial** (in tree but short of the closed
-decision), **Deferred** (explicitly out of v1). Ops deploy notes:
-[TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md).
+Statuses: **Implemented** (in tree), **Planned** (close-out, not shipped),
+**Partial** (in tree but short of the closed decision — do not leave unmarked),
+**Deferred** (explicitly out of scope). Ops deploy notes:
+[TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.md). Remaining CLI + Telegram display
+work: [2026-08-15-hermes-parity-closeout.md](specs/2026-08-15-hermes-parity-closeout.md).
 
 ## Closed-decision rows
 
@@ -37,10 +39,41 @@ decision), **Deferred** (explicitly out of v1). Ops deploy notes:
 | Freezing stream-json | Deferred | stream-json / public NDJSON is **not** a contract; gateway↔worker schema may change. |
 | Full 36-command chat surface | Deferred | Minimal chat commands (`/stop`, `/new`, `/repo`, approval callbacks); full REPL command parity not in v1. |
 
+## v1.1 display-parity
+
+Readonly Telegram pages already use the shared layout HTML dialect (waves A–K,
+[#92](https://github.com/chayapats/jarn/pull/92)). Live-turn and command muscle
+memory is this table. Tracked in
+[2026-08-15-hermes-parity-closeout.md](specs/2026-08-15-hermes-parity-closeout.md).
+Rows that still need code are **Planned**, not Implemented.
+
+| Item | Status | Notes |
+|---|---|---|
+| Quiet default (draft → finalize; tools off) | Implemented | [#40](https://github.com/chayapats/jarn/issues/40) stays. Default turn is prose only. |
+| Opt-in `/verbose` progress bubble | Planned | One edited HTML bubble; disappears when the answer lands. `/verbose` is a no-op on the live turn today. |
+| Local command layers | Planned | Target local set: `/status` `/help` `/model` `/mode` `/compact` `/undo` `/sessions` `/resume <id>` `/title`. Not the full 36-command REPL surface (that row stays Deferred above). |
+| Mutating refuse | Planned | `/config set` and other mutating names refused with a terminal hint; never `submit_turn`. |
+
+## Frozen non-goals (close-out)
+
+Echo of the close-out spec §11. These stay out of v1.1. Changing one needs a
+spec amendment, not a drive-by PR. This checklist does **not** promise:
+
+- Voice STT/TTS; still refuse voice notes (#54) — also Deferred in v1 above
+- Group chat / multi-user — also Deferred in v1 above
+- Discord, Slack, WhatsApp, or other chat platforms
+- Personalities, kawaii, pets, `/skin` marketplace
+- Second Ink / alt-screen TUI (CLI stays native scrollback; N/A to this gateway)
+- Remote ALWAYS — also Deferred in v1 above
+- Making host-direct `!` go through approvals (`!` stays red on the CLI)
+- Web UI, open-core, native Windows
+- Rewind slices 3–4 (in-place same-thread rewind, visual branch tree)
+
 ## Wave 5 note
 
 This checklist is **T-QA-3**. Wave 5 hardening is complete: the turn
 re-entrancy guard (**T-QA-1**) and scripted DM→park→resume e2e coverage
 (**T-QA-2**) landed with the gateway in
 [#88](https://github.com/chayapats/jarn/pull/88). The deferred/out-of-scope
-rows above remain deliberate exclusions from v1.
+rows above remain deliberate exclusions from v1. v1.1 display-parity does not
+reopen them.
