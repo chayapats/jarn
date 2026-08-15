@@ -15,7 +15,7 @@ from jarn.gateway.daemon import DaemonSupervisor
 from jarn.gateway.protocol import EventFrame, MediaRef, TurnFrame
 from jarn.gateway.sessions import SessionRouter, UnknownRepoError
 from jarn.telegram.backend import SessionRouterBackend
-from jarn.telegram.outbox import Outbox
+from jarn.telegram.outbox import BUSY_ACK_TEXT, Outbox
 
 
 class _FakeSender:
@@ -131,6 +131,47 @@ async def test_submit_turn_forwards_media_refs(tmp_path: Path, monkeypatch):
     assert frame.text == "see this"
     assert frame.media and frame.media[0].path == "/tmp/x.png"
     assert frame.chat_id == 7
+
+
+@pytest.mark.asyncio
+async def test_second_submit_while_busy_steers_not_second_turn(tmp_path: Path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("JARN_HOME", str(home))
+    personal = tmp_path / "personal"
+    personal.mkdir()
+    (personal / ".jarn").mkdir()
+
+    supervisor = MagicMock(spec=DaemonSupervisor)
+    supervisor.on_outbound = None
+    supervisor.on_worker_death = None
+    sent: list = []
+
+    def _send(root, frame):
+        sent.append((root, frame))
+
+    supervisor.send.side_effect = _send
+    supervisor.ensure_worker.return_value = SimpleNamespace(root=personal.resolve())
+    supervisor.get_worker.return_value = None
+
+    router = SessionRouter(supervisor, personal_root=personal)
+    backend = SessionRouterBackend(router=router, supervisor=supervisor)
+    sender = _FakeSender()
+    backend.bind_outbox(Outbox(sender=sender))
+
+    await backend.submit_turn(chat_id=7, user_id=1, text="first")
+    turns = [f for _, f in sent if isinstance(f, TurnFrame)]
+    assert len(turns) == 1
+
+    await backend.submit_turn(chat_id=7, user_id=1, text="prefer pytest")
+    supervisor.steer.assert_called_once()
+    _root, tid, text = supervisor.steer.call_args.args
+    assert text == "prefer pytest"
+    assert len([f for _, f in sent if isinstance(f, TurnFrame)]) == 1
+    await asyncio.sleep(0.05)
+    assert any(BUSY_ACK_TEXT in m["text"] for m in sender.messages)
+    assert not any("Steering" in m["text"] for m in sender.messages)
+    assert not any("Queued" in m["text"] for m in sender.messages)
 
 
 @pytest.mark.asyncio

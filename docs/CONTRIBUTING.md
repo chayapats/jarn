@@ -38,7 +38,7 @@ uv run mypy src/                   # type-check (must report 0 errors)
 ```
 
 Before pushing, run all three gates locally — `ruff check src tests scripts`, `mypy src/`, and
-`pytest` (currently **3154** tests) after `uv sync --extra dev --extra telegram`. CI runs
+`pytest` (currently **3171** tests) after `uv sync --extra dev --extra telegram`. CI runs
 exactly these on every push/PR (lint → type-check → test, with the telegram extra) across
 Linux/macOS/Windows and Python 3.12/3.13, plus a `packaging` job and an `npm` job that runs
 the Node launcher + assembly tests (`node --test npm/jarn-cli/test/launcher.test.js` and

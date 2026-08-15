@@ -485,6 +485,8 @@ class UIConfig:
     statusbar: bool = True
     #: Draw the context fill bar inside the status bar.
     context_bar: bool = True
+    #: Extra "queued/steering" copy on a busy ack. Default off — one short Working…
+    busy_ack_detail: bool = False
 
 
 @dataclass(slots=True)
@@ -572,6 +574,10 @@ class UpdatesConfig:
 
 _VALID_TOOL_PROGRESS_CLEANUP: frozenset[str] = frozenset({"delete", "keep"})
 
+#: Telegram overlay only (P4-2). Do **not** inherit CLI ``ui.busy_input_mode``.
+TELEGRAM_BUSY_INPUT_MODES: frozenset[str] = frozenset({"steer", "queue"})
+TELEGRAM_BUSY_INPUT_DEFAULT = "steer"
+
 
 @dataclass(slots=True)
 class GatewayTelegramConfig:
@@ -584,6 +590,9 @@ class GatewayTelegramConfig:
     ``tool_progress`` is the Telegram overlay (``off|new|all|verbose``). Default
     ``off`` is the #40 quiet contract and must **not** inherit CLI
     ``ui.tool_progress: new``. ``/verbose`` cycles session state only.
+
+    ``busy_input_mode`` is the Telegram overlay (``steer|queue``). Default
+    ``steer`` must **not** inherit CLI ``ui.busy_input_mode: queue``.
     """
 
     token: str = ""
@@ -594,6 +603,10 @@ class GatewayTelegramConfig:
     tool_progress_cleanup: str = "delete"
     #: User-visible ``Working — N min`` after a quiet interval while a turn runs.
     long_running_notifications: bool = True
+    #: Second DM while a turn is in flight: steer (default) or queue. Never CLI queue.
+    busy_input_mode: str = TELEGRAM_BUSY_INPUT_DEFAULT
+    #: Extra queued/steering paragraph on the Working… ack. Default off.
+    busy_ack_detail: bool = False
 
 
 @dataclass(slots=True)

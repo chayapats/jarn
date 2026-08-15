@@ -42,6 +42,7 @@ from jarn.tui.grammar import TOOL_PROGRESS_VALUES
 _log = logging.getLogger("jarn.telegram.outbox")
 
 __all__ = [
+    "BUSY_ACK_TEXT",
     "CallbackKind",
     "LONG_RUNNING_INTERVAL_S",
     "Outbox",
@@ -50,6 +51,8 @@ __all__ = [
     "build_media_refusal_card",
     "build_undo_confirm_card",
     "build_yolo_confirm_card",
+    "effective_telegram_busy_ack_detail",
+    "effective_telegram_busy_input_mode",
     "effective_telegram_tool_progress",
     "encode_callback",
     "parse_callback",
@@ -62,6 +65,14 @@ _CB_MAX = 64
 #: Quiet minutes (as seconds) before a user-visible ``Working — N min`` line.
 #: Separate from draft TTL ``keepalive_draft`` and from ``ui.notify_min_secs``.
 LONG_RUNNING_INTERVAL_S = 180.0
+
+#: One-line busy ack. No queued/steering paragraph unless ``busy_ack_detail``.
+BUSY_ACK_TEXT = "Working…"
+
+_BUSY_ACK_DETAIL = {
+    "steer": "Steering into the current turn.",
+    "queue": "Queued until this turn finishes.",
+}
 
 _TOOL_EVENT_KINDS = frozenset({"tool_start", "tool_end", "tool_progress", "tool_call"})
 _PROGRESS_VISIBLE = frozenset({"new", "all", "verbose"})
@@ -246,6 +257,25 @@ def effective_telegram_tool_progress(config: Any | None) -> str:
     if isinstance(raw, str) and raw in TOOL_PROGRESS_VALUES:
         return raw
     return "off"
+
+
+def effective_telegram_busy_input_mode(config: Any | None) -> str:
+    """Telegram busy overlay. Default ``steer``; never inherit CLI queue."""
+    from jarn.config.schema import TELEGRAM_BUSY_INPUT_DEFAULT, TELEGRAM_BUSY_INPUT_MODES
+
+    tg = getattr(getattr(config, "gateway", None), "telegram", None)
+    raw = getattr(tg, "busy_input_mode", None)
+    if isinstance(raw, str) and raw in TELEGRAM_BUSY_INPUT_MODES:
+        return raw
+    return TELEGRAM_BUSY_INPUT_DEFAULT
+
+
+def effective_telegram_busy_ack_detail(config: Any | None) -> bool:
+    """Busy-ack detail. Default off. Either Telegram overlay or ``ui`` enables it."""
+    tg = getattr(getattr(config, "gateway", None), "telegram", None)
+    tg_raw = getattr(tg, "busy_ack_detail", None)
+    ui_raw = getattr(getattr(config, "ui", None), "busy_ack_detail", None)
+    return bool(tg_raw) or bool(ui_raw)
 
 
 def should_drop_event(
@@ -480,6 +510,8 @@ class Outbox:
     tool_progress_cleanup: str = "delete"
     long_running_notifications: bool = True
     long_running_interval_s: float = LONG_RUNNING_INTERVAL_S
+    #: Extra queued/steering paragraph on the Working… ack. Default off.
+    busy_ack_detail: bool = False
     clock: Callable[[], float] = field(default=time.monotonic)
     _draft_id: dict[int, int] = field(default_factory=dict)
     _draft_buf: dict[int, str] = field(default_factory=dict)
@@ -490,6 +522,8 @@ class Outbox:
     _progress_tools: dict[int, dict[str, _ToolLine]] = field(default_factory=dict)
     _progress_heartbeat_min: dict[int, int] = field(default_factory=dict)
     _last_event_at: dict[int, float] = field(default_factory=dict)
+    _busy_ack_mode: dict[int, str] = field(default_factory=dict)
+    _last_progress_html: dict[int, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.sender = _adapt_sender(self.sender)
@@ -530,6 +564,10 @@ class Outbox:
         if progress is not None:
             self.progress = progress
         density = self.progress
+        if kind == "busy_ack":
+            mode = str(data.get("mode") or "steer")
+            await self.ack_busy(chat_id, mode=mode)
+            return
         if should_drop_event(kind, data, progress=density):
             return
         self._mark_activity(chat_id)
@@ -624,6 +662,12 @@ class Outbox:
 
     def _progress_html(self, chat_id: int, progress: str) -> str:
         lines: list[str] = []
+        mode = self._busy_ack_mode.get(chat_id)
+        if mode:
+            lines.append(layout.muted(BUSY_ACK_TEXT, dialect="html"))
+            if self.busy_ack_detail:
+                extra = _BUSY_ACK_DETAIL.get(mode, _BUSY_ACK_DETAIL["steer"])
+                lines.append(layout.escape(extra, dialect="html"))
         minutes = self._progress_heartbeat_min.get(chat_id)
         if minutes:
             lines.append(layout.muted(f"Working — {minutes} min", dialect="html"))
@@ -645,6 +689,9 @@ class Outbox:
             return
         if len(html) > TELEGRAM_MESSAGE_MAX:
             html = html[: TELEGRAM_MESSAGE_MAX - 1] + "…"
+        if self._last_progress_html.get(chat_id) == html:
+            return
+        self._last_progress_html[chat_id] = html
         mid = self._progress_id.get(chat_id)
         if mid is None:
             msg = await self.sender.send_message(
@@ -699,11 +746,22 @@ class Outbox:
         self._progress_heartbeat_min[chat_id] = minutes
         await self._upsert_progress_bubble(chat_id, self._progress_html(chat_id, self.progress))
 
+    async def ack_busy(self, chat_id: int, *, mode: str = "steer") -> None:
+        """One short ``Working…`` edit. Detail paragraph only when enabled."""
+        from jarn.config.schema import TELEGRAM_BUSY_INPUT_DEFAULT, TELEGRAM_BUSY_INPUT_MODES
+
+        self._busy_ack_mode[chat_id] = (
+            mode if mode in TELEGRAM_BUSY_INPUT_MODES else TELEGRAM_BUSY_INPUT_DEFAULT
+        )
+        await self._upsert_progress_bubble(chat_id, self._progress_html(chat_id, self.progress))
+
     async def _cleanup_progress(self, chat_id: int) -> None:
         mid = self._progress_id.pop(chat_id, None)
         self._progress_tools.pop(chat_id, None)
         self._progress_heartbeat_min.pop(chat_id, None)
         self._last_event_at.pop(chat_id, None)
+        self._busy_ack_mode.pop(chat_id, None)
+        self._last_progress_html.pop(chat_id, None)
         if mid is None or self.tool_progress_cleanup != "delete":
             return
         delete = getattr(self.sender, "delete_message", None)

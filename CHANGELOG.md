@@ -40,6 +40,10 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ### Added
 
+- Telegram second DM while a turn is in flight steers by default
+  (`gateway.telegram.busy_input_mode: steer`, does not inherit CLI queue) or
+  queues; never a second in-flight agent turn. Short `Working…` busy ack;
+  `ui.busy_ack_detail` / `gateway.telegram.busy_ack_detail` default off.
 - `/context`, `/tools`, `/title`, `/usage` (alias of `/cost`), and case-insensitive
   slash names. Skills can be invoked as `/skill-name`. New `ui.wrap_at`,
   `ui.tool_progress`, `ui.show_reasoning`, `ui.statusbar`, and `ui.context_bar`

@@ -769,7 +769,10 @@ def test_gateway_defaults(tmp_path):
     assert cfg.gateway.telegram.tool_progress == "off"
     assert cfg.gateway.telegram.tool_progress_cleanup == "delete"
     assert cfg.gateway.telegram.long_running_notifications is True
+    assert cfg.gateway.telegram.busy_input_mode == "steer"
+    assert cfg.gateway.telegram.busy_ack_detail is False
     assert cfg.ui.tool_progress == "new"
+    assert cfg.ui.busy_ack_detail is False
     assert cfg.gateway.repos == []
 
 
@@ -849,6 +852,9 @@ def test_gateway_enabled_is_settable():
     assert is_settable("gateway.telegram.tool_progress")
     assert is_settable("gateway.telegram.tool_progress_cleanup")
     assert is_settable("gateway.telegram.long_running_notifications")
+    assert is_settable("gateway.telegram.busy_input_mode")
+    assert is_settable("gateway.telegram.busy_ack_detail")
+    assert is_settable("ui.busy_ack_detail")
 
 
 def test_gateway_telegram_tool_progress_overlay_does_not_inherit_ui(tmp_path):
@@ -883,6 +889,24 @@ def test_gateway_telegram_progress_keys_validated(tmp_path):
     assert cfg.gateway.telegram.tool_progress == "verbose"
     assert cfg.gateway.telegram.tool_progress_cleanup == "keep"
     assert cfg.gateway.telegram.long_running_notifications is False
+
+
+def test_gateway_telegram_busy_input_mode_validated(tmp_path):
+    gp = tmp_path / "g.yaml"
+    _write(gp, {"gateway": {"telegram": {"busy_input_mode": "interrupt"}}})
+    with pytest.raises(ConfigError, match="busy_input_mode"):
+        load_config(global_path=gp, project_path=None)
+    _write(
+        gp,
+        {
+            "gateway": {
+                "telegram": {"busy_input_mode": "queue", "busy_ack_detail": True}
+            }
+        },
+    )
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.gateway.telegram.busy_input_mode == "queue"
+    assert cfg.gateway.telegram.busy_ack_detail is True
 
 
 def test_ensure_personal_root_creates_git_repo(tmp_path, monkeypatch):
