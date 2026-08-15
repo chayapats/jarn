@@ -455,7 +455,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         group="Session",
         usage="[clear|cancel <n>|move <from> <to>|steer <n>]",
         index_usage="[subcommand]",
-        related=("abort",),
+        related=("abort", "busy"),
+    ),
+    _c(
+        "busy",
+        "Set what Enter does while a turn is running.",
+        "both",
+        group="Session",
+        usage="[interrupt|queue|steer|status]",
+        examples=("/busy", "/busy steer", "/busy status"),
+        related=("queue", "verbose"),
+        blurb="Session-only. queue (default) holds the line until the turn "
+        "ends. steer injects via the existing steer slot (needs ui.steering). "
+        "interrupt aborts then runs the line. Persist with "
+        "/config set ui.busy_input_mode.",
     ),
     _c(
         "map",

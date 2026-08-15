@@ -267,6 +267,7 @@ ui:
   approval_diff_lines: 40   # max diff lines inline before "View full diff" in an approval
   wrap_at: 120          # 0 = terminal width
   tool_progress: new    # off | new | all | verbose
+  busy_input_mode: queue  # queue | steer | interrupt
   show_reasoning: collapsed  # collapsed | full | off
   statusbar: true
   context_bar: true

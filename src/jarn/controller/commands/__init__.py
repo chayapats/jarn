@@ -46,6 +46,7 @@ _HANDLERS: dict[str, CommandHandler] = {
     "cost": diagnostics.cmd_cost,
     "context": diagnostics.cmd_context,
     "verbose": diagnostics.cmd_verbose,
+    "busy": diagnostics.cmd_busy,
     "focus": diagnostics.cmd_focus,
     "tools": diagnostics.cmd_tools,
     "title": diagnostics.cmd_title,

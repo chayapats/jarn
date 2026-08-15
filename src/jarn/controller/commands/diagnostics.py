@@ -716,6 +716,45 @@ def cmd_verbose(ctrl: Controller, args: str) -> CommandResult:
     )
 
 
+def cmd_busy(ctrl: Controller, args: str) -> CommandResult:
+    from jarn.config.schema import BUSY_INPUT_MODES
+
+    wanted = args.strip().lower()
+    current = getattr(ctrl, "busy_input_mode", None) or getattr(
+        ctrl.config.ui, "busy_input_mode", "queue"
+    )
+    if wanted in ("", "status"):
+        return CommandResult(
+            "\n".join(
+                [
+                    layout.kv("Busy input", current),
+                    layout.muted(
+                        "Session only — persist with /config set ui.busy_input_mode."
+                    ),
+                ]
+            )
+        )
+    if wanted not in BUSY_INPUT_MODES:
+        return CommandResult(usage_error("busy"))
+    if wanted == "steer" and not ctrl.config.ui.steering:
+        return CommandResult(
+            layout.err("Steering is off.")
+            + " "
+            + layout.muted("Enable ui.steering or use /busy queue.")
+        )
+    ctrl.busy_input_mode = wanted
+    return CommandResult(
+        "\n".join(
+            [
+                layout.kv("Busy input", ctrl.busy_input_mode),
+                layout.muted(
+                    "Session only — persist with /config set ui.busy_input_mode."
+                ),
+            ]
+        )
+    )
+
+
 def cmd_focus(ctrl: Controller, args: str) -> CommandResult:
     wanted = args.strip().lower()
     if wanted in ("status",):

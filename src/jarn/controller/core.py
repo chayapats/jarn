@@ -241,6 +241,9 @@ class Controller:
         self.session_started_at = time.monotonic()
         self.tool_progress = getattr(config.ui, "tool_progress", TOOL_PROGRESS_DEFAULT)
         self.focus_mode = False
+        #: Session-local Enter-while-busy mode. Seeded from config; /busy does
+        #: not write YAML (persist with /config set ui.busy_input_mode).
+        self.busy_input_mode = getattr(config.ui, "busy_input_mode", "queue")
         #: Session-local ``/compact`` apply count for the toolbar badge. In-graph
         #: auto-compact is not observed without a new engine API, so only
         #: :meth:`compact_apply` increments this.

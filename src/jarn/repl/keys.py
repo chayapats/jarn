@@ -40,6 +40,15 @@ class KeysMixin:
 
         return expand_mentions(text, project_root=self.controller.project_root)
 
+    def _busy_input_mode(self) -> str:
+        """Session Enter-while-busy mode (queue / steer / interrupt).
+
+        Wired in P4-1. /busy mutates ``controller.busy_input_mode`` only.
+        """
+        return getattr(self.controller, "busy_input_mode", None) or getattr(
+            self.controller.config.ui, "busy_input_mode", "queue"
+        )
+
     def _build_keys(self) -> KeyBindings:
         kb = KeyBindings()
         # Input/editing keys only apply when no overlay is open; while a panel

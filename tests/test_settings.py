@@ -169,6 +169,35 @@ def test_config_set_persists_and_applies(tmp_path, monkeypatch, base_config):
     ctrl.close()
 
 
+def test_busy_status_session_only_does_not_write_yaml(
+    tmp_path, monkeypatch, base_config
+):
+    ctrl, gpath = _controller(tmp_path, monkeypatch, base_config)
+    before = gpath.read_text()
+    status = ctrl.handle_command("busy", "status")
+    assert "queue" in status.text
+    assert "Session only" in status.text
+    changed = ctrl.handle_command("busy", "steer")
+    assert "steer" in changed.text.lower()
+    assert ctrl.busy_input_mode == "steer"
+    assert ctrl.config.ui.busy_input_mode == "queue"
+    assert gpath.read_text() == before
+    unknown = ctrl.handle_command("busy", "yell")
+    assert "Usage:" in unknown.text
+    ctrl.close()
+
+
+def test_config_set_busy_input_mode_persists(tmp_path, monkeypatch, base_config):
+    ctrl, gpath = _controller(tmp_path, monkeypatch, base_config)
+    out = ctrl.handle_command("config", "set ui.busy_input_mode steer")
+    assert out.rebuilt is True
+    from ruamel.yaml import YAML
+
+    assert YAML().load(gpath.read_text())["ui"]["busy_input_mode"] == "steer"
+    assert ctrl.config.ui.busy_input_mode == "steer"
+    ctrl.close()
+
+
 def test_config_set_bad_value_rejected_no_write(tmp_path, monkeypatch, base_config):
     ctrl, gpath = _controller(tmp_path, monkeypatch, base_config)
     before = gpath.read_text()
