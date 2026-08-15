@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -354,9 +355,11 @@ def test_service_unit_escapes_working_directory_without_value_quotes(
     )
     assert "WorkingDirectory=" + expected in unit
     assert "WorkingDirectory=\"" not in unit
-    assert GatewayServiceManager._working_directory("/home/owner home%folder") == (
-        "/home/owner\\x20home%%folder"
-    )
+    if sys.platform != "win32":
+        # Python 3.13+ Windows isabs() rejects a leading slash without a drive.
+        assert GatewayServiceManager._working_directory("/home/owner home%folder") == (
+            "/home/owner\\x20home%%folder"
+        )
     with pytest.raises(ValueError, match="must be absolute"):
         GatewayServiceManager._working_directory("relative")
 
@@ -584,7 +587,8 @@ def test_user_service_install_is_atomic_token_free_and_verified(tmp_path, monkey
     unit = manager.unit_path.read_text(encoding="utf-8")
     assert "ExecStart=" in unit
     assert "token" not in unit.lower()
-    assert manager.unit_path.stat().st_mode & 0o777 == 0o600
+    if sys.platform != "win32":
+        assert manager.unit_path.stat().st_mode & 0o777 == 0o600
     assert ["systemctl", "--user", "daemon-reload"] in calls
     assert [
         "systemctl",

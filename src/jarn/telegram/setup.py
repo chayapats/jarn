@@ -425,10 +425,10 @@ class GatewayServiceManager:
         of the unit-file syntax and preserve spaces without adding quotes.
 
         Absolute-path validation uses ``os.path.isabs()`` rather than a
-        leading ``/`` or ``Path.is_absolute()``.  Windows CI hosts stringify
-        pytest paths as ``C:\\...`` (drive-absolute) while POSIX fixtures
-        still use ``/home/...``; pathlib on Windows treats a root without a
-        drive as relative.  The user service itself remains Linux-only; on
+        leading ``/``.  Windows CI hosts stringify pytest paths as ``C:\\...``
+        (drive-absolute).  Python 3.13+ ``isabs`` on Windows also rejects a
+        leading slash without a drive, so POSIX ``/home/...`` fixtures belong
+        in Unix-only tests.  The user service itself remains Linux-only; on
         POSIX ``os.path.isabs`` is equivalent to ``startswith("/")``.
         """
 
