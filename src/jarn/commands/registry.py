@@ -647,9 +647,7 @@ GATEWAY_ONLY_COMMANDS = frozenset({"stop", "new", "repo", "help", "reset"})
 GATEWAY_LOCAL_COMMANDS = GATEWAY_READONLY_COMMANDS | GATEWAY_SESSION_COMMANDS
 
 #: One-line refuse copy for :data:`GATEWAY_MUTATING_COMMANDS`.
-GATEWAY_MUTATING_NOTICE = (
-    "This command is not available on Telegram. Use the terminal / jarn CLI."
-)
+GATEWAY_MUTATING_NOTICE = "This command is not available on Telegram. Use the terminal / jarn CLI."
 
 _TELEGRAM_BOTFATHER_NAME = re.compile(r"^[a-z0-9_]{1,32}$")
 
@@ -682,9 +680,7 @@ def gateway_mutating_notice(name: str = "") -> str:
     """One-line terminal hint for a blocked Telegram slash name."""
     shown = canonical_name(name) if name else ""
     if shown:
-        return (
-            f"/{shown} is not available on Telegram. Use the terminal / jarn CLI."
-        )
+        return f"/{shown} is not available on Telegram. Use the terminal / jarn CLI."
     return GATEWAY_MUTATING_NOTICE
 
 
