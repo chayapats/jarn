@@ -437,7 +437,12 @@ class GatewayWorker:
                     loop = asyncio.get_running_loop()
                 except RuntimeError:
                     return
-                loop.call_soon(lambda f=queued: loop.create_task(self._handle_turn(f)))
+                frame = queued
+
+                def _kick() -> None:
+                    loop.create_task(self._handle_turn(frame))
+
+                loop.call_soon(_kick)
 
     async def _confirm_card(self, kind: str, thread_id: str) -> bool:
         """Send a Confirm/Cancel card and wait for the matching verdict."""
@@ -526,7 +531,9 @@ class GatewayWorker:
                     return summary
                 return CommandResult(str(summary) if summary else "Nothing to compact.")
 
-        if key == "resume":
+        # Parsed name, not canonical: CLI `/resume` aliases `/sessions` (picker),
+        # but Telegram `/resume <id>` is the text resume path.
+        if name == "resume":
             result = cmd_resume(self.controller, args)
             new_id = getattr(self.controller, "thread_id", None)
             if isinstance(new_id, str) and result.text.startswith("Resumed session "):

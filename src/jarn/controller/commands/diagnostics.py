@@ -727,7 +727,7 @@ def cmd_busy(ctrl: Controller, args: str) -> CommandResult:
         return CommandResult(
             "\n".join(
                 [
-                    layout.kv("Busy input", current),
+                    layout.kv("Busy input", str(current)),
                     layout.muted(
                         "Session only — persist with /config set ui.busy_input_mode."
                     ),

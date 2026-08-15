@@ -591,7 +591,7 @@ def print_assistant_markdown(console: object, source: str) -> None:
     body = (source or "").strip()
     if palette.no_color():
         body = strip_md_wrappers(body)
-    console.print(Markdown(body, code_theme=palette.CODE_THEME))  # type: ignore[union-attr]
+    console.print(Markdown(body, code_theme=palette.CODE_THEME))  # type: ignore[attr-defined]
 
 
 def looks_like_layout_markup(text: str) -> bool:

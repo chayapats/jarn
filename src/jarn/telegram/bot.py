@@ -406,6 +406,7 @@ class TelegramBotApp:
         from jarn.commands.registry import gateway_botfather_commands
 
         rows = gateway_botfather_commands()
+        commands: list[Any]
         try:
             from aiogram.types import BotCommand
 

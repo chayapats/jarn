@@ -282,6 +282,8 @@ def test_parse_slash_line_and_gateway_local() -> None:
         "quit",
         "exit",
         "expand",
+        "diff",
+        "busy",
     )
     for name in mutating:
         assert name in GATEWAY_MUTATING_COMMANDS

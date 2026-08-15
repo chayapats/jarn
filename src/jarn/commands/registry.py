@@ -639,8 +639,9 @@ GATEWAY_SESSION_COMMANDS = frozenset(
 )
 
 #: Blocked on Telegram: never local ``handle_command`` as the mutate path, never
-#: ``submit_turn``. Closed set — YAML writers, trust/auth, and REPL-picker-only
-#: names. Aliases (``new`` → ``clear``, ``exit`` → ``quit``) resolve via
+#: ``submit_turn``. Closed set — YAML writers, trust/auth, REPL-picker-only
+#: names, and CLI-only close-out verbs (``diff``, ``busy``). Aliases (``new`` →
+#: ``clear``, ``exit`` → ``quit``) resolve via
 #: :func:`is_gateway_mutating_command`.
 GATEWAY_MUTATING_COMMANDS = frozenset(
     {
@@ -665,6 +666,8 @@ GATEWAY_MUTATING_COMMANDS = frozenset(
         "quit",
         "exit",
         "expand",
+        "diff",
+        "busy",
     }
 )
 
