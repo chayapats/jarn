@@ -6,6 +6,7 @@ read this module. Add a command here first; handlers and docs follow.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -568,6 +569,7 @@ def parse_slash_line(text: str) -> tuple[str, str] | None:
 
 #: Display pages the Telegram worker runs locally via ``handle_command``.
 #: Read-only catalog pages — never mutate config, memory, or sandbox.
+#: ``sessions`` / ``checkpoints`` / ``ps`` stay here (text list, not pickers).
 GATEWAY_READONLY_COMMANDS = frozenset(
     {
         "status",
@@ -590,13 +592,74 @@ GATEWAY_READONLY_COMMANDS = frozenset(
     }
 )
 
-#: Session chrome that does not write YAML unless the user later ``/config set``.
-GATEWAY_SESSION_COMMANDS = frozenset({"verbose", "focus", "title"})
+#: Session chrome + local session mutations that already have controller APIs.
+#: Does not write YAML unless the user later ``/config set``.
+GATEWAY_SESSION_COMMANDS = frozenset(
+    {
+        "verbose",
+        "focus",
+        "title",
+        "model",
+        "mode",
+        "compact",
+        "undo",
+        "redo",
+        "resume",
+        "skill",
+    }
+)
 
-#: Union consumed by the gateway worker. Mutating names (config/preset/memory/
-#: sandbox and picker-only commands) stay out so Telegram cannot change the host
-#: through a local slash shortcut.
+#: Blocked on Telegram: never local ``handle_command`` as the mutate path, never
+#: ``submit_turn``. Closed set — YAML writers, trust/auth, and REPL-picker-only
+#: names. Aliases (``new`` → ``clear``, ``exit`` → ``quit``) resolve via
+#: :func:`is_gateway_mutating_command`.
+GATEWAY_MUTATING_COMMANDS = frozenset(
+    {
+        "config",
+        "preset",
+        "memory",
+        "sandbox",
+        "trust",
+        "key",
+        "login",
+        "logout",
+        "add-dir",
+        "init",
+        "module",
+        "theme",
+        "rewind",
+        "queue",
+        "abort",
+        "commit",
+        "review",
+        "clear",
+        "quit",
+        "exit",
+        "expand",
+    }
+)
+
+#: Bot-layer names that never reach the agent. ``help`` is also readonly local;
+#: ``new`` aliases mutating ``clear`` but Telegram ``/new`` is a fresh thread.
+GATEWAY_ONLY_COMMANDS = frozenset({"stop", "new", "repo", "help", "reset"})
+
+#: Union consumed by the gateway worker.
 GATEWAY_LOCAL_COMMANDS = GATEWAY_READONLY_COMMANDS | GATEWAY_SESSION_COMMANDS
+
+#: One-line refuse copy for :data:`GATEWAY_MUTATING_COMMANDS`.
+GATEWAY_MUTATING_NOTICE = (
+    "This command is not available on Telegram. Use the terminal / jarn CLI."
+)
+
+_TELEGRAM_BOTFATHER_NAME = re.compile(r"^[a-z0-9_]{1,32}$")
+
+_GATEWAY_ONLY_MENU: dict[str, str] = {
+    "stop": "Cancel the in-flight turn",
+    "new": "Start a fresh thread",
+    "repo": "Switch the active repo",
+    "help": "Show commands",
+    "reset": "Start a fresh thread",
+}
 
 
 def is_gateway_local_command(name: str) -> bool:
@@ -605,3 +668,42 @@ def is_gateway_local_command(name: str) -> bool:
     if spec is None:
         return False
     return (spec.alias_of or spec.name) in GATEWAY_LOCAL_COMMANDS
+
+
+def is_gateway_mutating_command(name: str) -> bool:
+    """True when Telegram must refuse this builtin (never an agent prompt)."""
+    spec = spec_by_name(name)
+    if spec is None:
+        return name.strip().lower() in GATEWAY_MUTATING_COMMANDS
+    return (spec.alias_of or spec.name) in GATEWAY_MUTATING_COMMANDS
+
+
+def gateway_mutating_notice(name: str = "") -> str:
+    """One-line terminal hint for a blocked Telegram slash name."""
+    shown = canonical_name(name) if name else ""
+    if shown:
+        return (
+            f"/{shown} is not available on Telegram. Use the terminal / jarn CLI."
+        )
+    return GATEWAY_MUTATING_NOTICE
+
+
+def gateway_botfather_commands() -> tuple[tuple[str, str], ...]:
+    """``(command, description)`` rows for Telegram ``setMyCommands``.
+
+    Local catalog names plus gateway-only ``stop`` / ``new`` / ``repo`` /
+    ``help`` / ``reset``. Mutating names are excluded (``/new`` is gateway-only
+    and stays). Names must be Telegram-legal: ``[a-z0-9_]{1,32}``.
+    """
+    rows: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for name in sorted(GATEWAY_LOCAL_COMMANDS | GATEWAY_ONLY_COMMANDS):
+        if name in seen or not _TELEGRAM_BOTFATHER_NAME.fullmatch(name):
+            continue
+        if is_gateway_mutating_command(name) and name not in GATEWAY_ONLY_COMMANDS:
+            continue
+        seen.add(name)
+        spec = spec_by_name(name)
+        desc = _GATEWAY_ONLY_MENU.get(name) or (spec.description if spec else name)
+        rows.append((name, desc[:256]))
+    return tuple(rows)
