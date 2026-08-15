@@ -239,6 +239,7 @@ class TelegramBotApp:
     tool_progress: str = "off"
     tool_progress_cleanup: str = "delete"
     long_running_notifications: bool = True
+    busy_ack_detail: bool = False
     _bot: Any = field(default=None, repr=False)
     _outbox: Outbox | None = field(default=None, repr=False)
     _offset: int | None = field(default=None, repr=False)
@@ -286,6 +287,7 @@ class TelegramBotApp:
                 progress=self.tool_progress,
                 tool_progress_cleanup=self.tool_progress_cleanup,
                 long_running_notifications=self.long_running_notifications,
+                busy_ack_detail=self.busy_ack_detail,
             )
             binder = getattr(self.backend, "bind_outbox", None)
             if callable(binder):
@@ -643,6 +645,7 @@ async def run_gateway_bot(
     tool_progress: str = "off",
     tool_progress_cleanup: str = "delete",
     long_running_notifications: bool = True,
+    busy_ack_detail: bool = False,
 ) -> int:
     """Convenience entry used by ``python -m jarn.telegram``."""
     app = TelegramBotApp(
@@ -654,5 +657,6 @@ async def run_gateway_bot(
         tool_progress=tool_progress,
         tool_progress_cleanup=tool_progress_cleanup,
         long_running_notifications=long_running_notifications,
+        busy_ack_detail=busy_ack_detail,
     )
     return await app.start()

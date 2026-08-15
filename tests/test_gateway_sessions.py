@@ -171,13 +171,14 @@ def test_busy_queues_with_notice_and_stop(personal: Path, allowlisted_repo: Path
         repos=[GatewayRepo(path=str(allowlisted_repo), name="app")],
         personal_root=personal,
         on_notice=on_notice,
+        busy_input_mode="queue",
     )
     try:
         tid1 = r.submit_turn(3, "first")
         tid2 = r.submit_turn(3, "second")
         assert tid1 == tid2
-        assert any(QUEUED_NOTICE in text for _, text in notices)
         assert r.queue_depth(personal) == 1
+        assert not any(QUEUED_NOTICE in text for _, text in notices)
 
         # /stop cancels in-flight and drops this chat's queue.
         assert r.cmd_stop(3) is True
@@ -210,12 +211,46 @@ def test_queue_drains_after_turn_completes(personal: Path, allowlisted_repo: Pat
         personal_root=personal,
         on_event=on_event,
         on_notice=lambda *_: None,
+        busy_input_mode="queue",
     )
     try:
         r.submit_turn(5, "one")
         r.submit_turn(5, "two")
         assert all_done.wait(timeout=5)
         assert done_texts == ["echo:one", "echo:two"]
+    finally:
+        sup.shutdown()
+
+
+def test_busy_second_text_steers_by_default(personal: Path, allowlisted_repo: Path):
+    events: list = []
+    notices: list[tuple[int, str]] = []
+
+    def on_event(chat_id: int, root: Path, frame) -> None:
+        events.append(frame)
+
+    sup = DaemonSupervisor(
+        worker_command=_worker_cmd(),
+        handshake_timeout_secs=5.0,
+        env={"FAKE_WORKER_TURN_HOLD_SECS": "0.35"},
+    )
+    r = SessionRouter(
+        sup,
+        repos=[GatewayRepo(path=str(allowlisted_repo), name="app")],
+        personal_root=personal,
+        on_notice=lambda c, t: notices.append((c, t)),
+        on_event=on_event,
+    )
+    try:
+        tid1 = r.submit_turn(3, "first")
+        tid2 = r.submit_turn(3, "prefer pytest")
+        assert tid1 == tid2
+        assert r.queue_depth(personal) == 0
+        assert r.busy_input_mode == "steer"
+        assert not any(QUEUED_NOTICE in text for _, text in notices)
+        assert any(isinstance(f, EventFrame) and f.kind == "busy_ack" for f in events)
+        ack = next(f for f in events if isinstance(f, EventFrame) and f.kind == "busy_ack")
+        assert ack.data.get("mode") == "steer"
     finally:
         sup.shutdown()
 

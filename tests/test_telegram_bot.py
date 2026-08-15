@@ -167,6 +167,14 @@ async def test_handle_message_submits_turn_when_allowed():
     assert backend.last_turn().text == "hello agent"
 
 
+def test_bot_busy_ack_detail_defaults_off():
+    backend = InMemoryGatewayBackend()
+    app = TelegramBotApp(token="fake", allowed_user_ids=[42], backend=backend)
+    assert app.busy_ack_detail is False
+    out = Outbox(sender=FakeBot(), busy_ack_detail=app.busy_ack_detail)
+    assert out.busy_ack_detail is False
+
+
 @pytest.mark.asyncio
 async def test_handle_message_rejects_unauthorized():
     backend = InMemoryGatewayBackend()

@@ -745,24 +745,95 @@ async def test_status_parked_does_not_imply_busy(isolated_home: Path, tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_busy_second_turn_rejected(isolated_home: Path, tmp_path: Path):
+async def test_busy_second_turn_steers_without_second_run(
+    isolated_home: Path, tmp_path: Path
+):
+    """P4-2 / P4-6: second TurnFrame sets the steer slot; never a second _run_turn."""
     root = tmp_path / "proj"
     root.mkdir()
     gate = asyncio.Event()
+    run_texts: list[str] = []
+
+    async def run_turn_slow(driver, text, **kwargs):
+        run_texts.append(text)
+        await gate.wait()
+        yield Event(EventKind.DONE)
+
+    stdin, stdout = _Stdin(), _Stdout()
+    ctrl = _stub_controller(root=root, run_turn=run_turn_slow)
+    # CLI queue must not leak onto Telegram (overlay default is steer).
+    ctrl.config.ui = SimpleNamespace(busy_input_mode="queue")
+    worker = GatewayWorker(
+        root=root,
+        controller=ctrl,
+        stdin=stdin,
+        stdout=stdout,
+        heartbeat_interval=60.0,
+        approval_store=PendingApprovalMap(isolated_home / "pending.json"),
+    )
+    run_calls: list[str] = []
+    orig_run = worker._run_turn
+
+    async def wrapped_run(frame: TurnFrame) -> None:
+        run_calls.append(frame.text)
+        await orig_run(frame)
+
+    worker._run_turn = wrapped_run  # type: ignore[method-assign]
+    task = asyncio.create_task(worker.run())
+    stdin.push(encode_line(HandshakeFrame(schema_version=SCHEMA_VERSION)))
+    await asyncio.sleep(0.05)
+    stdin.push(encode_line(TurnFrame(thread_id="thr-s", text="first")))
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and not worker._turn_in_flight():
+        await asyncio.sleep(0.02)
+    in_flight = worker._turn_task
+    stdin.push(encode_line(TurnFrame(thread_id="thr-s", text="prefer pytest")))
+    await asyncio.sleep(0.1)
+    assert ctrl._steer_slot == "prefer pytest"
+    assert run_calls == ["first"]
+    assert run_texts == ["first"]
+    assert worker._turn_task is in_flight
+    assert worker._turn_in_flight()
+    assert not any(e.code == "busy" for e in _frames_of(stdout, ErrorFrame))
+    acks = [f for f in _frames_of(stdout, EventFrame) if f.kind == "busy_ack"]
+    assert acks and acks[0].data.get("mode") == "steer"
+    gate.set()
+    stdin.push(encode_line(ShutdownFrame()))
+    await asyncio.wait_for(task, timeout=2)
+    assert run_calls == ["first"]
+
+
+@pytest.mark.asyncio
+async def test_busy_second_turn_queue_does_not_double_run(
+    isolated_home: Path, tmp_path: Path
+):
+    root = tmp_path / "proj"
+    root.mkdir()
+    gate = asyncio.Event()
+    run_calls: list[str] = []
 
     async def run_turn_slow(driver, text, **kwargs):
         await gate.wait()
         yield Event(EventKind.DONE)
 
     stdin, stdout = _Stdin(), _Stdout()
+    ctrl = _stub_controller(root=root, run_turn=run_turn_slow)
+    ctrl.config.gateway = SimpleNamespace(telegram=SimpleNamespace(busy_input_mode="queue"))
     worker = GatewayWorker(
         root=root,
-        controller=_stub_controller(root=root, run_turn=run_turn_slow),
+        controller=ctrl,
         stdin=stdin,
         stdout=stdout,
         heartbeat_interval=60.0,
         approval_store=PendingApprovalMap(isolated_home / "pending.json"),
     )
+    orig_run = worker._run_turn
+
+    async def wrapped_run(frame: TurnFrame) -> None:
+        run_calls.append(frame.text)
+        await orig_run(frame)
+
+    worker._run_turn = wrapped_run  # type: ignore[method-assign]
     task = asyncio.create_task(worker.run())
     stdin.push(encode_line(HandshakeFrame(schema_version=SCHEMA_VERSION)))
     await asyncio.sleep(0.05)
@@ -770,11 +841,19 @@ async def test_busy_second_turn_rejected(isolated_home: Path, tmp_path: Path):
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline and not worker._turn_in_flight():
         await asyncio.sleep(0.02)
-    stdin.push(encode_line(TurnFrame(thread_id="t2", text="b")))
+    first_task = worker._turn_task
+    stdin.push(encode_line(TurnFrame(thread_id="t1", text="b")))
     await asyncio.sleep(0.1)
-    errs = _frames_of(stdout, ErrorFrame)
-    assert any(e.code == "busy" for e in errs)
+    assert run_calls == ["a"]
+    assert worker._turn_task is first_task
+    assert worker._queued_turn is not None and worker._queued_turn.text == "b"
+    assert ctrl._steer_slot is None
+    assert not any(e.code == "busy" for e in _frames_of(stdout, ErrorFrame))
     gate.set()
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and len(run_calls) < 2:
+        await asyncio.sleep(0.02)
+    assert run_calls == ["a", "b"]
     stdin.push(encode_line(ShutdownFrame()))
     await asyncio.wait_for(task, timeout=2)
 

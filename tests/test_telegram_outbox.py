@@ -8,12 +8,15 @@ from types import SimpleNamespace
 import pytest
 
 from jarn.telegram.outbox import (
+    BUSY_ACK_TEXT,
     LONG_RUNNING_INTERVAL_S,
     Outbox,
     build_approval_card,
     build_media_refusal_card,
     build_undo_confirm_card,
     build_yolo_confirm_card,
+    effective_telegram_busy_ack_detail,
+    effective_telegram_busy_input_mode,
     effective_telegram_tool_progress,
     encode_callback,
     parse_callback,
@@ -427,6 +430,68 @@ def test_effective_telegram_tool_progress_does_not_inherit_ui():
     cfg.gateway.telegram.tool_progress = "nope"
     assert effective_telegram_tool_progress(cfg) == "off"
     assert effective_telegram_tool_progress(None) == "off"
+
+
+def test_effective_telegram_busy_input_mode_does_not_inherit_ui_queue():
+    cfg = SimpleNamespace(
+        ui=SimpleNamespace(busy_input_mode="queue"),
+        gateway=SimpleNamespace(telegram=SimpleNamespace()),
+    )
+    assert effective_telegram_busy_input_mode(cfg) == "steer"
+    cfg.gateway.telegram.busy_input_mode = "queue"
+    assert effective_telegram_busy_input_mode(cfg) == "queue"
+    cfg.gateway.telegram.busy_input_mode = "interrupt"
+    assert effective_telegram_busy_input_mode(cfg) == "steer"
+    assert effective_telegram_busy_input_mode(None) == "steer"
+
+
+def test_effective_telegram_busy_ack_detail_defaults_off():
+    cfg = SimpleNamespace(
+        ui=SimpleNamespace(busy_ack_detail=False),
+        gateway=SimpleNamespace(telegram=SimpleNamespace(busy_ack_detail=False)),
+    )
+    assert effective_telegram_busy_ack_detail(cfg) is False
+    assert effective_telegram_busy_ack_detail(None) is False
+    cfg.ui.busy_ack_detail = True
+    assert effective_telegram_busy_ack_detail(cfg) is True
+
+
+@pytest.mark.asyncio
+async def test_busy_ack_is_short_working_without_detail():
+    sender = FakeSender()
+    out = Outbox(sender=sender)
+    assert out.busy_ack_detail is False
+    await out.ack_busy(1, mode="steer")
+    assert len(sender.messages) == 1
+    html = sender.messages[0]["text"]
+    assert BUSY_ACK_TEXT in html
+    assert "Steering" not in html
+    assert "Queued" not in html
+    await out.ack_busy(1, mode="steer")
+    assert len(sender.messages) == 1
+    assert sender.edits == []
+
+
+@pytest.mark.asyncio
+async def test_busy_ack_detail_off_by_default_on_event():
+    sender = FakeSender()
+    out = Outbox(sender=sender)
+    await out.on_event(1, kind="busy_ack", text=BUSY_ACK_TEXT, data={"mode": "queue"})
+    assert len(sender.messages) == 1
+    html = sender.messages[0]["text"]
+    assert BUSY_ACK_TEXT in html
+    assert "Queued" not in html
+    assert "Steering" not in html
+
+
+@pytest.mark.asyncio
+async def test_busy_ack_detail_adds_paragraph_when_enabled():
+    sender = FakeSender()
+    out = Outbox(sender=sender, busy_ack_detail=True)
+    await out.ack_busy(1, mode="steer")
+    html = sender.messages[0]["text"]
+    assert BUSY_ACK_TEXT in html
+    assert "Steering" in html
 
 
 @pytest.mark.asyncio

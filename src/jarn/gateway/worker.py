@@ -213,7 +213,9 @@ class GatewayWorker:
 
     Construct with an injectable :class:`Controller` for tests, or let
     :meth:`from_root` build a real one. Turns are serialized by construction
-    (one in-flight task); inbound ``cancel`` / ``steer`` target that task.
+    (one in-flight task, T-QA-1). A second ``TurnFrame`` while busy steers or
+    queues; it never starts another ``_run_turn``. Inbound ``cancel`` / ``steer``
+    target the in-flight task.
     """
 
     def __init__(
@@ -243,6 +245,7 @@ class GatewayWorker:
         self._last_activity = self._clock()
         self._emit_lock = asyncio.Lock()
         self._pending_confirms: dict[str, asyncio.Future[bool]] = {}
+        self._queued_turn: TurnFrame | None = None
         self._seed_telegram_tool_progress()
 
     def _seed_telegram_tool_progress(self) -> None:
@@ -262,6 +265,19 @@ class GatewayWorker:
         if isinstance(raw, str) and raw in TOOL_PROGRESS_VALUES:
             return raw
         return "off"
+
+    def _busy_input_mode(self) -> str:
+        from jarn.telegram.outbox import effective_telegram_busy_input_mode
+
+        return effective_telegram_busy_input_mode(getattr(self.controller, "config", None))
+
+    def _should_steer_busy(self, frame: TurnFrame) -> bool:
+        """Steer same-thread text. Media / other threads / queue mode use the slot."""
+        return (
+            self._busy_input_mode() == "steer"
+            and not frame.media
+            and (not self._turn_thread_id or frame.thread_id == self._turn_thread_id)
+        )
 
     def _event_frame(self, event: Event, *, thread_id: str) -> EventFrame:
         return event_to_frame(event, thread_id=thread_id, progress=self._session_progress())
@@ -375,14 +391,15 @@ class GatewayWorker:
         await self.aemit(self.status_frame())
 
     async def _handle_turn(self, frame: TurnFrame) -> None:
+        if self._shutdown:
+            return
         if self._turn_in_flight():
-            await self.aemit(
-                ErrorFrame(
-                    message="turn already in flight",
-                    code="busy",
-                    thread_id=frame.thread_id,
-                )
-            )
+            mode = "steer" if self._should_steer_busy(frame) else "queue"
+            if mode == "steer":
+                await self._handle_steer(SteerFrame(thread_id=frame.thread_id, text=frame.text))
+            else:
+                self._queued_turn = frame
+            await self._emit_busy_ack(frame, mode=mode)
             return
         self._turn_thread_id = frame.thread_id
         task = asyncio.create_task(
@@ -394,12 +411,33 @@ class GatewayWorker:
         # Do not await here — the main loop must keep reading cancel/steer/shutdown.
         task.add_done_callback(self._on_turn_done)
 
+    async def _emit_busy_ack(self, frame: TurnFrame, *, mode: str) -> None:
+        from jarn.telegram.outbox import BUSY_ACK_TEXT
+
+        await self.aemit(
+            EventFrame(
+                thread_id=frame.thread_id,
+                kind="busy_ack",
+                text=BUSY_ACK_TEXT,
+                data={"mode": mode},
+                progress=self._session_progress(),
+            )
+        )
+
     def _on_turn_done(self, task: asyncio.Task[Any]) -> None:
         if self._turn_task is task:
             self._turn_task = None
             self._turn_thread_id = None
             self.controller.bind_turn_task(None)
             self._touch()
+            queued = self._queued_turn
+            self._queued_turn = None
+            if queued is not None and not self._shutdown:
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    return
+                loop.call_soon(lambda f=queued: loop.create_task(self._handle_turn(f)))
 
     async def _confirm_card(self, kind: str, thread_id: str) -> bool:
         """Send a Confirm/Cancel card and wait for the matching verdict."""
@@ -717,6 +755,7 @@ class GatewayWorker:
                 )
 
     async def _handle_cancel(self, frame: CancelFrame) -> None:
+        self._queued_turn = None
         if not self._turn_in_flight():
             return
         if self._turn_thread_id and frame.thread_id != self._turn_thread_id:
@@ -759,6 +798,7 @@ class GatewayWorker:
 
     async def _handle_shutdown(self) -> None:
         self._shutdown = True
+        self._queued_turn = None
         if self._turn_in_flight():
             try:
                 await self.controller.abort()

@@ -451,12 +451,12 @@ def test_e2e_session_router_dm_turn_and_busy_queue(tmp_path: Path, monkeypatch: 
         on_event=on_event,
     )
     try:
-        # Synthetic DM → fake worker; second submit while held → busy queue notice.
+        # Synthetic DM → fake worker; second submit while held → steer, not queue.
         tid1 = router.submit_turn(11, "first")
         tid2 = router.submit_turn(11, "second")
         assert tid1 == tid2
-        assert any(QUEUED_NOTICE in text for _, text in notices)
-        assert router.queue_depth(personal) == 1
+        assert router.queue_depth(personal) == 0
+        assert not any(QUEUED_NOTICE in text for _, text in notices)
 
         assert done.wait(timeout=5)
         assert any(

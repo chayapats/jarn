@@ -46,6 +46,8 @@ class GatewaySettings:
     tool_progress: str = "off"
     tool_progress_cleanup: str = "delete"
     long_running_notifications: bool = True
+    busy_input_mode: str = "steer"
+    busy_ack_detail: bool = False
 
 
 def _gateway_detail(
@@ -228,6 +230,11 @@ def load_gateway_settings(
         )
 
     env_fake = environ.get("JARN_TELEGRAM_FAKE_BACKEND", "").strip() == "1"
+    from jarn.telegram.outbox import (
+        effective_telegram_busy_ack_detail,
+        effective_telegram_busy_input_mode,
+    )
+
     return GatewaySettings(
         token=token,
         allowed_user_ids=allowed,
@@ -236,6 +243,8 @@ def load_gateway_settings(
         tool_progress=getattr(tg, "tool_progress", "off") or "off",
         tool_progress_cleanup=getattr(tg, "tool_progress_cleanup", "delete") or "delete",
         long_running_notifications=bool(getattr(tg, "long_running_notifications", True)),
+        busy_input_mode=effective_telegram_busy_input_mode(cfg),
+        busy_ack_detail=effective_telegram_busy_ack_detail(cfg),
     )
 
 
@@ -243,6 +252,7 @@ def build_backend(
     *,
     fake_backend: bool,
     repos: Sequence[Any] | None = None,
+    busy_input_mode: str = "steer",
 ) -> tuple[Any, Any]:
     """Construct a :class:`~jarn.telegram.backend.GatewayBackend`.
 
@@ -268,6 +278,7 @@ def build_backend(
         supervisor,
         repos=repos,
         on_notice=_on_notice,
+        busy_input_mode=busy_input_mode,
     )
     return SessionRouterBackend(router=router, supervisor=supervisor), supervisor
 
@@ -309,6 +320,7 @@ def run_gateway_cli(
         backend, supervisor = build_backend(
             fake_backend=settings.fake_backend,
             repos=settings.repos,
+            busy_input_mode=settings.busy_input_mode,
         )
     except Exception as exc:  # noqa: BLE001 - stable CLI boundary
         _print_gateway_error(
@@ -341,6 +353,7 @@ def run_gateway_cli(
                 tool_progress=settings.tool_progress,
                 tool_progress_cleanup=settings.tool_progress_cleanup,
                 long_running_notifications=settings.long_running_notifications,
+                busy_ack_detail=settings.busy_ack_detail,
             )
         )
         if result != 0:

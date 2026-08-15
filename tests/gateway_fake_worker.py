@@ -34,6 +34,7 @@ from jarn.gateway.protocol import (  # noqa: E402
     HandshakeFrame,
     ShutdownFrame,
     StatusFrame,
+    SteerFrame,
     TurnFrame,
     UnsupportedSchemaVersion,
     decode_inbound_line,
@@ -128,6 +129,10 @@ def main() -> int:
                 )
             )
             _status(turn_in_flight=False, idle_ms=0)
+            continue
+
+        if isinstance(frame, SteerFrame):
+            # Mid-turn steer: keep the in-flight turn; do not clear busy.
             continue
 
         if isinstance(frame, TurnFrame):
