@@ -161,6 +161,14 @@ SETTINGS: tuple[Setting, ...] = (
     # ── Gateway (global-only; token / allowlist / repos stay YAML-only) ──
     _s("gateway.enabled", "bool", "Gateway", "Telegram gateway",
        "Run the optional Telegram gateway daemon (global config only)."),
+    _s("gateway.telegram.tool_progress", "enum", "Gateway", "Telegram tool progress",
+       "Chat overlay: off (quiet default), new, all, or verbose. Does not inherit ui.tool_progress.",
+       ("off", "new", "all", "verbose")),
+    _s("gateway.telegram.tool_progress_cleanup", "enum", "Gateway", "Progress bubble cleanup",
+       "After the answer lands: delete the progress bubble, or keep it.",
+       ("delete", "keep")),
+    _s("gateway.telegram.long_running_notifications", "bool", "Gateway", "Working heartbeat",
+       "Show Working — N min after a quiet interval while a Telegram turn is in flight."),
 )
 
 _BY_KEY: dict[str, Setting] = {s.key: s for s in SETTINGS}

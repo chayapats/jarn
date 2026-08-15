@@ -570,17 +570,30 @@ class UpdatesConfig:
     check: bool = True
 
 
+_VALID_TOOL_PROGRESS_CLEANUP: frozenset[str] = frozenset({"delete", "keep"})
+
+
 @dataclass(slots=True)
 class GatewayTelegramConfig:
-    """Telegram bot credentials for the optional gateway daemon.
+    """Telegram bot credentials and chat-surface overlays for the gateway.
 
     ``token`` is a secret *reference* (``${ENV}`` / ``keychain:…`` / ``file:…``),
     resolved via :mod:`jarn.config.secrets` — never an inline bot token.
     ``allowed_user_ids`` is the entire remaining auth boundary for DMs.
+
+    ``tool_progress`` is the Telegram overlay (``off|new|all|verbose``). Default
+    ``off`` is the #40 quiet contract and must **not** inherit CLI
+    ``ui.tool_progress: new``. ``/verbose`` cycles session state only.
     """
 
     token: str = ""
     allowed_user_ids: list[int] = field(default_factory=list)
+    #: Chat overlay. Unset/off = quiet; never inherit ``ui.tool_progress``.
+    tool_progress: str = "off"
+    #: After finalize, ``delete`` removes the progress bubble; ``keep`` leaves it.
+    tool_progress_cleanup: str = "delete"
+    #: User-visible ``Working — N min`` after a quiet interval while a turn runs.
+    long_running_notifications: bool = True
 
 
 @dataclass(slots=True)

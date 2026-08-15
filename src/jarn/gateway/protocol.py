@@ -107,6 +107,8 @@ class EventFrame:
     kind: str
     text: str = ""
     data: dict[str, Any] = field(default_factory=dict)
+    #: Session ``tool_progress`` density at emit time (``off|new|all|verbose``).
+    progress: str | None = None
 
 
 @dataclass(slots=True)

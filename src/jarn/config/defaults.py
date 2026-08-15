@@ -272,6 +272,17 @@ ui:
   statusbar: true
   context_bar: true
 
+# Optional Telegram DM gateway (global config only). Chat tool-progress starts
+# OFF and does not inherit ui.tool_progress. /verbose is session-only.
+# gateway:
+#   enabled: false
+#   telegram:
+#     token: ${{JARN_TELEGRAM_BOT_TOKEN}}
+#     allowed_user_ids: []
+#     tool_progress: off              # off | new | all | verbose
+#     tool_progress_cleanup: delete   # delete | keep
+#     long_running_notifications: true
+
 # ── Cross-vendor interop ──────────────────────────────────────────────────────
 # Controls which context file is auto-loaded and whether ~/.claude / .claude/
 # extension directories are scanned alongside ~/.jarn / .jarn/.

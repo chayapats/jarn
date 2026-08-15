@@ -43,6 +43,9 @@ class GatewaySettings:
     allowed_user_ids: list[int]
     repos: list[Any]
     fake_backend: bool
+    tool_progress: str = "off"
+    tool_progress_cleanup: str = "delete"
+    long_running_notifications: bool = True
 
 
 def _gateway_detail(
@@ -230,6 +233,9 @@ def load_gateway_settings(
         allowed_user_ids=allowed,
         repos=list(cfg.gateway.repos),
         fake_backend=bool(fake_backend or env_fake),
+        tool_progress=getattr(tg, "tool_progress", "off") or "off",
+        tool_progress_cleanup=getattr(tg, "tool_progress_cleanup", "delete") or "delete",
+        long_running_notifications=bool(getattr(tg, "long_running_notifications", True)),
     )
 
 
@@ -332,6 +338,9 @@ def run_gateway_cli(
                 token=settings.token,
                 allowed_user_ids=settings.allowed_user_ids,
                 backend=backend,
+                tool_progress=settings.tool_progress,
+                tool_progress_cleanup=settings.tool_progress_cleanup,
+                long_running_notifications=settings.long_running_notifications,
             )
         )
         if result != 0:
