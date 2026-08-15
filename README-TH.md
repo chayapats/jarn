@@ -316,6 +316,7 @@ Reply ของ assistant render เป็น **Markdown** (heading, list, code 
 | `/abort` | หยุด turn นี้และ roll back ไฟล์ |
 | `/commit` | ร่าง commit จาก diff ปัจจุบัน (ถามก่อน) |
 | `/review` | review diff แบบ read-only |
+| `/diff [staged\|all\|session]` | แสดง git diff ของ staged, working-tree หรือไฟล์ใน session |
 | `/compact [status]` | สรุปแล้วทำต่อใน thread ใหม่ |
 | `/expand` | เปิด tool output เต็มของ turn ล่าสุด |
 | `/memory [search\|show\|add\|update\|delete\|dump] …` | จัดการ long-term memory |
@@ -342,6 +343,7 @@ Reply ของ assistant render เป็น **Markdown** (heading, list, code 
 | `/checkpoints` | รายการ auto-checkpoint ล่าสุด |
 | `/ps [kill <id>]` | ดูหรือ kill background process |
 | `/queue [clear\|cancel <n>\|move <from> <to>\|steer <n>]` | ดูหรือจัดการ input ที่ queue ไว้ |
+| `/busy [interrupt\|queue\|steer\|status]` | ตั้งว่า Enter ทำอะไรขณะที่ turn กำลังรัน |
 | `/map [focus] [--refresh]` | แสดง repo map |
 | `/wiki [search <q>\|list]` | ค้นหาหรือแสดงรายการหน้า wiki |
 | `/quit` | ออกจาก J.A.R.N. (alias: /exit) |

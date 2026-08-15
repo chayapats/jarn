@@ -468,6 +468,7 @@ runs as the next turn (never lost). Disable with `ui.steering: false` (hides the
 | `/abort` | Stop this turn and roll back its file changes. |
 | `/commit` | Draft a commit from the current diff (asks first). |
 | `/review` | Read-only review of the current diff. |
+| `/diff [staged\|all\|session]` | Show a git diff of staged, working-tree, or session files. |
 | `/compact [status]` | Summarize and continue in a fresh thread. |
 | `/expand` | Show the last tool output in full. |
 | `/memory [search\|show\|add\|update\|delete\|dump] …` | List or edit long-term memory. |
@@ -494,6 +495,7 @@ runs as the next turn (never lost). Disable with `ui.steering: false` (hides the
 | `/checkpoints` | List recent auto-checkpoints. |
 | `/ps [kill <id>]` | List or kill background processes. |
 | `/queue [clear\|cancel <n>\|move <from> <to>\|steer <n>]` | Show or manage queued input lines. |
+| `/busy [interrupt\|queue\|steer\|status]` | Set what Enter does while a turn is running. |
 | `/map [focus] [--refresh]` | Show a map of this repository. |
 | `/wiki [search <q>\|list]` | Search or list wiki pages. |
 | `/quit` | Exit J.A.R.N. (alias: /exit). |
