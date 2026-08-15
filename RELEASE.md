@@ -11,7 +11,7 @@ draft by itself: every criterion, UAT, and published-artifact gate must pass fir
 uv sync --extra dev --extra telegram
 uv run ruff check src tests scripts
 uv run mypy src/
-uv run pytest -q                    # 3102 tests
+uv run pytest -q                    # 3118 tests
 uv run pytest tests/test_packaging.py -q
 uv run pytest tests/test_installer.py tests/test_ci.py tests/test_update.py -q
 uv run python scripts/benchmark_startup.py --output artifacts/startup.json
