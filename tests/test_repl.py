@@ -1547,6 +1547,55 @@ async def test_resume_picker_attempts_pending_approval(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_resume_picker_prints_local_recap(tmp_path, monkeypatch):
+    """After /resume, scrollback shows the local recap with no model call."""
+    import json
+    from types import SimpleNamespace
+
+    app = _make_inline_app(tmp_path, monkeypatch)
+    chosen = SimpleNamespace(
+        updated_human="now",
+        title="parked work",
+        thread_id=app.controller.thread_id,
+    )
+    transcript = app.controller.sessions.transcript_path(app.controller.thread_id)
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    transcript.write_text(
+        json.dumps({"type": "user", "text": "Fix the flaky toolbar test"}) + "\n"
+        + json.dumps({"type": "assistant", "text": "Patched the priority sort"})
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app.controller.sessions, "list", lambda: [chosen])
+    monkeypatch.setattr(
+        app,
+        "_pick_menu",
+        lambda *args, **kwargs: asyncio.sleep(0, result=chosen),
+    )
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr(app, "_replay_transcript", _noop)
+    monkeypatch.setattr(app, "_render_todos", _noop)
+    monkeypatch.setattr(app, "_maybe_autocheckpoint_hint", lambda: None)
+    _spy_run_turn(monkeypatch)
+    buf = StringIO()
+    app.console = Console(file=buf, width=80)
+
+    await app._resume_picker()
+
+    out = buf.getvalue()
+    assert "Resumed" in out
+    assert "Directory" in out
+    assert "Model" in out
+    assert "Last you" in out
+    assert "Fix the flaky toolbar test" in out
+    assert app.controller.runtime is None
+    app.controller.close()
+
+
+@pytest.mark.asyncio
 async def test_custom_command_turn_wires_queue_sink(tmp_path, monkeypatch):
     """A custom-command turn passes ``queue_sink`` so a diagnostics auto-fix round
     under ``diagnostics: auto`` is queued rather than silently discarded."""

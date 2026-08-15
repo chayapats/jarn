@@ -403,6 +403,9 @@ class CommandMixin:
         self.controller.resume_thread(chosen.thread_id)
         self._last_todos_sig = None
         await self._replay_transcript()
+        from jarn.controller.commands.diagnostics import format_resume_recap
+
+        self.console.print(format_resume_recap(self.controller), highlight=False)
         # A selected thread may be parked on a checkpointed approval from a
         # cancelled or crashed process. Ask for the verdict immediately and
         # resume with a Command; ``pending_only`` is a no-op for settled threads,

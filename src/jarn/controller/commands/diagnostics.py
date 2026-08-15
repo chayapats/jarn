@@ -96,6 +96,41 @@ def cmd_status(ctrl: Controller, args: str) -> CommandResult:
     return CommandResult("\n".join(lines))
 
 
+def format_resume_recap(ctrl: Controller) -> str:
+    """Local directory/model/mode + last-turn recap after ``/resume``.
+
+    Reuses :func:`_transcript_recap` / :func:`_status_recap` — no model call.
+    """
+    model = ctrl.config.resolved_main_model() or "not configured"
+    mode = ctrl.config.permission_mode.value
+    mode_label = _PERMISSION_LABELS.get(mode, mode)
+    recap_meta = _transcript_recap(ctrl.sessions.transcript_path(ctrl.thread_id))
+    title = ""
+    for session in ctrl.sessions.list():
+        if session.thread_id == ctrl.thread_id:
+            title = session.title or ""
+            break
+    session_bits = [str(ctrl.thread_id)]
+    turns = int(recap_meta.get("turns") or 0)
+    if turns > 0:
+        session_bits.append("1 turn" if turns == 1 else f"{turns} turns")
+    if title:
+        session_bits.append(title)
+    lines = [
+        layout.heading("Resumed"),
+        "",
+        layout.kv("Directory", str(ctrl.project_root)),
+        layout.kv("Model", model),
+        layout.kv("Permissions", f"{mode_label}  ·  {mode}"),
+        layout.kv("Session", "  ·  ".join(session_bits)),
+    ]
+    recap = _status_recap(ctrl, recap_meta)
+    if recap:
+        lines.append(layout.section("Recap"))
+        lines.extend(recap)
+    return "\n".join(lines)
+
+
 def _recap_snippet(text: str, width: int = _RECAP_SNIPPET_WIDTH) -> str:
     """First line, collapsed whitespace, then ``layout.truncate`` (no pre-escape)."""
     first = text.split("\n", 1)[0]
