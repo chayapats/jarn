@@ -15,7 +15,11 @@ All notable changes to J.A.R.N. are documented here. Format follows
   `commands/registry.py`. `jarn --help` leads with common commands, then
   Start / One-shot flag groups. TTY errors color the code and `Next:` line.
   Onboarding, doctor, and slash-command pages use the same palette tokens
-  (no named Rich colors outside `palette.py`).
+  (no named Rich colors outside `palette.py`). `jarn --help` lists every
+  subcommand in grouped plain-dialect rows (Start / Account / Install /
+  Workspace / Gateway / Support). Telegram `/status` `/cost` and other
+  display commands run locally in the gateway worker and transcode layout
+  markup to HTML.
 - Quieter default tool stream (`ui.tool_progress: new`). `/verbose` cycles
   density for the session; `/focus` hides tool chrome. The toolbar shows a
   context fill bar and session timer; YOLO stays sticky on narrow widths.

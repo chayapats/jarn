@@ -34,7 +34,7 @@ from jarn.telegram.htmlutil import (
     format_code,
     format_pre,
 )
-from jarn.tui import grammar
+from jarn.tui import grammar, layout
 
 _log = logging.getLogger("jarn.telegram.outbox")
 
@@ -150,7 +150,7 @@ def build_approval_card(
         body = str(suggested_memory.get("body") or "")
         desc = str(suggested_memory.get("description") or description or "")
         text = (
-            f"<b>Save memory?</b> {escape_html(name)}\n"
+            f"{layout.strong('Save memory?', dialect='html')} {escape_html(name)}\n"
             f"{escape_html(desc)}\n"
             f"{format_pre(body[:1500])}"
         )
@@ -169,7 +169,7 @@ def build_approval_card(
         body = str(suggested_skill.get("body") or "")
         desc = str(suggested_skill.get("description") or description or "")
         text = (
-            f"<b>Save skill?</b> {escape_html(name)}\n"
+            f"{layout.strong('Save skill?', dialect='html')} {escape_html(name)}\n"
             f"{escape_html(desc)}\n"
             f"{format_pre(body[:1500])}"
         )
@@ -184,7 +184,7 @@ def build_approval_card(
         return text, markup
 
     if plan is not None:
-        text = f"<b>Plan ready</b>\n{escape_html(plan[:3000])}"
+        text = f"{layout.strong('Plan ready', dialect='html')}\n{escape_html(plan[:3000])}"
         markup = _inline_keyboard(
             [
                 [
@@ -206,7 +206,7 @@ def build_approval_card(
             args_blob = escape_html(str(safe_args)[:1200])
     danger = f" {grammar.GLYPH_WARN}" if dangerous else ""
     title = escape_html(action or "tool")
-    lines = [f"<b>Approve{danger}</b> {format_code(title)}"]
+    lines = [f"{layout.strong(f'Approve{danger}', dialect='html')} {format_code(title)}"]
     if target:
         lines.append(f"target: {format_code(target)}")
     if description:
@@ -229,7 +229,7 @@ def build_approval_card(
 def build_yolo_confirm_card(*, token: str = "yolo") -> tuple[str, dict[str, Any]]:
     """Controller-owned yolo escalate confirm (#59 / #39)."""
     text = (
-        "<b>Enable yolo mode?</b>\n"
+        f"{layout.strong('Enable yolo mode?', dialect='html')}\n"
         "No prompts except danger-guard. Confirm only if you trust this root."
     )
     markup = _inline_keyboard(
@@ -251,7 +251,7 @@ def build_media_refusal_card(
     filename: str | None = None,
 ) -> str:
     """HTML notice for voice/unsupported/oversize media (#54)."""
-    parts = ["<b>Media not accepted</b>"]
+    parts = [layout.strong("Media not accepted", dialect="html")]
     if modality or reason:
         meta = " · ".join(p for p in (modality, reason) if p)
         parts.append(escape_html(meta))
@@ -409,6 +409,11 @@ class Outbox:
             )
 
     async def send_notice(self, chat_id: int, text: str) -> None:
+        from jarn.tui import layout
+
+        if layout.looks_like_layout_markup(text):
+            await self.send_html(chat_id, layout.to_html(text))
+            return
         await self.send_plain(chat_id, text)
 
     async def send_approval_card(self, chat_id: int, **kwargs: Any) -> Any:

@@ -4,18 +4,22 @@ Handlers return ``CommandResult(text)``; they compose that text here so spacing,
 column width, and semantic colors cannot drift between ``/help``, ``/status``,
 ``/doctor``, and friends.
 
-Telegram can reuse the same functions with ``dialect="html"``.
+Telegram can reuse the same functions with ``dialect="html"``. CLI ``--help``
+uses ``dialect="plain"`` (same spacing, no markup).
 """
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from rich.markup import escape as _escape_rich
 
 from jarn.tui import grammar, palette
 
-Dialect = Literal["rich", "html"]
+Dialect = Literal["rich", "html", "plain"]
+
+_MARKUP_TAG = re.compile(r"\[(/?)(?:(bold)\s+)?(#[0-9A-Fa-f]{6}|b)\]")
 
 
 def escape(text: object, *, dialect: Dialect = "rich") -> str:
@@ -24,6 +28,8 @@ def escape(text: object, *, dialect: Dialect = "rich") -> str:
         from jarn.telegram.htmlutil import escape_html
 
         return escape_html(value)
+    if dialect == "plain":
+        return value
     return _escape_rich(value)
 
 
@@ -39,6 +45,8 @@ def paint(
     HTML is Telegram ``parse_mode=HTML``: ``<b>``, ``<i>``, ``<code>`` only —
     no ``<span>`` and no inline CSS (Telegram strips them).
     """
+    if dialect == "plain":
+        return text
     if dialect == "html":
         if bold or color in {palette.C_ERROR, palette.C_WARN, palette.C_SUCCESS}:
             return f"<b>{text}</b>"
@@ -79,9 +87,17 @@ def notice(text: str, *, dialect: Dialect = "rich") -> str:
 def strong(text: str, *, dialect: Dialect = "rich") -> str:
     """Inline bold (not a page title)."""
     body = escape(text, dialect=dialect)
-    if dialect == "html":
-        return f"<b>{body}</b>"
+    if dialect in {"html", "plain"}:
+        return f"<b>{body}</b>" if dialect == "html" else body
     return f"[b]{body}[/b]"
+
+
+def field(label: str, value: str = "", *, dialect: Dialect = "rich") -> str:
+    """``Label: value`` with a strong label — onboarding and CLI ceremonies."""
+    head = strong(f"{label}:", dialect=dialect)
+    if value == "":
+        return head
+    return f"{head} {escape(value, dialect=dialect)}"
 
 
 def title(text: str, *, dialect: Dialect = "rich") -> str:
@@ -207,3 +223,55 @@ def context_gauge(
         pair = f"{format_tokens(used)}/{format_tokens(window)}"
         return f"{escape(pair, dialect=dialect)} {bar} {pct}"
     return f"{bar} {pct}"
+
+
+def looks_like_layout_markup(text: str) -> bool:
+    """True when *text* contains layout-generated Rich tags (not user prose)."""
+    return _MARKUP_TAG.search(text or "") is not None
+
+
+def _html_tag_for(token: str, *, bold: bool) -> str:
+    color = token.lower()
+    if token == "b":
+        return "b"
+    if color == palette.C_DIM.lower():
+        return "i"
+    if color == palette.ACCENT.lower():
+        return "code"
+    if bold or color in {
+        palette.C_ERROR.lower(),
+        palette.C_WARN.lower(),
+        palette.C_SUCCESS.lower(),
+        palette.C_NOTICE.lower(),
+        palette.C_TOOL.lower(),
+        palette.C_USER.lower(),
+    }:
+        return "b"
+    return "b"
+
+
+def to_html(markup: str) -> str:
+    """Transcode layout-generated Rich markup to Telegram HTML.
+
+    Text nodes are HTML-escaped; tags become ``<b>`` / ``<i>`` / ``<code>``.
+    """
+    from jarn.telegram.htmlutil import escape_html
+
+    parts: list[str] = []
+    pos = 0
+    stack: list[str] = []
+    for match in _MARKUP_TAG.finditer(markup):
+        parts.append(escape_html(markup[pos : match.start()]))
+        closing, bold_token, token = match.group(1), match.group(2), match.group(3)
+        if closing:
+            if stack:
+                parts.append(f"</{stack.pop()}>")
+        else:
+            tag = _html_tag_for(token, bold=bool(bold_token))
+            stack.append(tag)
+            parts.append(f"<{tag}>")
+        pos = match.end()
+    parts.append(escape_html(markup[pos:]))
+    while stack:
+        parts.append(f"</{stack.pop()}>")
+    return "".join(parts)

@@ -94,11 +94,11 @@ def prepare_chatgpt_setup(
             else f"incompatible ({status.dependency.version or 'version unknown'})"
         )
         console.print(f"{layout.warn(grammar.GLYPH_WARN)} OpenAI Codex CLI is {reason}.")
-        console.print("[b]Purpose:[/b] ChatGPT subscription authentication and model access")
-        console.print(f"[b]Version/channel:[/b] {plan.version} ({plan.channel})")
-        console.print(f"[b]Source:[/b] {escape(plan.source)} — {escape(plan.metadata_url)}")
-        console.print(f"[b]Destination:[/b] {escape(plan.destination)}")
-        console.print("[b]Verification:[/b] official metadata + SHA-256 manifest")
+        console.print(f"{layout.field('Purpose')} ChatGPT subscription authentication and model access")
+        console.print(f"{layout.field('Version/channel')} {plan.version} ({plan.channel})")
+        console.print(f"{layout.field('Source')} {escape(plan.source)} — {escape(plan.metadata_url)}")
+        console.print(f"{layout.field('Destination')} {escape(plan.destination)}")
+        console.print(f"{layout.field('Verification')} official metadata + SHA-256 manifest")
         ask_install = confirm_install or (
             lambda: Confirm.ask("Install the official standalone Codex CLI now?", default=True)
         )
@@ -123,7 +123,7 @@ def prepare_chatgpt_setup(
             ) from exc
         console.print(
             f"{layout.ok(grammar.GLYPH_OK)} Verified Codex CLI {escape(result.smoke_version)} at "
-            f"[b]{escape(result.executable)}[/b]"
+            f"{layout.strong(result.executable)}"
         )
         auth = CodexAuthService(command=result.executable)
         status = auth.status(refresh=True)
@@ -189,11 +189,11 @@ def prepare_chatgpt_setup(
         raise ChatGPTSetupError(message, kind=SetupFailureKind.MODEL)
 
     console.print(
-        f"{layout.ok(grammar.GLYPH_OK)} Verified ChatGPT ([b]{escape(status.plan_type or 'plan unknown')}[/b])"
+        f"{layout.ok(grammar.GLYPH_OK)} Verified ChatGPT ({layout.strong(status.plan_type or 'plan unknown')})"
     )
-    effort_text = f", reasoning [b]{escape(effort)}[/b]" if effort else ""
+    effort_text = f", reasoning {layout.strong(effort)}" if effort else ""
     console.print(
-        f"{layout.ok(grammar.GLYPH_OK)} Using account default [b]{escape(selected.display_name)}[/b]"
+        f"{layout.ok(grammar.GLYPH_OK)} Using account default {layout.strong(selected.display_name)}"
         f"{effort_text} {layout.muted('(' + snapshot.provenance_label + ')')}"
     )
     return ChatGPTSetupResult(

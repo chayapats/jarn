@@ -48,7 +48,7 @@ def cmd_login(ctrl: Controller, args: str) -> CommandResult:
     if args.strip():
         return CommandResult(usage_error("login"))
     return CommandResult(
-        "Run [b]jarn auth login[/b] in a terminal. It will show the browser URL "
+        f"Run {layout.strong('jarn auth login')} in a terminal. It will show the browser URL "
         "or device code and will report success only after the account is verified."
     )
 
@@ -58,7 +58,7 @@ def cmd_logout(ctrl: Controller, args: str) -> CommandResult:
     if args.strip():
         return CommandResult(usage_error("logout"))
     return CommandResult(
-        "Run [b]jarn auth logout[/b] in a terminal. This removes only "
+        f"Run {layout.strong('jarn auth logout')} in a terminal. This removes only "
         "Codex-managed ChatGPT credentials; provider API keys are preserved."
     )
 

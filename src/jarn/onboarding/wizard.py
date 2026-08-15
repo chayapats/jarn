@@ -406,7 +406,7 @@ def run_wizard(
             border_style=palette.ACCENT,
         )
     )
-    console.print("Let's get you set up. This writes [b]~/.jarn/config.yaml[/b].\n")
+    console.print(f"Let's get you set up. This writes {layout.strong('~/.jarn/config.yaml')}.\n")
 
     try:
         set_setup_progress("in_progress")
@@ -447,7 +447,7 @@ def run_wizard(
         ):
             answers.pop("_credential_pending", None)
             stage = "key"
-        console.print(f"{layout.ok(grammar.GLYPH_OK)} Resuming at [b]{stage}[/b].")
+        console.print(f"{layout.ok(grammar.GLYPH_OK)} Resuming at {layout.strong(stage)}.")
     else:
         save_setup_state("provider", answers)
 
@@ -565,7 +565,7 @@ def run_wizard(
                 env_var = PROVIDER_ENV_VARS.get(provider, f"{provider.upper()}_API_KEY")
                 if env_hit is not None and env_hit[0] == provider:
                     console.print(
-                        f"{layout.ok(grammar.GLYPH_OK)} Using [b]${env_var}[/b] from your environment."
+                        f"{layout.ok(grammar.GLYPH_OK)} Using {layout.strong('$' + env_var)} from your environment."
                     )
                     answers["storage"] = "env"
                     pending_credentials.discard(provider)
@@ -668,7 +668,7 @@ def run_wizard(
                             verified=True,
                         )
                         console.print(
-                            f"{layout.ok(grammar.GLYPH_OK)} Using model [b]{answers['model']}[/b] "
+                            f"{layout.ok(grammar.GLYPH_OK)} Using model {layout.strong(answers['model'])} "
                             "reported by the local server."
                         )
                         stage = "reasoning" if group == "advanced" else "theme"
@@ -855,9 +855,9 @@ def run_wizard(
 
             console.print("\nReady to finish:")
             console.print(
-                f"  Provider: [b]{'ChatGPT' if provider == 'codex_subscription' else provider}[/b]"
+                f"  {layout.field('Provider', 'ChatGPT' if provider == 'codex_subscription' else provider)}"
             )
-            console.print(f"  Model: [b]{answers.get('model', 'account default')}[/b]")
+            console.print(f"  {layout.field('Model', answers.get('model', 'account default') or '')}")
             if answers.get("_model_catalog_provenance"):
                 status = (
                     "verified"
@@ -865,24 +865,26 @@ def run_wizard(
                     else "unverified"
                 )
                 console.print(
-                    f"  Catalog: [b]{status}[/b] — {answers['_model_catalog_provenance']}"
+                    f"  {layout.field('Catalog', status)} — {answers['_model_catalog_provenance']}"
                 )
-            console.print(f"  Theme: [b]{answers.get('theme', 'dark')}[/b]")
+            console.print(f"  {layout.field('Theme', answers.get('theme', 'dark'))}")
             if group == "advanced":
-                console.print(f"  Subagent: [b]{answers.get('routing_subagent')}[/b]")
-                console.print(f"  Summarizer: [b]{answers.get('routing_summarizer')}[/b]")
-                console.print(f"  Fallbacks: [b]{answers.get('routing_fallback') or '(none)'}[/b]")
+                console.print(f"  {layout.field('Subagent', answers.get('routing_subagent') or '')}")
                 console.print(
-                    "  Budget: [b]$"
-                    f"{answers.get('budget_per_session_usd', '5.00')}[/b] "
+                    f"  {layout.field('Summarizer', answers.get('routing_summarizer') or '')}"
+                )
+                console.print(
+                    f"  {layout.field('Fallbacks', answers.get('routing_fallback') or '(none)')}"
+                )
+                console.print(
+                    f"  {layout.field('Budget', '$' + str(answers.get('budget_per_session_usd', '5.00')))} "
                     f"(warn {answers.get('budget_warn_at_pct', '80')}%, "
                     f"hard stop {answers.get('budget_hard_stop', 'true')})"
                 )
                 from jarn.permissions.labels import permission_mode_name
 
                 console.print(
-                    "  Permissions: [b]"
-                    f"{permission_mode_name(answers.get('permission_mode', 'ask'))}[/b]"
+                    f"  {layout.field('Permissions', permission_mode_name(answers.get('permission_mode', 'ask')))}"
                 )
             choice = _plain_menu("Finish setup?", ["save"], default="save")
             if choice == "save":
@@ -928,7 +930,7 @@ def run_wizard(
         save_setup_state(stage, answers)
         mark_setup_incomplete()
         console.print(f"\n{layout.err('Setup incomplete at ' + stage + ':')} {exc}")
-        console.print("No configuration was changed. Retry with [b]jarn setup[/b].")
+        console.print(f"No configuration was changed. Retry with {layout.strong('jarn setup')}.")
         failure: SetupCommandError
         if isinstance(exc, SetupCommandError):
             failure = exc
@@ -985,7 +987,7 @@ def _configure_key(
         console.print("  " + layout.muted(f"J.A.R.N. will read the key from ${{{env_var}}}."))
         return f"${{{env_var}}}"
 
-    console.print(f"\nHow should J.A.R.N. read your [b]{profile}[/b] API key?")
+    console.print(f"\nHow should J.A.R.N. read your {layout.strong(profile)} API key?")
 
     if profile == "openrouter":
         choices = ["oauth", "env", "keychain"]

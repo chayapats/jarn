@@ -268,7 +268,7 @@ def finalize_setup(
                         configured_provider = parsed.providers[provider]
                         console.print(
                             f"{layout.ok(grammar.GLYPH_OK)} Using provider-reported default "
-                            f"[b]{selected.display_name}[/b] "
+                            f"{layout.strong(selected.display_name)} "
                             f"{layout.muted('(' + snapshot.provenance_label + ')')}"
                         )
                 if selected is None:

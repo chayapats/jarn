@@ -153,3 +153,36 @@ def test_heading_and_more_helpers() -> None:
     assert "hint" in line
     assert palette.C_DIM in line
     assert "3" in layout.more(3)
+
+
+def test_layout_plain_dialect_has_no_markup() -> None:
+    assert "[" not in layout.title("Commands", dialect="plain")
+    row = layout.row("setup", "Run the onboarding wizard", dialect="plain")
+    assert "setup" in row
+    assert "Run the onboarding wizard" in row
+    assert palette.ACCENT not in row
+    assert layout.field("Purpose", dialect="plain") == "Purpose:"
+
+
+def test_layout_to_html_transcodes_rich_tags() -> None:
+    rich = f"{layout.title('Status')}\n{layout.kv('Model', 'claude')}"
+    html = layout.to_html(rich)
+    assert "<b>Status</b>" in html
+    assert "claude" in html
+    assert "<span" not in html
+    assert "[b]" not in html
+    assert layout.looks_like_layout_markup(rich)
+    assert not layout.looks_like_layout_markup("hello /status")
+
+
+def test_parse_slash_line_and_gateway_local() -> None:
+    from jarn.commands.registry import is_gateway_local_command, parse_slash_line
+
+    assert parse_slash_line("/status") == ("status", "")
+    assert parse_slash_line("/HELP compact") == ("help", "compact")
+    assert parse_slash_line("/cost@MyBot") == ("cost", "")
+    assert parse_slash_line("not a command") is None
+    assert is_gateway_local_command("status")
+    assert is_gateway_local_command("usage")
+    assert not is_gateway_local_command("quit")
+    assert not is_gateway_local_command("nope")

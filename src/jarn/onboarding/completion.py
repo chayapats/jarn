@@ -232,29 +232,29 @@ def render_setup_completion(console: Console, summary: SetupCompletion) -> None:
     install_label = "verified" if summary.install.verified else "unverified"
     console.print("\n" + layout.banner_ok("Setup complete."))
     console.print(
-        f"  J.A.R.N.: [b]{escape(summary.install.version)}[/b] · "
+        f"  {layout.field('J.A.R.N.', summary.install.version)} · "
         f"{escape(summary.install.method)} · {install_label}"
     )
-    console.print(f"  Executable: [b]{escape(summary.install.executable)}[/b]")
-    console.print(f"  Config: [b]{escape(str(summary.config_path))}[/b]")
+    console.print(f"  {layout.field('Executable', summary.install.executable)}")
+    console.print(f"  {layout.field('Config', str(summary.config_path))}")
     if summary.backup_path is not None:
         console.print(f"  Previous config backup: {escape(str(summary.backup_path))}")
-    console.print(f"  Provider: [b]{escape(summary.provider)}[/b]")
+    console.print(f"  {layout.field('Provider', summary.provider)}")
     if summary.auth_mode:
-        console.print(f"  Authentication: [b]{escape(summary.auth_mode)}[/b]")
+        console.print(f"  {layout.field('Authentication', summary.auth_mode)}")
     if summary.auth_plan:
-        console.print(f"  ChatGPT plan: [b]{escape(summary.auth_plan)}[/b]")
+        console.print(f"  {layout.field('ChatGPT plan', summary.auth_plan)}")
     if summary.auth_workspace:
-        console.print(f"  Workspace: [b]{escape(summary.auth_workspace)}[/b]")
+        console.print(f"  {layout.field('Workspace', summary.auth_workspace)}")
     console.print(
-        f"  Model: {layout.strong(summary.model_display)} {layout.muted('(' + summary.model + ')')}"
+        f"  {layout.field('Model', summary.model_display)} {layout.muted('(' + summary.model + ')')}"
     )
     if summary.reasoning_effort:
-        console.print(f"  Reasoning: [b]{escape(summary.reasoning_effort)}[/b]")
+        console.print(f"  {layout.field('Reasoning', summary.reasoning_effort)}")
     console.print(
-        f"  Permission: [b]{escape(permission_mode_summary(summary.permission_mode))}[/b]"
+        f"  {layout.field('Permission', permission_mode_summary(summary.permission_mode))}"
     )
-    console.print(f"  Working directory: [b]{escape(str(summary.cwd))}[/b]")
+    console.print(f"  {layout.field('Working directory', str(summary.cwd))}")
     console.print(f"  Provider validation: {escape(summary.validation)}")
     console.print(f"\n  Next command: {layout.accent(summary.next_command, bold=True)}")
 

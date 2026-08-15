@@ -24,7 +24,7 @@ from jarn.config.schema import PermissionMode
 from jarn.permissions import ActionKind, RememberScope
 from jarn.repl.auth_errors import _friendly_auth_error, _provider_hint
 from jarn.repl_renderer import TurnRenderer
-from jarn.tui import grammar, palette
+from jarn.tui import grammar, layout, palette
 from jarn.tui.controller import Controller
 from jarn.tui.notify import notify
 from jarn.util.process_env import external_command_env
@@ -377,31 +377,28 @@ async def _approve(
             else f"write: {a.target}" if a.kind is ActionKind.WRITE
             else f"{a.kind.value}: {a.target}")
     danger = (
-        f"[{palette.C_ERROR}]{grammar.GLYPH_WARN} DANGEROUS — [/{palette.C_ERROR}]"
+        f"{layout.err(grammar.GLYPH_WARN + ' DANGEROUS — ')}"
         if request.result.dangerous
         else ""
     )
     console.print(
-        f"\n{danger}[bold]Approve?[/bold] {what}  "
-        f"[{palette.C_DIM}]({request.result.reason})[/{palette.C_DIM}]"
+        f"\n{danger}{layout.strong('Approve?')} {what}  "
+        f"{layout.muted('(' + request.result.reason + ')')}"
     )
     console.print(
-        f"[{palette.C_DIM}]working directory: "
-        f"{_rich_escape(str(controller.project_root))}[/{palette.C_DIM}]"
+        layout.muted(f"working directory: {controller.project_root}")
     )
     if a.kind is ActionKind.NETWORK:
-        console.print(
-            f"[{palette.C_DIM}]network destination: "
-            f"{_rich_escape(a.target)}[/{palette.C_DIM}]"
-        )
+        console.print(layout.muted(f"network destination: {a.target}"))
     console.print(
-        f"[{palette.C_DIM}]Choose whether this approval applies once or to a "
-        f"scoped remembered rule.[/{palette.C_DIM}]"
+        layout.muted(
+            "Choose whether this approval applies once or to a scoped remembered rule."
+        )
     )
     console.print(
-        f"[{palette.C_DIM}]remembered scope: "
-        f"{_rich_escape(controller.engine.remember_scope_summary(a))}"
-        f"[/{palette.C_DIM}]"
+        layout.muted(
+            f"remembered scope: {controller.engine.remember_scope_summary(a)}"
+        )
     )
     full_diff: Text | None = None
     over_cap = False
@@ -546,10 +543,11 @@ async def _approve_suggested_memory(
     """
     suggestion = request.suggested_memory
     assert suggestion is not None
-    console.print(f"\n[{palette.C_NOTICE}]▶ Suggested memory[/{palette.C_NOTICE}] "
-                  f"[{palette.C_DIM}]({suggestion.scope}, {suggestion.type})[/{palette.C_DIM}]")
-    console.print(f"  [b]{_rich_escape(suggestion.name)}[/b] — "
-                  f"{_rich_escape(suggestion.description)}")
+    console.print(
+        f"\n{layout.notice('▶ Suggested memory')} "
+        f"{layout.muted('(' + suggestion.scope + ', ' + suggestion.type + ')')}"
+    )
+    console.print(f"  {layout.strong(suggestion.name)} — {_rich_escape(suggestion.description)}")
     if suggestion.body.strip():
         console.print(Markdown(suggestion.body))
 
@@ -615,12 +613,11 @@ async def _approve_suggested_skill(
     suggestion = request.suggested_skill
     assert suggestion is not None
     console.print(
-        f"\n[{palette.C_NOTICE}]▶ Suggested skill[/{palette.C_NOTICE}] "
-        f"[{palette.C_DIM}](trigger={suggestion.trigger})[/{palette.C_DIM}]"
+        f"\n{layout.notice('▶ Suggested skill')} "
+        f"{layout.muted('(trigger=' + suggestion.trigger + ')')}"
     )
     console.print(
-        f"  [b]{_rich_escape(suggestion.name)}[/b] — "
-        f"{_rich_escape(suggestion.description)}"
+        f"  {layout.strong(suggestion.name)} — {_rich_escape(suggestion.description)}"
     )
     if suggestion.body.strip():
         console.print(Markdown(suggestion.body))

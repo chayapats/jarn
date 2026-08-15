@@ -549,7 +549,57 @@ def slash_usage(spec: CommandSpec) -> str:
 
 def slash_index(spec: CommandSpec) -> str:
     """Shorter ``/help`` index form; falls back to :func:`slash_usage`."""
-    usage = spec.index_usage if spec.index_usage else spec.usage
-    if usage:
-        return f"/{spec.name} {usage}"
-    return f"/{spec.name}"
+    if spec.index_usage:
+        return f"/{spec.name} {spec.index_usage}"
+    return slash_usage(spec)
+
+
+def parse_slash_line(text: str) -> tuple[str, str] | None:
+    """``(name, args)`` for a leading slash line; strips a Telegram ``@bot`` suffix."""
+    stripped = text.strip()
+    if not stripped.startswith("/"):
+        return None
+    head, _, tail = stripped.partition(" ")
+    name = head[1:].split("@", 1)[0].strip().lower()
+    if not name:
+        return None
+    return name, tail.strip()
+
+
+#: Read-only (or session-display) commands the Telegram worker runs locally —
+#: same ``handle_command`` pages as the REPL, rendered via layout HTML at the
+#: outbox. Mutating / picker / REPL-only names stay out of this set.
+GATEWAY_LOCAL_COMMANDS = frozenset(
+    {
+        "status",
+        "cost",
+        "usage",
+        "context",
+        "tools",
+        "permissions",
+        "mcp",
+        "memory",
+        "sessions",
+        "telemetry",
+        "ps",
+        "checkpoints",
+        "modules",
+        "doctor",
+        "verbose",
+        "focus",
+        "title",
+        "skills",
+        "help",
+        "sandbox",
+        "preset",
+        "config",
+    }
+)
+
+
+def is_gateway_local_command(name: str) -> bool:
+    """True when the Telegram worker should run this slash name locally."""
+    spec = spec_by_name(name)
+    if spec is None:
+        return False
+    return (spec.alias_of or spec.name) in GATEWAY_LOCAL_COMMANDS

@@ -150,3 +150,16 @@ async def test_subagent_inner_stream_dropped():
     out = Outbox(sender=sender)
     await out.on_event(1, kind="text", text="secret", data={"agent": "worker-1"})
     assert sender.drafts == []
+
+
+@pytest.mark.asyncio
+async def test_layout_notice_is_sent_as_telegram_html():
+    from jarn.tui import layout
+
+    sender = FakeSender()
+    out = Outbox(sender=sender)
+    await out.on_event(1, kind="notice", text=layout.title("Status"))
+    assert sender.messages
+    assert "<b>Status</b>" in sender.messages[0]["text"]
+    assert "[b]" not in sender.messages[0]["text"]
+    assert sender.messages[0]["parse_mode"] == "HTML"

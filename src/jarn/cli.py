@@ -29,7 +29,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Never
 
-from jarn.tui import grammar, layout
+from jarn.tui import grammar, layout, palette
 from jarn.util.process_env import external_command_env
 from jarn.version import __version__
 
@@ -61,18 +61,52 @@ class JarnArgumentParser(argparse.ArgumentParser):
         self.exit(2, detail.render(stream=sys.stderr) + "\n")
 
     def format_help(self) -> str:
-        """Common commands (epilog) first, then grouped flags — scannable ``--help``."""
+        """Common commands (epilog) first, then grouped catalog and flags."""
         formatter = self._get_formatter()
         formatter.add_usage(self.usage, self._actions, self._mutually_exclusive_groups)
         formatter.add_text(self.description)
         formatter.add_text(self.epilog)
+        formatter.add_text(_format_cli_commands(self))
+        skip = {"positional arguments", "Commands"}
         for action_group in self._action_groups:
+            if action_group.title in skip:
+                continue
             formatter.start_section(action_group.title)
             formatter.add_text(action_group.description)
             formatter.add_arguments(action_group._group_actions)
             formatter.end_section()
         formatter.add_text("See `jarn <command> --help` for subcommand flags.")
         return formatter.format_help()
+
+
+#: Exhaustive CLI subcommand grouping for ``jarn --help``. Help strings stay on
+#: the argparse parsers; this tuple is only membership + scan order.
+_CLI_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Start", ("setup", "init", "exec", "sessions")),
+    ("Account", ("auth", "login", "codex")),
+    ("Install", ("doctor", "config", "update", "rollback", "uninstall")),
+    ("Workspace", ("trust", "trust-hooks", "keys")),
+    ("Gateway", ("gateway",)),
+    ("Support", ("bug", "telemetry", "completions")),
+)
+
+
+def _format_cli_commands(parser: argparse.ArgumentParser) -> str:
+    """Grouped command catalog (plain dialect) — replaces argparse's brace dump."""
+    sub = next(
+        (action for action in parser._actions if isinstance(action, argparse._SubParsersAction)),
+        None,
+    )
+    if sub is None:
+        return ""
+    helps = {action.dest: (action.help or "") for action in sub._choices_actions}
+    lines = [layout.title("Commands", dialect="plain")]
+    for group, names in _CLI_COMMAND_GROUPS:
+        lines.append(layout.title(group, dialect="plain"))
+        for name in names:
+            lines.append(layout.row(name, helps.get(name, ""), dialect="plain"))
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 def _auth_timeout_arg(value: str) -> float:
@@ -315,7 +349,7 @@ Stable exit codes:
   10 updated executable requires a fresh shell; 124 timeout; 130 cancelled.
 """
 
-    sub = parser.add_subparsers(dest="command")
+    sub = parser.add_subparsers(dest="command", metavar="COMMAND", title="Commands")
 
     # Stable, discoverable spelling for automation. The historical ``-p`` /
     # ``--print`` flags remain supported; both routes dispatch through exactly
@@ -2410,7 +2444,7 @@ def _cmd_doctor(
     render_doctor_console(console, result.diagnostics)
     if result.repair_result is not None:
         mode = "preview" if result.repair_result.dry_run else "result"
-        console.print(f"\n[b]Repair {mode}[/b]")
+        console.print(f"\n{layout.strong(f'Repair {mode}')}")
         for item in result.repair_result.applied:
             console.print(
                 f"  {item.get('status', 'planned')}: "
@@ -2418,7 +2452,7 @@ def _cmd_doctor(
                 markup=False,
             )
         for reason in result.repair_result.skipped:
-            console.print(f"  skipped: {reason}", style="yellow", markup=False)
+            console.print(f"  skipped: {reason}", style=palette.C_WARN, markup=False)
         if result.repair_result.error:
             detail = _error_detail_from_mapping(
                 result.repair_result.error,
@@ -2428,7 +2462,7 @@ def _cmd_doctor(
                 fallback_component="doctor repair",
                 fallback_action="Review the doctor report and retry.",
             )
-            console.print(detail.render(), style="red", markup=False)
+            console.print(detail.render(), markup=False)
     if result.report_path is not None:
         console.print(f"\nSupport report: {result.report_path}", markup=False)
     return result.exit_code
@@ -2782,19 +2816,19 @@ def _cmd_login() -> int:
 
     if not result.changed:
         # Existing key kept — nothing to persist; don't rewrite the config.
-        console.print(f"{layout.ok(grammar.GLYPH_OK)}  Keeping your existing key ([b]{result.reference}[/b]).")
+        console.print(f"{layout.ok(grammar.GLYPH_OK)}  Keeping your existing key ({layout.strong(result.reference)}).")
         console.print(f"   Key tail: {layout.muted(result.masked_key)}")
         return 0
 
-    console.print(f"{layout.ok(grammar.GLYPH_OK)}  Logged in — key stored as [b]{result.reference}[/b]")
+    console.print(f"{layout.ok(grammar.GLYPH_OK)}  Logged in — key stored as {layout.strong(result.reference)}")
     console.print(f"   Key tail: {layout.muted(result.masked_key)}")
 
     # Write the reference into the OpenRouter provider in the global config.
     if _write_openrouter_key_ref(result.reference):
-        console.print(f"\n{layout.ok(grammar.GLYPH_OK)}  Config updated.  Launch [b]jarn[/b] to start coding.")
+        console.print(f"\n{layout.ok(grammar.GLYPH_OK)}  Config updated.  Launch {layout.strong('jarn')} to start coding.")
         return 0
     console.print(
-        f"\n{layout.warn('!')}  The key is stored ([b]{result.reference}[/b]) but the "
+        f"\n{layout.warn('!')}  The key is stored ({layout.strong(result.reference)}) but the "
         "config was left untouched — set `providers.openrouter.api_key` manually."
     )
     return _emit_cli_failure(
@@ -2858,7 +2892,7 @@ def _cmd_auth(
         if status.ready:
             console.print(
                 f"{layout.ok(grammar.GLYPH_OK)} ChatGPT connected"
-                f" ([b]{status.plan_type or 'plan unknown'}[/b]); account verified."
+                f" ({layout.strong(status.plan_type or 'plan unknown')}); account verified."
             )
             return
         if status.error is not None:
@@ -2870,7 +2904,7 @@ def _cmd_auth(
                 fallback_component="authentication",
                 fallback_action="Run `jarn auth repair`, then retry.",
             )
-            console.print(detail.render(), style="red", markup=False)
+            console.print(detail.render(), markup=False)
             return
         detail = error_detail(
             ErrorCode.AUTH_SIGNED_OUT,
@@ -2880,7 +2914,7 @@ def _cmd_auth(
             retryable=status.state is AuthState.SIGNED_OUT,
             action="Run `jarn auth login`, then verify with `jarn auth status`.",
         )
-        console.print(detail.render(), style="red", markup=False)
+        console.print(detail.render(), markup=False)
 
     def ensure_dependency(status):
         """Offer the reviewed standalone dependency and return a service using it."""
@@ -2913,11 +2947,11 @@ def _cmd_auth(
                 else f"incompatible ({status.dependency.version or 'version unknown'})"
             )
             console.print(f"\n{layout.warn('!')} OpenAI Codex CLI is {reason}.")
-            console.print("[b]Purpose:[/b] ChatGPT subscription authentication and model access")
-            console.print(f"[b]Version/channel:[/b] {plan.version} ({plan.channel})")
-            console.print(f"[b]Source:[/b] {plan.source} — {plan.metadata_url}")
-            console.print(f"[b]Destination:[/b] {plan.destination}")
-            console.print("[b]Verification:[/b] official metadata + SHA-256 manifest")
+            console.print(f"{layout.field('Purpose')} ChatGPT subscription authentication and model access")
+            console.print(f"{layout.field('Version/channel')} {plan.version} ({plan.channel})")
+            console.print(f"{layout.field('Source')} {plan.source} — {plan.metadata_url}")
+            console.print(f"{layout.field('Destination')} {plan.destination}")
+            console.print(f"{layout.field('Verification')} official metadata + SHA-256 manifest")
 
         accepted = yes
         if not accepted and not as_json and sys.stdin.isatty():
@@ -2935,7 +2969,7 @@ def _cmd_auth(
                 )
             else:
                 console.print(f"{layout.warn('Setup incomplete:')} Codex CLI was not changed.")
-                console.print(f"Manual official command: [b]{CODEX_OFFICIAL_INSTALL_COMMAND}[/b]")
+                console.print(f"Manual official command: {layout.strong(CODEX_OFFICIAL_INSTALL_COMMAND)}")
             return False
 
         try:
@@ -2963,7 +2997,7 @@ def _cmd_auth(
                 )
             else:
                 console.print(f"{layout.err('Setup incomplete:')} {exc}")
-                console.print(f"Manual official command: [b]{CODEX_OFFICIAL_INSTALL_COMMAND}[/b]")
+                console.print(f"Manual official command: {layout.strong(CODEX_OFFICIAL_INSTALL_COMMAND)}")
             return False
         if as_json:
             print(
@@ -2976,7 +3010,7 @@ def _cmd_auth(
             action = "Installed" if result.changed else "Verified"
             console.print(
                 f"{layout.ok(grammar.GLYPH_OK)} {action} Codex CLI {result.smoke_version} at "
-                f"[b]{result.executable}[/b]"
+                f"{layout.strong(result.executable)}"
             )
         service = (
             CodexAuthService(command=result.executable)
@@ -3057,7 +3091,7 @@ def _cmd_auth(
                 )
             )
         else:
-            console.print("\n" + detail.render(), style="yellow", markup=False)
+            console.print("\n" + detail.render(), style=palette.C_WARN, markup=False)
         return EXIT_CANCELLED
     except AuthServiceError as exc:
         emit(exc.status)
@@ -3083,7 +3117,7 @@ def _cmd_auth(
                 )
             )
         else:
-            console.print(detail.render(), style="red", markup=False)
+            console.print(detail.render(), markup=False)
         return EXIT_AUTH
 
 

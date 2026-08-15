@@ -64,6 +64,18 @@ def test_parser_exposes_ga_admin_surface_and_exit_taxonomy() -> None:
     assert "One-shot:" in help_text
     assert help_text.index("Start and common commands:") < help_text.index("Start:")
     assert "See `jarn <command> --help`" in help_text
+    assert "positional arguments" not in help_text
+    assert "COMMAND" in help_text
+    assert "\nCommands\n" in help_text or help_text.startswith("Commands") or "\nCommands" in help_text
+    from jarn import cli as cli_mod
+
+    listed = [name for _, names in cli_mod._CLI_COMMAND_GROUPS for name in names]
+    sub = next(
+        action for action in parser._actions if action.__class__.__name__ == "_SubParsersAction"
+    )
+    assert set(listed) == set(sub.choices)
+    for name in listed:
+        assert name in help_text
 
 
 def test_top_level_help_is_offline_complete_plain_and_non_mutating(tmp_path: Path) -> None:
@@ -96,6 +108,7 @@ socket.getaddrinfo = denied
         encoding="utf-8",
     )
     jarn_home = tmp_path / "missing-jarn-home"
+    src = str(Path(__file__).resolve().parents[1] / "src")
     env = dict(os.environ)
     env.update(
         {
@@ -105,7 +118,9 @@ socket.getaddrinfo = denied
             "JARN_HOME": str(jarn_home),
             "NO_COLOR": "1",
             "PYTHONPATH": os.pathsep.join(
-                part for part in (str(guard_dir), env.get("PYTHONPATH", "")) if part
+                part
+                for part in (str(guard_dir), src, env.get("PYTHONPATH", ""))
+                if part
             ),
             "TERM": "dumb",
         }

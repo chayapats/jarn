@@ -130,7 +130,7 @@ class SetupApp(App):
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="card"):
-            yield Static(f"[b]{TAGLINE}[/b]", id="brand")
+            yield Static(layout.strong(TAGLINE), id="brand")
             yield Static("", id="crumbs")
             yield Static("", id="title")
             yield Vertical(id="step")
@@ -662,7 +662,6 @@ class SetupApp(App):
 
     async def _step_confirm(self) -> None:
         a = self.answers
-        base_line = f"base_url: [b]{a['base_url']}[/b]\n" if a.get("base_url") else ""
         if a.get("_credential_pending"):
             key_ref = "(pasted; held in memory until verified commit)"
         else:
@@ -687,40 +686,48 @@ class SetupApp(App):
             )
             if text:
                 notice = f"\n{layout.warn(text)}\n"
-        advanced = ""
-        if a.get("_provider_group") == "advanced":
-            from jarn.permissions.labels import permission_mode_name
-
-            advanced = (
-                f"reasoning: [b]{a.get('reasoning_effort', 'provider default')}[/b]\n"
-                f"subagent: [b]{a.get('routing_subagent', a.get('model', ''))}[/b]\n"
-                f"summary:  [b]{a.get('routing_summarizer', a.get('model', ''))}[/b]\n"
-                f"fallback: [b]{a.get('routing_fallback') or '(none)'}[/b]\n"
-                f"budget:   [b]${a.get('budget_per_session_usd', '5.00')}[/b] "
-                f"(warn {a.get('budget_warn_at_pct', '80')}%, "
-                f"hard stop {a.get('budget_hard_stop', 'true')})\n"
-                "access:   [b]"
-                f"{permission_mode_name(a.get('permission_mode', 'ask'))}[/b]\n"
+        rows = [
+            layout.field(
+                "provider",
+                "ChatGPT" if a["provider"] == "codex_subscription" else a["provider"],
             )
-        catalog_line = ""
+        ]
+        if a.get("base_url"):
+            rows.append(layout.field("base_url", a["base_url"]))
+        rows.append(
+            layout.field("model", a.get("model") or "account default (checked before save)")
+        )
         if a.get("_model_catalog_provenance"):
             catalog_state = (
                 "verified" if a.get("_model_catalog_verified") == "true" else "unverified"
             )
-            catalog_line = (
-                f"catalog:  [b]{catalog_state}[/b] — "
-                f"{a['_model_catalog_provenance']}\n"
+            rows.append(
+                f"{layout.field('catalog', catalog_state)} — {a['_model_catalog_provenance']}"
             )
-        summary = (
-            f"provider: [b]{'ChatGPT' if a['provider'] == 'codex_subscription' else a['provider']}[/b]\n"
-            f"{base_line}"
-            f"model:    [b]{a.get('model') or 'account default (checked before save)'}[/b]\n"
-            f"{catalog_line}"
-            f"key:      [b]{key_ref}[/b]\n"
-            f"{advanced}"
-            f"theme:    [b]{a.get('theme', 'dark')}[/b]\n"
-            f"{notice}"
-        )
+        rows.append(layout.field("key", key_ref))
+        if a.get("_provider_group") == "advanced":
+            from jarn.permissions.labels import permission_mode_name
+
+            rows.extend(
+                [
+                    layout.field(
+                        "reasoning", a.get("reasoning_effort", "provider default") or ""
+                    ),
+                    layout.field("subagent", a.get("routing_subagent", a.get("model", "")) or ""),
+                    layout.field(
+                        "summary", a.get("routing_summarizer", a.get("model", "")) or ""
+                    ),
+                    layout.field("fallback", a.get("routing_fallback") or "(none)"),
+                    f"{layout.field('budget', '$' + str(a.get('budget_per_session_usd', '5.00')))} "
+                    f"(warn {a.get('budget_warn_at_pct', '80')}%, "
+                    f"hard stop {a.get('budget_hard_stop', 'true')})",
+                    layout.field(
+                        "access", permission_mode_name(a.get("permission_mode", "ask"))
+                    ),
+                ]
+            )
+        rows.append(layout.field("theme", a.get("theme", "dark")))
+        summary = "\n".join(rows) + (f"\n{notice}" if notice else "")
         body = Vertical(
             Static(summary),
             self._option_list([("save", "Save configuration"), ("back", "Go back")], None),
@@ -1036,7 +1043,7 @@ def run_setup_tui(*, force: bool = False, propagate_errors: bool = False) -> Pat
             f"Resume setup from {saved.stage} (saved {saved.updated_at})?", default=True
         ):
             resume = saved
-            rc.print(f"{layout.ok(grammar.GLYPH_OK)} Resuming at [b]{saved.stage}[/b].")
+            rc.print(f"{layout.ok(grammar.GLYPH_OK)} Resuming at {layout.strong(saved.stage)}.")
     except (KeyboardInterrupt, EOFError):
         mark_setup_incomplete()
         rc.print(f"\n{layout.warn('Setup incomplete (cancelled).')} Resume with {layout.strong('jarn setup')}.")
@@ -1055,7 +1062,7 @@ def run_setup_tui(*, force: bool = False, propagate_errors: bool = False) -> Pat
     except (KeyboardInterrupt, EOFError, OSError) as exc:
         mark_setup_incomplete()
         rc.print(f"\n{layout.err('Setup incomplete:')} {exc or 'terminal closed'}")
-        rc.print("Your progress is saved. Resume with [b]jarn setup[/b].")
+        rc.print(f"Your progress is saved. Resume with {layout.strong('jarn setup')}.")
         kind = (
             SetupFailureKind.CANCELLED
             if isinstance(exc, (KeyboardInterrupt, EOFError))
@@ -1093,7 +1100,7 @@ def run_setup_tui(*, force: bool = False, propagate_errors: bool = False) -> Pat
         mark_setup_incomplete()
         message = str(exc) if str(exc) else "setup cancelled"
         rc.print(f"\n{layout.err('Setup incomplete at verification:')} {message}")
-        rc.print("No configuration was changed. Retry with [b]jarn setup[/b].")
+        rc.print(f"No configuration was changed. Retry with {layout.strong('jarn setup')}.")
         failure = (
             exc
             if isinstance(exc, SetupCommandError)

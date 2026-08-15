@@ -13,7 +13,7 @@ from rich.markdown import Markdown
 from rich.status import Status
 from rich.text import Text
 
-from jarn.tui import grammar, palette
+from jarn.tui import grammar, layout, palette
 
 # Sentinel prefix the reasoning live-stream is pushed with, so the inline app can
 # tell a thinking block from assistant prose in the shared live sink and render it
@@ -371,10 +371,13 @@ class TurnRenderer:
             return
         self._sep("tool")
         prefix = self._agent_prefix(agent)
-        line = f"{prefix}[{palette.C_TOOL}]{grammar.GLYPH_TOOL}[/{palette.C_TOOL}] [bold]{esc(name)}[/bold]"
+        line = (
+            f"{prefix}{layout.paint(palette.C_TOOL, grammar.GLYPH_TOOL)} "
+            f"{layout.strong(name)}"
+        )
         arg_s = fmt_args(args)
         if arg_s:
-            line += f"  [{palette.C_DIM}]{esc(arg_s)}[/{palette.C_DIM}]"
+            line += f"  {layout.muted(arg_s)}"
         self.console.print(line, highlight=False)
         if agent:
             self._show_subagent_status()

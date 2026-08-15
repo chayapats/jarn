@@ -373,7 +373,41 @@ async def test_turn_emits_events(isolated_home: Path, tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_park_emits_approval_ask(isolated_home: Path, tmp_path: Path):
+async def test_local_slash_status_does_not_run_agent(isolated_home: Path, tmp_path: Path):
+    from jarn.controller.core import CommandResult
+    from jarn.tui import layout
+
+    root = tmp_path / "slash-proj"
+    root.mkdir()
+    stdin, stdout = _Stdin(), _Stdout()
+    ctrl = _stub_controller(root=root)
+    ctrl.handle_command = lambda name, args: CommandResult(
+        "\n".join([layout.title("Status"), layout.kv("Directory", str(root))])
+    )
+    worker = GatewayWorker(
+        root=root,
+        controller=ctrl,
+        stdin=stdin,
+        stdout=stdout,
+        heartbeat_interval=60.0,
+        approval_store=PendingApprovalMap(isolated_home / "pending.json"),
+    )
+    task = asyncio.create_task(worker.run())
+    stdin.push(encode_line(HandshakeFrame(schema_version=SCHEMA_VERSION)))
+    await asyncio.sleep(0.05)
+    stdin.push(encode_line(TurnFrame(thread_id="thr-status", text="/status")))
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        if any(isinstance(f, EventFrame) and f.kind == "done" for f in stdout.frames()):
+            break
+        await asyncio.sleep(0.02)
+    else:
+        pytest.fail(f"no done event; got {stdout.frames()!r}")
+    events = _frames_of(stdout, EventFrame)
+    assert any(e.kind == "notice" and "Status" in e.text for e in events)
+    assert not any(e.kind == "text" and "echo:" in e.text for e in events)
+    stdin.push(encode_line(ShutdownFrame()))
+    await asyncio.wait_for(task, timeout=2)
     root = tmp_path / "proj"
     root.mkdir()
     store = PendingApprovalMap(isolated_home / "pending.json")

@@ -72,13 +72,9 @@ _GATEWAY_HELP_ROWS: tuple[tuple[str, str], ...] = (
 
 def _split_slash(text: str) -> tuple[str, str] | None:
     """``(/name, rest)`` for a Telegram slash line; strips ``@bot`` suffix."""
-    if not text.startswith("/"):
-        return None
-    head, _, tail = text.partition(" ")
-    name = head[1:].split("@", 1)[0].lower()
-    if not name:
-        return None
-    return name, tail.strip()
+    from jarn.commands.registry import parse_slash_line
+
+    return parse_slash_line(text)
 
 
 def _telegram_help_html(topic: str = "") -> str:

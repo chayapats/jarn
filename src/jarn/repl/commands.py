@@ -61,7 +61,7 @@ def format_todos(todos: list[dict], width: int, *, cap: int | None = None) -> li
     overflow is elided behind a ``… +N more`` line. ``cap is None`` (committed
     render) shows every item, unwrapped, exactly as before.
     """
-    header = f"[{palette.C_TOOL}]{grammar.GLYPH_TOOL}[/{palette.C_TOOL}] [bold]Todos[/bold]"
+    header = f"{layout.paint(palette.C_TOOL, grammar.GLYPH_TOOL)} {layout.strong('Todos')}"
     lines = [header]
     trunc = width if cap is not None else None
     if cap is None or len(todos) <= cap:
