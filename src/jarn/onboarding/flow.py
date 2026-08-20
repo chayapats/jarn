@@ -45,6 +45,11 @@ from jarn.onboarding.credentials import (
 from jarn.onboarding.outcome import SetupCommandError, SetupFailureKind
 from jarn.onboarding.state import clear_setup_state, save_setup_state
 from jarn.tui import grammar, layout
+from jarn.tui.i18n import resolve_locale, t
+
+
+def _t(key: str, **kwargs: object) -> str:
+    return t(key, resolve_locale("auto"), **kwargs)
 
 
 class SetupFlowError(SetupCommandError):
@@ -267,8 +272,8 @@ def finalize_setup(
                         parsed = config_to_dataclass(parse_config_model(staged.candidate))
                         configured_provider = parsed.providers[provider]
                         console.print(
-                            f"{layout.ok(grammar.GLYPH_OK)} Using provider-reported default "
-                            f"{layout.strong(selected.display_name)} "
+                            f"{layout.ok(grammar.GLYPH_OK)} "
+                            f"{_t('onboarding.validate.using_default', name=layout.strong(selected.display_name))} "
                             f"{layout.muted('(' + snapshot.provenance_label + ')')}"
                         )
                 if selected is None:
@@ -281,10 +286,10 @@ def finalize_setup(
                 if not valid:
                     raise SetupFlowError(detail, kind=SetupFailureKind.MODEL)
             console.print(
-                f"\n{layout.warn('Required readiness validation (may be billable)')}: "
-                "sends one real model request and may consume provider credits."
+                f"\n{layout.warn(_t('onboarding.validate.required'))}: "
+                f"{_t('onboarding.validate.credits')}"
             )
-            if not Confirm.ask("Send the validation request and finish setup?", default=False):
+            if not Confirm.ask(_t("onboarding.validate.confirm"), default=False):
                 raise SetupFlowError(
                     "Billable provider validation was declined. No request was sent and no "
                     "configuration was changed; setup remains resumable.",

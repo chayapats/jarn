@@ -21,6 +21,7 @@ from jarn.catalog import (
     ModelCatalogEntry,
     ModelCatalogSnapshot,
 )
+from jarn.tui.i18n import t
 
 
 def _snapshot(
@@ -38,9 +39,7 @@ def _snapshot(
             display_name=model,
             is_default=index == 0,
             account_available=True if verified else None,
-            supports_tools=(
-                ollama_supports_tools if provider == "ollama" and verified else None
-            ),
+            supports_tools=(ollama_supports_tools if provider == "ollama" and verified else None),
         )
         for index, model in enumerate(models)
     )
@@ -128,9 +127,9 @@ async def _choose_advanced_provider(pilot, app, provider: str) -> None:
 def test_unverified_static_catalog_has_no_selectable_setup_models() -> None:
     from jarn.onboarding.model_catalog import selectable_setup_models
 
-    assert selectable_setup_models(
-        _snapshot("anthropic", ("static-bootstrap",), verified=False)
-    ) == ()
+    assert (
+        selectable_setup_models(_snapshot("anthropic", ("static-bootstrap",), verified=False)) == ()
+    )
 
 
 @pytest.mark.asyncio
@@ -303,7 +302,13 @@ async def test_unreachable_local_endpoint_shows_nudge(tmp_path, monkeypatch):
         await pilot.pause()
         assert app.step == "model"
         title = str(app.query_one("#title").render())
-        assert "couldn't reach" in title.lower() or "couldn’t reach" in title.lower()
+        marker = t(
+            "onboarding.model.catalog_unreachable",
+            app.locale,
+            endpoint="\x1e",
+            status="\x1e",
+        )
+        assert marker.split("\x1e", 1)[0] in title
         assert "ollama" in title.lower()
         # still a manual-entry box (degrades gracefully)
         inp = app.query_one("#step-input")

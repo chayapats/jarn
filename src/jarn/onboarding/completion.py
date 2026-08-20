@@ -20,10 +20,15 @@ from jarn.install_state import (
 )
 from jarn.permissions.labels import permission_mode_summary
 from jarn.tui import layout
+from jarn.tui.i18n import resolve_locale, t
 from jarn.util.process_env import external_command_env
 from jarn.version import __version__
 
 _VERSION_RE = re.compile(r"(?<!\d)(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)")
+
+
+def _t(key: str, **kwargs: object) -> str:
+    return t(key, resolve_locale("auto"), **kwargs)
 
 
 class SetupCompletionError(RuntimeError):
@@ -208,7 +213,9 @@ def completion_from_setup(
         install=install,
         config_path=config_path,
         backup_path=backup_path,
-        provider="ChatGPT subscription" if provider == "codex_subscription" else provider,
+        provider=_t("onboarding.complete.chatgpt_sub")
+        if provider == "codex_subscription"
+        else provider,
         model=model,
         model_display=model_display or model,
         reasoning_effort=reasoning_effort,
@@ -217,7 +224,11 @@ def completion_from_setup(
         auth_mode=(
             auth.auth_mode
             if auth is not None
-            else ("API key reference" if provider in CLOUD_PROVIDERS else "none (local)")
+            else (
+                _t("onboarding.complete.auth.api")
+                if provider in CLOUD_PROVIDERS
+                else _t("onboarding.complete.auth.local")
+            )
         ),
         auth_plan=auth.plan_type if auth is not None else None,
         auth_workspace=workspace,
@@ -228,35 +239,51 @@ def completion_from_setup(
 def render_setup_completion(console: Console, summary: SetupCompletion) -> None:
     """Render only facts verified before the successful commit."""
 
-    install_label = "verified" if summary.install.verified else "unverified"
-    console.print("\n" + layout.banner_ok("Setup complete."))
+    install_label = (
+        _t("onboarding.complete.verified")
+        if summary.install.verified
+        else _t("onboarding.complete.unverified")
+    )
+    console.print("\n" + layout.banner_ok(_t("onboarding.complete.banner")))
     console.print(
         f"  {layout.field('J.A.R.N.', summary.install.version)} · "
         f"{layout.escape(summary.install.method)} · {install_label}"
     )
-    console.print(f"  {layout.field('Executable', summary.install.executable)}")
-    console.print(f"  {layout.field('Config', str(summary.config_path))}")
-    if summary.backup_path is not None:
-        console.print(f"  {layout.field('Previous config backup', str(summary.backup_path))}")
-    console.print(f"  {layout.field('Provider', summary.provider)}")
-    if summary.auth_mode:
-        console.print(f"  {layout.field('Authentication', summary.auth_mode)}")
-    if summary.auth_plan:
-        console.print(f"  {layout.field('ChatGPT plan', summary.auth_plan)}")
-    if summary.auth_workspace:
-        console.print(f"  {layout.field('Workspace', summary.auth_workspace)}")
     console.print(
-        f"  {layout.field('Model', summary.model_display)} {layout.muted('(' + summary.model + ')')}"
+        f"  {layout.field(_t('onboarding.complete.executable'), summary.install.executable)}"
+    )
+    console.print(f"  {layout.field(_t('onboarding.complete.config'), str(summary.config_path))}")
+    if summary.backup_path is not None:
+        console.print(
+            f"  {layout.field(_t('onboarding.complete.backup'), str(summary.backup_path))}"
+        )
+    console.print(f"  {layout.field(_t('onboarding.field.provider'), summary.provider)}")
+    if summary.auth_mode:
+        console.print(f"  {layout.field(_t('onboarding.complete.auth'), summary.auth_mode)}")
+    if summary.auth_plan:
+        console.print(
+            f"  {layout.field(_t('onboarding.complete.chatgpt_plan'), summary.auth_plan)}"
+        )
+    if summary.auth_workspace:
+        console.print(
+            f"  {layout.field(_t('onboarding.complete.workspace'), summary.auth_workspace)}"
+        )
+    console.print(
+        f"  {layout.field(_t('onboarding.field.model'), summary.model_display)} "
+        f"{layout.muted('(' + summary.model + ')')}"
     )
     if summary.reasoning_effort:
-        console.print(f"  {layout.field('Reasoning', summary.reasoning_effort)}")
+        console.print(
+            f"  {layout.field(_t('onboarding.complete.reasoning'), summary.reasoning_effort)}"
+        )
     console.print(
-        f"  {layout.field('Permission', permission_mode_summary(summary.permission_mode))}"
+        f"  {layout.field(_t('onboarding.complete.permission'), permission_mode_summary(summary.permission_mode))}"
     )
-    console.print(f"  {layout.field('Working directory', str(summary.cwd))}")
-    console.print(f"  {layout.field('Provider validation', summary.validation)}")
+    console.print(f"  {layout.field(_t('onboarding.complete.cwd'), str(summary.cwd))}")
+    console.print(f"  {layout.field(_t('onboarding.complete.validation'), summary.validation)}")
     console.print(
-        f"\n  {layout.field('Next command')} {layout.accent(summary.next_command, bold=True)}"
+        f"\n  {layout.field(_t('onboarding.complete.next'))} "
+        f"{layout.accent(summary.next_command, bold=True)}"
     )
 
 

@@ -10,7 +10,10 @@ from jarn.commands.help import usage_error
 from jarn.controller.core import CommandResult
 from jarn.extensibility.mcp import load_mcp_tools, run_blocking
 from jarn.permissions.labels import PERMISSION_MODE_NAMES as _PERMISSION_LABELS
+from jarn.permissions.labels import permission_mode_name
 from jarn.tui import grammar, layout
+from jarn.tui.i18n import resolve_locale, t
+from jarn.tui.layout import Dialect
 
 if TYPE_CHECKING:
     from jarn.agent.prompt_modules import PromptModuleScope
@@ -24,40 +27,65 @@ _RESPONSE_TOOL = "(response)"
 _RECAP_SNIPPET_WIDTH = 72
 
 
-def cmd_status(ctrl: Controller, args: str) -> CommandResult:
-    """Return a concise, offline session summary for ``/status``."""
-    if args.strip():
-        return CommandResult(usage_error("status"))
-    model = ctrl.config.resolved_main_model() or "not configured"
-    provider = ctrl.current_provider() or "not configured"
-    provider_config = ctrl.config.providers.get(provider)
-    reasoning = "provider default"
-    auth = "not configured"
-    if provider_config is not None:
-        from jarn.config.schema import ProviderType
+def _page_locale(ctrl: Controller, locale: str | None = None) -> str:
+    if locale in ("en", "th"):
+        return locale
+    return resolve_locale(ctrl.config)
 
-        raw_effort = provider_config.extra.get("reasoning_effort")
-        if raw_effort:
-            reasoning = str(raw_effort)
-        if provider_config.type is ProviderType.CODEX_SUBSCRIPTION:
-            auth = "ChatGPT subscription (Codex-managed; /login to verify)"
-        elif provider_config.type in {
+
+def _status_auth_label(provider_config: Any, loc: str) -> str:
+    from jarn.config.schema import ProviderType
+
+    if provider_config is None:
+        return t("status.not_configured", loc)
+    if provider_config.type is ProviderType.CODEX_SUBSCRIPTION:
+        return t("status.auth.chatgpt", loc)
+    if (
+        provider_config.type
+        in {
             ProviderType.OLLAMA,
             ProviderType.LMSTUDIO,
             ProviderType.OPENAI_COMPATIBLE,
-        } and not provider_config.api_key:
-            auth = "local endpoint (no cloud key)"
-        else:
-            auth = "API-key reference"
+        }
+        and not provider_config.api_key
+    ):
+        return t("status.auth.local", loc)
+    return t("status.auth.api_key", loc)
+
+
+def _status_turn_label(turns: int, loc: str) -> str:
+    if turns == 1:
+        return t("status.turn_one", loc)
+    return t("status.turn_many", loc, n=turns)
+
+
+def format_status_page(
+    ctrl: Controller,
+    *,
+    dialect: Dialect = "rich",
+    locale: str | None = None,
+) -> str:
+    """``/status`` body. ``dialect='html'`` is Telegram ``parse_mode=HTML``."""
+    loc = _page_locale(ctrl, locale)
+    model = ctrl.config.resolved_main_model() or t("status.not_configured", loc)
+    provider_id = ctrl.current_provider()
+    provider = provider_id or t("status.not_configured", loc)
+    provider_config = ctrl.config.providers.get(provider_id) if provider_id else None
+    reasoning = t("status.provider_default", loc)
+    if provider_config is not None:
+        raw_effort = provider_config.extra.get("reasoning_effort")
+        if raw_effort:
+            reasoning = str(raw_effort)
+    auth = _status_auth_label(provider_config, loc)
     mode = ctrl.config.permission_mode.value
-    mode_label = _PERMISSION_LABELS.get(mode, mode)
-    trust = "trusted" if ctrl.project_trusted else "untrusted (read-only floor)"
+    mode_label = permission_mode_name(mode, loc)
+    trust = t("status.trusted", loc) if ctrl.project_trusted else t("status.untrusted_floor", loc)
     context = ctrl.context_status()
     if context is not None:
         used, window, frac = context
-        context_text = layout.context_gauge(frac, used=used, window=window)
+        context_text = layout.context_gauge(frac, used=used, window=window, dialect=dialect)
     else:
-        context_text = "not measured"
+        context_text = t("status.not_measured", loc)
     import time as _time
 
     elapsed = ""
@@ -74,44 +102,59 @@ def cmd_status(ctrl: Controller, args: str) -> CommandResult:
     turns = int(recap_meta.get("turns") or 0)
     session_bits = [str(ctrl.thread_id), elapsed]
     if turns > 0:
-        session_bits.append("1 turn" if turns == 1 else f"{turns} turns")
+        session_bits.append(_status_turn_label(turns, loc))
     if title:
         session_bits.append(title)
     lines = [
-        layout.heading("Status"),
+        layout.heading(t("status.title", loc), dialect=dialect),
         "",
-        layout.kv("Directory", str(ctrl.project_root)),
-        layout.kv("Model", model),
-        layout.kv("Provider", f"{provider}  ·  {auth}"),
-        layout.kv("Reasoning", reasoning),
-        layout.kv("Permissions", f"{mode_label}  ·  {mode}"),
-        layout.kv("Workspace", trust),
-        layout.kv("Context", context_text),
-        layout.kv("Session", "  ·  ".join(session_bits)),
+        layout.kv(t("status.directory", loc), str(ctrl.project_root), dialect=dialect),
+        layout.kv(t("status.model", loc), model, dialect=dialect),
+        layout.kv(t("status.provider", loc), f"{provider}  ·  {auth}", dialect=dialect),
+        layout.kv(t("status.reasoning", loc), reasoning, dialect=dialect),
+        layout.kv(t("status.permissions", loc), f"{mode_label}  ·  {mode}", dialect=dialect),
+        layout.kv(t("status.workspace", loc), trust, dialect=dialect),
+        layout.kv(t("status.context", loc), context_text, dialect=dialect),
+        layout.kv(t("status.session", loc), "  ·  ".join(session_bits), dialect=dialect),
     ]
     compact_n = int(getattr(ctrl, "compact_count", 0) or 0)
     if compact_n:
         lines.append(
             layout.kv(
-                "Compact",
-                f"{compact_n}  ·  /compact applies (in-graph auto-compact is not counted)",
+                t("status.compact", loc),
+                t("status.compact_value", loc, n=compact_n),
+                dialect=dialect,
             )
         )
-    recap = _status_recap(ctrl, recap_meta)
+    recap = _status_recap(ctrl, recap_meta, dialect=dialect, locale=loc)
     if recap:
-        lines.append(layout.section("Recap"))
+        lines.append(layout.section(t("status.recap", loc), dialect=dialect))
         lines.extend(recap)
-    return CommandResult("\n".join(lines))
+    return "\n".join(lines)
 
 
-def format_resume_recap(ctrl: Controller) -> str:
+def cmd_status(ctrl: Controller, args: str) -> CommandResult:
+    """Return a concise, offline session summary for ``/status``."""
+    loc = resolve_locale(ctrl.config)
+    if args.strip():
+        return CommandResult(usage_error("status", locale=loc))
+    return CommandResult(format_status_page(ctrl, locale=loc))
+
+
+def format_resume_recap(
+    ctrl: Controller,
+    *,
+    dialect: Dialect = "rich",
+    locale: str | None = None,
+) -> str:
     """Local directory/model/mode + last-turn recap after ``/resume``.
 
     Reuses :func:`_transcript_recap` / :func:`_status_recap` — no model call.
     """
-    model = ctrl.config.resolved_main_model() or "not configured"
+    loc = _page_locale(ctrl, locale)
+    model = ctrl.config.resolved_main_model() or t("status.not_configured", loc)
     mode = ctrl.config.permission_mode.value
-    mode_label = _PERMISSION_LABELS.get(mode, mode)
+    mode_label = permission_mode_name(mode, loc)
     recap_meta = _transcript_recap(ctrl.sessions.transcript_path(ctrl.thread_id))
     title = ""
     for session in ctrl.sessions.list():
@@ -121,20 +164,20 @@ def format_resume_recap(ctrl: Controller) -> str:
     session_bits = [str(ctrl.thread_id)]
     turns = int(recap_meta.get("turns") or 0)
     if turns > 0:
-        session_bits.append("1 turn" if turns == 1 else f"{turns} turns")
+        session_bits.append(_status_turn_label(turns, loc))
     if title:
         session_bits.append(title)
     lines = [
-        layout.heading("Resumed"),
+        layout.heading(t("status.resume_title", loc), dialect=dialect),
         "",
-        layout.kv("Directory", str(ctrl.project_root)),
-        layout.kv("Model", model),
-        layout.kv("Permissions", f"{mode_label}  ·  {mode}"),
-        layout.kv("Session", "  ·  ".join(session_bits)),
+        layout.kv(t("status.directory", loc), str(ctrl.project_root), dialect=dialect),
+        layout.kv(t("status.model", loc), model, dialect=dialect),
+        layout.kv(t("status.permissions", loc), f"{mode_label}  ·  {mode}", dialect=dialect),
+        layout.kv(t("status.session", loc), "  ·  ".join(session_bits), dialect=dialect),
     ]
-    recap = _status_recap(ctrl, recap_meta)
+    recap = _status_recap(ctrl, recap_meta, dialect=dialect, locale=loc)
     if recap:
-        lines.append(layout.section("Recap"))
+        lines.append(layout.section(t("status.recap", loc), dialect=dialect))
         lines.extend(recap)
     return "\n".join(lines)
 
@@ -230,32 +273,43 @@ def _transcript_recap(path: Path) -> dict[str, Any]:
     return recap
 
 
-def _status_recap(ctrl: Controller, recap: dict[str, Any] | None = None) -> list[str]:
+def _status_recap(
+    ctrl: Controller,
+    recap: dict[str, Any] | None = None,
+    *,
+    dialect: Dialect = "rich",
+    locale: str | None = None,
+) -> list[str]:
+    loc = _page_locale(ctrl, locale)
     if recap is None:
         recap = _transcript_recap(ctrl.sessions.transcript_path(ctrl.thread_id))
     lines: list[str] = []
     top = [
-        (name, usage)
-        for name, usage in ctrl.tracker.top_tools(limit=6)
-        if name != _RESPONSE_TOOL
+        (name, usage) for name, usage in ctrl.tracker.top_tools(limit=6) if name != _RESPONSE_TOOL
     ][:5]
     if top:
         tools = " · ".join(f"{name} {usage.calls}" for name, usage in top)
-        lines.append(layout.kv("Tools", tools))
-    t = ctrl.tracker.total
-    if t.calls:
+        lines.append(layout.kv(t("status.tools", loc), tools, dialect=dialect))
+    total = ctrl.tracker.total
+    if total.calls:
         lines.append(
-            layout.kv("Calls", f"{t.calls}  ·  {t.total_tokens:,} tok  ·  ${t.cost_usd:.4f}")
+            layout.kv(
+                t("status.calls", loc),
+                f"{total.calls}  ·  {total.total_tokens:,} tok  ·  ${total.cost_usd:.4f}",
+                dialect=dialect,
+            )
         )
     files = recap.get("files") or []
     if files:
-        lines.append(layout.kv("Files", " · ".join(str(p) for p in files)))
+        lines.append(
+            layout.kv(t("status.files", loc), " · ".join(str(p) for p in files), dialect=dialect)
+        )
     last_user = recap.get("last_user") or ""
     if last_user:
-        lines.append(layout.kv("Last you", str(last_user)))
+        lines.append(layout.kv(t("status.last_you", loc), str(last_user), dialect=dialect))
     last_assistant = recap.get("last_assistant") or ""
     if last_assistant:
-        lines.append(layout.kv("Last J.A.R.N.", str(last_assistant)))
+        lines.append(layout.kv(t("status.last_jarn", loc), str(last_assistant), dialect=dialect))
     return lines
 
 
@@ -273,7 +327,7 @@ def cmd_doctor(ctrl: Controller, args: str) -> CommandResult:
         extra_roots=ctrl.extra_roots,
         prompt_modules=ctrl.prompt_module_diagnostics(),
     )
-    return CommandResult("\n".join(doctor_lines(diag)))
+    return CommandResult("\n".join(doctor_lines(diag, locale=resolve_locale(ctrl.config))))
 
 
 def cmd_cost(ctrl, args: str) -> CommandResult:
@@ -326,17 +380,14 @@ def cmd_modules(ctrl: Controller, args: str) -> CommandResult:
             token_text = f"{status.token_count:,}/{status.configured_budget:,} tok"
         truncated = " · truncated" if status.truncated else ""
         lines.append(
-            f"  {mark} {layout.accent(status.name)} · "
-            f"{status.scope} · {token_text}{truncated}"
+            f"  {mark} {layout.accent(status.name)} · {status.scope} · {token_text}{truncated}"
         )
         lines.append(
             f"      {layout.muted(status.activation_reason + ' · source: ' + status.source)}"
         )
     if sub != "active":
         lines.append(
-            layout.muted(
-                "Lazy skill bodies: /skills, then /module on skill.NAME [turn|session]."
-            )
+            layout.muted("Lazy skill bodies: /skills, then /module on skill.NAME [turn|session].")
         )
     return CommandResult("\n".join(lines))
 
@@ -545,9 +596,7 @@ def _mcp_resources(ctrl) -> CommandResult:
             label = layout.escape(r.name or r.description or "")
             mime = f" {layout.muted(r.mime_type)}" if r.mime_type else ""
             tail = f" — {label}" if label else ""
-            lines.append(
-                f"  {layout.accent(r.server)} {layout.escape(r.uri)}{mime}{tail}"
-            )
+            lines.append(f"  {layout.accent(r.server)} {layout.escape(r.uri)}{mime}{tail}")
     else:
         lines.append(layout.muted("No resources available."))
     _append_mcp_errors(lines, res.errors)
@@ -678,9 +727,7 @@ def cmd_context(ctrl: Controller, args: str) -> CommandResult:
         lines.append(layout.muted("  Context window not measured yet."))
     statuses, assembly = ctrl.prompt_module_statuses()
     lines.append("")
-    lines.append(
-        layout.heading("Prompt modules", f"{assembly.token_count:,} tok assembled")
-    )
+    lines.append(layout.heading("Prompt modules", f"{assembly.token_count:,} tok assembled"))
     for status in statuses:
         if not show_all and not status.active:
             continue
@@ -728,9 +775,7 @@ def cmd_busy(ctrl: Controller, args: str) -> CommandResult:
             "\n".join(
                 [
                     layout.kv("Busy input", str(current)),
-                    layout.muted(
-                        "Session only — persist with /config set ui.busy_input_mode."
-                    ),
+                    layout.muted("Session only — persist with /config set ui.busy_input_mode."),
                 ]
             )
         )
@@ -747,9 +792,7 @@ def cmd_busy(ctrl: Controller, args: str) -> CommandResult:
         "\n".join(
             [
                 layout.kv("Busy input", ctrl.busy_input_mode),
-                layout.muted(
-                    "Session only — persist with /config set ui.busy_input_mode."
-                ),
+                layout.muted("Session only — persist with /config set ui.busy_input_mode."),
             ]
         )
     )
@@ -776,9 +819,7 @@ def cmd_focus(ctrl: Controller, args: str) -> CommandResult:
             ctrl.tool_progress = ctrl._focus_saved_progress or "new"
             ctrl._focus_saved_progress = None
             ctrl.focus_mode = False
-        return CommandResult(
-            f"Focus {layout.accent('off')} — tool progress {ctrl.tool_progress}."
-        )
+        return CommandResult(f"Focus {layout.accent('off')} — tool progress {ctrl.tool_progress}.")
     return CommandResult(usage_error("focus"))
 
 

@@ -479,6 +479,7 @@ def test_doctor_lists_stripped_keys_in_human_output(jarn_home, tmp_path, monkeyp
 
     gp = jarn_home / "config.yaml"
     gp.write_text(
+        "ui:\n  locale: en\n"
         "providers:\n  openrouter:\n    type: openrouter\n"
         "    api_key: ${OPENROUTER_API_KEY}\n"
         "    base_url: https://openrouter.ai/api/v1\n",
