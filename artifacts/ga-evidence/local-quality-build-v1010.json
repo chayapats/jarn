@@ -1,0 +1,56 @@
+{
+  "record_id": "LOCAL-QUALITY-BUILD-20260820-V1010",
+  "criterion_ids": [
+    "AC-SEC-002",
+    "AC-SEC-003",
+    "CONSTRAINT-IMPLEMENTATION"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-20T16:17:47Z",
+  "ended_at": "2026-08-20T16:24:49Z",
+  "duration_seconds": 422.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "uv lock --check; Ruff; mypy; packaging tests; uvx pip-audit; subprocess audit; two SOURCE_DATE_EPOCH builds",
+  "implementation": [
+    "pyproject.toml",
+    "uv.lock",
+    "src/jarn",
+    "tests/test_packaging.py"
+  ],
+  "automated_tests": [
+    "uv run ruff check src tests scripts",
+    "uv run mypy src/",
+    "uv run pytest -q tests/test_packaging.py",
+    "uvx pip-audit",
+    "uv run python scripts/audit_subprocesses.py"
+  ],
+  "decisions": [
+    "uv lock --check resolved the pinned lock; Ruff passed and mypy passed all 185 source files.",
+    "All 4 packaging tests passed.",
+    "uvx pip-audit found no known dependency vulnerabilities.",
+    "The subprocess boundary audit passed.",
+    "Two independent SOURCE_DATE_EPOCH=1700000000 builds were byte-identical."
+  ],
+  "result": "The immutable v1.0.10 candidate passed lock, lint, typing, dependency-audit, subprocess-audit, packaging, and deterministic local-build gates.",
+  "limitations": [
+    "Release-runner SBOM, provenance, signatures, binaries, and Tier-1 lifecycle execution are separate tagged-workflow evidence.",
+    "Local wheel bytes are not claimed identical to the GitHub Actions wheel; tagged binaries were verified against checksums.txt instead."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.10",
+  "candidate_commit": "3499f3a2c024dbf04f710687ed59dc998a6b7583",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": [],
+  "documentation_lookups": []
+}

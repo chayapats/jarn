@@ -1,0 +1,60 @@
+{
+  "record_id": "RELEASE-DRAFT-CANARIES-V1010",
+  "criterion_ids": [
+    "AC-INSTALL-003",
+    "AC-INSTALL-004",
+    "AC-INSTALL-005",
+    "AC-INSTALL-017",
+    "AC-SEC-001",
+    "TEST-RELEASE"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-20T15:51:40Z",
+  "ended_at": "2026-08-20T16:06:25Z",
+  "duration_seconds": 885.0,
+  "platform": {
+    "os": "GitHub Actions Tier-1 matrix",
+    "version": "Ubuntu 20.04/22.04/24.04; Debian 11/12; macOS 15/26",
+    "architecture": "x86_64 and arm64",
+    "libc": "glibc 2.31 baseline and native matrix runtimes"
+  },
+  "command": "GitHub Actions release workflow run 32388641736 for immutable annotated tag v1.0.10",
+  "implementation": [
+    ".github/workflows/release.yml",
+    "scripts/release_lifecycle_canary.sh",
+    "install.sh"
+  ],
+  "automated_tests": [
+    "release preflight, security, contracts, packaging, checksum, SBOM, provenance, and attestation-verification jobs",
+    "Tier-1 lifecycle matrix on native Linux and macOS targets",
+    "authenticated draft glibc/npm-shadow canary",
+    "real 0.11.0 to 1.0.10 update, rollback, uninstall, and reinstall canary"
+  ],
+  "decisions": [
+    "All required pre-publication jobs and all Tier-1 lifecycle legs completed successfully on immutable tagged commit 3499f3a2c024dbf04f710687ed59dc998a6b7583.",
+    "Linux artifacts were built against the Ubuntu 20.04 glibc 2.31 baseline; x86_64 and arm64 lifecycle legs passed on Ubuntu 20.04, 22.04, 24.04 and Debian 11, 12.",
+    "Native macOS lifecycle legs passed on macOS 15 and 26 for Apple Silicon and Intel.",
+    "Every staged release subject had a canonical SHA-256 digest; SPDX and CycloneDX SBOMs, SLSA provenance, Sigstore attestations, and attestation verification completed successfully.",
+    "The authenticated draft canary fetched install.sh, checksums.txt, and jarn-linux-x86_64 from the GitHub Release for tag v1.0.10, verified digests, executed the oldest-glibc binary, and installed through a loopback fixture.",
+    "Anonymous fetch of https://raw.githubusercontent.com/chayapats/jarn/v1.0.10/install.sh returned SHA-256 4f51da73341a47062a2673fa5785f103bbab7f3123748fab87f4cb4158351790, identical to the draft Release asset and checksums.txt.",
+    "The GitHub release remained a private draft; the anonymous public-URL canary, promotion, PyPI, and npm were intentionally skipped until this evidence pack and JARN_GA_PROMOTE_TAG are in place."
+  ],
+  "result": "The exact v1.0.10 tag passed every required private pre-publication release, integrity, oldest-runtime, Tier-1 lifecycle, npm-shadow, fallback, historical-upgrade, checksum, and tagged-install.sh fetch gate.",
+  "limitations": [
+    "Anonymous published GitHub Release binary URLs cannot be fetched until the draft is undrafted; this record uses the public git-tag install.sh URL plus authenticated draft asset URLs, which are the only asset surfaces available before promote_release.",
+    "The historical upgrade canary exercised published v0.11.0 to v1.0.10; a second predecessor was not selected by the compatible-prior matrix on this tag.",
+    "Live ChatGPT and Anthropic account UATs are not inferred from release automation."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.10",
+  "candidate_commit": "3499f3a2c024dbf04f710687ed59dc998a6b7583",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": [],
+  "documentation_lookups": []
+}

@@ -1,0 +1,62 @@
+{
+  "record_id": "LOCAL-INSTALLER-20260820-V1010",
+  "criterion_ids": [
+    "AC-INSTALL-001",
+    "AC-INSTALL-002",
+    "AC-INSTALL-005",
+    "AC-INSTALL-006",
+    "AC-INSTALL-007",
+    "AC-INSTALL-008",
+    "AC-INSTALL-009",
+    "AC-INSTALL-010",
+    "AC-INSTALL-011",
+    "AC-INSTALL-012",
+    "AC-INSTALL-013",
+    "AC-INSTALL-014",
+    "AC-INSTALL-015",
+    "AC-INSTALL-016",
+    "TEST-INSTALL",
+    "MILESTONE-0"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-20T16:17:47Z",
+  "ended_at": "2026-08-20T16:23:26Z",
+  "duration_seconds": 339.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "sh -n install.sh; exact full collection including installer/CI/update contracts",
+  "implementation": [
+    "install.sh",
+    "src/jarn/install_state.py",
+    "src/jarn/update.py",
+    ".github/workflows/release.yml"
+  ],
+  "automated_tests": [
+    "tests/test_installer.py",
+    "tests/test_update.py",
+    "tests/test_ci.py"
+  ],
+  "decisions": [
+    "This local result proves implementation contracts but does not stand in for executing the Tier-1 hosted matrix or fetching a public GitHub Release URL after undraft."
+  ],
+  "result": "Installer transaction, collision, fallback, integrity, failure injection, idempotency, ARM64 asset selection, SSH/headless setup, updater ownership/preview, rollback, and release-workflow contracts passed.",
+  "limitations": [
+    "AC-INSTALL-003, AC-INSTALL-004, AC-INSTALL-017, and TEST-RELEASE remain separately gated by hosted/published execution."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.10",
+  "candidate_commit": "3499f3a2c024dbf04f710687ed59dc998a6b7583",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": [],
+  "documentation_lookups": []
+}

@@ -1,0 +1,84 @@
+{
+  "record_id": "LOCAL-AUTH-MODEL-20260820-V1010",
+  "criterion_ids": [
+    "AC-DEP-001",
+    "AC-DEP-002",
+    "AC-DEP-003",
+    "AC-DEP-004",
+    "AC-DEP-005",
+    "AC-DEP-006",
+    "AC-DEP-007",
+    "AC-AUTH-001",
+    "AC-AUTH-002",
+    "AC-AUTH-003",
+    "AC-AUTH-004",
+    "AC-AUTH-005",
+    "AC-AUTH-006",
+    "AC-AUTH-007",
+    "AC-AUTH-008",
+    "AC-AUTH-009",
+    "AC-AUTH-010",
+    "AC-AUTH-011",
+    "AC-AUTH-012",
+    "AC-AUTH-013",
+    "AC-AUTH-014",
+    "AC-MODEL-001",
+    "AC-MODEL-002",
+    "AC-MODEL-003",
+    "AC-MODEL-004",
+    "AC-MODEL-005",
+    "AC-MODEL-006",
+    "AC-MODEL-007",
+    "AC-MODEL-008",
+    "AC-MODEL-009",
+    "AC-MODEL-010",
+    "AC-MODEL-011",
+    "AC-MODEL-012",
+    "AC-MODEL-013",
+    "AC-MODEL-014",
+    "AC-MODEL-015"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-20T16:17:47Z",
+  "ended_at": "2026-08-20T16:23:26Z",
+  "duration_seconds": 339.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "JARN_TEST_MODE=1 uv run pytest -q full collection including auth, Codex dependency/subscription, live model catalog, and ChatGPT onboarding contracts",
+  "implementation": [
+    "src/jarn/auth",
+    "src/jarn/catalog",
+    "src/jarn/codex_dependency.py",
+    "src/jarn/providers/codex_subscription.py"
+  ],
+  "automated_tests": [
+    "tests/test_auth_service.py",
+    "tests/test_auth_cli.py",
+    "tests/test_codex_subscription.py",
+    "tests/test_codex_dependency.py",
+    "tests/test_model_catalog.py"
+  ],
+  "decisions": [
+    "Public tests use the fake Codex app-server and provider HTTP fixtures; real account/entitlement behavior remains a protected UAT rather than being inferred."
+  ],
+  "result": "Versioned auth state, visible browser/device ceremonies, dependency acquisition, verification failures, scoped logout, paginated live catalog protocol, cache provenance, routing validation, retirement, and pre-turn refusal contracts passed with credential-free fixtures.",
+  "limitations": [
+    "No live Anthropic account was contacted from this record; UAT-004 remains separate."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.10",
+  "candidate_commit": "3499f3a2c024dbf04f710687ed59dc998a6b7583",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": [],
+  "documentation_lookups": []
+}

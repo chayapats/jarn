@@ -1,0 +1,50 @@
+{
+  "record_id": "LOCAL-FULL-20260820-V1010",
+  "criterion_ids": [
+    "TEST-AUTH",
+    "TEST-MODEL",
+    "TEST-CONFIG",
+    "TEST-UI",
+    "TEST-SECURITY"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-20T16:17:47Z",
+  "ended_at": "2026-08-20T16:23:26Z",
+  "duration_seconds": 339.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "JARN_TEST_MODE=1 uv run pytest -q on the exact v1.0.10 tagged worktree",
+  "implementation": [
+    "src/jarn",
+    "install.sh",
+    ".github/workflows"
+  ],
+  "automated_tests": [
+    "complete 3368-test repository collection"
+  ],
+  "decisions": [
+    "The exact tagged suite accounted for 3359 passed, 9 skipped, and zero failed or errored in one clean run.",
+    "Exact-commit CI run 32388634809 passed all 11 jobs on Ubuntu, macOS, and Windows 3.12/3.13.",
+    "Catalog and authentication unit tests use isolated cache roots and fake protocol fixtures; live-account truth remains in separate UAT evidence."
+  ],
+  "result": "All 3368 collected tests on candidate v1.0.10 were accounted for with zero failures or errors; exact-commit CI run 32388634809 also passed all 11 jobs.",
+  "limitations": [
+    "This record covers the observed full-suite interval and exact-commit CI result; lint, typing, audit, packaging, performance, release binaries, remote platforms, and live accounts are separate evidence."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.10",
+  "candidate_commit": "3499f3a2c024dbf04f710687ed59dc998a6b7583",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": [],
+  "documentation_lookups": []
+}

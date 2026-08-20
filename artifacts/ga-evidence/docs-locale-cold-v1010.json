@@ -1,0 +1,49 @@
+{
+  "record_id": "DOC-I18N-20260820-V1010",
+  "criterion_ids": [
+    "AC-DOC-001",
+    "AC-DOC-006",
+    "AC-I18N-001"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-20T16:24:36Z",
+  "ended_at": "2026-08-20T16:24:49Z",
+  "duration_seconds": 13.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "JARN_TEST_MODE=1 uv run pytest -q tests/test_doc_sync.py tests/test_terminal_contract.py; LC_ALL=C LANG=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 uv run jarn --help",
+  "implementation": [
+    "README.md",
+    "docs/QUICKSTART.md",
+    "docs",
+    "src/jarn/cli.py"
+  ],
+  "automated_tests": [
+    "tests/test_doc_sync.py",
+    "tests/test_terminal_contract.py"
+  ],
+  "decisions": [
+    "README and docs/QUICKSTART.md present one recommended curl|sh path from install to first ChatGPT prompt with no sudo, Node, Python, uv, or provider credential as a prerequisite.",
+    "Cold non-UTF locale help exited 0 with 8276 bytes of stdout and empty stderr."
+  ],
+  "result": "Five-minute quickstart documentation, documentation synchronization, and terminal contracts passed; cold non-UTF locale help exited 0 with no stderr or traceback.",
+  "limitations": [
+    "Anonymous post-promote GitHub/raw installer canaries remain the public-URL job after undraft."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.10",
+  "candidate_commit": "3499f3a2c024dbf04f710687ed59dc998a6b7583",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": [],
+  "documentation_lookups": []
+}

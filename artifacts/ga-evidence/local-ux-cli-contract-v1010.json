@@ -1,0 +1,75 @@
+{
+  "record_id": "LOCAL-UX-CLI-20260820-V1010",
+  "criterion_ids": [
+    "AC-UX-001",
+    "AC-UX-002",
+    "AC-UX-003",
+    "AC-UX-004",
+    "AC-UX-005",
+    "AC-UX-006",
+    "AC-UX-007",
+    "AC-UX-008",
+    "AC-UX-009",
+    "AC-UX-010",
+    "AC-UX-012",
+    "AC-UX-013",
+    "AC-UX-014",
+    "AC-UX-015",
+    "AC-CLI-001",
+    "AC-CLI-002",
+    "AC-CLI-003",
+    "AC-CLI-004",
+    "AC-CLI-005",
+    "AC-CLI-006",
+    "AC-CLI-007",
+    "AC-CLI-008",
+    "AC-A11Y-001",
+    "AC-A11Y-002",
+    "AC-A11Y-003",
+    "AC-A11Y-004"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-20T16:17:47Z",
+  "ended_at": "2026-08-20T16:23:26Z",
+  "duration_seconds": 339.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "JARN_TEST_MODE=1 uv run pytest -q full collection including UX/plain-resume/Textual/model-picker/terminal/controller/completion/headless/exit-code contracts",
+  "implementation": [
+    "src/jarn/onboarding",
+    "src/jarn/cli.py",
+    "src/jarn/repl",
+    "src/jarn/tui"
+  ],
+  "automated_tests": [
+    "tests/test_ux.py",
+    "tests/test_plain_onboarding.py",
+    "tests/test_onboarding_resume.py",
+    "tests/test_terminal_contract.py",
+    "tests/test_controller.py",
+    "tests/test_headless.py"
+  ],
+  "decisions": [
+    "The one-line activation design is exercised locally; immediate usability from a live account remains a separate UAT observation."
+  ],
+  "result": "Simple/Advanced onboarding, staged cancel/resume, verified completion, plain/TUI parity, 80x24/resize/Thai/color contracts, session header, slash discovery/suggestions, cancellation, exec JSON, and exit taxonomy passed.",
+  "limitations": [
+    "AC-UX-011 and the five-minute live quickstart are not inferred from local UI contracts."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.10",
+  "candidate_commit": "3499f3a2c024dbf04f710687ed59dc998a6b7583",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": [],
+  "documentation_lookups": []
+}
