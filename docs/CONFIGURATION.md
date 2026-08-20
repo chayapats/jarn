@@ -678,11 +678,12 @@ for subagents and summarization. Supported provider options are:
 | `service_name` | `jarn` | Client identity sent to App Server |
 
 Codex's shell, unified execution, apps, browser/computer use, image generation,
-and multi-agent features are disabled inside this bridge. The model returns a
-strict structured request which J.A.R.N. translates into its own tool calls; the
-normal permission engine, danger-guard, checkpoints, and `/undo` therefore remain
-the only execution path. The Codex turn itself runs read-only with network disabled
-and approval policy `never`.
+and multi-agent features are disabled inside this bridge. The inner Codex turn
+stays read-only with network disabled and approval policy `never`; that does not
+forbid the model from requesting J.A.R.N. `write_file`, `edit_file`, or `execute`.
+Those requests become ordinary J.A.R.N. tool calls. The permission engine,
+danger-guard, checkpoints, and `/undo` remain the only execution path and still
+perform writes after approval.
 
 Token usage is tracked, while J.A.R.N. reports `$0` API-key cost because usage is
 covered by the connected ChatGPT plan. It still consumes that plan's limits or

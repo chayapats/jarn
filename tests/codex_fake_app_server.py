@@ -28,6 +28,10 @@ if mode == "appserver_nonzero":
     raise SystemExit(9)
 
 logged_in = mode not in {"signed_out", "signed_out_then_login"}
+turn_starts = 0
+_SANDBOX_WRITE_REFUSAL = (
+    "Cannot call write_file because this session's filesystem permission is read-only"
+)
 
 
 def account_payload() -> dict | None:
@@ -323,6 +327,7 @@ for line in sys.stdin:
             }
         )
     elif method == "turn/start":
+        turn_starts += 1
         send(
             {
                 "id": request_id,
@@ -363,6 +368,30 @@ for line in sys.stdin:
                 "kind": "tool_calls",
                 "content": "",
                 "calls": [{"name": "read_file", "arguments_json": "[]"}],
+            }
+        elif mode == "sandbox_refuse":
+            if turn_starts == 1:
+                payload = {
+                    "kind": "final",
+                    "content": _SANDBOX_WRITE_REFUSAL,
+                    "calls": [],
+                }
+            else:
+                payload = {
+                    "kind": "tool_calls",
+                    "content": "",
+                    "calls": [
+                        {
+                            "name": "write_file",
+                            "arguments_json": '{"path":"notes.txt","content":"ok"}',
+                        }
+                    ],
+                }
+        elif mode == "sandbox_refuse_persist":
+            payload = {
+                "kind": "final",
+                "content": _SANDBOX_WRITE_REFUSAL,
+                "calls": [],
             }
         else:
             payload = {"kind": "final", "content": "subscription ready", "calls": []}
