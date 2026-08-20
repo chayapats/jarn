@@ -59,6 +59,7 @@ updates:
 ui:
   splash: "off"
   theme: dark
+  locale: en
   terminal_title: false
 observability:
   transcript: false
@@ -255,11 +256,12 @@ def _measure_interactive_once(
         os.close(slave)
         slave = -1
         deadline = started + timeout_seconds
-        # The toolbar is rendered by the same prompt-toolkit Application after
-        # the focused input Buffer has been attached. Unlike the Unicode prompt
-        # glyph, its ASCII ``cwd`` label survives every terminal encoding and
-        # style-control sequence, making it a stable readiness marker.
-        _read_pty_until(master, b"cwd ", deadline=deadline)
+        # The composer placeholder is rendered by the same prompt-toolkit
+        # Application after the focused input Buffer has been attached.
+        # Quiet toolbar no longer prints ASCII ``cwd ``; the English first-turn
+        # invitation is ASCII and survives encoding/style sequences. Locale is
+        # pinned to ``en`` in the benchmark config so this needle stays stable.
+        _read_pty_until(master, b"Ask jarn", deadline=deadline)
         prompt_ms = (time.perf_counter() - started) * 1_000
 
         # Prompt-toolkit has entered raw mode by the time its input marker is
@@ -366,6 +368,9 @@ def run_benchmarks(
             "JARN_BENCHMARK_API_KEY": "benchmark-local-only",
             "NO_COLOR": "1",
             "TERM": "xterm-256color",
+            "LANG": "C",
+            "LC_ALL": "C",
+            "LC_MESSAGES": "C",
         })
         cases = [
             _run_case(
