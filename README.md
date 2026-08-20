@@ -36,7 +36,7 @@ agents), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcrip
 base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists to
 `~/.jarn/config.yaml`), and per-server **MCP health** (`/mcp status`).
 
-> **Status:** this source line targets v1.0.9 General Availability. Publication is
+> **Status:** this source line targets v1.0.10 General Availability. Publication is
 > controlled by automated gates, protected UAT, and strict evidence; consult the
 > GitHub Releases, PyPI, and npm pages for the currently published version. v0.10 adds an optional
 > **single-operator Telegram gateway**: long-poll DM control, isolated per-root

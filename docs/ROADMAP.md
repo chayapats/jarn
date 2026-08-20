@@ -2,11 +2,11 @@
 
 > **Audience:** users curious about what is shipped versus planned, and contributors
 > choosing where to contribute. Items marked `[x]` are implemented. Hermes
-> display-parity close-out `[x]` rows are on `feat/hermes-parity-closeout`, not
-> a GitHub Release. `[ ]` items are scaffolded or documented but not yet shipped.
+> display-parity close-out and conversation UX chrome are in the v1.0.10
+> candidate. `[ ]` items are scaffolded or documented but not yet shipped.
 
 Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-15** (this source line
-targets v1.0.9 GA; consult the release and package registries for publication status).
+targets v1.0.10 GA; consult the release and package registries for publication status).
 
 ## v1 — implemented
 
@@ -152,7 +152,7 @@ multi-agent review. See the design spec under `docs/superpowers/specs/`.
 - [x] **Quality floor (M3)** — `scripts/eval.py` smoke-eval harness + fixtures (CI-safe offline logic)
 - [x] **Release UX (M4)** — `/mcp status`, in-REPL `/trust` + untrusted-launch notice; security
   audit fixes (Docker cancel/reaper, web_fetch SSRF, eval-checker guard, transcript redaction)
-- Historical v0.x line remained **Alpha**; v1.0.9 targets the completed GA hardening
+- Historical v0.x line remained **Alpha**; v1.0.10 targets the completed GA hardening
   contract (see Known limitations for constraints that still apply).
 
 ## v0.2.0 — released

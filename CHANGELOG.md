@@ -5,10 +5,11 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
-Conversation UX (Claude-style chrome, Thai/English `t()` catalog) plus a
-Codex subscription write-path fix. Hermes display-parity close-out remains
-merged ([#93](https://github.com/chayapats/jarn/pull/93)–[#99](https://github.com/chayapats/jarn/pull/99)).
-Not a GitHub Release.
+## [1.0.10] - 2026-08-20
+
+Conversation UX (Claude-style chrome, Thai/English `t()` catalog), Codex
+subscription write-path fix, and the Hermes display-parity close-out
+([#93](https://github.com/chayapats/jarn/pull/93)–[#100](https://github.com/chayapats/jarn/pull/100)).
 
 ### Fixed
 
@@ -1581,6 +1582,7 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Windows: use WSL; native Windows terminal is unsupported
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
+[1.0.10]: https://github.com/chayapats/jarn/releases/tag/v1.0.10
 [1.0.9]: https://github.com/chayapats/jarn/releases/tag/v1.0.9
 [1.0.8]: https://github.com/chayapats/jarn/releases/tag/v1.0.8
 [1.0.7]: https://github.com/chayapats/jarn/releases/tag/v1.0.7
