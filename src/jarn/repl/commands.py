@@ -51,6 +51,7 @@ class CommandMixin:
 
                 c.print(layout.err(redact_secrets(str(exc))))
                 return
+            self._mark_composer_later()
             await repl_turn._run_turn(
                 c, self.controller, rendered, self._ask,
                 pick=self._pick_approval, view=self._view_full_diff,
@@ -149,6 +150,7 @@ class CommandMixin:
             # act on: seed an agent turn with it — same path as custom commands
             # and /commit,/review — rather than just printing it.
             self._last_tool_outputs = []
+            self._mark_composer_later()
             await repl_turn._run_turn(
                 c, self.controller, result.seed_input or result.text, self._ask,
                 pick=self._pick_approval, view=self._view_full_diff,
@@ -215,6 +217,7 @@ class CommandMixin:
             c.print(layout.muted(f"Nothing to {what} — the working tree is clean."))
             return
         self._last_tool_outputs = []
+        self._mark_composer_later()
         await repl_turn._run_turn(
             c, self.controller, prompt, self._ask,
             pick=self._pick_approval, view=self._view_full_diff,
@@ -413,6 +416,7 @@ class CommandMixin:
         if chosen is None:
             return
         self.controller.resume_thread(chosen.thread_id)
+        self._mark_composer_later()
         self._last_todos_sig = None
         await self._replay_transcript()
         from jarn.controller.commands.diagnostics import format_resume_recap
@@ -546,6 +550,7 @@ class CommandMixin:
         # Match the main submit path (repl/app.py): pass queue_sink so a
         # diagnostics auto-fix round on the rewound/edited prompt is queued, and
         # inline any @image mention in that prompt (both no-op unless enabled).
+        self._mark_composer_later()
         await repl_turn._run_turn(
             c, self.controller, prompt, self._ask,
             pick=self._pick_approval, view=self._view_full_diff,

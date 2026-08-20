@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import sys
 from io import StringIO
 
 from rich.console import Console
 
 from jarn.commands.help import format_help, format_help_detail, usage_error
 from jarn.tui import grammar, layout, palette
+from jarn.tui.i18n import t
 
 
 def test_context_level_ramps() -> None:
@@ -84,32 +86,48 @@ def test_layout_markup_is_valid_rich() -> None:
 
 
 def test_usage_error_comes_from_registry() -> None:
-    text = usage_error("config")
+    text = usage_error("config", locale="en")
     assert "Usage:" in text
     assert "/config" in text
     assert "/help config" in text
 
 
 def test_help_detail_page() -> None:
-    text = format_help_detail("compact")
+    text = format_help_detail("compact", locale="en")
     assert "/compact" in text
     assert "Usage" in text
     assert "/clear" in text or "Related" in text
 
 
 def test_help_index_uses_work_session_setup() -> None:
-    body = format_help()
+    body = format_help(locale="en")
     assert "[b]Work[/b]" in body
     assert "[b]Session[/b]" in body
     assert "[b]Setup[/b]" in body
     assert body.index("[b]Work[/b]") < body.index("[b]Session[/b]") < body.index("[b]Setup[/b]")
-    assert "[b]Glyphs[/b]" in body
+    assert "[b]Glyphs[/b]" not in body
     assert "[b]Daily[/b]" not in body
     assert "[b]Toolbar glyphs[/b]" not in body
 
 
+def test_help_index_shows_bare_model_name() -> None:
+    """Index lists ``/model``; syntax stays on the detail page."""
+    body = format_help(locale="en")
+    index = body.split("[b]Shortcuts[/b]", 1)[0]
+    model_line = next(
+        line for line in index.splitlines() if "Show or switch the active model" in line
+    )
+    assert "/model" in model_line
+    assert "[name]" not in model_line
+    assert "refresh" not in model_line
+    assert "[/ref" not in index
+    detail = format_help_detail("model", locale="en")
+    assert "/model" in detail
+    assert "name" in detail and "refresh" in detail
+
+
 def test_format_help_wide_keeps_name_and_description_on_one_line() -> None:
-    for body in (format_help(), format_help(columns=80)):
+    for body in (format_help(locale="en"), format_help(columns=80, locale="en")):
         status_line = next(line for line in body.splitlines() if "/status" in line)
         assert "Show directory" in status_line
         cost_line = next(line for line in body.splitlines() if "/cost" in line)
@@ -117,7 +135,7 @@ def test_format_help_wide_keeps_name_and_description_on_one_line() -> None:
 
 
 def test_format_help_narrow_puts_description_on_next_line() -> None:
-    body = format_help(columns=50)
+    body = format_help(columns=50, locale="en")
     idx = body.index("/status")
     name_line_end = body.index("\n", idx)
     name_line = body[body.rfind("\n", 0, idx) + 1 : name_line_end]
@@ -141,18 +159,107 @@ def test_layout_row_wraps_only_when_narrow() -> None:
 
 
 def test_layout_html_dialect_is_telegram_safe() -> None:
-    html = format_help(dialect="html")
+    html = format_help(dialect="html", locale="en")
     assert "<b>Work</b>" in html
     assert "<code>/model" in html or "<code>/mode" in html
     assert "<span" not in html
     assert "[b]" not in html
     assert palette.C_SUCCESS not in html
-    detail = format_help_detail("compact", dialect="html")
+    detail = format_help_detail("compact", dialect="html", locale="en")
     assert "<b>/compact" in detail
     assert "<span" not in detail
 
 
+def test_format_help_html_thai_keeps_english_names() -> None:
+    html = format_help(dialect="html", locale="th")
+    assert f"<b>{t('help.group.Work', 'th')}</b>" in html
+    assert "/model" in html
+    assert "<span" not in html
+    assert "[b]" not in html
+    assert f"<b>{t('help.group.Work', 'en')}</b>" not in html
+
+
+def test_format_help_thai_body_keeps_english_names() -> None:
+    en = format_help(locale="en")
+    th = format_help(locale="th")
+    assert "Show or switch the active model." in en
+    assert "แสดงหรือเปลี่ยนโมเดลที่ใช้อยู่" in th
+    assert "Show or switch the active model." not in th
+    assert "/model" in th and "/mode" in th and "/help" in th
+    assert "[b]Work[/b]" in en
+    assert "[b]งาน[/b]" in th
+    assert "maps to" not in en.lower()
+    assert "maps to" not in th.lower()
+
+
+def test_help_mode_glosses_plan_ask_auto_edit_yolo() -> None:
+    en = format_help_detail("mode", locale="en")
+    th = format_help_detail("mode", locale="th")
+    for mode_id in ("plan", "ask", "auto-edit", "yolo"):
+        assert mode_id in en
+        assert mode_id in th
+    assert "confirm each change" in en
+    assert "ถามก่อนทุกการเปลี่ยน" in th
+    assert "danger-guard" in en
+    assert "อันตราย" in th
+
+
+def test_help_login_cli_is_detail_extra_not_index() -> None:
+    index = format_help(locale="en")
+    login_line = next(line for line in index.splitlines() if "/login" in line)
+    assert "Sign in to ChatGPT." in login_line
+    assert "jarn auth login" not in login_line
+    assert "maps to" not in index
+    detail = format_help_detail("login", locale="en")
+    assert "maps to" not in detail
+    assert "jarn auth login" in detail
+    assert "In a terminal:" in detail
+    th = format_help_detail("login", locale="th")
+    assert "jarn auth login" in th
+    assert "ในเทอร์มินัล:" in th
+    assert "maps to" not in th
+
+
 def test_error_detail_tty_adds_color_and_blank_lines(monkeypatch) -> None:
+    from jarn.errors import ErrorCode, error_detail
+    from jarn.tui.i18n import t
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setattr(sys, "argv", ["pytest"])
+
+    class _Tty:
+        def isatty(self) -> bool:
+            return True
+
+    detail = error_detail(
+        ErrorCode.CLI_USAGE,
+        "Command usage is invalid.",
+        cause="missing argument",
+        component="command line parser",
+        retryable=False,
+        action="Run jarn --help",
+    )
+    colored = detail.render(stream=_Tty(), locale="en")
+    assert "\x1b[" in colored
+    assert "\n\n" in colored
+    assert f"{t('error.next', 'en')}:" in colored
+    assert "component:" not in colored.lower()
+    assert "Cause:" not in colored
+    assert "Log:" not in colored
+    verbose = detail.render(stream=_Tty(), locale="en", verbose=True)
+    assert "Component:" in verbose
+    assert "Cause:" in verbose
+    thai = detail.render(stream=_Tty(), locale="th")
+    assert f"{t('error.next', 'th')}:" in thai
+    assert "component:" not in thai.lower()
+    plain = detail.render(stream=object(), locale="en")
+    assert "\x1b[" not in plain
+    assert plain.splitlines()[1].startswith("Cause:")
+    assert "Component:" in plain
+
+
+def test_error_detail_jarn_verbose_argv_shows_component_on_tty(monkeypatch) -> None:
     from jarn.errors import ErrorCode, error_detail
 
     monkeypatch.delenv("NO_COLOR", raising=False)
@@ -170,13 +277,52 @@ def test_error_detail_tty_adds_color_and_blank_lines(monkeypatch) -> None:
         retryable=False,
         action="Run jarn --help",
     )
-    colored = detail.render(stream=_Tty())
-    assert "\x1b[" in colored
-    assert "\n\nCause:" in colored
-    assert "Next:" in colored
-    plain = detail.render(stream=object())
-    assert "\x1b[" not in plain
-    assert plain.splitlines()[1].startswith("Cause:")
+    monkeypatch.setattr(sys, "argv", ["jarn", "--verbose", "nope"])
+    shown = detail.render(stream=_Tty(), locale="en")
+    assert "Component:" in shown
+    monkeypatch.setattr(sys, "argv", ["python", "-m", "jarn", "--verbose"])
+    module = detail.render(stream=_Tty(), locale="en")
+    assert "Component:" in module
+    monkeypatch.setattr(sys, "argv", ["/usr/bin/python3.14", "-m", "jarn", "--verbose"])
+    versioned = detail.render(stream=_Tty(), locale="en")
+    assert "Component:" in versioned
+    monkeypatch.setattr(sys, "argv", ["/opt/jarn/src/jarn/__main__.py", "--verbose"])
+    rewritten = detail.render(stream=_Tty(), locale="en")
+    assert "Component:" in rewritten
+    monkeypatch.setattr(sys, "argv", ["pytest", "--verbose"])
+    quiet = detail.render(stream=_Tty(), locale="en")
+    assert "component:" not in quiet.lower()
+    monkeypatch.setattr(sys, "argv", ["pytest", "-m", "jarn", "--verbose"])
+    marker = detail.render(stream=_Tty(), locale="en")
+    assert "component:" not in marker.lower()
+
+
+def test_error_detail_follows_destination_stream_not_stderr(monkeypatch) -> None:
+    """Rich Console writes to stdout; quiet/full must follow that file, not stderr."""
+    from io import StringIO
+
+    from jarn.errors import ErrorCode, error_detail
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    class _Tty:
+        def isatty(self) -> bool:
+            return True
+
+    detail = error_detail(
+        ErrorCode.CLI_USAGE,
+        "Command usage is invalid.",
+        cause="missing argument",
+        component="command line parser",
+        retryable=False,
+        action="Run jarn --help",
+    )
+    monkeypatch.setattr(sys, "stderr", _Tty())
+    piped = StringIO()
+    rendered = detail.render(stream=piped, locale="en")
+    assert "Component:" in rendered
+    assert rendered.splitlines()[1].startswith("Cause:")
 
 
 def test_heading_and_more_helpers() -> None:
@@ -305,6 +451,22 @@ def test_parse_slash_line_and_gateway_local() -> None:
     assert {"stop", "new", "repo", "help", "reset"} <= menu_names
 
 
+def test_gateway_mutating_notice_localizes_terminal_hint() -> None:
+    from jarn.commands.registry import GATEWAY_MUTATING_NOTICE, gateway_mutating_notice
+    from jarn.tui.i18n import t
+
+    assert gateway_mutating_notice("config") == t("telegram.mutating.named", "en", name="config")
+    assert gateway_mutating_notice("config", locale="th") == t(
+        "telegram.mutating.named", "th", name="config"
+    )
+    assert gateway_mutating_notice() == GATEWAY_MUTATING_NOTICE
+    assert gateway_mutating_notice() == t("telegram.mutating", "en")
+    assert "/config" in gateway_mutating_notice("config", locale="th")
+    assert gateway_mutating_notice("config", locale="en") != gateway_mutating_notice(
+        "config", locale="th"
+    )
+
+
 def test_live_stream_helpers_use_grammar_and_palette() -> None:
     assert grammar.GLYPH_PROMPT in layout.prompt("hello")
     assert palette.C_USER in layout.prompt("hello")
@@ -405,6 +567,14 @@ def test_truncate_bullet_rule_item_helpers() -> None:
     assert palette.C_DIM in ruled
     bare = layout.rule()
     assert bare == layout.muted("──")
+    assert layout.bar(4, dialect="plain") == "────"
+    assert palette.C_DIM in layout.bar(3)
+    boxed = layout.composer_box("hello", width=8, dialect="plain")
+    assert boxed.splitlines()[0] == "─" * 8
+    assert boxed.splitlines()[1].startswith(f"{grammar.GLYPH_PROMPT} hello")
+    typed = layout.composer_box("hello", width=8, typed="draft", dialect="plain")
+    assert "draft" in typed
+    assert "hello" not in typed.splitlines()[1]
     row = layout.item("bash", "run a command", meta="tool")
     assert palette.ACCENT in row
     assert "bash" in row

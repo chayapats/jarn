@@ -32,6 +32,7 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import (
     AppendAutoSuggestion,
     BeforeInput,
+    Processor,
     Transformation,
 )
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -55,8 +56,9 @@ from jarn.repl_renderer import esc as _esc
 from jarn.tui import grammar, layout, palette
 from jarn.tui.completion import CompletionProvider
 from jarn.tui.controller import Controller
+from jarn.tui.i18n import resolve_locale, t
 from jarn.tui.input_queue import InputQueue
-from jarn.tui.logo import SHORTCUT_HINT, display_folder, splash, splash_compact, splash_info_strip
+from jarn.tui.logo import display_folder, render_launch_banner
 from jarn.tui.notify import notify, set_title
 from jarn.tui.toolbar import render_toolbar
 from jarn.version import __version__
@@ -68,6 +70,10 @@ if TYPE_CHECKING:
 #: Max body lines of the LIVE plan checklist above the input, so a long plan can't
 #: push the input/toolbar off-screen (the committed end-of-turn render is uncapped).
 _LIVE_TODOS_CAP = 8
+#: Pinned rows below the live region: upper rule + input + lower rule + toolbar.
+#: Two extra rows of slack so a wrapped composer line still fits (was 4 before
+#: the composer box added two rule rows).
+_PINNED_CHROME_ROWS = 6
 
 # Render a usable input before constructing provider/model/runtime extensions.
 # The small delay guarantees prompt_toolkit gets its first event-loop turn even
@@ -75,21 +81,6 @@ _LIVE_TODOS_CAP = 8
 # controller's bounded background/thread paths and is still single-flighted if
 # the user submits immediately.
 _DEFERRED_RUNTIME_DELAY_SECONDS = 0.05
-
-
-def _startup_info_strip(app) -> str:
-    """Model / folder / mode strip printed under every splash variant."""
-    cfg = app.controller.config
-    model = cfg.resolved_main_model() or "unconfigured"
-    skills = None
-    if app.controller.runtime and app.controller.runtime.skills:
-        skills = len(app.controller.runtime.skills)
-    return splash_info_strip(
-        model=model,
-        folder=display_folder(app.controller.project_root),
-        mode=cfg.permission_mode.value,
-        skills=skills,
-    )
 
 
 class _GhostAutoSuggestion(AppendAutoSuggestion):
@@ -104,6 +95,21 @@ class _GhostAutoSuggestion(AppendAutoSuggestion):
         if ti.buffer_control.buffer.complete_state is not None:
             return Transformation(ti.fragments)
         return super().apply_transformation(ti)
+
+
+class _ComposerPlaceholder(Processor):
+    """Dim invitation after ``›`` when the buffer is empty; gone once the user types."""
+
+    def __init__(self, get_text, style: str) -> None:
+        self.get_text = get_text
+        self.style = style
+
+    def apply_transformation(self, ti):  # type: ignore[override]
+        if ti.document.text:
+            return Transformation(ti.fragments)
+        if ti.lineno != ti.document.line_count - 1:
+            return Transformation(ti.fragments)
+        return Transformation(list(ti.fragments) + [(self.style, self.get_text())])
 
 
 class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
@@ -206,9 +212,6 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         # reasoning flag — both route to the same dim renderer in _stream_control.
         self._stream_is_progress = False
         self._turn_start: float | None = None     # for the elapsed timer
-        # One stable thinking word per session (don't re-roll every turn — the
-        # churning label reads as noise). Shared with the renderer spinner.
-        self._thinking_word = palette.session_thinking_word()
         self._turn_stream_chars = 0   # streamed output chars this turn (live tok estimate)
         self._turn_base_output = 0    # tracker output tokens at turn start (real-usage delta)
         self._turn_base_input = 0     # tracker input tokens at turn start (prompt-size delta)
@@ -234,6 +237,9 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self._module_window: Window | None = None
         self._resume_on_start = resume               # show the /resume picker on launch
         self.app: Application | None = None
+        # Empty-buffer composer invitation: first-turn copy until an agent turn
+        # or a resumed session; ``/clear`` restores first-turn copy.
+        self._composer_first = True
 
     async def run(self) -> None:
         c = self.console
@@ -247,14 +253,18 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             with contextlib.suppress(OSError):
                 _first_run_marker.parent.mkdir(parents=True, exist_ok=True)
                 _first_run_marker.touch()
-            c.print(splash(__version__))
-        elif _splash_cfg == "full":
-            c.print(splash(__version__))
-        elif _splash_cfg == "compact":
-            c.print(splash_compact(__version__))
-        else:  # off
-            c.print(SHORTCUT_HINT)
-        c.print(_startup_info_strip(self))
+        cfg = self.controller.config
+        c.print(
+            render_launch_banner(
+                __version__,
+                variant=_splash_cfg,
+                first_run=_is_first_run,
+                model=cfg.resolved_main_model() or "unconfigured",
+                folder=display_folder(self.controller.project_root),
+                mode=cfg.permission_mode.value,
+                locale=resolve_locale(self.config),
+            )
+        )
         # Startup notice: name the context file whose bounded excerpt was loaded.
         if self.controller.project_trusted and self.controller.project_root is not None:
             from jarn.memory.context import resolve_context_file
@@ -385,6 +395,29 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             kwargs={"network": self.config.pricing.network},
             daemon=True,
         ).start()
+
+    def _ui_locale(self) -> str:
+        return resolve_locale(self.controller.config)
+
+    def _composer_placeholder(self) -> str:
+        key = (
+            "composer.placeholder.first"
+            if self._composer_first
+            else "composer.placeholder.later"
+        )
+        return t(key, self._ui_locale())
+
+    def _mark_composer_later(self) -> None:
+        self._composer_first = False
+
+    def _composer_rule_window(self) -> Window:
+        return Window(
+            height=1,
+            char="─",
+            style=f"fg:{palette.C_DIM}",
+            dont_extend_height=True,
+        )
+
     def _build_app(self) -> Application:
         # dont_extend_height so each window sizes to its CONTENT (not the screen):
         # otherwise the windows expand to their max and the input floats up the
@@ -405,6 +438,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 self.input,
                 input_processors=[
                     BeforeInput(f"{grammar.GLYPH_PROMPT} ", style="bold"),
+                    _ComposerPlaceholder(
+                        self._composer_placeholder,
+                        style=f"fg:{palette.C_DIM}",
+                    ),
                     # Ghost autosuggest: renders the upcoming suggestion suffix in
                     # a dim colour after the cursor.  Hidden when the completion
                     # dropdown is open so both UI layers never appear together.
@@ -459,7 +496,13 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             ),
         ])
         root = FloatContainer(
-            HSplit([top, prompt, toolbar]),
+            HSplit([
+                top,
+                self._composer_rule_window(),
+                prompt,
+                self._composer_rule_window(),
+                toolbar,
+            ]),
             floats=[Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=8))],
         )
         from prompt_toolkit.output import DummyOutput, create_output
@@ -636,7 +679,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         and toolbar off the bottom of the screen. Reserve a few rows for the input
         + toolbar; the live block clips at that cap, the input stays pinned."""
         rows = shutil.get_terminal_size((80, 24)).lines
-        return Dimension(min=0, max=max(4, rows - 4))
+        return Dimension(min=0, max=max(4, rows - _PINNED_CHROME_ROWS))
 
     def _stream_control(self):
         """Region above the input: the live plan checklist (when a turn has written
@@ -663,7 +706,13 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                 # "✻ thinking\n…" block keeps its line breaks (markdown collapses
                 # the soft break onto one line).
                 if self._stream_is_reasoning:
-                    rendered = self._render_dim_ansi(self._stream_text)
+                    body = self._stream_text
+                    if body.startswith(REASONING_STREAM_PREFIX):
+                        body = body[len(REASONING_STREAM_PREFIX):]
+                    header = f"{grammar.GLYPH_THINKING} {self._thinking_label()}"
+                    rendered = self._render_dim_ansi(
+                        f"{header}\n{body}" if body else header
+                    )
                 elif self._stream_is_progress:
                     # Strip the routing sentinel; show the raw tail dim + verbatim.
                     rendered = self._render_dim_ansi(
@@ -724,15 +773,31 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         cap.print("\n".join(lines), end="")
         return buf.getvalue().rstrip("\n")
 
+    def _thinking_style(self) -> str:
+        return getattr(self.controller.config.ui, "thinking_style", "plain") or "plain"
+
+    def _thinking_label(self) -> str:
+        return palette.thinking_label(
+            style=self._thinking_style(), locale=self._ui_locale()
+        )
+
+    def _thinking_status_text(self) -> str:
+        start = self._turn_start or time.monotonic()
+        elapsed = int(time.monotonic() - start)
+        parts = [f"{elapsed}s"]
+        if getattr(self.controller, "tool_progress", "new") == "verbose":
+            stat = self._gen_stat()
+            if stat:
+                parts.append(stat)
+        parts.append("esc to interrupt")
+        return f"{self._thinking_label()} ({' · '.join(parts)})"
+
     def _thinking_ansi(self) -> str:
         """The animated thinking line rendered to ANSI, for composing BELOW the live
         todos block (the plain-HTML _thinking_line can't be concatenated with the
         ANSI checklist in a single control value)."""
-        start = self._turn_start or time.monotonic()
-        elapsed = int(time.monotonic() - start)
         frame = palette.SPINNER_FRAMES[int(time.monotonic() * 5) % len(palette.SPINNER_FRAMES)]
-        word = self._thinking_word or "Working"
-        text = f"{word}… ({elapsed}s · {self._gen_stat()} · esc to interrupt)"
+        text = self._thinking_status_text()
         width = _current_width()
         self.console.width = width
         buf = io.StringIO()
@@ -763,6 +828,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         self._last_tool_outputs = []
         self._last_todos_sig = None
         self._live_todos = None
+        self._composer_first = True
         if self.app is not None:
             self.app.invalidate()
         f = self.console.file
@@ -798,9 +864,14 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
                     f'<style fg="{palette.C_DIM}">↑/↓ · Enter prefill · Backspace · Esc cancel</style>'
                 )
         else:
-            lines.append(
-                f'<style fg="{palette.C_DIM}">↑/↓ select · Enter confirm</style>'
+            # Approval picker (fastkeys set) uses the catalog nav; other menus
+            # keep the longer English hint.
+            nav = (
+                t("approval.nav", resolve_locale(self.controller.config))
+                if self._menu_fastkeys is not None
+                else "↑/↓ select · Enter confirm"
             )
+            lines.append(f'<style fg="{palette.C_DIM}">{_esc(nav)}</style>')
         return HTML("\n".join(lines))
 
     def _gen_stat(self) -> str:
@@ -835,13 +906,10 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         return out
 
     def _thinking_line(self) -> HTML:
-        start = self._turn_start or time.monotonic()
-        elapsed = int(time.monotonic() - start)
         frame = palette.SPINNER_FRAMES[int(time.monotonic() * 5) % len(palette.SPINNER_FRAMES)]
-        word = self._thinking_word or "Working"
         return HTML(
             f'{palette.styled_fg(palette.C_TOOL, frame)} '
-            f'{palette.styled_fg(palette.C_DIM, f"{word}… ({elapsed}s · {self._gen_stat()} · esc to interrupt)")}'
+            f'{palette.styled_fg(palette.C_DIM, self._thinking_status_text())}'
         )
 
     def _count_stream_chars(self, delta: str) -> None:
@@ -906,6 +974,8 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             compact_count=getattr(self.controller, "compact_count", 0),
             title=session_title,
             width=width,
+            detail=cfg.ui.toolbar_detail,
+            locale=resolve_locale(cfg),
         )
 
     def _completer(self) -> CompletionProvider:
@@ -921,7 +991,9 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
         ]
         skills = self.controller.runtime.skills if self.controller.runtime else None
         return CompletionProvider(
-            command_catalog=completion_catalog(custom, skills=skills),
+            command_catalog=completion_catalog(
+                custom, skills=skills, locale=self._ui_locale()
+            ),
             project_root=self.controller.project_root,
             model_refs=model_refs or None,
             session_titles=session_titles or None,
@@ -1060,6 +1132,7 @@ class InlineApp(OverlayMixin, KeysMixin, CommandMixin):
             else:
                 # Reset + pass the list as a sink so tool outputs accumulate LIVE
                 # — Ctrl+O works mid-turn, not only after the answer completes.
+                self._mark_composer_later()
                 self._last_tool_outputs = []
                 self._title_hook("working")   # Set working title when agent turn starts
                 # T-3-7: scan the submitted text for @-mentioned images to inline as

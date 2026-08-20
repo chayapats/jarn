@@ -35,7 +35,7 @@ def test_builtin_registry_routes_are_handled():
 
 
 def test_help_and_completion_use_registry():
-    body = format_help()
+    body = format_help(locale="en")
     for name in builtin_names():
         assert f"/{name}" in body
 
@@ -46,7 +46,7 @@ def test_format_help_is_valid_rich_markup():
     from rich.console import Console
 
     buf = StringIO()
-    Console(file=buf, force_terminal=True, width=100).print(format_help())
+    Console(file=buf, force_terminal=True, width=100).print(format_help(locale="en"))
     rendered = buf.getvalue()
     # Grouped sections replace the old flat "Built-in commands" header.
     assert "Work" in rendered
@@ -56,7 +56,7 @@ def test_format_help_is_valid_rich_markup():
 
 def test_format_help_groups_contain_expected_commands():
     """Commands appear under the correct group section."""
-    body = format_help()
+    body = format_help(locale="en")
     # Verify section ordering: Work, Session, Setup.
     assert body.index("[b]Work[/b]") < body.index("[b]Session[/b]")
     assert body.index("[b]Session[/b]") < body.index("[b]Setup[/b]")
@@ -76,14 +76,24 @@ def test_format_help_groups_contain_expected_commands():
 
 def test_format_help_has_shortcuts_block():
     """Shortcuts block is present in the rendered help."""
-    body = format_help()
+    body = format_help(locale="en")
     assert "[b]Shortcuts[/b]" in body
     assert "Shift+Tab" in body or "Tab complete" in body
 
 
-def test_format_help_has_toolbar_glyphs_legend():
-    """Glyphs legend block is rendered with the expected symbols."""
-    body = format_help()
+def test_format_help_has_no_glyphs_section():
+    """Default /help must not teach a glyph dialect."""
+    body = format_help(locale="en")
+    assert "[b]Glyphs[/b]" not in body
+    assert "key ok" not in body
+    assert "queue N" not in body
+
+
+def test_help_glyphs_page_documents_legend():
+    """``/help glyphs`` keeps the contributor legend."""
+    from jarn.commands.help import format_help_detail
+
+    body = format_help_detail("glyphs", locale="en")
     assert "[b]Glyphs[/b]" in body
     assert "◇" in body   # plan
     assert "◆" in body   # ask
@@ -92,6 +102,9 @@ def test_format_help_has_toolbar_glyphs_legend():
     assert "●" in body   # key ok
     assert "✗" in body   # key fail
     assert "queue N" in body
+    html = format_help_detail("GLYPHS", dialect="html", locale="en")
+    assert "<b>Glyphs</b>" in html
+    assert "key ok" in html
 
 
 def test_builtin_command_group_field():
@@ -184,31 +197,62 @@ def test_input_queue_drop_internal_all_user_untouched():
     assert q.pop_next().display == "b"
 
 
+def _quiet_toolbar(**kwargs):
+    kwargs.setdefault("detail", "quiet")
+    kwargs.setdefault("cost_line", "$0.0123 · 1,204 tok")
+    kwargs.setdefault("cost_status", BudgetStatus.OK)
+    return render_toolbar(**kwargs)
+
+
 def test_toolbar_shows_queue_and_collapses_narrow():
-    wide = render_toolbar(
-        model="openrouter/claude",
+    wide = _quiet_toolbar(
+        model="sonnet-4",
         mode="ask",
-        cost_line="$0.01 · 100 tok · 1 calls",
-        cost_status=BudgetStatus.OK,
         queue_count=2,
         context_frac=0.42,
         width=120,
     )
     assert "queue 2" in wide.value
-    narrow = render_toolbar(
-        model="openrouter/claude",
+    narrow = _quiet_toolbar(
+        model="sonnet-4",
         mode="ask",
-        cost_line="$0.01 · 100 tok · 1 calls",
-        cost_status=BudgetStatus.OK,
         queue_count=2,
         context_frac=0.42,
         width=30,
     )
-    # Model + mode survive; context or cost may drop on very narrow width.
+    # Model + mode survive; context may drop on very narrow width.
     assert "ask" in narrow.value
 
 
-def test_toolbar_shows_ga_session_context_when_wide():
+def test_toolbar_quiet_width_80_hides_trusted_and_provider():
+    result = _quiet_toolbar(
+        model="sonnet-4",
+        mode="ask",
+        cwd="~/Projects/harness",
+        provider="openrouter",
+        auth="key",
+        reasoning="medium",
+        trusted=True,
+        context_frac=0.12,
+        context_used=12_400,
+        context_window=200_000,
+        elapsed_s=12 * 60,
+        context_bar=True,
+        title="Fix login",
+        width=80,
+    )
+    text = result.value
+    assert "trusted" not in text
+    assert "openrouter" not in text
+    assert "cwd" not in text
+    assert "reasoning" not in text
+    assert "$0.0123" not in text
+    assert "Fix login" not in text
+    assert "sonnet-4" in text
+    assert "ask" in text
+
+
+def test_toolbar_full_shows_ga_session_context_when_wide():
     result = render_toolbar(
         model="gpt-5",
         mode="ask",
@@ -220,6 +264,7 @@ def test_toolbar_shows_ga_session_context_when_wide():
         cost_status=BudgetStatus.OK,
         context_frac=0.12,
         width=180,
+        detail="full",
     )
     assert "cwd งานไทย" in result.value
     assert "chatgpt · ChatGPT" in result.value
@@ -227,33 +272,79 @@ def test_toolbar_shows_ga_session_context_when_wide():
     assert "ctx 12%" in result.value
 
 
-def test_toolbar_trusted_shows_lock():
+def test_toolbar_full_trusted_shows_lock():
     result = render_toolbar(
-        model="openrouter/claude",
+        model="sonnet-4",
         mode="ask",
         cost_line="$0.00 · 0 tok · 0 calls",
         cost_status=BudgetStatus.OK,
         trusted=True,
         width=120,
+        detail="full",
     )
     assert "trusted" in result.value
     assert "untrusted" not in result.value
 
 
-def test_toolbar_untrusted_shows_warning_and_pointer():
+def test_toolbar_untrusted_shows_in_quiet():
+    result = _quiet_toolbar(
+        model="m",
+        mode="ask",
+        trusted=False,
+        width=80,
+    )
+    assert "untrusted" in result.value
+    assert "jarn trust" not in result.value
+
+
+def test_toolbar_full_untrusted_shows_warning_and_pointer():
     result = render_toolbar(
-        model="openrouter/claude",
+        model="sonnet-4",
         mode="ask",
         cost_line="$0.00 · 0 tok · 0 calls",
         cost_status=BudgetStatus.OK,
         trusted=False,
         width=120,
+        detail="full",
     )
     assert "untrusted" in result.value
     assert "jarn trust" in result.value
 
 
-def test_toolbar_fill_bar_and_duration_when_wide():
+def test_toolbar_quiet_fill_bar_at_full_width_hides_duration():
+    result = _quiet_toolbar(
+        model="gpt-5",
+        mode="ask",
+        context_frac=0.06,
+        context_used=12_400,
+        context_window=200_000,
+        elapsed_s=15 * 60,
+        context_bar=True,
+        width=180,
+    )
+    assert "12.4K/200K" in result.value
+    assert "6%" in result.value
+    assert "15m" not in result.value
+    assert "ctx 6%" not in result.value
+    assert "$0.0123" not in result.value
+
+
+def test_toolbar_quiet_narrow_context_is_percent_only():
+    result = _quiet_toolbar(
+        model="m",
+        mode="ask",
+        context_frac=0.12,
+        context_used=12_400,
+        context_window=200_000,
+        context_bar=True,
+        width=60,
+    )
+    assert "12%" in result.value
+    assert "ctx 12%" not in result.value
+    assert "12.4K/200K" not in result.value
+
+
+def test_toolbar_full_fill_bar_and_duration_when_wide():
     result = render_toolbar(
         model="gpt-5",
         mode="ask",
@@ -265,6 +356,7 @@ def test_toolbar_fill_bar_and_duration_when_wide():
         elapsed_s=15 * 60,
         context_bar=True,
         width=180,
+        detail="full",
     )
     assert "12.4K/200K" in result.value
     assert "6%" in result.value
@@ -273,11 +365,10 @@ def test_toolbar_fill_bar_and_duration_when_wide():
 
 
 def test_toolbar_yolo_badge_survives_narrow():
-    narrow = render_toolbar(
+    narrow = _quiet_toolbar(
         model="m",
         mode="yolo",
         cost_line="$0.00 · 1000 tok · 99 calls · very long cost line",
-        cost_status=BudgetStatus.OK,
         width=40,
         title="A long session title that must drop first",
         compact_count=3,
@@ -291,7 +382,7 @@ def test_toolbar_yolo_badge_survives_narrow():
 
 
 def test_toolbar_title_drops_before_bar_and_yolo():
-    """Drop order among named pieces: YOLO > model > bar > title."""
+    """Drop order among named pieces in full: YOLO > model > bar > title."""
     title = "Fix toolbar"
     common = dict(
         model="openrouter/claude",
@@ -305,6 +396,7 @@ def test_toolbar_title_drops_before_bar_and_yolo():
         context_window=200_000,
         context_bar=True,
         trusted=True,
+        detail="full",
     )
     w40 = render_toolbar(**common, width=40)
     w60 = render_toolbar(**common, width=60)
@@ -330,29 +422,87 @@ def test_toolbar_title_drops_before_bar_and_yolo():
 
 
 def test_toolbar_compact_badge_hidden_when_zero():
-    result = render_toolbar(
+    result = _quiet_toolbar(
         model="m",
         mode="ask",
-        cost_line="$0.00",
-        cost_status=BudgetStatus.OK,
         compact_count=0,
         width=120,
     )
     assert "compact" not in result.value
 
 
-def test_toolbar_trust_segment_survives_narrow():
-    """Trust segment has priority 2; cost (priority 5) drops before trust does."""
-    # At width=60 the cost segment drops but model, mode, and trust all fit.
-    narrow = render_toolbar(
+def test_toolbar_compact_badge_shown_when_nonzero():
+    result = _quiet_toolbar(
+        model="m",
+        mode="ask",
+        compact_count=3,
+        width=80,
+    )
+    assert "compact 3" in result.value
+
+
+def test_toolbar_untrusted_survives_narrow():
+    """Untrusted cannot drop, even on a 40-col quiet bar."""
+    narrow = _quiet_toolbar(
         model="m",
         mode="ask",
         cost_line="$0.00 · 1000 tok · 99 calls · very long cost line",
-        cost_status=BudgetStatus.OK,
         trusted=False,
-        width=60,
+        width=40,
     )
     assert "untrusted" in narrow.value
+
+
+def test_toolbar_queue_localizes():
+    th = _quiet_toolbar(model="m", mode="ask", queue_count=2, locale="th", width=80)
+    en = _quiet_toolbar(model="m", mode="ask", queue_count=2, locale="en", width=80)
+    assert "คิว 2" in th.value
+    assert "queue 2" in en.value
+    assert "queue 2" not in th.value
+
+
+def test_ui_toolbar_detail_defaults_to_quiet():
+    from jarn.config.schema import UIConfig
+
+    assert UIConfig().toolbar_detail == "quiet"
+
+
+def test_ui_toolbar_detail_is_settable():
+    from jarn.config import settings
+
+    assert settings.is_settable("ui.toolbar_detail")
+    assert settings.coerce("ui.toolbar_detail", "full") == "full"
+    with pytest.raises(settings.SettingError):
+        settings.coerce("ui.toolbar_detail", "debug")
+
+
+def test_loader_toolbar_detail_accepted(tmp_path):
+    import yaml
+
+    from jarn.config.loader import load_config
+
+    gp = tmp_path / "g.yaml"
+    gp.write_text(yaml.safe_dump({"ui": {"toolbar_detail": "full"}}), encoding="utf-8")
+    cfg = load_config(global_path=gp, project_path=None)
+    assert cfg.ui.toolbar_detail == "full"
+
+
+def test_loader_toolbar_detail_invalid_raises(tmp_path):
+    import yaml
+
+    from jarn.config.loader import ConfigError, load_config
+
+    gp = tmp_path / "g.yaml"
+    gp.write_text(yaml.safe_dump({"ui": {"toolbar_detail": "debug"}}), encoding="utf-8")
+    with pytest.raises(ConfigError, match="ui.toolbar_detail"):
+        load_config(global_path=gp, project_path=None)
+
+
+def test_defaults_template_includes_toolbar_detail():
+    from jarn.config.defaults import global_config_template
+
+    assert "toolbar_detail:" in global_config_template()
+    assert "quiet | full" in global_config_template()
 
 
 def test_no_color_plain_toolbar(monkeypatch):
@@ -388,6 +538,14 @@ def _make_app(tmp_path, monkeypatch):
         routing=RoutingConfig(main="openrouter/m"),
     )
     return repl.InlineApp(cfg, root)
+
+
+def test_assembler_quiet_hides_provider_and_trusted(tmp_path, monkeypatch):
+    app = _make_app(tmp_path, monkeypatch)
+    text = app._toolbar().value
+    assert "openrouter" not in text
+    assert "trusted" not in text
+    assert "API key" not in text
 
 
 @pytest.mark.asyncio
