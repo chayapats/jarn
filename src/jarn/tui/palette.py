@@ -206,20 +206,34 @@ THINKING_WORDS = [
     "Wrangling",
 ]
 
-_session_thinking_word: str | None = None
+_quirky_thinking_word: str | None = None
 
 
-def session_thinking_word() -> str:
-    """Return the thinking-indicator label for this session.
+def session_thinking_word(*, style: str = "plain", locale: str = "en") -> str:
+    """Return the thinking-indicator word for this session.
 
-    Picked once (lazily) and cached so the indicator keeps one identity across
-    turns instead of churning a fresh ``random.choice`` every turn. All
-    indicators (REPL prompt line + renderer spinner) share this one word.
+    * ``plain`` (default) — catalog ``Thinking…`` / ``คิด…`` (ellipsis included).
+    * ``quirky`` — one word from :data:`THINKING_WORDS`, picked once and cached
+      so the indicator keeps one identity across turns.
+
+    Call :func:`thinking_label` when the UI needs a guaranteed trailing ellipsis.
     """
-    global _session_thinking_word
-    if _session_thinking_word is None:
-        _session_thinking_word = random.choice(THINKING_WORDS)
-    return _session_thinking_word
+    global _quirky_thinking_word
+    if style == "quirky":
+        if _quirky_thinking_word is None:
+            _quirky_thinking_word = random.choice(THINKING_WORDS)
+        return _quirky_thinking_word
+    from jarn.tui.i18n import t
+
+    return t("thinking.plain", locale)
+
+
+def thinking_label(*, style: str = "plain", locale: str = "en") -> str:
+    """User-facing thinking text, including a trailing ellipsis."""
+    word = session_thinking_word(style=style, locale=locale)
+    if word.endswith("…") or word.endswith("..."):
+        return word
+    return f"{word}…"
 
 
 def no_color() -> bool:
