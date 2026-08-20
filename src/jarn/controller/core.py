@@ -2005,7 +2005,9 @@ class Controller:
         from jarn.commands.registry import canonical_name, spec_by_name
         from jarn.controller.commands import REGISTRY
         from jarn.extensibility.skills import find_skill
+        from jarn.tui.i18n import resolve_locale
 
+        locale = resolve_locale(self.config)
         spec = spec_by_name(name)
         if spec is None:
             skill = None
@@ -2015,11 +2017,11 @@ class Controller:
                 from jarn.controller.commands.meta import cmd_skill
 
                 return cmd_skill(self, skill.name)
-            return CommandResult(unknown_command(name))
+            return CommandResult(unknown_command(name, locale=locale))
         key = canonical_name(name) or spec.name
         handler = REGISTRY.get(key) or REGISTRY.get(spec.name)
         if handler is None:
-            return CommandResult(unknown_command(name))
+            return CommandResult(unknown_command(name, locale=locale))
         return handler(self, args)
 
     def current_provider(self) -> str | None:

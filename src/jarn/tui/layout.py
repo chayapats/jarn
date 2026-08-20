@@ -185,6 +185,30 @@ def rule(title: str = "", *, dialect: Dialect = "rich") -> str:
     return muted(body, dialect=dialect)
 
 
+def bar(width: int, *, dialect: Dialect = "rich") -> str:
+    """Muted full-width ``─`` rule (composer box). *width* is in columns."""
+    return muted("─" * max(1, int(width)), dialect=dialect)
+
+
+def composer_box(
+    placeholder: str,
+    *,
+    width: int = 80,
+    typed: str = "",
+    dialect: Dialect = "plain",
+) -> str:
+    """Claude-style composer band: rule, ``›`` line, rule.
+
+    Empty *typed* shows *placeholder*. Non-empty *typed* is the draft and the
+    placeholder is gone. Default dialect is plain so tests can pin the 80-col
+    picture without color tags.
+    """
+    rule_line = bar(width, dialect=dialect)
+    body = typed if typed else placeholder
+    prompt = f"{grammar.GLYPH_PROMPT} {body}"
+    return f"{rule_line}\n{prompt}\n{rule_line}"
+
+
 def item(
     name: str,
     description: str = "",
@@ -387,8 +411,8 @@ def host_shell(cmd: str, *, dialect: Dialect = "rich") -> str:
     )
 
 
-def thinking(*, dialect: Dialect = "rich") -> str:
-    return muted(f"{grammar.GLYPH_THINKING} thinking", dialect=dialect)
+def thinking(*, label: str = "thinking", dialect: Dialect = "rich") -> str:
+    return muted(f"{grammar.GLYPH_THINKING} {label}", dialect=dialect)
 
 
 def subagent_prefix(name: str, *, dialect: Dialect = "rich") -> str:

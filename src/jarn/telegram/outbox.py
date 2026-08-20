@@ -14,7 +14,8 @@ Binding (#40)
 
 Cards (#37/#39)
 ---------------
-* Tool: name / description / redacted args; Once / Session / Deny (no Always).
+* Tool: catalog header + Once / Session / Deny nouns (no Always).
+* Verbose progress uses the same ``tool_labels`` catalog as the CLI.
 * Memory / skill: Save / Decline.
 * Plan-mode: auto-edit / ask / keep planning (three-way).
 * Yolo escalate confirm: Confirm / Cancel.
@@ -36,8 +37,10 @@ from jarn.telegram.htmlutil import (
     chunk_html,
     escape_html,
 )
-from jarn.tui import grammar, layout
+from jarn.tui import layout
 from jarn.tui.grammar import TOOL_PROGRESS_VALUES
+from jarn.tui.i18n import resolve_locale, t
+from jarn.tui.tool_labels import activity_open, activity_result, primary_object
 
 _log = logging.getLogger("jarn.telegram.outbox")
 
@@ -53,6 +56,7 @@ __all__ = [
     "build_yolo_confirm_card",
     "effective_telegram_busy_ack_detail",
     "effective_telegram_busy_input_mode",
+    "effective_telegram_locale",
     "effective_telegram_tool_progress",
     "encode_callback",
     "parse_callback",
@@ -278,6 +282,18 @@ def effective_telegram_busy_ack_detail(config: Any | None) -> bool:
     return bool(tg_raw) or bool(ui_raw)
 
 
+def effective_telegram_locale(
+    config: Any | None,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    """Same ``ui.locale`` as the CLI. Do not invent a Telegram overlay key."""
+    return resolve_locale(config, environ)
+
+
+def _chrome_locale(locale: str | None) -> str:
+    return locale if locale in {"en", "th"} else "en"
+
+
 def should_drop_event(
     kind: str,
     data: dict[str, Any] | None = None,
@@ -301,14 +317,37 @@ def should_drop_event(
     return progress not in _PROGRESS_VISIBLE
 
 
-def _fmt_args(args: dict[str, Any]) -> str:
-    parts: list[str] = []
-    for key, value in list(args.items())[:3]:
-        text = str(value)
-        if len(text) > 60:
-            text = text[:57] + "…"
-        parts.append(text if key in {"command", "cmd"} else f"{key}={text}")
-    return "  ".join(parts)
+#: Tool name or ActionKind value → S07 header key. Remote ALWAYS is not a noun here.
+_APPROVAL_HEADER_KEYS: dict[str, str] = {
+    "edit_file": "approval.header.edit",
+    "write_file": "approval.header.write",
+    "read_file": "approval.header.read",
+    "bash": "approval.header.shell",
+    "shell": "approval.header.shell",
+    "execute": "approval.header.shell",
+    "read": "approval.header.read",
+    "write": "approval.header.write",
+    "network": "approval.header.network",
+}
+
+
+def _approval_header_key(action: str, args: dict[str, Any] | None) -> str:
+    name = (action or "").strip().lower()
+    key = _APPROVAL_HEADER_KEYS.get(name)
+    if key is not None:
+        return key
+    if args and "old_string" in args:
+        return "approval.header.edit"
+    return "approval.header.write"
+
+
+def _approval_object(action: str, target: str, args: dict[str, Any] | None) -> str:
+    if (target or "").strip():
+        return target.strip()
+    obj = primary_object(action, args)
+    if obj:
+        return obj
+    return (action or "tool").strip() or "tool"
 
 
 def _clip_tail(tail: str) -> str:
@@ -324,7 +363,7 @@ def _clip_tail(tail: str) -> str:
 @dataclass
 class _ToolLine:
     name: str
-    args: str = ""
+    args: dict[str, Any] = field(default_factory=dict)
     summary: str = ""
     duration: str = ""
     tail: str = ""
@@ -350,8 +389,13 @@ def build_approval_card(
     suggested_memory: dict[str, Any] | None = None,
     suggested_skill: dict[str, Any] | None = None,
     dangerous: bool = False,
+    locale: str = "en",
 ) -> tuple[str, dict[str, Any]]:
-    """Return ``(html_text, reply_markup_dict)`` for an approval ask (#37/#39)."""
+    """Return ``(html_text, reply_markup_dict)`` for an approval ask (#37/#39).
+
+    Tool cards use S07 catalog nouns. Remote ALWAYS is not offered.
+    """
+    loc = _chrome_locale(locale)
     if suggested_memory is not None:
         name = str(suggested_memory.get("name") or "memory")
         body = str(suggested_memory.get("body") or "")
@@ -408,7 +452,7 @@ def build_approval_card(
         )
         return text, markup
 
-    # Tool-only card: name / description / already-redacted args (#37).
+    # Tool-only card: S07 header + Once / Session / Deny. Never Always (#39).
     safe_args = sanitize_tool_args(args)
     args_blob = ""
     if safe_args:
@@ -416,13 +460,19 @@ def build_approval_card(
             args_blob = json.dumps(safe_args, ensure_ascii=False, indent=2)[:1200]
         except (TypeError, ValueError):
             args_blob = str(safe_args)[:1200]
-    danger = f" {grammar.GLYPH_WARN}" if dangerous else ""
-    lines = [
-        f"{layout.strong(f'Approve{danger}', dialect='html')} "
-        f"{layout.code(action or 'tool', dialect='html')}"
-    ]
-    if target:
-        lines.append(f"target: {layout.code(target, dialect='html')}")
+    header = t(
+        _approval_header_key(action, args),
+        loc,
+        object=_approval_object(action, target, args),
+    )
+    if dangerous:
+        line = (
+            f"{layout.err(t('approval.danger', loc), dialect='html')} "
+            f"{layout.strong(header, dialect='html')}"
+        )
+    else:
+        line = layout.strong(header, dialect="html")
+    lines = [line]
     if description:
         lines.append(layout.escape(description, dialect="html"))
     if args_blob:
@@ -431,9 +481,9 @@ def build_approval_card(
     markup = _inline_keyboard(
         [
             [
-                ("Once", encode_callback("t", token, "once")),
-                ("Session", encode_callback("t", token, "session")),
-                ("Deny", encode_callback("t", token, "deny")),
+                (t("approval.once", loc), encode_callback("t", token, "once")),
+                (t("approval.session", loc), encode_callback("t", token, "session")),
+                (t("approval.deny", loc), encode_callback("t", token, "deny")),
             ]
         ]
     )
@@ -512,6 +562,8 @@ class Outbox:
     long_running_interval_s: float = LONG_RUNNING_INTERVAL_S
     #: Extra queued/steering paragraph on the Working… ack. Default off.
     busy_ack_detail: bool = False
+    #: Resolved ``ui.locale`` (``en`` | ``th``). No Telegram overlay key.
+    locale: str = "en"
     clock: Callable[[], float] = field(default=time.monotonic)
     _draft_id: dict[int, int] = field(default_factory=dict)
     _draft_buf: dict[int, str] = field(default_factory=dict)
@@ -527,6 +579,7 @@ class Outbox:
 
     def __post_init__(self) -> None:
         self.sender = _adapt_sender(self.sender)
+        self.locale = _chrome_locale(self.locale)
 
     def _next_draft_id(self, chat_id: int) -> int:
         self._seq += 1
@@ -640,14 +693,14 @@ class Outbox:
             if row is None:
                 raw_args = data.get("args")
                 args = raw_args if isinstance(raw_args, dict) else {}
-                tools[key] = _ToolLine(name=text or "tool", args=_fmt_args(args))
+                tools[key] = _ToolLine(name=text or "tool", args=args)
         elif kind == "tool_end":
             if row is None:
                 tools[key] = _ToolLine(name=text or "tool")
                 row = tools[key]
             row.summary = str(data.get("summary") or text or "")
             elapsed = data.get("elapsed")
-            if isinstance(elapsed, (int, float)) and elapsed:
+            if progress == "verbose" and isinstance(elapsed, (int, float)) and elapsed:
                 row.duration = f" · {float(elapsed):.1f}s"
         elif kind == "tool_progress":
             if progress not in _PROGRESS_TAILS:
@@ -671,12 +724,14 @@ class Outbox:
         minutes = self._progress_heartbeat_min.get(chat_id)
         if minutes:
             lines.append(layout.muted(f"Working — {minutes} min", dialect="html"))
+        loc = _chrome_locale(self.locale)
         for tool in self._progress_tools.get(chat_id, {}).values():
-            lines.append(layout.tool_open(tool.name, tool.args, dialect="html"))
+            verb, obj = activity_open(tool.name, tool.args, locale=loc)
+            lines.append(layout.tool_open(verb, obj, dialect="html"))
             if tool.summary:
-                lines.append(
-                    layout.tool_result(tool.summary, duration=tool.duration, dialect="html")
-                )
+                shown = activity_result(tool.summary, locale=loc)
+                duration = tool.duration if progress == "verbose" else ""
+                lines.append(layout.tool_result(shown, duration=duration, dialect="html"))
             elif progress in _PROGRESS_TAILS and tool.tail:
                 clipped = _clip_tail(tool.tail)
                 if clipped:
@@ -836,6 +891,7 @@ class Outbox:
         await self.send_plain(chat_id, text)
 
     async def send_approval_card(self, chat_id: int, **kwargs: Any) -> Any:
+        kwargs.setdefault("locale", _chrome_locale(self.locale))
         html, markup = build_approval_card(**kwargs)
         self.restart_draft(chat_id)
         return await self.sender.send_message(

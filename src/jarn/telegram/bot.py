@@ -63,12 +63,12 @@ _CONFLICT_NOTICE = (
 )
 
 _GATEWAY_HELP_ROWS: tuple[tuple[str, str], ...] = (
-    ("/stop", "Cancel the in-flight turn"),
-    ("/new", "Start a fresh thread"),
-    ("/reset", "Alias of /new (fresh gateway thread, not /clear)"),
-    ("/repo <name>", "Switch the active repo"),
-    ("/help [name]", "This catalog (same commands as the REPL)"),
-    ("/rollback", "Alias: use /checkpoints and /undo — not a mutate command"),
+    ("/stop", "telegram.help.stop"),
+    ("/new", "telegram.help.new"),
+    ("/reset", "telegram.help.reset"),
+    ("/repo <name>", "telegram.help.repo"),
+    ("/help [name]", "telegram.help.help"),
+    ("/rollback", "telegram.help.rollback"),
 )
 
 _ROLLBACK_NOTICE = (
@@ -84,17 +84,23 @@ def _split_slash(text: str) -> tuple[str, str] | None:
     return parse_slash_line(text)
 
 
-def _telegram_help_html(topic: str = "") -> str:
+def _chrome_locale(locale: str | None) -> str:
+    return locale if locale in {"en", "th"} else "en"
+
+
+def _telegram_help_html(topic: str = "", *, locale: str = "en") -> str:
     """``/help`` body in Telegram HTML — same catalog as the REPL."""
     from jarn.commands.help import format_help, format_help_detail
     from jarn.tui import layout
+    from jarn.tui.i18n import t
 
+    loc = _chrome_locale(locale)
     if topic:
-        return format_help_detail(topic, dialect="html")
-    lines = [format_help(dialect="html").rstrip(), ""]
-    lines.append(layout.section("Gateway", dialect="html"))
-    for name, desc in _GATEWAY_HELP_ROWS:
-        lines.append(layout.row(name, desc, dialect="html"))
+        return format_help_detail(topic, dialect="html", locale=loc)
+    lines = [format_help(dialect="html", locale=loc).rstrip(), ""]
+    lines.append(layout.section(t("telegram.help.group", loc), dialect="html"))
+    for name, key in _GATEWAY_HELP_ROWS:
+        lines.append(layout.row(name, t(key, loc), dialect="html"))
     return "\n".join(lines)
 
 
@@ -240,6 +246,7 @@ class TelegramBotApp:
     tool_progress_cleanup: str = "delete"
     long_running_notifications: bool = True
     busy_ack_detail: bool = False
+    locale: str = "en"
     _bot: Any = field(default=None, repr=False)
     _outbox: Outbox | None = field(default=None, repr=False)
     _offset: int | None = field(default=None, repr=False)
@@ -288,6 +295,7 @@ class TelegramBotApp:
                 tool_progress_cleanup=self.tool_progress_cleanup,
                 long_running_notifications=self.long_running_notifications,
                 busy_ack_detail=self.busy_ack_detail,
+                locale=self.locale,
             )
             binder = getattr(self.backend, "bind_outbox", None)
             if callable(binder):
@@ -584,7 +592,9 @@ class TelegramBotApp:
                 return
             if name == "help":
                 if self._outbox:
-                    await self._outbox.send_html(chat_id, _telegram_help_html(rest))
+                    await self._outbox.send_html(
+                        chat_id, _telegram_help_html(rest, locale=self.locale)
+                    )
                 return
             if name == "rollback":
                 if self._outbox:
@@ -598,7 +608,10 @@ class TelegramBotApp:
 
             if is_gateway_mutating_command(name) and name not in GATEWAY_ONLY_COMMANDS:
                 if self._outbox:
-                    await self._outbox.send_notice(chat_id, gateway_mutating_notice(name))
+                    await self._outbox.send_notice(
+                        chat_id,
+                        gateway_mutating_notice(name, locale=_chrome_locale(self.locale)),
+                    )
                 return
 
         # Media path (T-TG-4).
@@ -647,6 +660,7 @@ async def run_gateway_bot(
     tool_progress_cleanup: str = "delete",
     long_running_notifications: bool = True,
     busy_ack_detail: bool = False,
+    locale: str = "en",
 ) -> int:
     """Convenience entry used by ``python -m jarn.telegram``."""
     app = TelegramBotApp(
@@ -659,5 +673,6 @@ async def run_gateway_bot(
         tool_progress_cleanup=tool_progress_cleanup,
         long_running_notifications=long_running_notifications,
         busy_ack_detail=busy_ack_detail,
+        locale=locale,
     )
     return await app.start()

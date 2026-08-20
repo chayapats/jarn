@@ -13,7 +13,7 @@ from rich.markdown import Markdown
 from rich.status import Status
 from rich.text import Text
 
-from jarn.tui import grammar, layout, palette
+from jarn.tui import grammar, layout, palette, tool_labels
 
 # Sentinel prefix the reasoning live-stream is pushed with, so the inline app can
 # tell a thinking block from assistant prose in the shared live sink and render it
@@ -92,6 +92,8 @@ class TurnRenderer:
         tool_progress: str = "all",
         wrap_at: int = grammar.WRAP_AT,
         show_reasoning: str = "collapsed",
+        locale: str = "en",
+        thinking_style: str = "plain",
     ) -> None:
         self.console = console
         self._tokens = tokens or (lambda: 0)
@@ -100,6 +102,8 @@ class TurnRenderer:
         self._tool_progress = tool_progress
         self._wrap_at = wrap_at
         self._show_reasoning = show_reasoning
+        self._locale = locale
+        self._thinking_style = thinking_style
         self._buf = ""
         self._rbuf = ""
         self._live: Live | None = None
@@ -140,13 +144,33 @@ class TurnRenderer:
         if not self._spinner_enabled:
             return
         if self._status is None and self._live is None:
-            word = palette.session_thinking_word()
+            label = palette.thinking_label(
+                style=self._thinking_style, locale=self._locale
+            )
             n = self._tokens()
-            label = f"{word}… {n} tok" if n else f"{word}…"
+            if self._tool_progress == "verbose" and n:
+                label = f"{label} {n} tok"
             self._status = self.console.status(
                 layout.muted(label), spinner="dots"
             )
             self._status.start()
+
+    def _thinking_caption(self) -> str:
+        return palette.thinking_label(
+            style=self._thinking_style, locale=self._locale
+        )
+
+    def _thinking_heading(self) -> str:
+        return f"{grammar.GLYPH_THINKING} {self._thinking_caption()}"
+
+    def _human_activity(self) -> bool:
+        return self._tool_progress == "new"
+
+    def _hide_checklist_line(self, name: str) -> bool:
+        return (
+            tool_labels.is_checklist_tool(name)
+            and self._tool_progress != "verbose"
+        )
 
     def _unspin(self) -> None:
         if self._status is not None:
@@ -190,7 +214,7 @@ class TurnRenderer:
                 vertical_overflow="visible",
             )
             self._live.start()
-        preview = Text(f"{grammar.GLYPH_THINKING} thinking\n", style=palette.C_DIM)
+        preview = Text(f"{self._thinking_heading()}\n", style=palette.C_DIM)
         preview.append(body, style=palette.C_DIM)
         self._live.update(preview)
 
@@ -226,7 +250,7 @@ class TurnRenderer:
             self._live_clear()
             self._unspin()
             self._sep("reasoning")
-            self.console.print(layout.thinking())
+            self.console.print(layout.thinking(label=self._thinking_caption()))
             self.console.print(Text(self._rbuf.strip(), style=palette.C_DIM))
         self._rbuf = ""
 
@@ -363,15 +387,21 @@ class TurnRenderer:
         if agent:
             self._subagent_tools[agent] = self._subagent_tools.get(agent, 0) + 1
         self._tools[key] = ToolRenderState(name=name, args=args)
-        if self._tool_progress == "off":
+        hide = self._hide_checklist_line(name)
+        if self._tool_progress == "off" or hide:
             if agent:
                 self._show_subagent_status()
             self._spin()
             return
         self._sep("tool")
         prefix = self._agent_prefix(agent)
-        arg_s = fmt_args(args)
-        self.console.print(prefix + layout.tool_open(name, arg_s), highlight=False)
+        if self._human_activity():
+            shown_name, arg_s = tool_labels.activity_open(
+                name, args, locale=self._locale
+            )
+        else:
+            shown_name, arg_s = name, fmt_args(args)
+        self.console.print(prefix + layout.tool_open(shown_name, arg_s), highlight=False)
         if agent:
             self._show_subagent_status()
         self._spin()
@@ -457,22 +487,29 @@ class TurnRenderer:
         if self._progress_active:
             self._progress_active.discard(tool_call_id or name)
             self._live_clear()
-        hint = "· ctrl+o" if full else ""
+        hint = "· ctrl+o" if full and self._tool_progress == "verbose" else ""
         dur = ""
-        key, state = self._resolve_tool_state(name, tool_call_id)
+        _key, state = self._resolve_tool_state(name, tool_call_id)
         if state is not None:
             dt = time.monotonic() - state.started
-            dur = f" · {dt:.1f}s"
+            if self._tool_progress == "verbose":
+                dur = f" · {dt:.1f}s"
             state.ended = True
         # A subagent's result line carries the same dim ┊ <name> prefix; the leading
         # indent is folded into the prefix so tagged lines stay left-aligned with it.
         prefix = self._agent_prefix(agent)
         indent = "" if agent else "  "
-        if self._tool_progress != "off":
+        shown = (
+            tool_labels.activity_result(summary, locale=self._locale)
+            if self._human_activity()
+            else summary
+        )
+        hide = self._hide_checklist_line(name)
+        if self._tool_progress != "off" and not hide:
             self.console.print(
                 prefix
                 + layout.tool_result(
-                    summary, duration=dur, hint=hint, indent=indent
+                    shown, duration=dur, hint=hint, indent=indent
                 ),
                 highlight=False,
             )

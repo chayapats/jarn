@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from jarn.tui import grammar, layout
+from jarn.tui.i18n import t
 
 WORDMARK = "\n".join([
     r"     ██╗      █████╗      ██████╗      ███╗   ██╗",
@@ -36,25 +37,17 @@ def splash_info_strip(
     model: str,
     folder: str,
     mode: str,
-    skills: int | None = None,
 ) -> str:
-    """Orientation strip under the wordmark (or alone when splash is off)."""
+    """Model / folder / mode kv table — extra under the full wordmark only."""
     from jarn.permissions.labels import permission_mode_name
 
     glyph = grammar.MODE_GLYPH.get(mode, grammar.MODE_GLYPH["ask"])
     label = permission_mode_name(mode)
-    if skills is None:
-        skills_text = "type /skills"
-    elif skills == 0:
-        skills_text = "none loaded   ·  type /skills"
-    else:
-        skills_text = f"{skills} loaded   ·  type /skills"
     return "\n".join(
         [
             layout.kv("Model", model),
             layout.kv("Folder", folder),
             layout.kv("Mode", f"{glyph} {label}"),
-            layout.kv("Skills", skills_text),
         ]
     )
 
@@ -68,10 +61,44 @@ def splash(version: str) -> str:
     )
 
 
-def splash_compact(version: str) -> str:
-    """Single-line wordmark + version + shortcut hint."""
-    return (
-        f"{layout.accent('JARN', bold=True)} "
-        f"{layout.muted(f'v{version} · {TAGLINE}')}  "
-        f"{SHORTCUT_HINT}"
-    )
+def splash_compact(
+    version: str,
+    *,
+    model: str = "",
+    folder: str = "",
+    mode: str = "",
+    locale: str | None = None,
+) -> str:
+    """Compact first frame: name + version, session facts, locale orientation."""
+    lines = [
+        f"{layout.accent('jarn', bold=True)}  {layout.muted(f'v{version}')}",
+    ]
+    facts = [part for part in (model, folder, mode) if part]
+    if facts:
+        lines.append(layout.muted(f"  {'  ·  '.join(facts)}"))
+    lines.append(layout.muted(f"  {t('splash.orientation', locale)}"))
+    return "\n".join(lines)
+
+
+def render_launch_banner(
+    version: str,
+    *,
+    variant: str,
+    first_run: bool = False,
+    model: str = "",
+    folder: str = "",
+    mode: str = "",
+    locale: str | None = None,
+) -> str:
+    """Compose the first-frame splash. Compact has no kv table and no skills line."""
+    if first_run or variant == "full":
+        return f"{splash(version)}\n{splash_info_strip(model=model, folder=folder, mode=mode)}"
+    if variant == "compact":
+        return splash_compact(
+            version,
+            model=model,
+            folder=folder,
+            mode=mode,
+            locale=locale,
+        )
+    return SHORTCUT_HINT

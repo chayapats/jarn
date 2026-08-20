@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import os
 import shlex
 import sys
@@ -20,11 +21,13 @@ from jarn.cost.pricing import cost_of
 from jarn.permissions import PermissionEngine
 from jarn.providers import ModelFactory
 from jarn.providers.codex_subscription import (
+    _BRIDGE_BASE_INSTRUCTIONS,
     CodexAppServer,
     CodexProtocolError,
     CodexSubscriptionAuthError,
     CodexSubscriptionChatModel,
     CodexTurnError,
+    _looks_like_codex_sandbox_write_refusal,
     codex_subscription_account,
     normalize_codex_command,
 )
@@ -40,6 +43,22 @@ READ_FILE_TOOL = {
             "type": "object",
             "properties": {"path": {"type": "string"}},
             "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+}
+WRITE_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "write_file",
+        "description": "Write one file",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["path", "content"],
             "additionalProperties": False,
         },
     },
@@ -153,6 +172,109 @@ def test_safe_model_mode_disables_inner_execution_features(monkeypatch, tmp_path
         safe_model_mode=True,
     ) as server:
         assert server.account() == {"type": "chatgpt", "planType": "plus"}
+
+
+def test_bridge_instructions_allow_jarn_mutating_tools_despite_readonly_sandbox():
+    text = _BRIDGE_BASE_INSTRUCTIONS
+    lowered = text.casefold()
+    compact = lowered.replace('"', "").replace("\\", "")
+    assert "write_file" in lowered
+    assert "edit_file" in lowered
+    assert "execute" in lowered
+    assert "tool_calls" in lowered
+    assert "read-only" in lowered
+    assert "never use kind=final" in compact
+    assert "file operations" not in lowered
+
+
+def test_sandbox_write_refusal_detector_matches_uat_prose_only():
+    assert _looks_like_codex_sandbox_write_refusal(
+        "Cannot call write_file because this session’s filesystem permission is read-only"
+    )
+    assert _looks_like_codex_sandbox_write_refusal(
+        "Cannot call write_file because this session's filesystem permission is read-only"
+    )
+    assert not _looks_like_codex_sandbox_write_refusal(
+        "README.md contains the install steps for a read-only review."
+    )
+    assert not _looks_like_codex_sandbox_write_refusal("")
+
+
+def test_thread_and_turn_start_keep_readonly_sandbox(monkeypatch, tmp_path):
+    captured: list[tuple[str, dict]] = []
+    original = CodexAppServer.request
+
+    def wrapped(self, method, params, **kwargs):
+        if method in {"thread/start", "turn/start"}:
+            captured.append((method, copy.deepcopy(params)))
+        return original(self, method, params, **kwargs)
+
+    monkeypatch.setattr(CodexAppServer, "request", wrapped)
+    bound = model(tmp_path).bind_tools([WRITE_FILE_TOOL])
+    bound.invoke([HumanMessage(content="write notes.txt")])
+
+    thread = next(params for method, params in captured if method == "thread/start")
+    turn = next(params for method, params in captured if method == "turn/start")
+    assert thread["sandbox"] == "read-only"
+    assert thread["approvalPolicy"] == "never"
+    assert "write_file" in thread["baseInstructions"]
+    assert "file operations" not in thread["baseInstructions"]
+    assert "kind=tool_calls is allowed" in thread["developerInstructions"]
+    assert turn["sandboxPolicy"] == {"type": "readOnly", "networkAccess": False}
+    assert turn["approvalPolicy"] == "never"
+
+
+def test_sandbox_readonly_prose_retries_once_as_jarn_write_tool(monkeypatch, tmp_path):
+    monkeypatch.setenv("JARN_CODEX_FAKE_MODE", "sandbox_refuse")
+    bound = model(tmp_path).bind_tools([WRITE_FILE_TOOL])
+
+    message = bound.invoke([HumanMessage(content="write notes.txt")])
+
+    assert message.content == ""
+    assert len(message.tool_calls) == 1
+    assert message.tool_calls[0]["name"] == "write_file"
+    assert message.tool_calls[0]["args"] == {"path": "notes.txt", "content": "ok"}
+
+
+def test_sandbox_readonly_prose_is_surfaced_after_one_retry(monkeypatch, tmp_path):
+    monkeypatch.setenv("JARN_CODEX_FAKE_MODE", "sandbox_refuse_persist")
+    captured: list[str] = []
+    original = CodexAppServer.request
+
+    def wrapped(self, method, params, **kwargs):
+        if method == "turn/start":
+            captured.append(method)
+        return original(self, method, params, **kwargs)
+
+    monkeypatch.setattr(CodexAppServer, "request", wrapped)
+    bound = model(tmp_path).bind_tools([WRITE_FILE_TOOL])
+
+    message = bound.invoke([HumanMessage(content="write notes.txt")])
+
+    assert len(captured) == 2
+    assert message.tool_calls == []
+    assert "read-only" in str(message.content)
+    assert "write_file" in str(message.content)
+
+
+def test_sandbox_readonly_prose_is_not_retried_without_mutating_tools(monkeypatch, tmp_path):
+    monkeypatch.setenv("JARN_CODEX_FAKE_MODE", "sandbox_refuse")
+    captured: list[str] = []
+    original = CodexAppServer.request
+
+    def wrapped(self, method, params, **kwargs):
+        if method == "turn/start":
+            captured.append(method)
+        return original(self, method, params, **kwargs)
+
+    monkeypatch.setattr(CodexAppServer, "request", wrapped)
+    bound = model(tmp_path).bind_tools([READ_FILE_TOOL])
+
+    message = bound.invoke([HumanMessage(content="write notes.txt")])
+
+    assert captured == ["turn/start"]
+    assert message.tool_calls == []
+    assert "write_file" in str(message.content)
 
 
 def test_model_returns_final_text_and_subscription_usage(tmp_path):

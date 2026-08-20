@@ -146,7 +146,7 @@ def test_prompt_completer_skips_catalog_factory_for_ordinary_input(tmp_path):
 def test_completion_catalog_includes_builtins():
     from jarn.extensibility.commands import BUILTINS, completion_catalog
 
-    catalog = completion_catalog()
+    catalog = completion_catalog(locale="en")
     assert len(catalog) == len(BUILTINS)
     assert catalog["help"] == next(c.description for c in BUILTINS if c.name == "help")
 

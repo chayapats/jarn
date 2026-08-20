@@ -10,6 +10,7 @@ from jarn.controller.core import CommandResult
 from jarn.extensibility.skills import find_skill, render_skill_invocation
 from jarn.memory import write_jarn_md
 from jarn.tui import layout
+from jarn.tui.i18n import resolve_locale
 
 if TYPE_CHECKING:
     from jarn.controller.core import Controller
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
 
 def cmd_help(ctrl: Controller, args: str) -> CommandResult:
     custom = ctrl.runtime.commands if ctrl.runtime else None
+    locale = resolve_locale(ctrl.config)
     topic = args.strip()
     if topic:
         return CommandResult(
@@ -24,6 +26,7 @@ def cmd_help(ctrl: Controller, args: str) -> CommandResult:
                 topic,
                 custom,
                 custom_description=lambda c: getattr(c, "description", ""),
+                locale=locale,
             )
         )
     columns = shutil.get_terminal_size((80, 24)).columns
@@ -32,6 +35,7 @@ def cmd_help(ctrl: Controller, args: str) -> CommandResult:
             custom,
             custom_description=lambda c: getattr(c, "description", ""),
             columns=columns,
+            locale=locale,
         )
     )
 

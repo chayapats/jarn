@@ -30,7 +30,6 @@ class CommandSpec:
     aliases: tuple[str, ...] = ()
     alias_of: str = ""
     index: bool = True
-    index_usage: str = ""
 
 
 def _c(
@@ -47,7 +46,6 @@ def _c(
     aliases: tuple[str, ...] = (),
     alias_of: str = "",
     index: bool = True,
-    index_usage: str = "",
 ) -> CommandSpec:
     return CommandSpec(
         name,
@@ -62,7 +60,6 @@ def _c(
         aliases=aliases,
         alias_of=alias_of,
         index=index,
-        index_usage=index_usage,
     )
 
 
@@ -93,7 +90,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "both",
         usage="[name|refresh]",
         examples=("/model", "/model refresh"),
-        index_usage="[name]",
         related=("status", "cost"),
         blurb="With no argument, opens the model picker. "
         "`/model refresh` re-queries local endpoints.",
@@ -105,9 +101,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         usage="[plan|ask|auto-edit|yolo]",
         examples=("/mode", "/mode ask"),
         related=("permissions", "preset", "sandbox"),
-        blurb="plan = review only. ask = confirm changes (default). "
-        "auto-edit = edit the workspace. yolo = skip routine prompts; "
-        "the danger-guard still blocks catastrophic actions.",
+        blurb="How much the agent may change files and run commands. Mode ids stay English.",
     ),
     _c(
         "theme",
@@ -123,8 +117,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         group="Session",
         aliases=("usage",),
         related=("context", "status"),
-        blurb="Session spend, per-model totals, and cache reads. "
-        "`/usage` is the same command.",
+        blurb="Session spend, per-model totals, and cache reads. `/usage` is the same command.",
     ),
     _c(
         "usage",
@@ -179,7 +172,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Activate or deactivate a prompt module.",
         "both",
         usage="[on <name> [turn|session] | off <name>]",
-        index_usage="[on|off]",
         related=("modules", "skill"),
     ),
     _c(
@@ -245,7 +237,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "List or edit long-term memory.",
         "core",
         usage="[search|show|add|update|delete|dump] …",
-        index_usage="[subcommand]",
         examples=("/memory", "/memory search flaky tests"),
         related=("skills", "wiki"),
     ),
@@ -272,11 +263,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "both",
         group="Setup",
         usage="[get <key> | set <key> <value>]",
-        index_usage="[get|set]",
         examples=("/config", "/config set ui.theme light"),
         related=("theme", "doctor"),
-        blurb="No args opens the settings panel. Changes persist to "
-        "~/.jarn/config.yaml.",
+        blurb="No args opens the settings panel. Changes persist to ~/.jarn/config.yaml.",
     ),
     _c(
         "preset",
@@ -315,7 +304,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "core",
         group="Setup",
         usage="[status|refresh|prompts|prompt <server> <name>|resources|read <server> <uri>]",
-        index_usage="[subcommand]",
         related=("tools", "doctor"),
     ),
     _c(
@@ -370,8 +358,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "core",
         group="Setup",
         related=("logout", "key"),
-        blurb="Run `jarn auth login` in a terminal. It shows the browser URL "
-        "or device code and reports success only after the account is verified.",
+        blurb="Sign in to ChatGPT. Reports success only after the account is verified.",
     ),
     _c(
         "logout",
@@ -379,7 +366,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "core",
         group="Setup",
         related=("login",),
-        blurb="Run `jarn auth logout`. Removes only Codex-managed ChatGPT "
+        blurb="Sign out of ChatGPT. Removes only Codex-managed ChatGPT "
         "credentials; provider API keys are kept.",
     ),
     _c(
@@ -455,7 +442,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "ui",
         group="Session",
         usage="[clear|cancel <n>|move <from> <to>|steer <n>]",
-        index_usage="[subcommand]",
         related=("abort", "busy"),
     ),
     _c(
@@ -485,7 +471,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "core",
         group="Session",
         usage="[search <q>|list]",
-        index_usage="[subcommand]",
         related=("memory", "map"),
     ),
     _c(
@@ -532,15 +517,11 @@ def canonical_name(name: str) -> str | None:
 
 
 def core_command_names() -> frozenset[str]:
-    return frozenset(
-        spec.name for spec in COMMAND_SPECS if spec.layer in ("core", "both")
-    )
+    return frozenset(spec.name for spec in COMMAND_SPECS if spec.layer in ("core", "both"))
 
 
 def ui_command_names() -> frozenset[str]:
-    return frozenset(
-        spec.name for spec in COMMAND_SPECS if spec.layer in ("ui", "both")
-    )
+    return frozenset(spec.name for spec in COMMAND_SPECS if spec.layer in ("ui", "both"))
 
 
 _BOTH_REPL_ROUTE: frozenset[str] = frozenset({"model", "mode", "compact"})
@@ -555,6 +536,21 @@ def route_for_spec(spec: CommandSpec) -> CommandRoute:
     if spec.name in _BOTH_REPL_ROUTE:
         return "repl"
     return "controller"
+
+
+#: Dim extra on ``/help login`` / ``/help logout`` only — not on the index.
+HELP_CLI_EQUIVALENT: dict[str, str] = {
+    "login": "jarn auth login",
+    "logout": "jarn auth logout",
+}
+
+
+def help_description_key(name: str) -> str:
+    return f"help.cmd.{name}.description"
+
+
+def help_blurb_key(name: str) -> str:
+    return f"help.cmd.{name}.blurb"
 
 
 def grouped_specs(*, index_only: bool = False) -> dict[str, list[CommandSpec]]:
@@ -578,10 +574,8 @@ def slash_usage(spec: CommandSpec) -> str:
 
 
 def slash_index(spec: CommandSpec) -> str:
-    """Shorter ``/help`` index form; falls back to :func:`slash_usage`."""
-    if spec.index_usage:
-        return f"/{spec.name} {spec.index_usage}"
-    return slash_usage(spec)
+    """``/name`` for the ``/help`` index. Syntax lives on the detail page."""
+    return f"/{spec.name}"
 
 
 def parse_slash_line(text: str) -> tuple[str, str] | None:
@@ -678,7 +672,7 @@ GATEWAY_ONLY_COMMANDS = frozenset({"stop", "new", "repo", "help", "reset"})
 #: Union consumed by the gateway worker.
 GATEWAY_LOCAL_COMMANDS = GATEWAY_READONLY_COMMANDS | GATEWAY_SESSION_COMMANDS
 
-#: One-line refuse copy for :data:`GATEWAY_MUTATING_COMMANDS`.
+#: One-line refuse copy for :data:`GATEWAY_MUTATING_COMMANDS` (English fallback).
 GATEWAY_MUTATING_NOTICE = "This command is not available on Telegram. Use the terminal / jarn CLI."
 
 _TELEGRAM_BOTFATHER_NAME = re.compile(r"^[a-z0-9_]{1,32}$")
@@ -708,12 +702,15 @@ def is_gateway_mutating_command(name: str) -> bool:
     return (spec.alias_of or spec.name) in GATEWAY_MUTATING_COMMANDS
 
 
-def gateway_mutating_notice(name: str = "") -> str:
+def gateway_mutating_notice(name: str = "", locale: str | None = None) -> str:
     """One-line terminal hint for a blocked Telegram slash name."""
+    from jarn.tui.i18n import CATALOGS, t
+
+    loc = locale if locale in CATALOGS else "en"
     shown = canonical_name(name) if name else ""
     if shown:
-        return f"/{shown} is not available on Telegram. Use the terminal / jarn CLI."
-    return GATEWAY_MUTATING_NOTICE
+        return t("telegram.mutating.named", loc, name=shown)
+    return t("telegram.mutating", loc)
 
 
 def gateway_botfather_commands() -> tuple[tuple[str, str], ...]:

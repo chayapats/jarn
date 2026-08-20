@@ -70,6 +70,18 @@ DEFAULT_HEARTBEAT_INTERVAL_S = 2.0
 #: Routing placeholder when the daemon has not yet stamped ``chat_id`` on the map.
 _PLACEHOLDER_CHAT_ID = 0
 
+
+def _chrome_locale(controller: Any) -> str:
+    """Resolve ``ui.locale`` for local slash copy. Missing ``ui`` stays English."""
+    from jarn.tui.i18n import resolve_locale
+
+    config = getattr(controller, "config", None)
+    if getattr(config, "ui", None) is None:
+        return "en"
+    loc = resolve_locale(config)
+    return loc if loc in {"en", "th"} else "en"
+
+
 #: Max depth when walking event ``data`` / approval payloads for string redaction.
 _REDACT_DEPTH = 6
 
@@ -496,13 +508,14 @@ class GatewayWorker:
             return None
         name, args = parsed
         thread_id = frame.thread_id
+        loc = _chrome_locale(self.controller)
 
         if is_gateway_mutating_command(name):
-            return CommandResult(gateway_mutating_notice(name))
+            return CommandResult(gateway_mutating_notice(name, locale=loc))
 
         if not is_gateway_local_command(name):
             if spec_by_name(name) is not None:
-                return CommandResult(gateway_mutating_notice(name))
+                return CommandResult(gateway_mutating_notice(name, locale=loc))
             skills = getattr(getattr(self.controller, "runtime", None), "skills", None) or {}
             if find_skill(skills, name) is None:
                 return None

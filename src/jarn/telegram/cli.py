@@ -48,6 +48,7 @@ class GatewaySettings:
     long_running_notifications: bool = True
     busy_input_mode: str = "steer"
     busy_ack_detail: bool = False
+    locale: str = "en"
 
 
 def _gateway_detail(
@@ -233,6 +234,7 @@ def load_gateway_settings(
     from jarn.telegram.outbox import (
         effective_telegram_busy_ack_detail,
         effective_telegram_busy_input_mode,
+        effective_telegram_locale,
     )
 
     return GatewaySettings(
@@ -245,6 +247,7 @@ def load_gateway_settings(
         long_running_notifications=bool(getattr(tg, "long_running_notifications", True)),
         busy_input_mode=effective_telegram_busy_input_mode(cfg),
         busy_ack_detail=effective_telegram_busy_ack_detail(cfg),
+        locale=effective_telegram_locale(cfg, environ=environ),
     )
 
 
@@ -354,6 +357,7 @@ def run_gateway_cli(
                 tool_progress_cleanup=settings.tool_progress_cleanup,
                 long_running_notifications=settings.long_running_notifications,
                 busy_ack_detail=settings.busy_ack_detail,
+                locale=settings.locale,
             )
         )
         if result != 0:

@@ -15,6 +15,38 @@ from ruamel.yaml import YAML
 
 from jarn import cli
 from jarn.exit_codes import EXIT_INTERNAL
+from jarn.tui.i18n import EN, t
+
+
+def _pin_help_locale(target: dict[str, str] | pytest.MonkeyPatch, locale: str) -> None:
+    """Force ``resolve_locale(auto)`` without loading config (``--help`` must not)."""
+    for key in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        if isinstance(target, dict):
+            target[key] = locale
+        else:
+            target.setenv(key, locale)
+
+
+def _run_jarn_help(tmp_path: Path, env: dict[str, str]) -> str:
+    """Capture ``jarn --help`` as UTF-8 text.
+
+    Windows pipes default to the ANSI code page. Thai catalog strings are UTF-8,
+    so decode the child bytes explicitly instead of ``text=True`` + locale.
+    """
+    run_env = dict(env)
+    run_env["PYTHONUTF8"] = "1"
+    run_env["PYTHONIOENCODING"] = "utf-8"
+    completed = subprocess.run(  # noqa: S603 - fixed interpreter/module argv
+        [sys.executable, "-m", "jarn", "--help"],
+        cwd=tmp_path,
+        env=run_env,
+        capture_output=True,
+        timeout=15,
+    )
+    stdout = (completed.stdout or b"").decode("utf-8", errors="replace")
+    stderr = (completed.stderr or b"").decode("utf-8", errors="replace")
+    assert completed.returncode == 0, stderr
+    return stdout
 
 
 def _write_current_config(home: Path, *, secret: str | None = None) -> Path:
@@ -30,7 +62,9 @@ def _write_current_config(home: Path, *, secret: str | None = None) -> Path:
     return path
 
 
-def test_parser_exposes_ga_admin_surface_and_exit_taxonomy() -> None:
+def test_parser_exposes_ga_admin_surface_and_exit_taxonomy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     parser = cli.build_parser()
 
     config = parser.parse_args(["config", "reset", "--project", "--yes", "--json"])
@@ -58,6 +92,7 @@ def test_parser_exposes_ga_admin_surface_and_exit_taxonomy() -> None:
     uninstall = parser.parse_args(["uninstall", "--yes", "--config", "--sessions", "--credentials"])
     assert uninstall.uninstall_config and uninstall.uninstall_sessions
     assert uninstall.uninstall_credentials
+    _pin_help_locale(monkeypatch, "C")
     help_text = parser.format_help()
     assert "Stable exit codes:" in help_text
     assert "3 auth" in help_text and "7 update/rollback failed" in help_text
@@ -77,6 +112,23 @@ def test_parser_exposes_ga_admin_surface_and_exit_taxonomy() -> None:
     assert set(listed) == set(sub.choices)
     for name in listed:
         assert name in help_text
+        assert f"cli.cmd.{name}" in EN
+
+    _pin_help_locale(monkeypatch, "th_TH.UTF-8")
+    help_th = parser.format_help()
+    assert t("cli.epilog.start.title", "th") in help_th
+    assert t("cli.group.oneshot", "th") + ":" in help_th
+    assert t("cli.footer", "th") in help_th
+    assert t("cli.flag.resume", "th") in help_th
+    assert "--resume" in help_th
+    assert "-p" in help_th or "--print" in help_th
+    assert "jarn auth login [--device]" in help_th
+    assert "/mode plan|ask|auto-edit|yolo" in help_th
+    assert "Start and common commands:" not in help_th
+    assert "One-shot:" not in help_th
+    assert "maps to" not in help_th
+    for name in listed:
+        assert name in help_th
 
 
 def test_top_level_help_is_offline_complete_plain_and_non_mutating(tmp_path: Path) -> None:
@@ -126,23 +178,13 @@ socket.getaddrinfo = denied
             "TERM": "dumb",
         }
     )
+    _pin_help_locale(env, "C")
 
-    completed = subprocess.run(  # noqa: S603 - fixed interpreter/module argv
-        [sys.executable, "-m", "jarn", "--help"],
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-
-    assert completed.returncode == 0, completed.stderr
+    help_text = _run_jarn_help(tmp_path, env)
     assert marker.read_text(encoding="utf-8") == "loaded"
     assert not jarn_home.exists(), "--help must not create config or runtime state"
-    assert completed.stderr == ""
-    assert "\x1b[" not in completed.stdout
-    assert "Traceback" not in completed.stdout
-    help_text = completed.stdout
+    assert "\x1b[" not in help_text
+    assert "Traceback" not in help_text
     for section in (
         "Start and common commands:",
         "Installation and configuration (no browser required):",
@@ -169,8 +211,34 @@ socket.getaddrinfo = denied
         "jarn uninstall",
     ):
         assert detail in help_text
+    assert "maps to" not in help_text
     assert len(help_text.splitlines()) <= 160
     assert len(help_text) <= 12_000
+
+    env_th = dict(env)
+    _pin_help_locale(env_th, "th_TH.UTF-8")
+    help_th = _run_jarn_help(tmp_path, env_th)
+    assert not jarn_home.exists(), "--help must not create config or runtime state"
+    assert t("cli.epilog.start.title", "th") in help_th
+    assert t("cli.epilog.install.title", "th") in help_th
+    assert t("cli.group.oneshot", "th") + ":" in help_th
+    assert t("cli.footer", "th") in help_th
+    for flag in (
+        "--resume",
+        "--print",
+        "--output-format",
+        "--json",
+        "--model",
+        "--mode",
+        "jarn auth login [--device]",
+        "jarn doctor --fix --dry-run",
+        "/mode plan|ask|auto-edit|yolo",
+    ):
+        assert flag in help_th
+    assert "Start and common commands:" not in help_th
+    assert "maps to" not in help_th
+    assert len(help_th.splitlines()) <= 160
+    assert len(help_th) <= 12_000
 
 
 def _subparser(parser: argparse.ArgumentParser, *names: str) -> argparse.ArgumentParser:
@@ -185,9 +253,10 @@ def _subparser(parser: argparse.ArgumentParser, *names: str) -> argparse.Argumen
     return current
 
 
-def test_busy_subcommand_help_uses_argument_groups() -> None:
+def test_busy_subcommand_help_uses_argument_groups(monkeypatch: pytest.MonkeyPatch) -> None:
     """Busy CLIs scan like Hermes: flags sit in named groups, dests unchanged."""
     parser = cli.build_parser()
+    _pin_help_locale(monkeypatch, "C")
     exec_help = _subparser(parser, "exec").format_help()
     assert "Input:" in exec_help and "Output:" in exec_help and "Run:" in exec_help
     doctor_help = _subparser(parser, "doctor").format_help()
@@ -207,6 +276,15 @@ def test_busy_subcommand_help_uses_argument_groups() -> None:
     assert parsed.headless_prompt == "do the thing"
     assert parsed.json is True
     assert parsed.headless_max_turns == 2
+
+    _pin_help_locale(monkeypatch, "th_TH.UTF-8")
+    exec_th = _subparser(parser, "exec").format_help()
+    assert f"{t('cli.group.input', 'th')}:" in exec_th
+    assert f"{t('cli.group.output', 'th')}:" in exec_th
+    assert f"{t('cli.group.run', 'th')}:" in exec_th
+    assert "Input:" not in exec_th
+    assert "--json" in exec_th
+    assert "headless_prompt" not in exec_th
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")

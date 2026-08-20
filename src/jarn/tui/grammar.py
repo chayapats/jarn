@@ -168,7 +168,7 @@ def shortcut_line() -> str:
 
 
 def glyph_legend() -> str:
-    """One-line legend for ``/help``. Glyphs come from this module only."""
+    """One-line legend for ``/help glyphs``. Glyphs come from this module only."""
     modes = " · ".join(
         f"{glyph} {name}" for name, glyph in MODE_GLYPH.items()
     )

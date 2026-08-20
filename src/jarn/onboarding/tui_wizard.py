@@ -48,8 +48,11 @@ from jarn.onboarding.wizard import (
     _advanced_fallback_refs,
     _advanced_model_ref,
     _build_config_dict,
+    _cancelled_notice,
     _detect_env_key,
     _recommended_provider,
+    _setup_command,
+    _t,
     confirm_overwrite,
     normalize_base_url,
     profile_needs_base_url,
@@ -60,13 +63,13 @@ from jarn.providers import (
     suggest_slug,
 )
 from jarn.tui import grammar, layout
+from jarn.tui.i18n import resolve_locale, t
 from jarn.tui.logo import TAGLINE
 from jarn.tui.theme import ALL_THEMES, theme_name_for
 
-_THEMES = [("dark", "Dark"), ("light", "Light"), ("high-contrast", "High contrast")]
 _STORAGE = [
-    ("env", "Read from an environment variable (recommended)"),
-    ("keychain", "Paste it now → store in the OS keychain"),
+    ("env", "onboarding.storage.env.recommended"),
+    ("keychain", "onboarding.storage.keychain"),
 ]
 _PROVIDER_HINTS = {p: provider_hint(p) for p in ALL_PROVIDERS}
 
@@ -127,6 +130,17 @@ class SetupApp(App):
             self.env_hit,
             chatgpt_ready=chatgpt_ready,
         )
+        self.locale = resolve_locale("auto")
+
+    def _t(self, key: str, **kwargs: object) -> str:
+        return t(key, self.locale, **kwargs)
+
+    def _theme_items(self) -> list[tuple[str, str]]:
+        return [
+            ("dark", self._t("onboarding.theme.dark")),
+            ("light", self._t("onboarding.theme.light")),
+            ("high-contrast", self._t("onboarding.theme.high_contrast")),
+        ]
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="card"):
@@ -134,7 +148,7 @@ class SetupApp(App):
             yield Static("", id="crumbs")
             yield Static("", id="title")
             yield Vertical(id="step")
-            yield Static("↑/↓ select · Enter confirm · Esc back", id="help")
+            yield Static(self._t("onboarding.tui.help"), id="help")
 
     async def on_mount(self) -> None:
         for theme in ALL_THEMES.values():
@@ -319,11 +333,8 @@ class SetupApp(App):
             return self._model_catalog_snapshot
         prov = self.answers["provider"]
         await self._set(
-            f"Checking models reported by {prov}…",
-            Static(
-                "This is a read-only catalog request. "
-                "It will stop at the configured catalog timeout."
-            ),
+            self._t("onboarding.model.checking", provider=prov),
+            Static(self._t("onboarding.model.checking.detail")),
         )
         return await asyncio.to_thread(
             self._catalog_for_current_provider,
@@ -390,32 +401,32 @@ class SetupApp(App):
 
     async def _step_provider(self) -> None:
         local_note = (
-            f"  {layout.ok('(found ' + ', '.join(self.local_providers) + ')')}"
+            f"  {layout.ok(self._t('onboarding.connect.local.found_paren', names=', '.join(self.local_providers)))}"
             if self.local_providers
             else ""
         )
         items = [
             (
                 "codex_subscription",
-                "Continue with ChatGPT  (subscription; no API key)"
+                self._t("onboarding.connect.chatgpt.detail")
                 + (
-                    f"  {layout.warn('★ recommended — already signed in')}"
+                    f"  {layout.warn(self._t('onboarding.recommended.signed_in'))}"
                     if self.chatgpt_ready
                     else ""
                 ),
             ),
             (
                 "anthropic",
-                "Use Anthropic"
+                self._t("onboarding.connect.anthropic")
                 + (
-                    f"  {layout.warn('★ recommended — key found')}"
+                    f"  {layout.warn(self._t('onboarding.recommended.key'))}"
                     if self.recommended == "anthropic"
                     else ""
                 ),
             ),
-            ("__cloud__", "Use another cloud provider"),
-            ("__local__", f"Use a local model{local_note}"),
-            ("__advanced__", "Advanced  (custom endpoints and full provider list)"),
+            ("__cloud__", self._t("onboarding.connect.cloud")),
+            ("__local__", f"{self._t('onboarding.connect.local')}{local_note}"),
+            ("__advanced__", self._t("onboarding.connect.advanced")),
         ]
         highlight = {
             "codex_subscription": "codex_subscription",
@@ -426,7 +437,7 @@ class SetupApp(App):
         }.get(self.recommended, "__cloud__")
         chosen = self.answers.get("provider")
         await self._set(
-            "How do you want to connect?",
+            self._t("onboarding.connect.prompt"),
             self._option_list(items, chosen, highlight=chosen or highlight),
         )
 
@@ -436,7 +447,7 @@ class SetupApp(App):
             providers = [
                 p for p in CLOUD_PROVIDERS if p not in ("anthropic", CUSTOM_OPENAI_PROFILE)
             ]
-            title = "Choose another cloud provider"
+            title = self._t("onboarding.cloud.choose")
             highlight = (
                 self.env_hit[0]
                 if self.env_hit is not None and self.env_hit[0] in providers
@@ -447,11 +458,11 @@ class SetupApp(App):
                 *self.local_providers,
                 *(p for p in ("ollama", "lmstudio") if p not in self.local_providers),
             ]
-            title = "Choose a local model server"
+            title = self._t("onboarding.local.choose")
             highlight = providers[0]
         else:
             providers = [provider for provider in ALL_PROVIDERS if provider != "codex_subscription"]
-            title = "Advanced provider selection"
+            title = self._t("onboarding.advanced.choose")
             highlight = self.answers.get("provider") or self.recommended
         items = [(provider, f"{provider}  ({_PROVIDER_HINTS[provider]})") for provider in providers]
         await self._set(
@@ -465,15 +476,15 @@ class SetupApp(App):
         # If the key is already in the environment, the env reference is the
         # recommended default; otherwise nudge the keychain (paste-now) path.
         if self._env_key_present(prov):
-            env_label = f"Read from ${env} {layout.ok('(found in your environment)')}"
+            env_label = self._t("onboarding.storage.env.found", env_var=f"${env}")
         else:
-            env_label = f"Read from ${env} — set it before launching"
+            env_label = self._t("onboarding.storage.env.set_before", env_var=f"${env}")
         # OAuth exchanges persist their token immediately, so transactional
         # setup uses only environment references or process-memory paste here.
         # The standalone OpenRouter login remains available outside setup.
-        items = [("env", env_label), _STORAGE[1]]
+        items = [("env", env_label), ("keychain", self._t(_STORAGE[1][1]))]
         await self._set(
-            f"How should J.A.R.N. read your {prov} API key?",
+            self._t("onboarding.storage.prompt_your", provider=prov),
             self._option_list(items, self.answers.get("storage")),
         )
 
@@ -483,9 +494,9 @@ class SetupApp(App):
         # When the env var is missing we land here to capture a key rather than
         # finishing with an unresolvable ${ENV} reference.
         if self.answers.get("storage") == "env":
-            title = f"${env} is not set — paste your {prov} API key now (stored in the OS keychain)"
+            title = self._t("onboarding.key.env_missing", env_var=f"${env}", provider=prov)
         else:
-            title = "Paste your API key (stored in the OS keychain)"
+            title = self._t("onboarding.key.paste.tui")
         await self._set(title, Input(placeholder="sk-...", password=True, id="step-input"))
 
     async def _step_base_url(self) -> None:
@@ -495,13 +506,13 @@ class SetupApp(App):
         )
         err = f" — {self._base_url_error}" if self._base_url_error else ""
         if prov == "ollama":
-            hint = "Ollama host URL (no /v1 suffix)"
+            hint = self._t("onboarding.base_url.hint.ollama")
         elif prov == CUSTOM_OPENAI_PROFILE:
-            hint = "bare host → /v1 appended"
+            hint = self._t("onboarding.base_url.hint.compat")
         else:
-            hint = "include /v1 when required"
+            hint = self._t("onboarding.base_url.hint.other")
         await self._set(
-            f"API base URL for {prov}{err}  ({hint})",
+            f"{self._t('onboarding.base_url.prompt', provider=prov)}{err}  ({hint})",
             Input(value=default, placeholder="http://localhost:11434", id="step-input"),
         )
 
@@ -524,7 +535,7 @@ class SetupApp(App):
             await self._model_text_input(
                 prov,
                 default_id,
-                catalog_notice="Manual entry; availability must pass the final readiness gate",
+                catalog_notice=self._t("onboarding.model.manual_notice"),
             )
             return
 
@@ -536,10 +547,14 @@ class SetupApp(App):
         if discovered:
             ids = [entry.model_id for entry in discovered]
             items = [(model_id, model_id) for model_id in ids]
-            items.append(("__manual__", "Enter a model id manually…"))
+            items.append(("__manual__", self._t("onboarding.model.manual")))
             await self._set(
-                f"Pick a model reported by {prov}  ({len(ids)} found; "
-                f"{snapshot.provenance_label})",
+                self._t(
+                    "onboarding.model.pick",
+                    provider=prov,
+                    n=len(ids),
+                    status=snapshot.provenance_label,
+                ),
                 self._option_list(
                     items,
                     default_id if default_id in ids else None,
@@ -552,9 +567,10 @@ class SetupApp(App):
         if snapshot.availability_verified:
             notice = setup_catalog_status(snapshot)
         elif profile_needs_base_url(prov):
-            notice = (
-                f"couldn't reach or verify the catalog at {endpoint} — "
-                f"{setup_catalog_status(snapshot)}"
+            notice = self._t(
+                "onboarding.model.catalog_unreachable",
+                endpoint=endpoint,
+                status=setup_catalog_status(snapshot),
             )
         else:
             notice = setup_catalog_status(snapshot)
@@ -569,32 +585,36 @@ class SetupApp(App):
     ) -> None:
         """Render manual entry with explicit unverified catalog provenance."""
         if self._model_hint:
-            title = f"Model id for {prov} (manual, unverified) — {self._model_hint}"
+            title = self._t(
+                "onboarding.model.manual_unverified", provider=prov, hint=self._model_hint
+            )
         elif catalog_notice:
-            title = f"{catalog_notice}  Enter a model id for {prov} manually (unverified)"
+            title = (
+                f"{catalog_notice}  {self._t('onboarding.model.enter_unverified', provider=prov)}"
+            )
         elif prov == CUSTOM_OPENAI_PROFILE:
-            title = "Model id on your endpoint  (e.g. gpt-4o, qwen3-coder)"
+            title = self._t("onboarding.model.id.compat")
         else:
-            title = f"Model id for {prov}  (e.g. deepseek/deepseek-v4-flash for OpenRouter)"
+            title = self._t("onboarding.model.id.example", provider=prov)
         await self._set(title, Input(value=default_id, id="step-input"))
 
     async def _step_reasoning(self) -> None:
         items = [
-            ("default", "Provider/model default"),
-            ("low", "Low"),
-            ("medium", "Medium"),
-            ("high", "High"),
-            ("xhigh", "Extra high"),
+            ("default", self._t("onboarding.reasoning.default")),
+            ("low", self._t("onboarding.reasoning.low")),
+            ("medium", self._t("onboarding.reasoning.medium")),
+            ("high", self._t("onboarding.reasoning.high")),
+            ("xhigh", self._t("onboarding.reasoning.xhigh")),
         ]
         await self._set(
-            "Reasoning effort",
+            self._t("onboarding.reasoning"),
             self._option_list(items, self.answers.get("reasoning_effort", "default")),
         )
 
     async def _step_subagent_model(self) -> None:
         value = self.answers.get("routing_subagent") or self.answers.get("model", "")
         await self._set(
-            "Subagent model  (use profile/model for another provider)",
+            self._t("onboarding.subagent"),
             Input(value=value, id="step-input"),
         )
 
@@ -605,47 +625,50 @@ class SetupApp(App):
             or self.answers.get("model", "")
         )
         await self._set(
-            "Summarizer model  (use profile/model for another provider)",
+            self._t("onboarding.summarizer"),
             Input(value=value, id="step-input"),
         )
 
     async def _step_fallback_models(self) -> None:
         await self._set(
-            "Fallback models, comma-separated  (blank for none)",
+            self._t("onboarding.fallback"),
             Input(value=self.answers.get("routing_fallback", ""), id="step-input"),
         )
 
     async def _step_budget(self) -> None:
         error = f" — {self._advanced_error}" if self._advanced_error else ""
         await self._set(
-            f"Maximum cost per session in USD{error}",
+            f"{self._t('onboarding.budget')}{error}",
             Input(value=self.answers.get("budget_per_session_usd", "5.00"), id="step-input"),
         )
 
     async def _step_budget_warn(self) -> None:
         error = f" — {self._advanced_error}" if self._advanced_error else ""
         await self._set(
-            f"Warn when this percentage of the budget is used{error}",
+            f"{self._t('onboarding.budget.warn')}{error}",
             Input(value=self.answers.get("budget_warn_at_pct", "80"), id="step-input"),
         )
 
     async def _step_budget_stop(self) -> None:
-        items = [("true", "Stop automatically"), ("false", "Warn only")]
+        items = [
+            ("true", self._t("onboarding.budget.stop.auto")),
+            ("false", self._t("onboarding.budget.stop.warn_only")),
+        ]
         await self._set(
-            "When the session budget is reached",
+            self._t("onboarding.budget.stop.when"),
             self._option_list(items, self.answers.get("budget_hard_stop", "true")),
         )
 
     async def _step_permissions(self) -> None:
         items = [
-            ("plan", "Review only — read and plan"),
-            ("ask", "Ask before changes — recommended"),
-            ("auto-edit", "Edit workspace; ask before commands and external actions"),
-            ("yolo", "Full access; hard safety blocks remain"),
+            ("plan", self._t("onboarding.perm.tui.plan")),
+            ("ask", self._t("onboarding.perm.tui.ask")),
+            ("auto-edit", self._t("onboarding.perm.tui.edit")),
+            ("yolo", self._t("onboarding.perm.tui.yolo")),
         ]
         current = self.answers.get("permission_mode", "ask")
         await self._set(
-            "Permission profile",
+            self._t("onboarding.perm.prompt"),
             self._option_list(items, current, highlight=current),
         )
 
@@ -658,19 +681,22 @@ class SetupApp(App):
         ):
             snapshot = await self._catalog_with_visible_progress(refresh=True)
             self._apply_standard_catalog_model(snapshot)
-        await self._set("Theme?", self._option_list(_THEMES, self.answers.get("theme", "dark")))
+        await self._set(
+            self._t("onboarding.theme.prompt"),
+            self._option_list(self._theme_items(), self.answers.get("theme", "dark")),
+        )
 
     async def _step_confirm(self) -> None:
         a = self.answers
         if a.get("_credential_pending"):
-            key_ref = "(pasted; held in memory until verified commit)"
+            key_ref = self._t("onboarding.key.pasted")
         else:
             key_ref = a.get(
                 "key_ref",
                 (
-                    "(managed by Codex)"
+                    self._t("onboarding.key.managed_codex")
                     if a.get("provider") == "codex_subscription"
-                    else "(none — local)"
+                    else self._t("onboarding.key.none_local")
                 ),
             )
         notice = ""
@@ -686,53 +712,77 @@ class SetupApp(App):
             )
             if text:
                 notice = f"\n{layout.warn(text)}\n"
-        rows = [
-            layout.field(
-                "provider",
-                "ChatGPT" if a["provider"] == "codex_subscription" else a["provider"],
-            )
-        ]
+        provider_label = "ChatGPT" if a["provider"] == "codex_subscription" else a["provider"]
+        rows = [layout.field(self._t("onboarding.field.provider"), provider_label)]
         if a.get("base_url"):
-            rows.append(layout.field("base_url", a["base_url"]))
+            rows.append(layout.field(self._t("onboarding.field.base_url"), a["base_url"]))
         rows.append(
-            layout.field("model", a.get("model") or "account default (checked before save)")
+            layout.field(
+                self._t("onboarding.field.model"),
+                a.get("model") or self._t("onboarding.model.account_default_checked"),
+            )
         )
         if a.get("_model_catalog_provenance"):
             catalog_state = (
-                "verified" if a.get("_model_catalog_verified") == "true" else "unverified"
+                self._t("onboarding.catalog.verified")
+                if a.get("_model_catalog_verified") == "true"
+                else self._t("onboarding.catalog.unverified")
             )
             rows.append(
-                f"{layout.field('catalog', catalog_state)} — {a['_model_catalog_provenance']}"
+                f"{layout.field(self._t('onboarding.field.catalog'), catalog_state)} — "
+                f"{a['_model_catalog_provenance']}"
             )
-        rows.append(layout.field("key", key_ref))
+        rows.append(layout.field(self._t("onboarding.field.key"), key_ref))
         if a.get("_provider_group") == "advanced":
             from jarn.permissions.labels import permission_mode_name
 
             rows.extend(
                 [
                     layout.field(
-                        "reasoning", a.get("reasoning_effort", "provider default") or ""
+                        self._t("onboarding.field.reasoning"),
+                        a.get("reasoning_effort", self._t("onboarding.reasoning.provider_default"))
+                        or "",
                     ),
-                    layout.field("subagent", a.get("routing_subagent", a.get("model", "")) or ""),
                     layout.field(
-                        "summary", a.get("routing_summarizer", a.get("model", "")) or ""
+                        self._t("onboarding.field.subagent"),
+                        a.get("routing_subagent", a.get("model", "")) or "",
                     ),
-                    layout.field("fallback", a.get("routing_fallback") or "(none)"),
-                    f"{layout.field('budget', '$' + str(a.get('budget_per_session_usd', '5.00')))} "
-                    f"(warn {a.get('budget_warn_at_pct', '80')}%, "
-                    f"hard stop {a.get('budget_hard_stop', 'true')})",
                     layout.field(
-                        "access", permission_mode_name(a.get("permission_mode", "ask"))
+                        self._t("onboarding.field.summarizer"),
+                        a.get("routing_summarizer", a.get("model", "")) or "",
+                    ),
+                    layout.field(
+                        self._t("onboarding.field.fallbacks"),
+                        a.get("routing_fallback") or self._t("onboarding.none"),
+                    ),
+                    layout.field(
+                        self._t("onboarding.field.budget"),
+                        self._t(
+                            "onboarding.budget.summary",
+                            amount="$" + str(a.get("budget_per_session_usd", "5.00")),
+                            pct=a.get("budget_warn_at_pct", "80"),
+                            hard=a.get("budget_hard_stop", "true"),
+                        ),
+                    ),
+                    layout.field(
+                        self._t("onboarding.field.access"),
+                        permission_mode_name(a.get("permission_mode", "ask")),
                     ),
                 ]
             )
-        rows.append(layout.field("theme", a.get("theme", "dark")))
+        rows.append(layout.field(self._t("onboarding.field.theme"), a.get("theme", "dark")))
         summary = "\n".join(rows) + (f"\n{notice}" if notice else "")
         body = Vertical(
             Static(summary),
-            self._option_list([("save", "Save configuration"), ("back", "Go back")], None),
+            self._option_list(
+                [
+                    ("save", self._t("onboarding.confirm.save")),
+                    ("back", self._t("onboarding.confirm.back")),
+                ],
+                None,
+            ),
         )
-        self.query_one("#title", Static).update("Ready?")
+        self.query_one("#title", Static).update(self._t("onboarding.confirm.ready_q"))
         self.query_one("#crumbs", Static).update("")
         container = self.query_one("#step", Vertical)
         await container.remove_children()
@@ -859,7 +909,7 @@ class SetupApp(App):
                 if not 0 <= parsed < float("inf"):
                     raise ValueError
             except ValueError:
-                self._advanced_error = "enter a finite number greater than or equal to 0"
+                self._advanced_error = self._t("onboarding.budget.invalid")
                 await self._render_step()
                 return
             self._advanced_error = None
@@ -871,7 +921,7 @@ class SetupApp(App):
                 if not 0 <= parsed_pct <= 100:
                     raise ValueError
             except ValueError:
-                self._advanced_error = "enter a whole number from 0 through 100"
+                self._advanced_error = self._t("onboarding.budget.warn.invalid")
                 await self._render_step()
                 return
             self._advanced_error = None
@@ -1016,7 +1066,7 @@ def run_setup_tui(*, force: bool = False, propagate_errors: bool = False) -> Pat
         proceed = confirm_overwrite(force=force)
     except (KeyboardInterrupt, EOFError):
         mark_setup_incomplete()
-        rc.print(f"\n{layout.warn('Setup incomplete (cancelled).')} Resume with {layout.strong('jarn setup')}.")
+        rc.print(_cancelled_notice())
         return return_or_raise_setup_failure(
             SetupCommandError("The setup prompt was cancelled.", kind=SetupFailureKind.CANCELLED),
             propagate_errors=propagate_errors,
@@ -1031,7 +1081,7 @@ def run_setup_tui(*, force: bool = False, propagate_errors: bool = False) -> Pat
     try:
         set_setup_progress("in_progress")
     except SetupFlowError as exc:
-        rc.print(f"{layout.err('Setup incomplete (install state):')} {exc}")
+        rc.print(f"{layout.err(_t('onboarding.incomplete.install'))} {exc}")
         return return_or_raise_setup_failure(exc, propagate_errors=propagate_errors)
 
     from jarn.onboarding.wizard import _chatgpt_session_ready, _detect_local_providers
@@ -1040,13 +1090,17 @@ def run_setup_tui(*, force: bool = False, propagate_errors: bool = False) -> Pat
     resume = None
     try:
         if saved is not None and Confirm.ask(
-            f"Resume setup from {saved.stage} (saved {saved.updated_at})?", default=True
+            _t("onboarding.resume", stage=saved.stage, updated_at=saved.updated_at),
+            default=True,
         ):
             resume = saved
-            rc.print(f"{layout.ok(grammar.GLYPH_OK)} Resuming at {layout.strong(saved.stage)}.")
+            rc.print(
+                f"{layout.ok(grammar.GLYPH_OK)} "
+                f"{_t('onboarding.resuming', stage=layout.strong(saved.stage))}"
+            )
     except (KeyboardInterrupt, EOFError):
         mark_setup_incomplete()
-        rc.print(f"\n{layout.warn('Setup incomplete (cancelled).')} Resume with {layout.strong('jarn setup')}.")
+        rc.print(_cancelled_notice())
         return return_or_raise_setup_failure(
             SetupCommandError("Setup resume was cancelled.", kind=SetupFailureKind.CANCELLED),
             propagate_errors=propagate_errors,
@@ -1061,8 +1115,10 @@ def run_setup_tui(*, force: bool = False, propagate_errors: bool = False) -> Pat
         app.run()
     except (KeyboardInterrupt, EOFError, OSError) as exc:
         mark_setup_incomplete()
-        rc.print(f"\n{layout.err('Setup incomplete:')} {exc or 'terminal closed'}")
-        rc.print(f"Your progress is saved. Resume with {layout.strong('jarn setup')}.")
+        rc.print(
+            f"\n{layout.err(_t('onboarding.incomplete'))} {exc or _t('onboarding.terminal_closed')}"
+        )
+        rc.print(_t("onboarding.progress_saved", command=_setup_command()))
         kind = (
             SetupFailureKind.CANCELLED
             if isinstance(exc, (KeyboardInterrupt, EOFError))
@@ -1074,14 +1130,14 @@ def run_setup_tui(*, force: bool = False, propagate_errors: bool = False) -> Pat
         )
     if app._cancelled:
         mark_setup_incomplete()
-        rc.print(f"\n{layout.warn('Setup incomplete (cancelled).')} Resume with {layout.strong('jarn setup')}.")
+        rc.print(_cancelled_notice())
         return return_or_raise_setup_failure(
             SetupCommandError("Setup was cancelled by the user.", kind=SetupFailureKind.CANCELLED),
             propagate_errors=propagate_errors,
         )
     if app.result_path is None:
         mark_setup_incomplete()
-        rc.print(f"\n{layout.err('Setup incomplete:')} no configuration was confirmed.")
+        rc.print(f"\n{layout.err(_t('onboarding.incomplete'))} {_t('onboarding.unconfirmed')}")
         return return_or_raise_setup_failure(
             SetupCommandError(
                 "The setup UI exited without a confirmed configuration.",
@@ -1099,8 +1155,8 @@ def run_setup_tui(*, force: bool = False, propagate_errors: bool = False) -> Pat
     except (SetupFlowError, KeyboardInterrupt) as exc:
         mark_setup_incomplete()
         message = str(exc) if str(exc) else "setup cancelled"
-        rc.print(f"\n{layout.err('Setup incomplete at verification:')} {message}")
-        rc.print(f"No configuration was changed. Retry with {layout.strong('jarn setup')}.")
+        rc.print(f"\n{layout.err(_t('onboarding.incomplete.verification'))} {message}")
+        rc.print(_t("onboarding.retry", command=_setup_command()))
         failure = (
             exc
             if isinstance(exc, SetupCommandError)

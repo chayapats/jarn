@@ -24,6 +24,7 @@ from jarn.repl.auth_errors import _friendly_auth_error, _provider_hint
 from jarn.repl_renderer import TurnRenderer
 from jarn.tui import grammar, layout
 from jarn.tui.controller import Controller
+from jarn.tui.i18n import resolve_locale, t
 from jarn.tui.notify import notify
 from jarn.util.process_env import external_command_env
 
@@ -93,6 +94,8 @@ async def _run_turn(
         tool_progress=getattr(controller, "tool_progress", controller.config.ui.tool_progress),
         wrap_at=controller.config.ui.wrap_at,
         show_reasoning=controller.config.ui.show_reasoning,
+        locale=resolve_locale(controller.config),
+        thinking_style=getattr(controller.config.ui, "thinking_style", "plain"),
     )
     # ONE cancellation handler spans the whole turn — runtime warm-up, enrich, AND
     # streaming — so a cancel during the PRE-STREAM awaits (``ensure_runtime`` or the
@@ -313,28 +316,59 @@ def _edit_text_in_editor(text: str, *, suffix: str = ".txt") -> str | None:
             os.unlink(path)
 
 
+def _approval_header_key(request: ApprovalRequest) -> str:
+    """Catalog key for the one-line approval question (§3.6)."""
+    kind = request.action.kind
+    if kind is ActionKind.SHELL:
+        return "approval.header.shell"
+    if kind is ActionKind.NETWORK:
+        return "approval.header.network"
+    if kind is ActionKind.READ:
+        return "approval.header.read"
+    tool = (request.action.tool or "").lower()
+    if tool == "edit_file" or (request.args and "old_string" in request.args):
+        return "approval.header.edit"
+    return "approval.header.write"
+
+
+def _approval_header(request: ApprovalRequest, locale: str) -> str:
+    """Human header: one verb-ish question plus the object. Paths stay as-is."""
+    return t(_approval_header_key(request), locale, object=request.action.target)
+
+
 def _approval_options(
-    request: ApprovalRequest, *, view_full_diff: bool = False, edit_before_apply: bool = False
+    request: ApprovalRequest,
+    *,
+    view_full_diff: bool = False,
+    edit_before_apply: bool = False,
+    locale: str = "en",
 ) -> list[tuple[str, object]]:
     """Build the Claude Code-style approval menu for a gated action.
 
+    Option *order and scopes* are fixed: once, then always (or session when
+    ``block_remember_always``), then deny. Labels come from the locale catalog.
     ``view_full_diff`` appends a non-reply "View full diff" option (carrying the
     :data:`_VIEW_FULL_DIFF` sentinel) for over-cap write diffs. ``edit_before_apply``
     appends an "Edit before apply" option (carrying :data:`_EDIT_BEFORE_APPLY`) for
     writes whose new content can be opened in ``$EDITOR``.
     """
+    loc = locale if locale in ("en", "th") else "en"
     options: list[tuple[str, object]] = [
-        ("Allow once", ApprovalReply(True, RememberScope.ONCE)),
+        (t("approval.once", loc), ApprovalReply(True, RememberScope.ONCE)),
     ]
     if request.result.block_remember_always:
-        options.append(("Allow for session", ApprovalReply(True, RememberScope.SESSION)))
+        options.append(
+            (t("approval.session", loc), ApprovalReply(True, RememberScope.SESSION))
+        )
     else:
-        options.append(("Allow always", ApprovalReply(True, RememberScope.ALWAYS)))
+        options.append(
+            (t("approval.always", loc), ApprovalReply(True, RememberScope.ALWAYS))
+        )
     if edit_before_apply:
-        options.append(("Edit before apply", _EDIT_BEFORE_APPLY))
-    options.append(("Deny", ApprovalReply(False, message="rejected by user")))
+        options.append((t("approval.edit", loc), _EDIT_BEFORE_APPLY))
+    options.append((t("approval.deny", loc), ApprovalReply(False, message="rejected by user")))
     if view_full_diff:
-        options.append(("View full diff", _VIEW_FULL_DIFF))
+        options.append((t("approval.view_diff", loc), _VIEW_FULL_DIFF))
     return options
 
 
@@ -362,33 +396,16 @@ async def _approve(
             console, controller, request, ask=ask, pick=pick, edit=edit
         )
     a = request.action
-    what = (f"run: {a.target}" if a.kind is ActionKind.SHELL
-            else f"write: {a.target}" if a.kind is ActionKind.WRITE
-            else f"{a.kind.value}: {a.target}")
-    danger = (
-        f"{layout.err(grammar.GLYPH_WARN + ' DANGEROUS — ')}"
-        if request.result.dangerous
-        else ""
-    )
-    console.print(
-        f"\n{danger}{layout.strong('Approve?')} {what}  "
-        f"{layout.muted('(' + request.result.reason + ')')}"
-    )
-    console.print(
-        layout.muted(f"working directory: {controller.project_root}")
-    )
-    if a.kind is ActionKind.NETWORK:
-        console.print(layout.muted(f"network destination: {a.target}"))
-    console.print(
-        layout.muted(
-            "Choose whether this approval applies once or to a scoped remembered rule."
-        )
-    )
-    console.print(
-        layout.muted(
-            f"remembered scope: {controller.engine.remember_scope_summary(a)}"
-        )
-    )
+    locale = resolve_locale(controller.config)
+    header = _approval_header(request, locale)
+    if request.result.dangerous:
+        line = f"{layout.err(t('approval.danger', locale))} {layout.strong(header)}"
+    else:
+        line = layout.strong(header)
+    console.print(f"\n{line}")
+    density = getattr(controller, "tool_progress", controller.config.ui.tool_progress)
+    if density == "verbose" and request.result.reason:
+        console.print(layout.muted(request.result.reason))
     full_diff: Text | None = None
     over_cap = False
     if a.kind is ActionKind.WRITE:
@@ -413,7 +430,12 @@ async def _approve(
         and edit is not None
         and _editable_field(request.args) is not None
     )
-    options = _approval_options(request, view_full_diff=show_view, edit_before_apply=show_edit)
+    options = _approval_options(
+        request,
+        view_full_diff=show_view,
+        edit_before_apply=show_edit,
+        locale=locale,
+    )
     if pick is not None:
         while True:
             picked = await pick(options)

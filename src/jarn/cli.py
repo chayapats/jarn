@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Never
 
 from jarn.tui import grammar, layout, palette
+from jarn.tui.i18n import resolve_locale, t
 from jarn.util.process_env import external_command_env
 from jarn.version import __version__
 
@@ -62,25 +63,28 @@ class JarnArgumentParser(argparse.ArgumentParser):
 
     def format_help(self) -> str:
         """Common commands (epilog) first, then grouped catalog and flags."""
+        locale = resolve_locale("auto")
+        top = self.prog == "jarn"
         formatter = self._get_formatter()
         formatter.add_usage(self.usage, self._actions, self._mutually_exclusive_groups)
-        formatter.add_text(self.description)
-        formatter.add_text(self.epilog)
-        formatter.add_text(_format_cli_commands(self))
+        formatter.add_text(t("cli.description", locale) if top else self.description)
+        formatter.add_text(_cli_epilog(locale) if top else self.epilog)
+        formatter.add_text(_format_cli_commands(self, locale))
         skip = {"positional arguments", "Commands"}
-        for action_group in self._action_groups:
-            if action_group.title in skip:
-                continue
-            formatter.start_section(action_group.title)
-            formatter.add_text(action_group.description)
-            formatter.add_arguments(action_group._group_actions)
-            formatter.end_section()
-        formatter.add_text("See `jarn <command> --help` for subcommand flags.")
-        return formatter.format_help()
+        with _localized_action_help(self, locale, top=top):
+            for action_group in self._action_groups:
+                if action_group.title in skip:
+                    continue
+                formatter.start_section(_localized_group_title(action_group.title, locale))
+                formatter.add_text(action_group.description)
+                formatter.add_arguments(action_group._group_actions)
+                formatter.end_section()
+            formatter.add_text(t("cli.footer", locale))
+            return formatter.format_help()
 
 
-#: Exhaustive CLI subcommand grouping for ``jarn --help``. Help strings stay on
-#: the argparse parsers; this tuple is only membership + scan order.
+#: Exhaustive CLI subcommand grouping for ``jarn --help``. Membership and
+#: scan order live here; catalog blurbs come from ``cli.cmd.*`` i18n keys.
 _CLI_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Start", ("setup", "init", "exec", "sessions")),
     ("Account", ("auth", "login", "codex")),
@@ -90,21 +94,112 @@ _CLI_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Support", ("bug", "telemetry", "completions")),
 )
 
+_CLI_GROUP_TITLE_KEYS: dict[str, str] = {
+    "Commands": "cli.group.commands",
+    "Start": "cli.group.start",
+    "One-shot": "cli.group.oneshot",
+    "Account": "cli.group.account",
+    "Install": "cli.group.install",
+    "Workspace": "cli.group.workspace",
+    "Gateway": "cli.group.gateway",
+    "Support": "cli.group.support",
+    "options": "cli.group.options",
+    "optional arguments": "cli.group.options",
+    "Input": "cli.group.input",
+    "Output": "cli.group.output",
+    "Run": "cli.group.run",
+    "Repair": "cli.group.repair",
+    "Checks": "cli.group.checks",
+    "Scope": "cli.group.scope",
+    "Confirm": "cli.group.confirm",
+    "Release": "cli.group.release",
+    "Mode": "cli.group.mode",
+    "Wait": "cli.group.wait",
+    "Method": "cli.group.method",
+    "Refresh": "cli.group.refresh",
+    "Setup": "cli.group.setup",
+}
 
-def _format_cli_commands(parser: argparse.ArgumentParser) -> str:
+_TOP_FLAG_HELP_KEYS: dict[str, str] = {
+    "resume": "cli.flag.resume",
+    "add_dir": "cli.flag.add_dir",
+    "headless_prompt": "cli.flag.print",
+    "headless_output_format": "cli.flag.output_format",
+    "json": "cli.flag.json",
+    "headless_model": "cli.flag.model",
+    "headless_permission_mode": "cli.flag.mode",
+    "preset": "cli.flag.preset",
+    "headless_max_turns": "cli.flag.max_turns",
+    "headless_cwd": "cli.flag.cwd",
+    "headless_ignore_project_config": "cli.flag.ignore_project_config",
+    "headless_resume_session": "cli.flag.resume_session",
+    "headless_output_schema": "cli.flag.output_schema",
+}
+
+_EPILOG_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("cli.epilog.start.title", "cli.epilog.start.body"),
+    ("cli.epilog.install.title", "cli.epilog.install.body"),
+    ("cli.epilog.auth.title", "cli.epilog.auth.body"),
+    ("cli.epilog.models.title", "cli.epilog.models.body"),
+    ("cli.epilog.permissions.title", "cli.epilog.permissions.body"),
+    ("cli.epilog.diagnosis.title", "cli.epilog.diagnosis.body"),
+    ("cli.epilog.update.title", "cli.epilog.update.body"),
+    ("cli.epilog.exits.title", "cli.epilog.exits.body"),
+)
+
+
+def _cli_epilog(locale: str) -> str:
+    return "\n\n".join(
+        f"{t(title_key, locale)}\n{t(body_key, locale)}" for title_key, body_key in _EPILOG_SECTIONS
+    )
+
+
+def _localized_group_title(title: str | None, locale: str) -> str:
+    if not title:
+        return ""
+    key = _CLI_GROUP_TITLE_KEYS.get(title)
+    return t(key, locale) if key else title
+
+
+@contextlib.contextmanager
+def _localized_action_help(
+    parser: argparse.ArgumentParser, locale: str, *, top: bool
+) -> Iterator[None]:
+    previous: list[tuple[argparse.Action, str | None]] = []
+    for action in parser._actions:
+        if action.help in {None, argparse.SUPPRESS}:
+            continue
+        key: str | None = None
+        if action.dest in {"help", "version"}:
+            key = f"cli.flag.{action.dest}"
+        elif top:
+            key = _TOP_FLAG_HELP_KEYS.get(action.dest)
+        if key is None:
+            continue
+        previous.append((action, action.help))
+        action.help = t(key, locale)
+    try:
+        yield
+    finally:
+        for action, help_text in previous:
+            action.help = help_text
+
+
+def _format_cli_commands(parser: argparse.ArgumentParser, locale: str) -> str:
     """Grouped command catalog (plain dialect) — replaces argparse's brace dump."""
+    if parser.prog != "jarn":
+        return ""
     sub = next(
         (action for action in parser._actions if isinstance(action, argparse._SubParsersAction)),
         None,
     )
     if sub is None:
         return ""
-    helps = {action.dest: (action.help or "") for action in sub._choices_actions}
-    lines = [layout.title("Commands", dialect="plain")]
+    lines = [layout.title(t("cli.group.commands", locale), dialect="plain")]
     for group, names in _CLI_COMMAND_GROUPS:
-        lines.append(layout.title(group, dialect="plain"))
+        lines.append(layout.title(_localized_group_title(group, locale), dialect="plain"))
         for name in names:
-            lines.append(layout.row(name, helps.get(name, ""), dialect="plain"))
+            lines.append(layout.row(name, t(f"cli.cmd.{name}", locale), dialect="plain"))
         lines.append("")
     return "\n".join(lines).rstrip()
 
@@ -310,58 +405,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    parser.epilog = """Start and common commands:
-  jarn setup                       verified, resumable first-run setup
-  jarn gateway setup               verify a Telegram bot, discover your user ID,
-                                   store its token safely, and offer auto-start
-  jarn                             start interactive coding in the current directory
-  jarn exec "TASK" --mode ask      run one automation-safe, non-interactive turn
-  jarn sessions                    list saved sessions; add --help for export/delete
-
-Installation and configuration (no browser required):
-  jarn doctor --json               show resolved executable path, install method/record,
-                                   setup state, dependency versions, and PATH conflicts
-  jarn config path                 print the active global config path
-  jarn config path --project       print .jarn/config.yaml for this project
-  jarn config validate             validate configuration without changing it
-
-Authentication:
-  jarn auth login [--device]       sign in with a ChatGPT subscription (device for SSH)
-  jarn auth status                 verify Codex dependency, auth mode, and account
-  jarn auth repair                 recheck dependency and refresh ChatGPT auth
-  jarn auth logout                 remove only Codex-managed credentials
-  jarn login                       OpenRouter OAuth login (separate from ChatGPT auth)
-
-Models and reasoning:
-  In interactive J.A.R.N., /model lists verified models and then offers only
-  reasoning efforts supported by the chosen model; /model refresh forces a refresh.
-  Use /status to inspect the active model/reasoning or --model PROFILE/MODEL with exec.
-
-Permissions and safety:
-  /mode plan|ask|auto-edit|yolo changes the interactive mode. With exec, use --mode.
-  plan = review only; ask = confirm changes (safe default); auto-edit = workspace edits;
-  yolo = broad access, but hard catastrophic-action and credential guards remain active.
-
-Diagnosis, repair, and support:
-  jarn doctor                      offline, non-mutating diagnosis (add --network to opt in)
-  jarn doctor --fix --dry-run      preview allowlisted, recoverable repairs
-  jarn doctor --fix                apply the shown plan with backup/rollback protection
-  jarn doctor --report FILE        write a redacted support report (owner-only mode 0600)
-  jarn bug --dry-run               prepare local support material without opening a browser
-
-Update, rollback, and removal:
-  jarn update --check              check only; jarn update --dry-run previews activation
-  jarn rollback                    activate the retained previous working version
-  jarn uninstall                   choose components; config/data/credentials are kept by default
-  jarn uninstall --help            show explicit data-removal category flags
-
-Stable exit codes:
-  0 success; 1 internal/diagnostic issue; 2 usage or configuration;
-  3 auth; 4 model unavailable; 5 permission denied; 6 network/provider;
-  7 update/rollback failed; 8 budget exceeded; 9 verification failed;
-  10 updated executable requires a fresh shell; 124 timeout; 130 cancelled.
-"""
-
     sub = parser.add_subparsers(dest="command", metavar="COMMAND", title="Commands")
 
     # Stable, discoverable spelling for automation. The historical ``-p`` /
@@ -369,9 +412,7 @@ Stable exit codes:
     # the same headless implementation and output contract.
     p_exec = sub.add_parser("exec", help="Run one non-interactive agent turn")
     exec_input = p_exec.add_argument_group("Input")
-    exec_input.add_argument(
-        "headless_prompt", metavar="PROMPT", help="Task text, or '-' for stdin"
-    )
+    exec_input.add_argument("headless_prompt", metavar="PROMPT", help="Task text, or '-' for stdin")
     exec_input.add_argument("--cwd", dest="headless_cwd", metavar="PATH")
     exec_input.add_argument("--resume-session", dest="headless_resume_session", metavar="THREAD")
     exec_input.add_argument(
@@ -600,7 +641,9 @@ Stable exit codes:
             help="Force browser/loopback login on this host",
         )
         login_output = login.add_argument_group("Output")
-        login_output.add_argument("--json", action="store_true", help="Emit JSONL challenge + status")
+        login_output.add_argument(
+            "--json", action="store_true", help="Emit JSONL challenge + status"
+        )
         login_confirm = login.add_argument_group("Confirm")
         login_confirm.add_argument(
             "--yes",
@@ -610,7 +653,9 @@ Stable exit codes:
         status = actions.add_parser("status", help="Verify auth mode, account, and dependency")
         add_timeout(status)
         status_output = status.add_argument_group("Output")
-        status_output.add_argument("--json", action="store_true", help="Emit the stable JSON status")
+        status_output.add_argument(
+            "--json", action="store_true", help="Emit the stable JSON status"
+        )
         status_refresh = status.add_argument_group("Refresh")
         status_refresh.add_argument(
             "--refresh",
@@ -620,13 +665,17 @@ Stable exit codes:
         logout = actions.add_parser("logout", help="Remove only Codex-managed credentials")
         add_timeout(logout)
         logout_output = logout.add_argument_group("Output")
-        logout_output.add_argument("--json", action="store_true", help="Emit the stable JSON status")
+        logout_output.add_argument(
+            "--json", action="store_true", help="Emit the stable JSON status"
+        )
         repair = actions.add_parser(
             "repair", help="Recheck the Codex dependency and refresh ChatGPT auth"
         )
         add_timeout(repair)
         repair_output = repair.add_argument_group("Output")
-        repair_output.add_argument("--json", action="store_true", help="Emit the stable JSON status")
+        repair_output.add_argument(
+            "--json", action="store_true", help="Emit the stable JSON status"
+        )
         repair_confirm = repair.add_argument_group("Confirm")
         repair_confirm.add_argument(
             "--yes",
@@ -2518,7 +2567,7 @@ def _cmd_doctor(
                 fallback_component="doctor repair",
                 fallback_action="Review the doctor report and retry.",
             )
-            console.print(detail.render(), markup=False)
+            console.print(detail.render(stream=console.file), markup=False)
     if result.report_path is not None:
         console.print("\n" + layout.field("Support report", str(result.report_path)))
     return result.exit_code
@@ -2872,16 +2921,22 @@ def _cmd_login() -> int:
 
     if not result.changed:
         # Existing key kept — nothing to persist; don't rewrite the config.
-        console.print(f"{layout.ok(grammar.GLYPH_OK)}  Keeping your existing key ({layout.strong(result.reference)}).")
+        console.print(
+            f"{layout.ok(grammar.GLYPH_OK)}  Keeping your existing key ({layout.strong(result.reference)})."
+        )
         console.print(f"   {layout.field('Key tail', result.masked_key)}")
         return 0
 
-    console.print(f"{layout.ok(grammar.GLYPH_OK)}  Logged in — key stored as {layout.strong(result.reference)}")
+    console.print(
+        f"{layout.ok(grammar.GLYPH_OK)}  Logged in — key stored as {layout.strong(result.reference)}"
+    )
     console.print(f"   {layout.field('Key tail', result.masked_key)}")
 
     # Write the reference into the OpenRouter provider in the global config.
     if _write_openrouter_key_ref(result.reference):
-        console.print(f"\n{layout.ok(grammar.GLYPH_OK)}  Config updated.  Launch {layout.strong('jarn')} to start coding.")
+        console.print(
+            f"\n{layout.ok(grammar.GLYPH_OK)}  Config updated.  Launch {layout.strong('jarn')} to start coding."
+        )
         return 0
     console.print(
         f"\n{layout.warn('!')}  The key is stored ({layout.strong(result.reference)}) but the "
@@ -2960,7 +3015,7 @@ def _cmd_auth(
                 fallback_component="authentication",
                 fallback_action="Run `jarn auth repair`, then retry.",
             )
-            console.print(detail.render(), markup=False)
+            console.print(detail.render(stream=console.file), markup=False)
             return
         detail = error_detail(
             ErrorCode.AUTH_SIGNED_OUT,
@@ -2970,7 +3025,7 @@ def _cmd_auth(
             retryable=status.state is AuthState.SIGNED_OUT,
             action="Run `jarn auth login`, then verify with `jarn auth status`.",
         )
-        console.print(detail.render(), markup=False)
+        console.print(detail.render(stream=console.file), markup=False)
 
     def ensure_dependency(status):
         """Offer the reviewed standalone dependency and return a service using it."""
@@ -3003,7 +3058,9 @@ def _cmd_auth(
                 else f"incompatible ({status.dependency.version or 'version unknown'})"
             )
             console.print(f"\n{layout.warn('!')} OpenAI Codex CLI is {reason}.")
-            console.print(layout.field("Purpose", "ChatGPT subscription authentication and model access"))
+            console.print(
+                layout.field("Purpose", "ChatGPT subscription authentication and model access")
+            )
             console.print(layout.field("Version/channel", f"{plan.version} ({plan.channel})"))
             console.print(layout.field("Source", f"{plan.source} — {plan.metadata_url}"))
             console.print(layout.field("Destination", plan.destination))
@@ -3025,7 +3082,9 @@ def _cmd_auth(
                 )
             else:
                 console.print(f"{layout.warn('Setup incomplete:')} Codex CLI was not changed.")
-                console.print(layout.field("Manual official command", CODEX_OFFICIAL_INSTALL_COMMAND))
+                console.print(
+                    layout.field("Manual official command", CODEX_OFFICIAL_INSTALL_COMMAND)
+                )
             return False
 
         try:
@@ -3053,7 +3112,9 @@ def _cmd_auth(
                 )
             else:
                 console.print(f"{layout.err('Setup incomplete:')} {exc}")
-                console.print(layout.field("Manual official command", CODEX_OFFICIAL_INSTALL_COMMAND))
+                console.print(
+                    layout.field("Manual official command", CODEX_OFFICIAL_INSTALL_COMMAND)
+                )
             return False
         if as_json:
             print(
@@ -3109,7 +3170,9 @@ def _cmd_auth(
                 if as_json:
                     emit(status)
                 else:
-                    console.print(f"{layout.ok(grammar.GLYPH_OK)} Codex-managed credentials removed.")
+                    console.print(
+                        f"{layout.ok(grammar.GLYPH_OK)} Codex-managed credentials removed."
+                    )
                 return 0
             emit(status)
             return EXIT_AUTH
@@ -3147,7 +3210,11 @@ def _cmd_auth(
                 )
             )
         else:
-            console.print("\n" + detail.render(), style=palette.C_WARN, markup=False)
+            console.print(
+                "\n" + detail.render(stream=console.file),
+                style=palette.C_WARN,
+                markup=False,
+            )
         return EXIT_CANCELLED
     except AuthServiceError as exc:
         emit(exc.status)
@@ -3173,7 +3240,7 @@ def _cmd_auth(
                 )
             )
         else:
-            console.print(detail.render(), markup=False)
+            console.print(detail.render(stream=console.file), markup=False)
         return EXIT_AUTH
 
 

@@ -87,6 +87,7 @@ def test_help_text_has_no_stale_features(tmp_path, monkeypatch, base_config):
 def test_required_general_user_aliases_are_discoverable_and_work(
     tmp_path, monkeypatch, base_config
 ):
+    base_config.ui.locale = "en"
     ctrl = _controller(tmp_path, monkeypatch, base_config)
     help_text = ctrl.handle_command("help", "").text
     for name in ("/status", "/new", "/login", "/logout", "/exit"):
@@ -118,6 +119,7 @@ def test_unknown_slash_command_offers_close_match(tmp_path, monkeypatch, base_co
 
 
 def test_slash_commands_are_case_insensitive(tmp_path, monkeypatch, base_config):
+    base_config.ui.locale = "en"
     ctrl = _controller(tmp_path, monkeypatch, base_config)
     lower = ctrl.handle_command("help", "").text
     upper = ctrl.handle_command("HELP", "").text
@@ -176,9 +178,28 @@ def test_help_renders_through_rich(tmp_path, monkeypatch, base_config):
     # tokens like "/model" on the slash.
     console = Console(file=buf, force_terminal=True, width=100, highlight=False)
     console.print(ctrl.handle_command("help", "").text)
-    console.print(format_help())
+    console.print(format_help(locale="en"))
     assert "/model" in buf.getvalue()
     assert "/help" in buf.getvalue()
+    ctrl.close()
+
+
+def test_help_follows_ui_locale(tmp_path, monkeypatch, base_config):
+    base_config.ui.locale = "th"
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    th = ctrl.handle_command("help", "").text
+    assert "[b]คำสั่ง[/b]" in th or "คำสั่ง" in th
+    assert "แสดงหรือเปลี่ยนโมเดลที่ใช้อยู่" in th
+    assert "/model" in th
+    assert "Show or switch the active model." not in th
+    mode = ctrl.handle_command("help", "mode").text
+    assert "plan" in mode and "yolo" in mode
+    assert "ถามก่อนทุกการเปลี่ยน" in mode
+
+    ctrl.config.ui.locale = "en"
+    en = ctrl.handle_command("help", "").text
+    assert "Show or switch the active model." in en
+    assert "[b]Work[/b]" in en
     ctrl.close()
 
 
@@ -1278,6 +1299,7 @@ def test_cmd_doctor_shows_provider_and_mode(tmp_path, monkeypatch, base_config):
 
     from rich.console import Console
 
+    base_config.ui.locale = "en"
     ctrl = _controller(tmp_path, monkeypatch, base_config)
     result = ctrl.handle_command("doctor", "")
 
@@ -1307,6 +1329,7 @@ def test_cmd_doctor_bad_key_shows_warning(tmp_path, monkeypatch, base_config):
 
     from rich.console import Console
 
+    base_config.ui.locale = "en"
     base_config.providers["openrouter"].api_key = "${DEFINITELY_UNSET_XYZ}"
     ctrl = _controller(tmp_path, monkeypatch, base_config)
     result = ctrl.handle_command("doctor", "")
@@ -1325,6 +1348,7 @@ def test_cmd_doctor_renders_same_data_as_cli(tmp_path, monkeypatch, base_config)
 
     from rich.console import Console
 
+    base_config.ui.locale = "en"
     ctrl = _controller(tmp_path, monkeypatch, base_config)
     result = ctrl.handle_command("doctor", "")
 
@@ -1335,8 +1359,9 @@ def test_cmd_doctor_renders_same_data_as_cli(tmp_path, monkeypatch, base_config)
 
     # The same section headers the CLI _cmd_doctor renders must be present so
     # both surfaces show the same data (criterion 1 + the Extensions fidelity gap).
-    for header in ("Providers", "Main model build", "Extensions"):
+    for header in ("Providers", "Extensions"):
         assert header in output, f"/doctor output missing {header!r} block"
+    assert "Model" in output
     # Extensions summary counts line is rendered.
     assert "skills" in output and "mcp" in output
     ctrl.close()

@@ -5,18 +5,32 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
-Hermes display-parity close-out is merged on `feat/hermes-parity-closeout`
-([#93](https://github.com/chayapats/jarn/pull/93)–[#99](https://github.com/chayapats/jarn/pull/99)).
+Conversation UX (Claude-style chrome, Thai/English `t()` catalog) plus a
+Codex subscription write-path fix. Hermes display-parity close-out remains
+merged ([#93](https://github.com/chayapats/jarn/pull/93)–[#99](https://github.com/chayapats/jarn/pull/99)).
 Not a GitHub Release.
 
 ### Fixed
 
+- Codex ChatGPT subscription: the inner App Server turn stays read-only, but
+  the model must still request J.A.R.N. `write_file` / `edit_file` / `execute`
+  via `kind=tool_calls`. Those become ordinary permission-card tool calls
+  instead of a prose refusal that the Codex sandbox cannot write.
 - Treat host-absolute paths as valid when encoding systemd
   `WorkingDirectory=` (Windows CI was rejecting drive-absolute pytest
   paths). The Telegram user service remains Linux-only.
 
 ### Changed
 
+- Conversation chrome: boxed composer with locale placeholders; default
+  `ui.toolbar_detail: quiet` (model · mode · context; YOLO/untrusted never
+  drop); compact splash is one orientation sentence; `/help` drops the Glyphs
+  legend (`/help glyphs` keeps it); approval cards are one header + object;
+  TTY errors show title + next step unless `--verbose`.
+- UI chrome localizes through `t()` (`ui.locale: auto|en|th`). Slash names,
+  mode ids, provider ids, and `--json` keys stay English. Telegram verbose
+  bubbles, approval nouns, and local `/help` `/status` `/mode` share the
+  same catalog as the CLI.
 - One visual grammar for the terminal: glyphs, spacing, and context-pressure
   colors live in `tui/grammar.py` / `tui/palette.py`; command pages are built
   with `tui/layout.py` (Rich or Telegram HTML). `/help` is grouped Work /
@@ -63,6 +77,9 @@ Not a GitHub Release.
 
 ### Added
 
+- `ui.locale`, `ui.toolbar_detail`, and `ui.thinking_style` (`plain` default:
+  `คิด…` / `Thinking…`; quirky spinner words opt-in). Human tool verbs live
+  in `tui/tool_labels.py` (`Read`/`อ่าน`, not `read_file path=`).
 - `/diff [staged|all|session]` and `/busy [interrupt|queue|steer|status]`.
 - Background-job finish panel in CLI scrollback (id, exit code, one-line
   tail, `/ps` hint).

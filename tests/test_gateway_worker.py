@@ -745,9 +745,7 @@ async def test_status_parked_does_not_imply_busy(isolated_home: Path, tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_busy_second_turn_steers_without_second_run(
-    isolated_home: Path, tmp_path: Path
-):
+async def test_busy_second_turn_steers_without_second_run(isolated_home: Path, tmp_path: Path):
     """P4-2 / P4-6: second TurnFrame sets the steer slot; never a second _run_turn."""
     root = tmp_path / "proj"
     root.mkdir()
@@ -804,9 +802,7 @@ async def test_busy_second_turn_steers_without_second_run(
 
 
 @pytest.mark.asyncio
-async def test_busy_second_turn_queue_does_not_double_run(
-    isolated_home: Path, tmp_path: Path
-):
+async def test_busy_second_turn_queue_does_not_double_run(isolated_home: Path, tmp_path: Path):
     root = tmp_path / "proj"
     root.mkdir()
     gate = asyncio.Event()
@@ -1244,6 +1240,32 @@ async def test_mutating_slash_on_worker_is_notice_not_agent(isolated_home: Path,
     await _wait_event(stdout, "done")
     notices = [f.text for f in stdout.frames() if isinstance(f, EventFrame) and f.kind == "notice"]
     assert any("terminal" in (t or "").lower() or "jarn CLI" in (t or "") for t in notices)
+    assert seen == []
+    stdin.push(encode_line(ShutdownFrame()))
+    await asyncio.wait_for(task, timeout=2)
+    del worker
+
+
+@pytest.mark.asyncio
+async def test_mutating_slash_localizes_notice_from_ui_locale(isolated_home: Path, tmp_path: Path):
+    from jarn.tui.i18n import t
+
+    seen: list[str] = []
+
+    async def run_turn(driver, text, **kwargs):
+        seen.append(text)
+        yield Event(EventKind.TEXT, text=f"echo:{text}")
+        yield Event(EventKind.DONE)
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    ctrl = _stub_controller(root=root, run_turn=run_turn)
+    ctrl.config.ui = SimpleNamespace(locale="th")
+    worker, stdin, stdout, task = await _handshake_worker(isolated_home, tmp_path, ctrl)
+    stdin.push(encode_line(TurnFrame(thread_id="t-cfg-th", text="/config set ui.theme light")))
+    await _wait_event(stdout, "done")
+    notices = [f.text for f in stdout.frames() if isinstance(f, EventFrame) and f.kind == "notice"]
+    assert any(t("telegram.mutating.named", "th", name="config") in (n or "") for n in notices)
     assert seen == []
     stdin.push(encode_line(ShutdownFrame()))
     await asyncio.wait_for(task, timeout=2)

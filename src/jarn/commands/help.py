@@ -7,15 +7,48 @@ from typing import Any
 
 from jarn.commands.registry import (
     COMMAND_SPECS,
+    HELP_CLI_EQUIVALENT,
     CommandSpec,
     grouped_specs,
+    help_blurb_key,
+    help_description_key,
     help_group_order,
     slash_index,
     slash_usage,
     spec_by_name,
 )
 from jarn.tui import grammar, layout
+from jarn.tui.i18n import CATALOGS, resolve_locale, t
 from jarn.tui.layout import Dialect
+
+_MODE_IDS: tuple[str, ...] = ("plan", "ask", "auto-edit", "yolo")
+
+
+def _loc(locale: str | None) -> str:
+    """Resolve ``en`` / ``th`` for chrome lookups.
+
+    ``None`` is English so callers that have not wired ``ui.locale`` stay
+    stable. Pass ``resolve_locale(config)`` from the REPL, or the resolved
+    Telegram bot locale for HTML pages.
+    """
+    if locale is None:
+        return "en"
+    if locale == "auto":
+        return resolve_locale("auto")
+    if locale in CATALOGS:
+        return locale
+    raise ValueError(f"unknown locale {locale!r}; expected 'en' or 'th'")
+
+
+def _cmd_description(spec: CommandSpec, locale: str) -> str:
+    return t(help_description_key(spec.name), locale)
+
+
+def _cmd_blurb(spec: CommandSpec, locale: str) -> str:
+    key = help_blurb_key(spec.name)
+    if key in CATALOGS[locale]:
+        return t(key, locale)
+    return _cmd_description(spec, locale)
 
 
 def format_help(
@@ -24,6 +57,7 @@ def format_help(
     custom_description: Callable[[Any], str] | None = None,
     dialect: Dialect = "rich",
     columns: int | None = None,
+    locale: str | None = None,
 ) -> str:
     """Build ``/help`` body, grouped by section.
 
@@ -32,9 +66,10 @@ def format_help(
     the terminal here. Pass a width below ``grammar.HELP_NARROW_COLUMNS`` to
     wrap each command onto two lines.
     """
+    loc = _loc(locale)
     lines: list[str] = [
-        layout.title("Commands", dialect=dialect),
-        layout.muted("type /help <name> for details", dialect=dialect),
+        layout.title(t("help.title", loc), dialect=dialect),
+        layout.muted(t("help.subtitle", loc), dialect=dialect),
         "",
     ]
 
@@ -43,7 +78,7 @@ def format_help(
         specs = [s for s in grouped.get(group_name, []) if s.index]
         if not specs:
             continue
-        lines.append(layout.title(group_name, dialect=dialect))
+        lines.append(layout.title(t(f"help.group.{group_name}", loc), dialect=dialect))
         name_width = min(
             grammar.HELP_NAME_WIDTH,
             max(len(slash_index(spec)) for spec in specs),
@@ -52,7 +87,7 @@ def format_help(
             lines.append(
                 layout.row(
                     slash_index(spec),
-                    spec.description,
+                    _cmd_description(spec, loc),
                     name_width=name_width,
                     dialect=dialect,
                     columns=columns,
@@ -61,7 +96,7 @@ def format_help(
         lines.append("")
 
     if custom:
-        lines.append(layout.title("Project commands", dialect=dialect))
+        lines.append(layout.title(t("help.group.project", loc), dialect=dialect))
         custom_rows = []
         for command in custom.values():
             name = getattr(command, "name", "")
@@ -81,13 +116,24 @@ def format_help(
             )
         lines.append("")
 
-    lines.append(layout.title("Shortcuts", dialect=dialect))
+    lines.append(layout.title(t("help.group.shortcuts", loc), dialect=dialect))
     lines.append(f"  {layout.muted(grammar.shortcut_line(), dialect=dialect)}")
-    lines.append(f"  {layout.muted(grammar.HELP_COPY_HINT, dialect=dialect)}")
-    lines.append("")
-    lines.append(layout.title("Glyphs", dialect=dialect))
-    lines.append(f"  {layout.muted(grammar.glyph_legend(), dialect=dialect)}")
+    lines.append(f"  {layout.muted(t('help.copy_hint', loc), dialect=dialect)}")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _glyphs_page(*, dialect: Dialect, locale: str) -> str:
+    """Contributor legend. Not part of the default ``/help`` index."""
+    return (
+        "\n".join(
+            [
+                layout.title(t("help.glyphs.title", locale), dialect=dialect),
+                "",
+                f"  {layout.muted(grammar.glyph_legend(), dialect=dialect)}",
+            ]
+        ).rstrip()
+        + "\n"
+    )
 
 
 def format_help_detail(
@@ -96,11 +142,16 @@ def format_help_detail(
     *,
     custom_description: Callable[[Any], str] | None = None,
     dialect: Dialect = "rich",
+    locale: str | None = None,
 ) -> str:
     """``/help <name>`` page from the registry (or a custom command)."""
+    loc = _loc(locale)
+    topic = name.strip().lstrip("/").lower().replace("-", "_")
+    if topic == "glyphs":
+        return _glyphs_page(dialect=dialect, locale=loc)
     spec = spec_by_name(name)
     if spec is not None:
-        return _detail_from_spec(spec, dialect=dialect)
+        return _detail_from_spec(spec, dialect=dialect, locale=loc)
     if custom:
         key = name.strip().lstrip("/")
         command = custom.get(key) or custom.get(key.lower())
@@ -116,36 +167,67 @@ def format_help_detail(
                     "",
                     f"  {layout.escape(desc, dialect=dialect)}",
                     "",
-                    layout.muted(
-                        "Project command — its body is sent to the agent.",
-                        dialect=dialect,
-                    ),
+                    layout.muted(t("help.custom_note", loc), dialect=dialect),
                 ]
             )
-    return unknown_command(name, dialect=dialect)
+    return unknown_command(name, dialect=dialect, locale=loc)
 
 
-def _detail_from_spec(spec: CommandSpec, *, dialect: Dialect = "rich") -> str:
+def _mode_gloss_lines(locale: str, dialect: Dialect) -> list[str]:
+    width = max(len(mode_id) for mode_id in _MODE_IDS)
+    lines = [""]
+    for mode_id in _MODE_IDS:
+        lines.append(
+            layout.row(
+                mode_id,
+                t(f"help.mode.{mode_id}", locale),
+                name_width=width,
+                dialect=dialect,
+            )
+        )
+    return lines
+
+
+def _detail_from_spec(
+    spec: CommandSpec, *, dialect: Dialect = "rich", locale: str = "en"
+) -> str:
     lines = [layout.title(slash_usage(spec), dialect=dialect), ""]
-    lines.append(f"  {layout.escape(spec.blurb or spec.description, dialect=dialect)}")
+    lines.append(f"  {layout.escape(_cmd_blurb(spec, locale), dialect=dialect)}")
+    if spec.name == "mode":
+        lines.extend(_mode_gloss_lines(locale, dialect))
+    cli = HELP_CLI_EQUIVALENT.get(spec.name)
+    if cli:
+        lines.append("")
+        lines.append(
+            layout.muted(t("help.cli_equivalent", locale, command=cli), dialect=dialect)
+        )
     if spec.alias_of:
         lines.append("")
-        lines.append(layout.muted(f"Alias of /{spec.alias_of}.", dialect=dialect))
+        lines.append(
+            layout.muted(t("help.alias_of", locale, name=spec.alias_of), dialect=dialect)
+        )
     if spec.aliases:
         names = ", ".join(f"/{a}" for a in spec.aliases)
         lines.append("")
-        lines.append(layout.muted(f"Also /{spec.name}: {names}", dialect=dialect))
+        lines.append(
+            layout.muted(
+                t("help.also_aliases", locale, name=spec.name, aliases=names),
+                dialect=dialect,
+            )
+        )
     lines.append("")
-    lines.append(layout.kv("Usage", slash_usage(spec), dialect=dialect))
+    lines.append(
+        layout.kv(t("help.usage_label", locale), slash_usage(spec), dialect=dialect)
+    )
     if spec.examples:
         lines.append("")
-        lines.append(layout.muted("Examples", dialect=dialect))
+        lines.append(layout.muted(t("help.examples", locale), dialect=dialect))
         for item in spec.examples:
             lines.append(f"  {layout.accent(item, dialect=dialect)}")
     if spec.related:
         rel = "  ".join(f"/{item}" for item in spec.related)
         lines.append("")
-        lines.append(layout.kv("Related", rel, dialect=dialect))
+        lines.append(layout.kv(t("help.related", locale), rel, dialect=dialect))
     return "\n".join(lines)
 
 
@@ -155,32 +237,37 @@ def usage_error(
     extra: str = "",
     hint: str = "",
     dialect: Dialect = "rich",
+    locale: str | None = None,
 ) -> str:
     """Standard failed-command page. Syntax always comes from the registry."""
+    loc = _loc(locale)
     spec = spec_by_name(name)
     syntax = slash_usage(spec) if spec is not None else f"/{name}"
     examples = spec.examples if spec is not None else ()
     related = spec.related if spec is not None else ()
     lines: list[str] = []
+    usage_line = t("help.usage", loc, syntax=syntax)
     if extra:
         lines.append(layout.err(extra, dialect=dialect))
-        lines.append(layout.muted(f"Usage: {syntax}", dialect=dialect))
+        lines.append(layout.muted(usage_line, dialect=dialect))
     else:
-        lines.append(layout.err(f"Usage: {syntax}", dialect=dialect))
+        lines.append(layout.err(usage_line, dialect=dialect))
     if hint:
         lines.append(layout.muted(hint, dialect=dialect))
     if examples:
         lines.append("")
-        lines.append(layout.muted("Examples", dialect=dialect))
+        lines.append(layout.muted(t("help.examples", loc), dialect=dialect))
         for item in examples:
             lines.append(f"  {layout.accent(item, dialect=dialect)}")
     if related:
         rel = "  ".join(f"/{item}" for item in related)
         lines.append("")
-        lines.append(layout.muted(f"Related  {rel}", dialect=dialect))
+        lines.append(
+            layout.muted(f"{t('help.related', loc)}  {rel}", dialect=dialect)
+        )
     topic = spec.name if spec is not None else name
     lines.append("")
-    lines.append(layout.muted(f"Type /help {topic} for details.", dialect=dialect))
+    lines.append(layout.muted(t("help.details_hint", loc, topic=topic), dialect=dialect))
     return "\n".join(lines)
 
 
@@ -189,11 +276,13 @@ def unknown_command(
     suggestions: list[str] | None = None,
     *,
     dialect: Dialect = "rich",
+    locale: str | None = None,
 ) -> str:
     import difflib
 
     from jarn.commands.registry import _SPEC_BY_NAME
 
+    loc = _loc(locale)
     clean = name.lstrip("/")
     if suggestions is None:
         suggestions = difflib.get_close_matches(
@@ -202,7 +291,7 @@ def unknown_command(
             n=5,
             cutoff=0.55,
         )
-    lines = [layout.err(f"Unknown command: /{clean}", dialect=dialect), ""]
+    lines = [layout.err(t("help.unknown", loc, name=clean), dialect=dialect), ""]
     if suggestions:
         shown = []
         for item in suggestions:
@@ -211,12 +300,14 @@ def unknown_command(
             if label not in shown:
                 shown.append(label)
         lines.append(
-            "  Did you mean  "
+            "  "
+            + t("help.did_you_mean", loc)
+            + "  "
             + "  ".join(layout.accent(f"/{item}", dialect=dialect) for item in shown)
             + "?"
         )
         lines.append("")
-    lines.append(layout.muted("Type /help to list commands.", dialect=dialect))
+    lines.append(layout.muted(t("help.list_hint", loc), dialect=dialect))
     return "\n".join(lines)
 
 
@@ -224,6 +315,7 @@ def readme_command_rows() -> list[tuple[str, str]]:
     """(command cell, description) rows for README parity tests.
 
     Alias-only specs are omitted: the primary row's description names them.
+    English registry copy is the README SSOT — not the locale catalog.
     """
     rows: list[tuple[str, str]] = []
     for spec in COMMAND_SPECS:

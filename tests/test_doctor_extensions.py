@@ -132,6 +132,7 @@ def test_cli_and_command_parity(tmp_path, monkeypatch, base_config):
     )
     root = tmp_path / "proj"
     (root / ".jarn").mkdir(parents=True)
+    base_config.ui.locale = "en"
 
     monkeypatch.setattr(paths, "global_config_path", lambda: gp)
     monkeypatch.setattr(paths, "find_project_root", lambda *a, **k: root)
@@ -142,7 +143,7 @@ def test_cli_and_command_parity(tmp_path, monkeypatch, base_config):
     ):
         diag_cli: dict = {}
         collect_doctor(diag_cli)
-        cli_lines = doctor_lines(diag_cli)
+        cli_lines = doctor_lines(diag_cli, locale="en")
 
         diag_cmd: dict = {}
         ctrl = Controller(base_config, root)
@@ -152,7 +153,7 @@ def test_cli_and_command_parity(tmp_path, monkeypatch, base_config):
             project_root=ctrl.project_root,
             project_trusted=ctrl.project_trusted,
         )
-        cmd_lines = doctor_lines(diag_cmd)
+        cmd_lines = doctor_lines(diag_cmd, locale="en")
         result = ctrl.handle_command("doctor", "")
         ctrl.close()
 

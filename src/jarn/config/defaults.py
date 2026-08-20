@@ -262,6 +262,7 @@ observability:
 
 ui:
   theme: dark           # dark | light | high-contrast
+  locale: auto          # auto | en | th — auto: Thai chrome when LANG/LC_* is th*
   accent: cyan
   splash: compact       # full | compact (default) | off
   approval_diff_lines: 40   # max diff lines inline before "View full diff" in an approval
@@ -269,8 +270,10 @@ ui:
   tool_progress: new    # off | new | all | verbose
   busy_input_mode: queue  # queue | steer | interrupt
   show_reasoning: collapsed  # collapsed | full | off
+  thinking_style: plain     # plain | quirky — plain is คิด… / Thinking…
   statusbar: true
   context_bar: true
+  toolbar_detail: quiet  # quiet | full — quiet hides cwd, provider, trusted, cost, …
   busy_ack_detail: false  # extra queued/steering paragraph on Working… ack
 
 # Optional Telegram DM gateway (global config only). Chat tool-progress starts

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from jarn.config.schema import PermissionMode
 from jarn.controller.core import CommandResult
+from jarn.tui.i18n import resolve_locale, t
 
 if TYPE_CHECKING:
     from jarn.agent.checkpoint import RestorePreview
@@ -92,8 +93,7 @@ async def abort(ctrl: Controller) -> CommandResult:
         current = asyncio.current_task()
         if task is None or task.done() or task is current:
             return CommandResult(
-                "Nothing to abort — no turn is running. "
-                "Use /undo to revert the last turn's edits."
+                "Nothing to abort — no turn is running. Use /undo to revert the last turn's edits."
             )
         # Drop any unapplied steer so it cannot resurface as the next turn.
         ctrl._steer_slot = None
@@ -129,11 +129,12 @@ async def set_permission_mode(
     projects still clamp via :meth:`Controller.apply_mode` (yolo → plan)
     without requiring confirm. Already-in-yolo is a no-op transition.
     """
+    loc = resolve_locale(ctrl.config)
     try:
         target = PermissionMode(value)
     except ValueError:
         valid = ", ".join(m.value for m in PermissionMode)
-        return CommandResult(f"Unknown mode. Choose one of: {valid}")
+        return CommandResult(t("mode.unknown", loc, valid=valid))
 
     # Real escalate = would land on yolo. Untrusted clamps >plan → plan, so
     # a "yolo" request there is not a silent escalate and needs no confirm.
@@ -144,21 +145,14 @@ async def set_permission_mode(
     )
     if escalating_to_yolo:
         if confirm is None:
-            return CommandResult(
-                "Escalating to yolo requires confirmation — "
-                "pass confirm=… to set_permission_mode "
-                "(sync handle_command('mode','yolo') refuses this path)."
-            )
+            return CommandResult(t("mode.yolo_async_refused", loc))
         if not await confirm():
-            return CommandResult("yolo cancelled — mode unchanged.")
+            return CommandResult(t("mode.yolo_cancelled", loc))
 
     applied = ctrl.apply_mode(target.value)
     if applied != target.value:
         return CommandResult(
-            f"Project untrusted — mode clamped to {applied}. "
-            "Run `jarn trust` to unlock other modes. (rebuilding)",
+            t("mode.untrusted", loc, mode=applied),
             rebuilt=True,
         )
-    return CommandResult(
-        f"Permission mode set to {applied} (rebuilding).", rebuilt=True
-    )
+    return CommandResult(t("mode.set_id", loc, mode=applied), rebuilt=True)

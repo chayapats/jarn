@@ -18,6 +18,7 @@ from jarn.telegram.bot import (
 )
 from jarn.telegram.outbox import Outbox, encode_callback
 from jarn.telegram.poller_lock import PollerLock, PollerLockHeldError
+from jarn.tui.i18n import t
 
 
 @dataclass
@@ -229,6 +230,47 @@ async def test_help_uses_command_catalog_html_and_does_not_submit_a_turn():
     assert any(sent[2].get("parse_mode") == "HTML" for sent in fake.sent)
 
 
+@pytest.mark.parametrize("locale", ["en", "th"])
+@pytest.mark.asyncio
+async def test_help_html_follows_locale_and_stays_local(locale):
+    backend = InMemoryGatewayBackend()
+    fake = FakeBot()
+    app = TelegramBotApp(token="fake", allowed_user_ids=[1], backend=backend, locale=locale)
+    app._bot = None
+    app._outbox = Outbox(sender=fake, locale=locale)
+    await app.handle_update(_update_message(uid=1, user_id=1, chat_id=1, text="/help"))
+    await app.handle_update(_update_message(uid=2, user_id=1, chat_id=1, text="/help mode"))
+    assert backend.turns == []
+    joined = "\n".join(sent[1] for sent in fake.sent)
+    assert f"<b>{t('help.group.Work', locale)}</b>" in joined
+    assert f"<b>{t('telegram.help.group', locale)}</b>" in joined
+    assert t("telegram.help.stop", locale) in joined
+    assert "/model" in joined
+    assert "ask" in joined and "yolo" in joined
+    assert t("help.mode.ask", locale) in joined
+    assert "<span" not in joined
+    other = "en" if locale == "th" else "th"
+    assert t("help.group.Work", other) not in joined
+    assert t("telegram.help.group", other) not in joined
+
+
+@pytest.mark.parametrize("locale", ["en", "th"])
+@pytest.mark.asyncio
+async def test_mutating_slash_localizes_hint_without_submit_turn(locale):
+    backend = InMemoryGatewayBackend()
+    fake = FakeBot()
+    app = TelegramBotApp(token="fake", allowed_user_ids=[1], backend=backend, locale=locale)
+    app._bot = None
+    app._outbox = Outbox(sender=fake, locale=locale)
+    await app.handle_update(
+        _update_message(uid=1, user_id=1, chat_id=1, text="/config set ui.theme light")
+    )
+    assert backend.turns == []
+    joined = "\n".join(sent[1] for sent in fake.sent)
+    assert t("telegram.mutating.named", locale, name="config") in joined
+    assert "/config" in joined
+
+
 @pytest.mark.asyncio
 async def test_callback_verdicts_tool_memory_plan_yolo():
     backend = InMemoryGatewayBackend()
@@ -401,9 +443,7 @@ async def test_start_binds_restores_and_unbinds_production_backend_lifecycle(
     assert calls[0][0] == "bind"
     assert calls[1] == ("restore", (42,))
     assert calls[-1] == "unbind"
-    menu_names = {
-        getattr(cmd, "command", None) or cmd.get("command") for cmd in fake.commands_set
-    }
+    menu_names = {getattr(cmd, "command", None) or cmd.get("command") for cmd in fake.commands_set}
     assert "status" in menu_names
     assert "stop" in menu_names
     assert "reset" in menu_names

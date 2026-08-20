@@ -8,6 +8,8 @@ from jarn.commands.help import usage_error
 from jarn.config.schema import PermissionMode
 from jarn.controller.core import CommandResult
 from jarn.tui import layout
+from jarn.tui.i18n import resolve_locale, t
+from jarn.tui.layout import Dialect
 
 if TYPE_CHECKING:
     from jarn.controller.core import Controller
@@ -119,28 +121,48 @@ def cmd_sandbox(ctrl, args: str) -> CommandResult:
 
 def cmd_model(ctrl, args: str) -> CommandResult:
     if not args.strip():
-        return CommandResult(
-            layout.kv("Model", str(ctrl.config.resolved_main_model() or ""))
-        )
+        return CommandResult(layout.kv("Model", str(ctrl.config.resolved_main_model() or "")))
     ctrl.config.routing.main = args.strip()
     ctrl.config.default_model = args.strip()
     ctrl._invalidate_runtime()  # force rebuild on next turn
     return CommandResult(f"Model set to {args.strip()} (rebuilding).", rebuilt=True)
 
 
+def format_mode_page(
+    ctrl: Controller,
+    *,
+    dialect: Dialect = "rich",
+    locale: str | None = None,
+) -> str:
+    """Current ``/mode`` page. ``dialect='html'`` is Telegram HTML."""
+    from jarn.permissions.labels import permission_mode_summary
+    from jarn.tui.i18n import CATALOGS
+
+    loc = locale if locale in ("en", "th") else resolve_locale(ctrl.config)
+    mode = ctrl.config.permission_mode.value
+    summary = permission_mode_summary(mode, include_internal=True, locale=loc)
+    lines = [
+        layout.heading(t("mode.title", loc), dialect=dialect),
+        "",
+        layout.kv(t("status.permissions", loc), summary, dialect=dialect),
+    ]
+    gloss_key = f"help.mode.{mode}"
+    if loc in CATALOGS and gloss_key in CATALOGS[loc]:
+        lines.append(layout.muted(t(gloss_key, loc), dialect=dialect))
+    return "\n".join(lines)
+
+
 def cmd_mode(ctrl, args: str) -> CommandResult:
     from jarn.permissions.labels import permission_mode_summary
 
+    loc = resolve_locale(ctrl.config)
     if not args.strip():
-        return CommandResult(
-            "Current permissions: "
-            f"{permission_mode_summary(ctrl.config.permission_mode.value, include_internal=True)}"
-        )
+        return CommandResult(format_mode_page(ctrl, locale=loc))
     try:
         mode = PermissionMode(args.strip())
     except ValueError:
         valid = ", ".join(m.value for m in PermissionMode)
-        return CommandResult(f"Unknown mode. Choose one of: {valid}")
+        return CommandResult(t("mode.unknown", loc, valid=valid))
     # Silent yolo escalate via sync handle_command is impossible (T-CTRL-1 / #59).
     # Trusted escalate must go through await set_permission_mode(..., confirm=…).
     # Untrusted still routes through apply_mode (clamps to plan) — not a real
@@ -150,21 +172,20 @@ def cmd_mode(ctrl, args: str) -> CommandResult:
         and ctrl.config.permission_mode != PermissionMode.YOLO
         and ctrl.project_trusted
     ):
-        return CommandResult(
-            "Escalating to yolo requires confirmation — "
-            "use await controller.set_permission_mode('yolo', confirm=…)."
-        )
+        return CommandResult(t("mode.yolo_sync_refused", loc))
     # Route through apply_mode so the untrusted-floor clamp applies here too.
     applied = ctrl.apply_mode(mode.value)
     if applied != mode.value:
         return CommandResult(
-            f"Project untrusted — mode clamped to {applied}. "
-            "Run `jarn trust` to unlock other modes. (rebuilding)",
+            t("mode.untrusted", loc, mode=applied),
             rebuilt=True,
         )
     return CommandResult(
-        f"Permissions set to {permission_mode_summary(applied, include_internal=True)} "
-        "(rebuilding).",
+        t(
+            "mode.set",
+            loc,
+            summary=permission_mode_summary(applied, include_internal=True, locale=loc),
+        ),
         rebuilt=True,
     )
 
@@ -240,12 +261,8 @@ def cmd_trust(ctrl, args: str) -> CommandResult:
 
     note = ""
     if danger:
-        note = (
-            "\n"
-            + layout.muted(
-                "Project hooks / MCP servers / providers from "
-                ".jarn/config.yaml are now active."
-            )
+        note = "\n" + layout.muted(
+            "Project hooks / MCP servers / providers from .jarn/config.yaml are now active."
         )
     return CommandResult(
         f"Trusted {root}. Review-only floor lifted; "

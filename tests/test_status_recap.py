@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from jarn.controller.commands.diagnostics import _transcript_recap
 from jarn.tui.controller import Controller
 
@@ -96,6 +98,7 @@ def test_transcript_recap_skips_malformed_jsonl(tmp_path: Path) -> None:
 def test_status_recap_integration_includes_transcript_and_tracker(
     tmp_path, monkeypatch, base_config
 ) -> None:
+    base_config.ui.locale = "en"
     ctrl = _controller(tmp_path, monkeypatch, base_config)
     transcript = ctrl.sessions.transcript_path(ctrl.thread_id)
     _write_jsonl(
@@ -137,6 +140,7 @@ def test_status_recap_integration_includes_transcript_and_tracker(
 
 
 def test_status_recap_omits_response_bucket(tmp_path, monkeypatch, base_config) -> None:
+    base_config.ui.locale = "en"
     ctrl = _controller(tmp_path, monkeypatch, base_config)
     ctrl.tracker.record("openrouter/test", 10, 10)
     text = ctrl.handle_command("status", "").text
@@ -145,12 +149,11 @@ def test_status_recap_omits_response_bucket(tmp_path, monkeypatch, base_config) 
     ctrl.close()
 
 
-def test_resume_recap_reuses_status_scan_without_model(
-    tmp_path, monkeypatch, base_config
-) -> None:
+def test_resume_recap_reuses_status_scan_without_model(tmp_path, monkeypatch, base_config) -> None:
     """Resume recap is local: directory/model/mode + last-turn, no LLM."""
     from jarn.controller.commands.diagnostics import format_resume_recap
 
+    base_config.ui.locale = "en"
     ctrl = _controller(tmp_path, monkeypatch, base_config)
     transcript = ctrl.sessions.transcript_path(ctrl.thread_id)
     _write_jsonl(
@@ -178,4 +181,40 @@ def test_resume_recap_reuses_status_scan_without_model(
     assert "Last J.A.R.N." in text
     assert "Patched the priority sort" in text
     assert ctrl.runtime is None
+    ctrl.close()
+
+
+@pytest.mark.parametrize("locale", ["en", "th"])
+def test_status_page_html_is_localized(tmp_path, monkeypatch, base_config, locale) -> None:
+    from jarn.controller.commands.diagnostics import format_status_page
+    from jarn.tui.i18n import t
+
+    base_config.ui.locale = locale
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    html = format_status_page(ctrl, dialect="html", locale=locale)
+    assert f"<b>{t('status.title', locale)}</b>" in html
+    assert t("status.directory", locale) in html
+    assert str(ctrl.project_root) in html
+    assert "<span" not in html
+    assert "[b]" not in html
+    other = "en" if locale == "th" else "th"
+    assert t("status.title", other) not in html
+    ctrl.close()
+
+
+@pytest.mark.parametrize("locale", ["en", "th"])
+def test_mode_page_html_is_localized(tmp_path, monkeypatch, base_config, locale) -> None:
+    from jarn.controller.commands.config import format_mode_page
+    from jarn.tui.i18n import t
+
+    base_config.ui.locale = locale
+    ctrl = _controller(tmp_path, monkeypatch, base_config)
+    html = format_mode_page(ctrl, dialect="html", locale=locale)
+    assert f"<b>{t('mode.title', locale)}</b>" in html
+    assert "ask" in html
+    assert t("help.mode.ask", locale) in html
+    assert "<span" not in html
+    assert "[b]" not in html
+    other = "en" if locale == "th" else "th"
+    assert t("mode.title", other) not in html
     ctrl.close()

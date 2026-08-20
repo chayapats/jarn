@@ -236,6 +236,7 @@ def test_human_doctor_renders_off_path_installation_with_source():
                 ],
             }
         },
+        locale="en",
     )
 
     rendered = "\n".join(lines)

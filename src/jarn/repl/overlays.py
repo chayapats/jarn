@@ -16,6 +16,7 @@ from jarn.permissions import RememberScope
 from jarn.repl import turn as repl_turn
 from jarn.repl.turn import _editable_field
 from jarn.tui import grammar, layout, palette
+from jarn.tui.i18n import resolve_locale, t
 
 _MenuT = TypeVar("_MenuT")
 
@@ -77,22 +78,18 @@ class OverlayMixin:
     async def _pick_approval(self, options: list[tuple[str, object]]) -> object:
         # Cancel → deny. The "View full diff" sentinel may sit last, so find the
         # deny reply by value rather than assuming it's options[-1].
-        deny = next(
-            v for _, v in options
-            if isinstance(v, ApprovalReply) and not v.approved
-        )
+        deny = next(v for _, v in options if isinstance(v, ApprovalReply) and not v.approved)
         # Allow-once is the first allow reply (options[0] by construction).
-        allow = next(
-            v for _, v in options
-            if isinstance(v, ApprovalReply) and v.approved
-        )
+        allow = next(v for _, v in options if isinstance(v, ApprovalReply) and v.approved)
         # Single-keypress fast-path: y/a approve (allow once), n/d deny — no
         # arrow+Enter needed across a multi-edit turn. Arrow nav + Enter and the
         # "View full diff"/"Edit before apply" options keep working unchanged.
         fastkeys: dict[str, object] = {"y": allow, "a": allow, "n": deny, "d": deny}
+        # Question lives on the scrollback card from ``_approve``. The live
+        # picker is options + catalog nav — not a second engine essay.
         picked = await self._pick_menu(
             options,
-            header="Approve · y/a allow · n/d deny · ↑/↓ · Enter · Esc cancel",
+            header="",
             cancel_returns=deny,
             fastkeys=fastkeys,
         )
@@ -102,15 +99,10 @@ class OverlayMixin:
         """Prompt the user to confirm entering yolo mode.  Returns True iff confirmed."""
         # Print a prominent banner into the visible scrollback first — the inline
         # ask renders in the faint region above the input, which is easy to miss;
-        # the user must clearly see this is a y/N decision.
-        self.console.print(
-            layout.err(f"{grammar.GLYPH_WARN}  Entering YOLO mode")
-            + " "
-            + layout.muted(
-                "— no approval prompts; the danger-guard still blocks catastrophic actions."
-            )
-        )
-        answer = await self._ask("Type 'y' to confirm yolo, anything else to cancel [y/N]: ")
+        # the user must clearly see this is a y/N decision. Still requires typed y.
+        locale = resolve_locale(self.controller.config)
+        self.console.print(layout.err(f"{grammar.GLYPH_WARN}  {t('yolo.confirm', locale)}"))
+        answer = await self._ask(t("yolo.confirm.prompt", locale))
         return answer.strip().lower() in ("y", "yes")
 
     def _request_yolo_confirm(self) -> None:
@@ -146,10 +138,12 @@ class OverlayMixin:
         self._armed = False
         color = palette.MODE_COLOR.get(new, palette.ACCENT)
         glyph = palette.MODE_GLYPH.get(new, palette.MODE_GLYPH["ask"])
-        self._flash(HTML(
-            f'<style fg="{color}"><b>{glyph} {new}</b></style> '
-            f'<style fg="{palette.C_DIM}">mode</style>'
-        ))
+        self._flash(
+            HTML(
+                f'<style fg="{color}"><b>{glyph} {new}</b></style> '
+                f'<style fg="{palette.C_DIM}">mode</style>'
+            )
+        )
         if self.app is not None:
             self.app.invalidate()
 
@@ -382,7 +376,7 @@ class OverlayMixin:
         raw = list(self.input.history.get_strings())
         seen: set[str] = set()
         unique: list[str] = []
-        for entry in reversed(raw):   # reversed → iterate newest-first
+        for entry in reversed(raw):  # reversed → iterate newest-first
             if entry and entry not in seen:
                 seen.add(entry)
                 unique.append(entry)
@@ -392,13 +386,11 @@ class OverlayMixin:
             return  # nothing in history yet
 
         # Store the full labelled list so the key handler can re-filter.
-        self._history_all_options = [
-            (self._history_entry_label(e), e) for e in all_entries
-        ]
+        self._history_all_options = [(self._history_entry_label(e), e) for e in all_entries]
         total = len(all_entries)
 
         # Initialise picker state.
-        self._menu_filter = ""    # "" = filter mode active, no chars typed
+        self._menu_filter = ""  # "" = filter mode active, no chars typed
         self._menu_options = cast(list[tuple[str, object]], list(self._history_all_options))
         self._menu_index = 0
         self._menu_header = (
@@ -431,7 +423,7 @@ class OverlayMixin:
 
     def _pager_header(self) -> HTML:
         base = (
-            f' <b>full output</b> '
+            f" <b>full output</b> "
             f'<style fg="{palette.C_DIM}">— ↑/↓ PgUp/PgDn scroll · Ctrl+O / q / Esc close</style>'
         )
         if self._busy():  # the turn keeps running behind the overlay — show it

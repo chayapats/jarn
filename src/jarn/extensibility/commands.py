@@ -86,9 +86,15 @@ def completion_names(custom: dict[str, Any] | None = None) -> list[str]:
 def completion_catalog(
     custom: dict[str, Any] | None = None,
     skills: dict[str, Any] | None = None,
+    *,
+    locale: str | None = None,
 ) -> dict[str, str]:
     """Slash-command names mapped to short descriptions (built-ins + custom + skills)."""
-    catalog = {cmd.name: cmd.description for cmd in BUILTINS}
+    from jarn.tui.i18n import t
+
+    catalog = {
+        cmd.name: t(f"help.cmd.{cmd.name}.description", locale) for cmd in BUILTINS
+    }
     if skills:
         for name, skill in skills.items():
             catalog.setdefault(

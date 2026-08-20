@@ -52,12 +52,28 @@ from jarn.onboarding.outcome import (
 )
 from jarn.providers import qualify_model_ref, strip_profile
 from jarn.tui import grammar, layout, palette
+from jarn.tui.i18n import resolve_locale, t
 from jarn.tui.logo import TAGLINE, WORDMARK
 
 console = Console()
 
 _CLOUD = CLOUD_PROVIDERS
 _PROFILES = ALL_PROVIDERS
+
+
+def _t(key: str, **kwargs: object) -> str:
+    return t(key, resolve_locale("auto"), **kwargs)
+
+
+def _setup_command() -> str:
+    return layout.strong("jarn setup")
+
+
+def _cancelled_notice() -> str:
+    return (
+        f"\n{layout.warn(_t('onboarding.cancelled'))} "
+        f"{_t('onboarding.resume_with', command=_setup_command())}"
+    )
 
 
 def _detect_env_key() -> tuple[str, str] | None:
@@ -186,11 +202,11 @@ def confirm_overwrite(*, force: bool = False) -> bool:
     if force or not config_path.is_file():
         return True
     if Confirm.ask(
-        f"{config_path} exists. Update setup selections? (advanced settings will be preserved)",
+        _t("onboarding.overwrite", path=str(config_path)),
         default=False,
     ):
         return True
-    console.print(layout.warn("Keeping existing config."))
+    console.print(layout.warn(_t("onboarding.overwrite.keep")))
     return False
 
 
@@ -217,7 +233,7 @@ def _plain_menu(prompt: str, choices: list[str], *, default: str) -> str:
 
 def _plain_text(prompt: str, *, default: str = "", password: bool = False) -> str:
     value = Prompt.ask(
-        f"{prompt} {layout.muted('(type /back or /cancel)')}",
+        f"{prompt} {layout.muted(_t('onboarding.nav.back_cancel'))}",
         default=default,
         password=password,
     )
@@ -311,7 +327,7 @@ def _catalog_for_answers(
         credential=credential,
         base_url=answers.get("base_url") or PROVIDER_BASE_URLS.get(provider),
         include_hidden=answers.get("_provider_group") == "advanced",
-            on_wait=lambda message: console.print(layout.muted(message)),
+        on_wait=lambda message: console.print(layout.muted(message)),
     )
 
 
@@ -380,9 +396,7 @@ def run_wizard(
         proceed = confirm_overwrite(force=force)
     except (KeyboardInterrupt, EOFError):
         mark_setup_incomplete()
-        console.print(
-            f"\n{layout.warn('Setup incomplete (cancelled).')} Resume with {layout.strong('jarn setup')}."
-        )
+        console.print(_cancelled_notice())
         return return_or_raise_setup_failure(
             SetupCommandError("The setup prompt was cancelled.", kind=SetupFailureKind.CANCELLED),
             propagate_errors=propagate_errors,
@@ -406,12 +420,12 @@ def run_wizard(
             border_style=palette.ACCENT,
         )
     )
-    console.print(f"Let's get you set up. This writes {layout.strong('~/.jarn/config.yaml')}.\n")
+    console.print(_t("onboarding.intro", path=layout.strong("~/.jarn/config.yaml")) + "\n")
 
     try:
         set_setup_progress("in_progress")
     except SetupFlowError as exc:
-        console.print(f"{layout.err('Setup incomplete (install state):')} {exc}")
+        console.print(f"{layout.err(_t('onboarding.incomplete.install'))} {exc}")
         return return_or_raise_setup_failure(exc, propagate_errors=propagate_errors)
 
     # -- probes and resumable non-secret progress -------------------------
@@ -427,14 +441,13 @@ def run_wizard(
         should_resume = saved is not None and (
             _resume
             or Confirm.ask(
-                f"Resume setup from {saved.stage} (saved {saved.updated_at})?", default=True
+                _t("onboarding.resume", stage=saved.stage, updated_at=saved.updated_at),
+                default=True,
             )
         )
     except (KeyboardInterrupt, EOFError):
         mark_setup_incomplete()
-        console.print(
-            f"\n{layout.warn('Setup incomplete (cancelled).')} Resume with {layout.strong('jarn setup')}."
-        )
+        console.print(_cancelled_notice())
         return return_or_raise_setup_failure(
             SetupCommandError("Setup resume was cancelled.", kind=SetupFailureKind.CANCELLED),
             propagate_errors=propagate_errors,
@@ -447,7 +460,9 @@ def run_wizard(
         ):
             answers.pop("_credential_pending", None)
             stage = "key"
-        console.print(f"{layout.ok(grammar.GLYPH_OK)} Resuming at {layout.strong(stage)}.")
+        console.print(
+            f"{layout.ok(grammar.GLYPH_OK)} {_t('onboarding.resuming', stage=layout.strong(stage))}"
+        )
     else:
         save_setup_state("provider", answers)
 
@@ -482,17 +497,19 @@ def run_wizard(
                     "ollama": "local",
                     "lmstudio": "local",
                 }.get(recommended, "cloud")
-                local_note = f" — found {', '.join(local_providers)}" if local_providers else ""
-                console.print("\nChoose how to connect:")
-                console.print("  chatgpt   — Continue with ChatGPT")
-                console.print("  anthropic — Use Anthropic")
-                console.print("  cloud     — Use another cloud provider")
-                console.print(f"  local     — Use a local model{local_note}")
-                console.print(
-                    f"  {layout.muted('Advanced: choose \'advanced\' for custom endpoints and the full registry.')}"
+                local_note = (
+                    _t("onboarding.connect.local.found", names=", ".join(local_providers))
+                    if local_providers
+                    else ""
                 )
+                console.print("\n" + _t("onboarding.connect.heading"))
+                console.print(f"  chatgpt   — {_t('onboarding.connect.chatgpt')}")
+                console.print(f"  anthropic — {_t('onboarding.connect.anthropic')}")
+                console.print(f"  cloud     — {_t('onboarding.connect.cloud')}")
+                console.print(f"  local     — {_t('onboarding.connect.local')}{local_note}")
+                console.print(f"  {layout.muted(_t('onboarding.connect.advanced.hint'))}")
                 connection = _plain_menu(
-                    "How do you want to connect?",
+                    _t("onboarding.connect.prompt"),
                     ["chatgpt", "anthropic", "cloud", "local", "advanced"],
                     default=default_choice,
                 )
@@ -508,7 +525,7 @@ def run_wizard(
                     ]
                     try:
                         selected = _plain_menu(
-                            "Cloud provider",
+                            _t("onboarding.cloud.prompt"),
                             cloud_profiles,
                             default=(
                                 recommended if recommended in cloud_profiles else "openrouter"
@@ -525,7 +542,7 @@ def run_wizard(
                     ]
                     try:
                         selected = _plain_menu(
-                            "Local provider", local_choices, default=local_choices[0]
+                            _t("onboarding.local.prompt"), local_choices, default=local_choices[0]
                         )
                     except _PlainBack:
                         save_setup_state("provider", answers)
@@ -535,10 +552,12 @@ def run_wizard(
                     advanced_profiles = [
                         profile for profile in _PROFILES if profile != "codex_subscription"
                     ]
-                    console.print("Advanced providers: " + ", ".join(advanced_profiles))
+                    console.print(
+                        _t("onboarding.advanced.list", names=", ".join(advanced_profiles))
+                    )
                     try:
                         selected = _plain_menu(
-                            "Provider",
+                            _t("onboarding.provider.prompt"),
                             advanced_profiles,
                             default=(recommended if recommended in _PROFILES else "openrouter"),
                         )
@@ -565,7 +584,8 @@ def run_wizard(
                 env_var = PROVIDER_ENV_VARS.get(provider, f"{provider.upper()}_API_KEY")
                 if env_hit is not None and env_hit[0] == provider:
                     console.print(
-                        f"{layout.ok(grammar.GLYPH_OK)} Using {layout.strong('$' + env_var)} from your environment."
+                        f"{layout.ok(grammar.GLYPH_OK)} "
+                        f"{_t('onboarding.storage.env.using', env_var=layout.strong('$' + env_var))}"
                     )
                     answers["storage"] = "env"
                     pending_credentials.discard(provider)
@@ -582,7 +602,7 @@ def run_wizard(
                     continue
                 methods = ["env", "keychain"]
                 method = _plain_menu(
-                    f"How should J.A.R.N. read the {provider} API key?",
+                    _t("onboarding.storage.prompt", provider=provider),
                     methods,
                     default="keychain",
                 )
@@ -601,19 +621,19 @@ def run_wizard(
                 else:
                     if method == "env":
                         console.print(
-                            f"{layout.warn('$' + env_var + ' is not set.')} Paste the key now; "
-                            "only its secure-store reference will be saved."
+                            f"{layout.warn(_t('onboarding.storage.env.unset', env_var='$' + env_var))} "
+                            f"{_t('onboarding.storage.env.paste_now')}"
                         )
                     stage = "key"
                 save_setup_state(stage, answers)
                 continue
 
             if stage == "key":
-                value = _plain_text(f"Paste the {provider} API key", password=True).strip()
+                value = _plain_text(
+                    _t("onboarding.key.paste", provider=provider), password=True
+                ).strip()
                 if not value:
-                    console.print(
-                        layout.warn("A key is required to finish this provider setup.")
-                    )
+                    console.print(layout.warn(_t("onboarding.key.required")))
                     continue
                 pending_credentials.set(provider, value)
                 answers["storage"] = "keychain"
@@ -636,7 +656,10 @@ def run_wizard(
                 try:
                     answers["base_url"] = normalize_base_url(
                         provider,
-                        _plain_text(f"API base URL for {provider}", default=default_url),
+                        _plain_text(
+                            _t("onboarding.base_url.prompt", provider=provider),
+                            default=default_url,
+                        ),
                     )
                 except ValueError as exc:
                     console.print(layout.warn(str(exc)))
@@ -668,25 +691,25 @@ def run_wizard(
                             verified=True,
                         )
                         console.print(
-                            f"{layout.ok(grammar.GLYPH_OK)} Using model {layout.strong(answers['model'])} "
-                            "reported by the local server."
+                            f"{layout.ok(grammar.GLYPH_OK)} "
+                            f"{_t('onboarding.model.using_local', model=layout.strong(answers['model']))}"
                         )
                         stage = "reasoning" if group == "advanced" else "theme"
                         save_setup_state(stage, answers)
                         continue
                     console.print(
                         f"{layout.warn(setup_catalog_status(snapshot) + '.')} "
-                        "Start/download a model, enter one manually, or go back."
+                        f"{_t('onboarding.model.start_or_manual')}"
                     )
 
                 if group == "advanced" and discovered:
                     ids = [entry.model_id for entry in discovered]
                     console.print(
                         f"{layout.ok(grammar.GLYPH_OK)} {snapshot.provenance_label}. "
-                        "Choose a reported model or enter one manually."
+                        f"{_t('onboarding.model.choose_reported')}"
                     )
                     picked = _plain_menu(
-                        f"Model for {provider}",
+                        _t("onboarding.model.prompt", provider=provider),
                         [*ids, "manual"],
                         default=(
                             strip_profile(default_full, provider)
@@ -707,17 +730,18 @@ def run_wizard(
                 elif group == "advanced":
                     console.print(
                         f"{layout.warn(setup_catalog_status(snapshot) + '.')} "
-                        "Advanced manual entry is allowed, but must pass final validation."
+                        f"{_t('onboarding.model.manual_gate')}"
                     )
 
                 default_id = strip_profile(default_full, provider)
-                raw_model = _plain_text(f"Model id for {provider}", default=default_id)
+                raw_model = _plain_text(
+                    _t("onboarding.model.id", provider=provider), default=default_id
+                )
                 answers["model"] = qualify_model_ref(raw_model, provider)
                 _remember_catalog_status(
                     answers,
                     provenance=(
-                        "Manual model entry; availability unverified until the final "
-                        "readiness gate"
+                        "Manual model entry; availability unverified until the final readiness gate"
                     ),
                     verified=False,
                 )
@@ -727,7 +751,7 @@ def run_wizard(
 
             if stage == "reasoning":
                 effort = _plain_menu(
-                    "Reasoning effort",
+                    _t("onboarding.reasoning"),
                     ["default", "low", "medium", "high", "xhigh"],
                     default=answers.get("reasoning_effort", "default"),
                 )
@@ -742,7 +766,7 @@ def run_wizard(
             if stage == "subagent_model":
                 default_route = answers.get("routing_subagent") or answers["model"]
                 raw = _plain_text(
-                    "Subagent model (use profile/model for another provider)",
+                    _t("onboarding.subagent"),
                     default=default_route,
                 )
                 answers["routing_subagent"] = _advanced_model_ref(raw, provider)
@@ -757,7 +781,7 @@ def run_wizard(
                     or answers["model"]
                 )
                 raw = _plain_text(
-                    "Summarizer model (use profile/model for another provider)",
+                    _t("onboarding.summarizer"),
                     default=default_route,
                 )
                 answers["routing_summarizer"] = _advanced_model_ref(raw, provider)
@@ -767,7 +791,7 @@ def run_wizard(
 
             if stage == "fallback_models":
                 raw = _plain_text(
-                    "Fallback models, comma-separated (blank for none)",
+                    _t("onboarding.fallback"),
                     default=answers.get("routing_fallback", ""),
                 )
                 answers["routing_fallback"] = _advanced_fallback_refs(raw, provider)
@@ -777,7 +801,7 @@ def run_wizard(
 
             if stage == "budget":
                 raw = _plain_text(
-                    "Maximum cost per session in USD",
+                    _t("onboarding.budget"),
                     default=answers.get("budget_per_session_usd", "5.00"),
                 )
                 try:
@@ -785,9 +809,7 @@ def run_wizard(
                     if not 0 <= budget_value < float("inf"):
                         raise ValueError
                 except ValueError:
-                    console.print(
-                        layout.warn("Enter a finite number greater than or equal to 0.")
-                    )
+                    console.print(layout.warn(_t("onboarding.budget.invalid")))
                     continue
                 answers["budget_per_session_usd"] = raw
                 stage = "budget_warn"
@@ -796,7 +818,7 @@ def run_wizard(
 
             if stage == "budget_warn":
                 raw = _plain_text(
-                    "Warn when this percentage of the budget is used",
+                    _t("onboarding.budget.warn"),
                     default=answers.get("budget_warn_at_pct", "80"),
                 )
                 try:
@@ -804,7 +826,7 @@ def run_wizard(
                     if not 0 <= warn_value <= 100:
                         raise ValueError
                 except ValueError:
-                    console.print(layout.warn("Enter a whole number from 0 through 100."))
+                    console.print(layout.warn(_t("onboarding.budget.warn.invalid")))
                     continue
                 answers["budget_warn_at_pct"] = raw
                 stage = "budget_stop"
@@ -813,7 +835,7 @@ def run_wizard(
 
             if stage == "budget_stop":
                 choice = _plain_menu(
-                    "Stop automatically at the session budget?",
+                    _t("onboarding.budget.stop"),
                     ["yes", "no"],
                     default="yes" if answers.get("budget_hard_stop", "true") == "true" else "no",
                 )
@@ -823,13 +845,13 @@ def run_wizard(
                 continue
 
             if stage == "permissions":
-                console.print("  review — read and plan only")
-                console.print("  ask    — ask before changes (recommended)")
-                console.print("  edit   — edit workspace; ask before commands/external actions")
-                console.print("  full   — skip routine prompts; hard safety blocks remain")
+                console.print(f"  review — {_t('onboarding.perm.review')}")
+                console.print(f"  ask    — {_t('onboarding.perm.ask')}")
+                console.print(f"  edit   — {_t('onboarding.perm.edit')}")
+                console.print(f"  full   — {_t('onboarding.perm.full')}")
                 reverse = {"plan": "review", "ask": "ask", "auto-edit": "edit", "yolo": "full"}
                 selected = _plain_menu(
-                    "Permission profile",
+                    _t("onboarding.perm.prompt"),
                     ["review", "ask", "edit", "full"],
                     default=reverse.get(answers.get("permission_mode", "ask"), "ask"),
                 )
@@ -845,7 +867,7 @@ def run_wizard(
 
             if stage == "theme":
                 answers["theme"] = _plain_menu(
-                    "Theme",
+                    _t("onboarding.theme"),
                     ["dark", "light", "high-contrast"],
                     default=answers.get("theme", "dark"),
                 )
@@ -853,40 +875,44 @@ def run_wizard(
                 save_setup_state(stage, answers)
                 continue
 
-            console.print("\nReady to finish:")
+            console.print("\n" + _t("onboarding.confirm.ready"))
+            provider_label = "ChatGPT" if provider == "codex_subscription" else provider
+            console.print(f"  {layout.field(_t('onboarding.field.provider'), provider_label)}")
             console.print(
-                f"  {layout.field('Provider', 'ChatGPT' if provider == 'codex_subscription' else provider)}"
+                f"  {layout.field(_t('onboarding.field.model'), answers.get('model', _t('onboarding.model.account_default')) or '')}"
             )
-            console.print(f"  {layout.field('Model', answers.get('model', 'account default') or '')}")
             if answers.get("_model_catalog_provenance"):
                 status = (
-                    "verified"
+                    _t("onboarding.catalog.verified")
                     if answers.get("_model_catalog_verified") == "true"
-                    else "unverified"
+                    else _t("onboarding.catalog.unverified")
                 )
                 console.print(
-                    f"  {layout.field('Catalog', status)} — {answers['_model_catalog_provenance']}"
+                    f"  {layout.field(_t('onboarding.field.catalog'), status)} — "
+                    f"{answers['_model_catalog_provenance']}"
                 )
-            console.print(f"  {layout.field('Theme', answers.get('theme', 'dark'))}")
+            console.print(
+                f"  {layout.field(_t('onboarding.field.theme'), answers.get('theme', 'dark'))}"
+            )
             if group == "advanced":
-                console.print(f"  {layout.field('Subagent', answers.get('routing_subagent') or '')}")
                 console.print(
-                    f"  {layout.field('Summarizer', answers.get('routing_summarizer') or '')}"
+                    f"  {layout.field(_t('onboarding.field.subagent'), answers.get('routing_subagent') or '')}"
                 )
                 console.print(
-                    f"  {layout.field('Fallbacks', answers.get('routing_fallback') or '(none)')}"
+                    f"  {layout.field(_t('onboarding.field.summarizer'), answers.get('routing_summarizer') or '')}"
                 )
                 console.print(
-                    f"  {layout.field('Budget', '$' + str(answers.get('budget_per_session_usd', '5.00')))} "
-                    f"(warn {answers.get('budget_warn_at_pct', '80')}%, "
-                    f"hard stop {answers.get('budget_hard_stop', 'true')})"
+                    f"  {layout.field(_t('onboarding.field.fallbacks'), answers.get('routing_fallback') or _t('onboarding.none'))}"
+                )
+                console.print(
+                    f"  {layout.field(_t('onboarding.field.budget'), _t('onboarding.budget.summary', amount='$' + str(answers.get('budget_per_session_usd', '5.00')), pct=answers.get('budget_warn_at_pct', '80'), hard=answers.get('budget_hard_stop', 'true')))}"
                 )
                 from jarn.permissions.labels import permission_mode_name
 
                 console.print(
-                    f"  {layout.field('Permissions', permission_mode_name(answers.get('permission_mode', 'ask')))}"
+                    f"  {layout.field(_t('onboarding.field.permissions'), permission_mode_name(answers.get('permission_mode', 'ask')))}"
                 )
-            choice = _plain_menu("Finish setup?", ["save"], default="save")
+            choice = _plain_menu(_t("onboarding.confirm.finish"), ["save"], default="save")
             if choice == "save":
                 return finalize_setup(
                     answers,
@@ -897,9 +923,7 @@ def run_wizard(
         previous = _plain_previous(stage, answers)
         if previous == "cancel":
             mark_setup_incomplete()
-            console.print(
-                f"\n{layout.warn('Setup incomplete (cancelled).')} Resume with {layout.strong('jarn setup')}."
-            )
+            console.print(_cancelled_notice())
             return return_or_raise_setup_failure(
                 SetupCommandError(
                     "Back was selected on the first setup step.",
@@ -919,9 +943,7 @@ def run_wizard(
     except (_PlainCancel, KeyboardInterrupt, EOFError):
         save_setup_state(stage, answers)
         mark_setup_incomplete()
-        console.print(
-            f"\n{layout.warn('Setup incomplete (cancelled).')} Resume with {layout.strong('jarn setup')}."
-        )
+        console.print(_cancelled_notice())
         return return_or_raise_setup_failure(
             SetupCommandError("Setup was cancelled by the user.", kind=SetupFailureKind.CANCELLED),
             propagate_errors=propagate_errors,
@@ -929,8 +951,8 @@ def run_wizard(
     except (SetupFlowError, InstallStateError, OSError) as exc:
         save_setup_state(stage, answers)
         mark_setup_incomplete()
-        console.print(f"\n{layout.err('Setup incomplete at ' + stage + ':')} {exc}")
-        console.print(f"No configuration was changed. Retry with {layout.strong('jarn setup')}.")
+        console.print(f"\n{layout.err(_t('onboarding.incomplete.at', stage=stage))} {exc}")
+        console.print(_t("onboarding.retry", command=_setup_command()))
         failure: SetupCommandError
         if isinstance(exc, SetupCommandError):
             failure = exc
@@ -950,13 +972,13 @@ def _prompt_model(profile: str) -> str:
         default_id = "gpt-4o"
     if profile_needs_base_url(profile) or "/" not in default_full:
         raw = Prompt.ask(
-            "Model id on your endpoint"
+            _t("onboarding.model.id.endpoint")
             if profile == CUSTOM_OPENAI_PROFILE
-            else f"Model id for {profile}",
+            else _t("onboarding.model.id", provider=profile),
             default=default_id,
         )
         return qualify_model_ref(raw, profile)
-    return Prompt.ask("Default model (main agent)", default=default_full)
+    return Prompt.ask(_t("onboarding.model.main"), default=default_full)
 
 
 def _configure_key(
@@ -971,64 +993,71 @@ def _configure_key(
     without prompting — keeping the key out of the config verbatim.
     """
     if profile == "codex_subscription":
-        console.print(
-            layout.muted("codex_subscription uses Codex-managed ChatGPT login — no API key.")
-        )
+        console.print(layout.muted(_t("onboarding.key.codex")))
         return None
 
     if profile not in _CLOUD:
-        console.print(layout.muted(f"{profile} is local — no API key needed."))
+        console.print(layout.muted(_t("onboarding.key.local", provider=profile)))
         return None
 
     env_var = PROVIDER_ENV_VARS.get(profile, f"{profile.upper()}_API_KEY")
 
     # If the detected env key belongs to this provider, use it as a reference.
     if env_hit is not None and env_hit[0] == profile:
-        console.print("  " + layout.muted(f"J.A.R.N. will read the key from ${{{env_var}}}."))
+        console.print(
+            "  " + layout.muted(_t("onboarding.key.read_from", env_var=f"${{{env_var}}}"))
+        )
         return f"${{{env_var}}}"
 
-    console.print(f"\nHow should J.A.R.N. read your {layout.strong(profile)} API key?")
+    console.print("\n" + _t("onboarding.storage.prompt_your", provider=layout.strong(profile)))
 
     if profile == "openrouter":
         choices = ["oauth", "env", "keychain"]
         default_storage = "oauth"
-        console.print("  oauth      — Log in with browser (recommended)")
-        console.print(f"  env        — Read from ${env_var}")
-        console.print("  keychain   — Paste it now → store in the OS keychain")
+        console.print(f"  oauth      — {_t('onboarding.storage.oauth')}")
+        console.print(f"  env        — {_t('onboarding.storage.env.read', env_var='$' + env_var)}")
+        console.print(f"  keychain   — {_t('onboarding.storage.keychain')}")
     else:
         choices = ["env", "keychain"]
         default_storage = "env"
 
-    method = Prompt.ask("  storage", choices=choices, default=default_storage)
+    method = Prompt.ask(
+        "  " + _t("onboarding.storage.method"), choices=choices, default=default_storage
+    )
 
     if method == "oauth":
-        console.print("  Opening your browser for OpenRouter login…")
+        console.print("  " + _t("onboarding.oauth.opening"))
         try:
             result: LoginResult = login_openrouter()
-            console.print(f"  {layout.ok(grammar.GLYPH_OK)} Logged in — key stored as {result.reference}")
+            console.print(
+                f"  {layout.ok(grammar.GLYPH_OK)} "
+                f"{_t('onboarding.oauth.logged_in', reference=result.reference)}"
+            )
             return result.reference
         except Exception as exc:  # noqa: BLE001
             from jarn.config.secrets import redact_secrets
 
             console.print(
-                f"  {layout.warn(grammar.GLYPH_WARN)} Browser login failed: "
-                f"{redact_secrets(str(exc))}. Falling back to manual key entry."
+                f"  {layout.warn(grammar.GLYPH_WARN)} "
+                f"{_t('onboarding.oauth.failed', error=redact_secrets(str(exc)))}"
             )
             # Fall through to keychain paste.
             method = "keychain"
 
     if method == "env":
-        console.print("  " + layout.muted(f"J.A.R.N. will read it from ${env_var}."))
+        console.print("  " + layout.muted(_t("onboarding.key.read_it", env_var=f"${env_var}")))
         return f"${{{env_var}}}"
 
-    key = Prompt.ask("  paste API key", password=True)
+    key = Prompt.ask("  " + _t("onboarding.key.paste_prompt"), password=True)
     if key:
         stored = store_secret("jarn", profile, key)
         notice = file_fallback_notice(stored, provider=profile, env_var=env_var)
         if notice:
             console.print(layout.warn(notice))
         else:
-            console.print(f"  {layout.ok(grammar.GLYPH_OK)} stored in OS keychain (jarn/{profile})")
+            console.print(
+                f"  {layout.ok(grammar.GLYPH_OK)} {_t('onboarding.key.stored', provider=profile)}"
+            )
         return stored.reference
     return f"${{{env_var}}}"
 
@@ -1037,7 +1066,7 @@ def _configure_base_url(profile: str) -> str:
     default = PROVIDER_BASE_URLS.get(profile, "http://localhost:8000/v1")
     while True:
         raw = Prompt.ask(
-            f"API base URL for {profile}",
+            _t("onboarding.base_url.prompt", provider=profile),
             default=default,
         )
         try:
@@ -1308,9 +1337,10 @@ def _run_validation_request(
         raise ValidationWorkerError("model validation worker returned an invalid response")
     if not response.get("ok"):
         raw_error_type = str(response.get("error_type") or "validation error")[:120]
-        error_type = "".join(
-            char for char in raw_error_type if char.isalnum() or char in "._- "
-        ).strip() or "validation error"
+        error_type = (
+            "".join(char for char in raw_error_type if char.isalnum() or char in "._- ").strip()
+            or "validation error"
+        )
         message = redact_secrets(
             str(response.get("message") or "model validation failed"),
             known={credential} if credential else None,
@@ -1447,39 +1477,34 @@ def validate_config(
     from jarn.config.secrets import redact_secrets
 
     try:
-        with console.status(
-            f"{layout.accent('validating')} — the model may need to load first "
-            "(can take ~1 min); Ctrl+C to skip"
-        ):
+        with console.status(layout.accent(_t("onboarding.validate.status"))):
             response_chars = _run_validation_request(
                 profile,
                 model,
                 config,
                 timeout=timeout,
             )
-        console.print(f"  {layout.ok(grammar.GLYPH_OK)} model responded ({response_chars} chars)")
+        console.print(
+            f"  {layout.ok(grammar.GLYPH_OK)} {_t('onboarding.validate.ok', n=response_chars)}"
+        )
         return True
     except KeyboardInterrupt:
-        console.print(
-            "  "
-            + layout.muted(
-                "skipped — the isolated validation worker was stopped; retry setup when ready."
-            )
-        )
+        console.print("  " + layout.muted(_t("onboarding.validate.skipped")))
         return False
     except TimeoutError:
         console.print(
-            f"  {layout.warn(grammar.GLYPH_WARN)} validation timed out after {timeout:.0f}s — the "
-            "isolated request was stopped and can be retried safely."
+            f"  {layout.warn(grammar.GLYPH_WARN)} "
+            f"{_t('onboarding.validate.timeout', seconds=f'{timeout:.0f}')}"
         )
-        console.print("  " + layout.muted("Adjust the key/model later in ~/.jarn/config.yaml if needed."))
+        console.print("  " + layout.muted(_t("onboarding.validate.adjust")))
         return False
     except Exception as exc:  # noqa: BLE001
         provider_raw = config.get("providers", {}).get(profile, {})
         raw_key = provider_raw.get("api_key") if isinstance(provider_raw, dict) else None
         known = {raw_key} if isinstance(raw_key, str) and raw_key else None
         console.print(
-            f"  {layout.warn(grammar.GLYPH_WARN)} validation failed: {redact_secrets(str(exc), known=known)}"
+            f"  {layout.warn(grammar.GLYPH_WARN)} "
+            f"{_t('onboarding.validate.failed', error=redact_secrets(str(exc), known=known))}"
         )
-        console.print("  " + layout.muted("You can fix the key/model later in ~/.jarn/config.yaml."))
+        console.print("  " + layout.muted(_t("onboarding.validate.fix_later")))
         return False

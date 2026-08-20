@@ -29,6 +29,7 @@ from jarn.onboarding.credentials import (
     rollback_activated_credential,
 )
 from jarn.onboarding.flow import SetupFlowError, finalize_setup
+from jarn.tui.i18n import resolve_locale, t
 
 _EXISTING = """\
 # keep this operator comment
@@ -327,18 +328,20 @@ def test_finalize_discloses_billable_validation_and_clears_state_only_on_success
     assert committed["routing"]["main"] == "anthropic/claude-sonnet-4-5"
     assert committed["routing"]["subagent"] == "anthropic/claude-sonnet-4-5"
     assert committed["routing"]["summarizer"] == "anthropic/claude-sonnet-4-5"
-    assert questions == ["Send the validation request and finish setup?"]
+    loc = resolve_locale()
+    assert questions == [t("onboarding.validate.confirm", loc)]
     output = stream.getvalue()
-    assert "Required readiness validation (may be billable)" in output
-    assert "may consume" in output
-    assert "provider credits" in output
-    assert "Setup complete" in output
+    plain = " ".join(output.split())
+    assert t("onboarding.validate.required", loc) in plain
+    assert t("onboarding.validate.credits", loc) in plain
+    assert t("onboarding.complete.banner", loc) in plain
     assert "/home/user/.local/bin/jarn" in output
     assert "portable-python" in output
-    assert "API key reference" in output
-    assert "Permission: Ask before changes" in output
-    assert "Working directory:" in output
-    assert "Next command: jarn" in output
+    assert t("onboarding.complete.auth.api", loc) in plain
+    assert "Ask before changes" in output
+    assert t("onboarding.complete.cwd", loc) in plain
+    assert t("onboarding.complete.next", loc) in plain
+    assert "jarn" in output
 
 
 def test_failed_validation_keeps_resume_state_and_does_not_commit(tmp_path, monkeypatch):
@@ -647,9 +650,7 @@ def _cross_provider_candidate(tmp_path, monkeypatch):
     return staged.candidate
 
 
-def test_staged_route_gate_accepts_every_verified_cross_provider_route(
-    tmp_path, monkeypatch
-):
+def test_staged_route_gate_accepts_every_verified_cross_provider_route(tmp_path, monkeypatch):
     from jarn.catalog import ModelCatalogCache, ModelCatalogService
     from jarn.onboarding.flow import _validate_staged_routes
     from jarn.providers import RemoteModelCatalog, RemoteModelRecord
@@ -671,9 +672,7 @@ def test_staged_route_gate_accepts_every_verified_cross_provider_route(
     _validate_staged_routes(_cross_provider_candidate(tmp_path, monkeypatch), service)
 
 
-def test_staged_route_gate_classifies_missing_background_credential_as_auth(
-    tmp_path, monkeypatch
-):
+def test_staged_route_gate_classifies_missing_background_credential_as_auth(tmp_path, monkeypatch):
     from jarn.catalog import ModelCatalogCache, ModelCatalogService
     from jarn.onboarding.flow import _validate_staged_routes
     from jarn.onboarding.outcome import SetupFailureKind
@@ -689,9 +688,7 @@ def test_staged_route_gate_classifies_missing_background_credential_as_auth(
 
     def remote(provider, **_kwargs):
         if provider.type.value == "anthropic":
-            raise RemoteModelDiscoveryError(
-                "anthropic model-list credential could not be resolved"
-            )
+            raise RemoteModelDiscoveryError("anthropic model-list credential could not be resolved")
         return RemoteModelCatalog(
             (RemoteModelRecord("gpt-main"),),
             "live openai",
@@ -708,9 +705,7 @@ def test_staged_route_gate_classifies_missing_background_credential_as_auth(
     assert "credential" in str(caught.value).lower()
 
 
-def test_staged_route_gate_rejects_stale_exact_validation_evidence(
-    tmp_path, monkeypatch
-):
+def test_staged_route_gate_rejects_stale_exact_validation_evidence(tmp_path, monkeypatch):
     from jarn.catalog import ModelCatalogCache, ModelCatalogService
     from jarn.config.schema import ProviderConfig, ProviderType
     from jarn.onboarding.flow import _validate_staged_routes
