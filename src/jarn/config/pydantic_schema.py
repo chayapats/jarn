@@ -786,9 +786,12 @@ class UIConfigModel(_StrictModel):
     tool_progress: str = "new"
     busy_input_mode: str = "queue"
     show_reasoning: str = "collapsed"
+    thinking_style: str = "plain"
     statusbar: bool = True
     context_bar: bool = True
+    toolbar_detail: str = "quiet"
     busy_ack_detail: bool = False
+    locale: str = "auto"
 
     @field_validator("theme", mode="before")
     @classmethod
@@ -888,6 +891,18 @@ class UIConfigModel(_StrictModel):
             )
         return raw
 
+    @field_validator("thinking_style", mode="before")
+    @classmethod
+    def _thinking_style(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_THINKING_STYLE_VALUES
+
+        raw = str(value)
+        if raw not in _VALID_THINKING_STYLE_VALUES:
+            raise ConfigValidationError(
+                f"ui.thinking_style must be one of {sorted(_VALID_THINKING_STYLE_VALUES)} (got {raw!r})."
+            )
+        return raw
+
     @field_validator("statusbar", mode="before")
     @classmethod
     def _statusbar(cls, value: Any) -> bool:
@@ -898,10 +913,34 @@ class UIConfigModel(_StrictModel):
     def _context_bar(cls, value: Any) -> bool:
         return _normalize_bool(value, "ui.context_bar")
 
+    @field_validator("toolbar_detail", mode="before")
+    @classmethod
+    def _toolbar_detail(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_TOOLBAR_DETAIL_VALUES
+
+        raw = str(value)
+        if raw not in _VALID_TOOLBAR_DETAIL_VALUES:
+            raise ConfigValidationError(
+                f"ui.toolbar_detail must be one of {sorted(_VALID_TOOLBAR_DETAIL_VALUES)} (got {raw!r})."
+            )
+        return raw
+
     @field_validator("busy_ack_detail", mode="before")
     @classmethod
     def _busy_ack_detail(cls, value: Any) -> bool:
         return _normalize_bool(value, "ui.busy_ack_detail")
+
+    @field_validator("locale", mode="before")
+    @classmethod
+    def _locale(cls, value: Any) -> str:
+        from jarn.config.schema import _VALID_LOCALE_VALUES
+
+        raw = str(value)
+        if raw not in _VALID_LOCALE_VALUES:
+            raise ConfigValidationError(
+                f"ui.locale must be one of {sorted(_VALID_LOCALE_VALUES)} (got {raw!r})."
+            )
+        return raw
 
 
 class CompatConfigModel(_StrictModel):
@@ -1518,9 +1557,12 @@ def config_to_dataclass(model: ConfigModel) -> Config:
             tool_progress=model.ui.tool_progress,
             busy_input_mode=model.ui.busy_input_mode,
             show_reasoning=model.ui.show_reasoning,
+            thinking_style=model.ui.thinking_style,
             statusbar=model.ui.statusbar,
             context_bar=model.ui.context_bar,
+            toolbar_detail=model.ui.toolbar_detail,
             busy_ack_detail=model.ui.busy_ack_detail,
+            locale=model.ui.locale,
         ),
         compat=CompatConfig(
             context_files=list(model.compat.context_files),

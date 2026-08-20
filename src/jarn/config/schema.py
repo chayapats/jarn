@@ -437,6 +437,12 @@ _VALID_SPLASH_VALUES: frozenset[str] = frozenset({"full", "compact", "off"})
 
 _VALID_NOTIFY_VALUES: frozenset[str] = frozenset({"off", "bell", "desktop", "both"})
 
+_VALID_LOCALE_VALUES: frozenset[str] = frozenset({"auto", "en", "th"})
+
+_VALID_TOOLBAR_DETAIL_VALUES: frozenset[str] = frozenset({"quiet", "full"})
+
+_VALID_THINKING_STYLE_VALUES: frozenset[str] = frozenset({"plain", "quirky"})
+
 _VALID_TOOL_PROGRESS_VALUES: frozenset[str] = frozenset(TOOL_PROGRESS_VALUES)
 
 BUSY_INPUT_MODES: tuple[str, ...] = ("queue", "steer", "interrupt")
@@ -481,12 +487,22 @@ class UIConfig:
     busy_input_mode: str = "queue"
     #: How thinking/reasoning is shown: collapsed | full | off.
     show_reasoning: str = "collapsed"
+    #: Thinking-indicator copy: plain (catalog ``คิด…`` / ``Thinking…``) or
+    #: quirky (session-random Cogitating / Spelunking / …).
+    thinking_style: str = "plain"
     #: Draw the bottom status bar.
     statusbar: bool = True
     #: Draw the context fill bar inside the status bar.
     context_bar: bool = True
+    #: Status-bar density: quiet | full. quiet is model, mode, YOLO, untrusted,
+    #: context pressure, and queue/compact when non-zero. full restores cwd,
+    #: provider, auth, reasoning, trusted, duration, cost, and title.
+    toolbar_detail: str = "quiet"
     #: Extra "queued/steering" copy on a busy ack. Default off — one short Working…
     busy_ack_detail: bool = False
+    #: UI chrome locale: auto | en | th. ``auto`` follows LANG / LC_MESSAGES /
+    #: LC_ALL (language tag ``th`` → Thai chrome). Command names stay English.
+    locale: str = "auto"
 
 
 @dataclass(slots=True)

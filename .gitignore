@@ -43,6 +43,7 @@ PROJECT_AUDIT_*.md
 todo.md
 fable-todo.md
 docs/superpowers/
+docs/specs/2026-08-20-conversation-ux-standard.md
 
 # Secrets / credentials (never commit)
 .env

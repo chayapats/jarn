@@ -528,6 +528,16 @@ ui:
                            #          auto) REUSES this startup detection — it does not
                            #          re-probe the terminal (a runtime probe would race
                            #          prompt_toolkit's input reader).
+  locale: auto             # auto | en | th
+                           #   auto — Thai UI chrome when LANG / LC_MESSAGES / LC_ALL
+                           #          has language tag th (e.g. th_TH.UTF-8);
+                           #          otherwise English. Slash command names, mode
+                           #          ids (plan / ask / auto-edit / yolo), and model
+                           #          output stay English.
+                           #   en   — English UI chrome
+                           #   th   — Thai UI chrome
+                           # Chrome strings live in tui/i18n.py. Persist with
+                           # `/config set ui.locale th` (or en / auto).
   accent: cyan             # brand accent for splash + toolbar (cyan|blue|teal|…)
   # Set NO_COLOR=1 in the environment for plain/unstyled toolbar labels.
   notify: bell             # off | bell | desktop | both
@@ -568,8 +578,20 @@ ui:
                            # `/verbose` cycles this for the session only; persist with
                            # `/config set ui.tool_progress`.
   show_reasoning: collapsed  # collapsed | full | off — thinking display
-  statusbar: true          # draw the bottom status bar (model, mode, context, cost)
+  thinking_style: plain      # plain | quirky
+                           #   plain  — catalog label (Thinking… / คิด…). Default.
+                           #   quirky — session-random Cogitating / Spelunking / …
+                           # Persist with `/config set ui.thinking_style quirky`.
+  statusbar: true          # draw the bottom status bar (model, mode, context)
   context_bar: true        # fill bar inside the status bar for context-window pressure
+                           # (quiet toolbar uses the bar at ≥76 columns)
+  toolbar_detail: quiet    # quiet | full
+                           #   quiet — model, mode, YOLO (if yolo), untrusted (if
+                           #            untrusted), context pressure, queue N / compact N
+                           #            when N>0. YOLO and untrusted never drop.
+                           #   full  — also cwd, provider · auth, reasoning, ✔ trusted,
+                           #            duration, cost, session title.
+                           # Persist with `/config set ui.toolbar_detail full`.
 
 # ── Git safety (auto-checkpoint + /undo /redo) ────────────────────────────────
 git:
@@ -591,8 +613,10 @@ always labeled unverified.
 
 At REPL launch, `palette.configure_ui(theme, accent)` applies theme tokens to the
 shared palette (chat colors, toolbar background/foreground, cost/context colors).
-The bottom toolbar is rendered by `tui/toolbar.py` and shows **model · mode · queue ·
-ctx · cost** (low-priority segments drop on narrow terminals).
+The bottom toolbar is rendered by `tui/toolbar.py`. Default `ui.toolbar_detail: quiet`
+shows **model · mode · context** (plus YOLO / untrusted / queue / compact when they
+apply). `full` restores cwd, provider, cost, and the rest. Low-priority segments
+drop from the right on narrow terminals; YOLO and untrusted never drop.
 
 ## Prompt modules and context budgets
 
