@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
@@ -104,57 +105,162 @@ class ErrorDetail:
         *,
         known_secrets: set[str] | None = None,
         stream: Any | None = None,
+        verbose: bool | None = None,
+        locale: str | None = None,
     ) -> str:
-        """Plain anatomy for pipes / ``NO_COLOR``; TTY adds spacing and color.
+        """Render this error for a human or a pipe.
 
-        Non-TTY text is the stable support contract (JSON, CI, ``TERM=dumb``).
-        A TTY colors the code (error) and ``Next:`` (accent) and inserts a blank
-        line between fields so the brick is scannable.
+        Non-TTY text is the stable support contract (JSON, CI, ``TERM=dumb``):
+        full English anatomy, single newlines. A TTY shows title + next step
+        (localized chrome). ``component`` / log path appear on a TTY only when
+        *verbose* is true or ``--verbose`` is on a jarn argv.
         """
         safe = self.to_dict(known_secrets=known_secrets)
-        retry = "yes" if safe["retryable"] else "no"
-        lines = [
-            f"{safe['code']}: {safe['summary']}",
-            f"Cause: {safe['cause']}",
-            f"Component: {safe['component']} (retryable: {retry})",
-            f"Next: {safe['action']}",
-        ]
-        if safe["log_available"]:
-            lines.append(f"Log: {safe['log_path']}")
-        else:
-            lines.append(
-                "Log: unavailable for this failure "
-                f"(expected location: {safe['log_path']}; use `jarn doctor --report FILE`)"
-            )
-        if safe.get("report_path"):
-            lines.append(f"Report: {safe['report_path']}")
-
         target = stream if stream is not None else sys.stderr
-        if not _error_tty_color(target):
-            return "\n".join(lines)
+        want_verbose = _error_verbose(verbose)
+        loc = _error_locale(locale)
+        if _error_is_tty(target):
+            lines = _tty_verbose_lines(safe, loc) if want_verbose else _tty_quiet_lines(safe, loc)
+            if not _error_tty_color(target):
+                return "\n\n".join(lines)
+            return "\n\n".join(_paint_tty_error_lines(lines, safe, loc))
+        return "\n".join(_plain_anatomy_lines(safe))
 
-        from jarn.tui import palette
 
-        painted: list[str] = []
-        for line in lines:
-            if line.startswith(f"{safe['code']}:"):
-                painted.append(
-                    f"{_ansi_fg(palette.C_ERROR, str(safe['code']))}: {safe['summary']}"
-                )
-            elif line.startswith("Next:"):
-                painted.append(f"{_ansi_fg(palette.ACCENT, 'Next:')} {safe['action']}")
-            else:
-                painted.append(line)
-        return "\n\n".join(painted)
+def _error_is_tty(stream: Any) -> bool:
+    if os.environ.get("TERM", "").lower() == "dumb":
+        return False
+    isatty = getattr(stream, "isatty", None)
+    return bool(callable(isatty) and isatty())
 
 
 def _error_tty_color(stream: Any) -> bool:
     if os.environ.get("NO_COLOR"):
         return False
-    if os.environ.get("TERM", "").lower() == "dumb":
+    return _error_is_tty(stream)
+
+
+def _error_verbose(explicit: bool | None, argv: Sequence[str] | None = None) -> bool:
+    if explicit is not None:
+        return explicit
+    return _jarn_cli_verbose(sys.argv if argv is None else argv)
+
+
+def _jarn_cli_verbose(argv: Sequence[str]) -> bool:
+    """True when ``--verbose`` is on a jarn invocation, not ``pytest --verbose``.
+
+    ``pytest -m jarn --verbose`` is a marker expression, not ``python -m jarn``.
+    """
+    if "--verbose" not in argv:
         return False
-    isatty = getattr(stream, "isatty", None)
-    return bool(callable(isatty) and isatty())
+    name = Path(str(argv[0])).name.lower() if argv else ""
+    if name in {"jarn", "jarn.exe"}:
+        return True
+    # ``python -m jarn`` rewrites argv[0] to the package __main__.py path.
+    if _jarn_package_entry(str(argv[0]) if argv else ""):
+        return True
+    if not _python_argv0(name):
+        return False
+    args = list(argv)
+    try:
+        module_at = args.index("-m")
+    except ValueError:
+        return False
+    return module_at + 1 < len(args) and str(args[module_at + 1]) in {"jarn", "jarn.cli"}
+
+
+def _jarn_package_entry(argv0: str) -> bool:
+    path = Path(argv0)
+    if path.name.lower() not in {"__main__.py", "cli.py"}:
+        return False
+    return path.parent.name.lower() == "jarn"
+
+
+def _python_argv0(name: str) -> bool:
+    stem = name[:-4] if name.endswith(".exe") else name
+    return stem == "python" or stem.startswith(("python", "pypy"))
+
+
+def _error_locale(locale: str | None) -> str:
+    from jarn.tui.i18n import resolve_locale
+
+    if locale in {"en", "th"}:
+        return locale
+    return resolve_locale()
+
+
+def _plain_anatomy_lines(safe: dict[str, Any]) -> list[str]:
+    """English full brick — pipes, CI, and ``TERM=dumb``."""
+    retry = "yes" if safe["retryable"] else "no"
+    lines = [
+        f"{safe['code']}: {safe['summary']}",
+        f"Cause: {safe['cause']}",
+        f"Component: {safe['component']} (retryable: {retry})",
+        f"Next: {safe['action']}",
+        _plain_log_line(safe),
+    ]
+    if safe.get("report_path"):
+        lines.append(f"Report: {safe['report_path']}")
+    return lines
+
+
+def _plain_log_line(safe: dict[str, Any]) -> str:
+    if safe["log_available"]:
+        return f"Log: {safe['log_path']}"
+    return (
+        "Log: unavailable for this failure "
+        f"(expected location: {safe['log_path']}; use `jarn doctor --report FILE`)"
+    )
+
+
+def _tty_quiet_lines(safe: dict[str, Any], locale: str) -> list[str]:
+    from jarn.tui.i18n import t
+
+    return [
+        f"{safe['code']}: {safe['summary']}",
+        f"{t('error.next', locale)}: {safe['action']}",
+    ]
+
+
+def _tty_verbose_lines(safe: dict[str, Any], locale: str) -> list[str]:
+    from jarn.tui.i18n import t
+
+    retry = t("error.retryable.yes" if safe["retryable"] else "error.retryable.no", locale)
+    log_body = (
+        str(safe["log_path"])
+        if safe["log_available"]
+        else t("error.log_unavailable", locale, path=safe["log_path"])
+    )
+    lines = [
+        f"{safe['code']}: {safe['summary']}",
+        f"{t('error.cause', locale)}: {safe['cause']}",
+        f"{t('error.component', locale)}: {safe['component']} (retryable: {retry})",
+        f"{t('error.next', locale)}: {safe['action']}",
+        f"{t('error.log', locale)}: {log_body}",
+    ]
+    if safe.get("report_path"):
+        lines.append(f"{t('error.report', locale)}: {safe['report_path']}")
+    return lines
+
+
+def _paint_tty_error_lines(
+    lines: list[str],
+    safe: dict[str, Any],
+    locale: str,
+) -> list[str]:
+    from jarn.tui import palette
+    from jarn.tui.i18n import t
+
+    next_label = t("error.next", locale)
+    painted: list[str] = []
+    for line in lines:
+        if line.startswith(f"{safe['code']}:"):
+            painted.append(f"{_ansi_fg(palette.C_ERROR, str(safe['code']))}: {safe['summary']}")
+        elif line.startswith(f"{next_label}:"):
+            painted.append(f"{_ansi_fg(palette.ACCENT, f'{next_label}:')} {safe['action']}")
+        else:
+            painted.append(line)
+    return painted
 
 
 def _ansi_fg(hex_color: str, text: str) -> str:
