@@ -27,6 +27,28 @@ def _pin_help_locale(target: dict[str, str] | pytest.MonkeyPatch, locale: str) -
             target.setenv(key, locale)
 
 
+def _run_jarn_help(tmp_path: Path, env: dict[str, str]) -> str:
+    """Capture ``jarn --help`` as UTF-8 text.
+
+    Windows pipes default to the ANSI code page. Thai catalog strings are UTF-8,
+    so decode the child bytes explicitly instead of ``text=True`` + locale.
+    """
+    run_env = dict(env)
+    run_env["PYTHONUTF8"] = "1"
+    run_env["PYTHONIOENCODING"] = "utf-8"
+    completed = subprocess.run(  # noqa: S603 - fixed interpreter/module argv
+        [sys.executable, "-m", "jarn", "--help"],
+        cwd=tmp_path,
+        env=run_env,
+        capture_output=True,
+        timeout=15,
+    )
+    stdout = (completed.stdout or b"").decode("utf-8", errors="replace")
+    stderr = (completed.stderr or b"").decode("utf-8", errors="replace")
+    assert completed.returncode == 0, stderr
+    return stdout
+
+
 def _write_current_config(home: Path, *, secret: str | None = None) -> Path:
     path = home / "config.yaml"
     home.mkdir(parents=True, exist_ok=True)
@@ -158,22 +180,11 @@ socket.getaddrinfo = denied
     )
     _pin_help_locale(env, "C")
 
-    completed = subprocess.run(  # noqa: S603 - fixed interpreter/module argv
-        [sys.executable, "-m", "jarn", "--help"],
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-
-    assert completed.returncode == 0, completed.stderr
+    help_text = _run_jarn_help(tmp_path, env)
     assert marker.read_text(encoding="utf-8") == "loaded"
     assert not jarn_home.exists(), "--help must not create config or runtime state"
-    assert completed.stderr == ""
-    assert "\x1b[" not in completed.stdout
-    assert "Traceback" not in completed.stdout
-    help_text = completed.stdout
+    assert "\x1b[" not in help_text
+    assert "Traceback" not in help_text
     for section in (
         "Start and common commands:",
         "Installation and configuration (no browser required):",
@@ -206,18 +217,8 @@ socket.getaddrinfo = denied
 
     env_th = dict(env)
     _pin_help_locale(env_th, "th_TH.UTF-8")
-    env_th["PYTHONIOENCODING"] = "utf-8"
-    completed_th = subprocess.run(  # noqa: S603 - fixed interpreter/module argv
-        [sys.executable, "-m", "jarn", "--help"],
-        cwd=tmp_path,
-        env=env_th,
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-    assert completed_th.returncode == 0, completed_th.stderr
+    help_th = _run_jarn_help(tmp_path, env_th)
     assert not jarn_home.exists(), "--help must not create config or runtime state"
-    help_th = completed_th.stdout
     assert t("cli.epilog.start.title", "th") in help_th
     assert t("cli.epilog.install.title", "th") in help_th
     assert t("cli.group.oneshot", "th") + ":" in help_th
