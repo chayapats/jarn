@@ -47,6 +47,7 @@ from jarn.telegram.auth import authorize_update
 from jarn.telegram.backend import InMemoryGatewayBackend, SessionRouterBackend
 from jarn.telegram.bot import TelegramBotApp
 from jarn.telegram.outbox import Outbox, encode_callback, parse_callback
+from jarn.tui.i18n import t
 
 FAKE_WORKER = Path(__file__).resolve().parent / "gateway_fake_worker.py"
 
@@ -342,7 +343,7 @@ async def test_e2e_dm_turn_park_verdict_resume(isolated_home: Path, tmp_path: Pa
     assert bot.sent, "expected approval card send_message"
     card = bot.sent[-1]
     assert card["chat_id"] == 7
-    assert "Approve" in card["text"] or "execute" in card["text"]
+    assert t("approval.header.shell", "en", object="rm -rf /tmp/e2e") in card["text"]
     markup = card.get("reply_markup")
     assert markup is not None
     callbacks: list[str] = []

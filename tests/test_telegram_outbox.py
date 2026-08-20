@@ -17,11 +17,13 @@ from jarn.telegram.outbox import (
     build_yolo_confirm_card,
     effective_telegram_busy_ack_detail,
     effective_telegram_busy_input_mode,
+    effective_telegram_locale,
     effective_telegram_tool_progress,
     encode_callback,
     parse_callback,
     should_drop_event,
 )
+from jarn.tui.i18n import t
 
 
 @dataclass
@@ -111,14 +113,21 @@ def test_tool_card_has_once_session_deny_no_always():
         description="run ls",
         args={"cmd": "ls /tmp"},
     )
-    assert "Approve" in text
-    assert "execute" in text
-    assert "<code>execute</code>" in text
+    assert t("approval.header.shell", "en", object="ls /tmp") in text
+    assert "Approve" not in text
     assert "<pre>" in text
     assert "<span" not in text
     labels = [btn["text"] for row in markup["inline_keyboard"] for btn in row]
-    assert labels == ["Once", "Session", "Deny"]
-    assert "Always" not in labels
+    assert labels == [
+        t("approval.once", "en"),
+        t("approval.session", "en"),
+        t("approval.deny", "en"),
+    ]
+    assert t("approval.always", "en") not in labels
+    assert t("approval.always", "th") not in labels
+    actions = [btn["callback_data"] for row in markup["inline_keyboard"] for btn in row]
+    assert all(":always" not in cb for cb in actions)
+    assert [parse_callback(cb).action for cb in actions] == ["once", "session", "deny"]
 
 
 def test_memory_and_skill_save_decline():
@@ -167,9 +176,8 @@ def test_cards_do_not_double_escape_user_text():
         args={"cmd": "echo <hi>"},
         target="path & file",
     )
-    assert "<code>bash &lt;x&gt;</code>" in text
+    assert "path &amp; file" in text
     assert "run a &amp; b" in text
-    assert "<code>path &amp; file</code>" in text
     assert "&amp;amp;" not in text
     assert "&amp;lt;" not in text
     assert "<span" not in text
@@ -247,8 +255,11 @@ async def test_new_density_one_bubble_edited_in_place():
     assert out.progress_message_id(1) == progress_id
     assert sender.edits
     assert all(e["message_id"] == progress_id for e in sender.edits)
-    assert "bash" in sender.edits[-1]["text"]
-    assert "read" in sender.edits[-1]["text"]
+    html = sender.edits[-1]["text"]
+    assert t("tool.verb.bash", "en") in html
+    assert "bash" not in html
+    assert "Read" in html
+    assert "path=" not in html
     assert sender.messages[0]["parse_mode"] == "HTML"
 
 
@@ -265,7 +276,8 @@ async def test_verbose_includes_tails():
     )
     html = sender.edits[-1]["text"] if sender.edits else sender.messages[0]["text"]
     assert "compiling foo.c" in html
-    assert "execute" in html
+    assert t("tool.verb.bash", "en") in html
+    assert "execute" not in html
 
 
 @pytest.mark.asyncio
@@ -314,7 +326,8 @@ async def test_verbose_then_tool_start_appears():
     assert sender.messages == []
     await out.on_event(1, kind="tool_start", text="bash", progress="new")
     assert len(sender.messages) == 1
-    assert "bash" in sender.messages[0]["text"]
+    assert t("tool.verb.bash", "en") in sender.messages[0]["text"]
+    assert "bash" not in sender.messages[0]["text"]
 
 
 @pytest.mark.asyncio
@@ -430,6 +443,17 @@ def test_effective_telegram_tool_progress_does_not_inherit_ui():
     cfg.gateway.telegram.tool_progress = "nope"
     assert effective_telegram_tool_progress(cfg) == "off"
     assert effective_telegram_tool_progress(None) == "off"
+
+
+def test_effective_telegram_locale_uses_ui_not_overlay():
+    cfg = SimpleNamespace(
+        ui=SimpleNamespace(locale="th"),
+        gateway=SimpleNamespace(telegram=SimpleNamespace(locale="en")),
+    )
+    assert effective_telegram_locale(cfg, environ={"LANG": "en_US.UTF-8"}) == "th"
+    cfg.ui.locale = "auto"
+    assert effective_telegram_locale(cfg, environ={"LANG": "en_US.UTF-8"}) == "en"
+    assert effective_telegram_locale(cfg, environ={"LANG": "th_TH.UTF-8"}) == "th"
 
 
 def test_effective_telegram_busy_input_mode_does_not_inherit_ui_queue():
@@ -554,3 +578,62 @@ def test_chunk_html_splits_under_limit_without_overflow():
     reconstructed = "\n".join(parts)
     assert "row-0" in reconstructed
     assert "row-79" in reconstructed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("locale", "verb"),
+    [("en", "Read"), ("th", "อ่าน")],
+)
+async def test_verbose_bubble_uses_catalog_verbs(locale, verb):
+    sender = FakeSender()
+    out = Outbox(sender=sender, progress="verbose", locale=locale)
+    path = "src/auth/session.py"
+    await out.on_event(
+        1,
+        kind="tool_start",
+        text="read_file",
+        data={"args": {"path": path}},
+    )
+    await out.on_event(
+        1,
+        kind="tool_end",
+        text="read_file",
+        data={"summary": "42 lines", "elapsed": 0.3},
+    )
+    html = sender.edits[-1]["text"] if sender.edits else sender.messages[0]["text"]
+    assert verb in html
+    assert path in html
+    assert "read_file" not in html
+    assert "path=" not in html
+    assert t("tool.result.lines", locale, n=42) in html
+    assert "0.3s" in html
+
+
+@pytest.mark.parametrize("locale", ["en", "th"])
+def test_approval_html_uses_catalog_nouns(locale):
+    path = "src/auth/session.py"
+    text, markup = build_approval_card(
+        token="tok1",
+        action="edit_file",
+        target=path,
+        dangerous=True,
+        locale=locale,
+    )
+    assert t("approval.header.edit", locale, object=path) in text
+    assert t("approval.danger", locale) in text
+    labels = [btn["text"] for row in markup["inline_keyboard"] for btn in row]
+    assert labels == [
+        t("approval.once", locale),
+        t("approval.session", locale),
+        t("approval.deny", locale),
+    ]
+    assert t("approval.always", "en") not in labels
+    assert t("approval.always", "th") not in labels
+    assert t("approval.always", locale) not in text
+    actions = [
+        parse_callback(btn["callback_data"]).action
+        for row in markup["inline_keyboard"]
+        for btn in row
+    ]
+    assert actions == ["once", "session", "deny"]
