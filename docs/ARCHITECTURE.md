@@ -246,7 +246,7 @@ another root. Operational details are in [TELEGRAM_GATEWAY.md](TELEGRAM_GATEWAY.
   permanent-401 stand-down, backend/outbox lifecycle, and long-poll transport.
 - `telegram/backend.py` — thread-safe worker-event bridge onto the Telegram asyncio
   outbox plus durable approval callback routing.
-- `telegram/outbox.py` + `telegram/inbound_media.py` — HTML/draft output, cards, and gated media staging.
+- `telegram/outbox.py` + `telegram/inbound_media.py` — coalesced HTML/draft output, cards that persist live prose and delete on tap, and gated media staging.
 - `compat.py` — context-file resolution order and `.claude/` directory discovery.
 
 ---

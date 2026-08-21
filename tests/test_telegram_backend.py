@@ -12,7 +12,7 @@ import pytest
 from jarn.config.schema import GatewayRepo
 from jarn.gateway.approvals import PendingApproval, PendingApprovalMap
 from jarn.gateway.daemon import DaemonSupervisor
-from jarn.gateway.protocol import EventFrame, MediaRef, TurnFrame
+from jarn.gateway.protocol import EventFrame, MediaRef, StatusFrame, TurnFrame
 from jarn.gateway.sessions import SessionRouter, UnknownRepoError
 from jarn.telegram.backend import SessionRouterBackend
 from jarn.telegram.outbox import BUSY_ACK_TEXT, Outbox
@@ -458,3 +458,39 @@ async def test_restore_pending_cards_filters_allowlist_and_updates_message_id(
     assert store.get("blocked").message_id is None
     assert store.get("legacy").message_id is None
     assert store.get("removed-root").message_id is None
+
+
+@pytest.mark.asyncio
+async def test_status_heartbeat_keepalives_live_draft(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("JARN_HOME", str(home))
+    personal = tmp_path / "personal"
+    personal.mkdir()
+    (personal / ".jarn").mkdir()
+    supervisor = MagicMock(spec=DaemonSupervisor)
+    supervisor.on_outbound = None
+    supervisor.on_worker_death = None
+    router = SessionRouter(supervisor, personal_root=personal)
+    backend = SessionRouterBackend(router=router, supervisor=supervisor)
+    sender = _FakeSender()
+    out = Outbox(sender=sender)
+    backend.bind_outbox(out)
+
+    await backend._deliver_frame(
+        7, EventFrame(thread_id="thread", kind="text", text="hello")
+    )
+    n = len(sender.drafts)
+    await backend._deliver_frame(
+        7,
+        StatusFrame(turn_in_flight=True, live_bg_jobs=0, idle_ms=0),
+    )
+    assert len(sender.drafts) == n + 1
+    await backend._deliver_frame(
+        7,
+        StatusFrame(turn_in_flight=False, live_bg_jobs=0, idle_ms=1000),
+    )
+    assert len(sender.drafts) == n + 1
+    backend.unbind_outbox()

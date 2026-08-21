@@ -271,6 +271,8 @@ class SessionRouterBackend:
             return
         if isinstance(frame, StatusFrame):
             await outbox.maybe_long_running(chat_id, turn_in_flight=frame.turn_in_flight)
+            if frame.turn_in_flight:
+                await outbox.keepalive_draft(chat_id)
             return
         if isinstance(frame, EventFrame):
             if frame.kind == "thread_switch":
