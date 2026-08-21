@@ -1,0 +1,58 @@
+{
+  "record_id": "UAT-001-V1011",
+  "uat_id": "UAT-001",
+  "criterion_ids": [
+    "UAT-001",
+    "AC-UX-011"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-20T16:39:00Z",
+  "ended_at": "2026-08-21T03:54:06Z",
+  "duration_seconds": 130.0,
+  "platform": {
+    "os": "Ubuntu",
+    "version": "22.04",
+    "architecture": "x86_64",
+    "libc": "glibc 2.35"
+  },
+  "command": "Isolated HOME on Ubuntu 22.04/glibc 2.35 using the exact tagged jarn-linux-x86_64 plus ChatGPT setup from an existing Codex CLI session, then one headless prompt",
+  "implementation": [
+    "install.sh",
+    "src/jarn/onboarding/",
+    "src/jarn/auth/",
+    "src/jarn/catalog/"
+  ],
+  "automated_tests": [
+    "tests/test_installer.py",
+    "tests/test_auth_service.py",
+    "tests/test_model_catalog.py"
+  ],
+  "decisions": [
+    "The exact tagged Linux x86_64 binary SHA-256 c413150161778b2fd7b7ffe53a146b40d8a57061980d348feb58b0113e8b9b48 matched checksums.txt and reported jarn 1.0.10.",
+    "The independent draft clean-install canary on ubuntu-22.04 already executed install.sh --method binary --no-setup --yes from authenticated v1.0.10 assets into a fresh HOME and activated the user-space command.",
+    "Isolated-HOME ChatGPT setup verified plan prolite, loaded a live catalog of 7 models, selected GPT-5.6-Sol automatically, and committed config with no credential material persisted.",
+    "The exact tagged binary completed a harmless first prompt with exit 0, result UAT_OK, one turn, and zero tool calls without PATH or config edits in that HOME.",
+    "The host production command remained jarn 1.0.9 and the existing Telegram gateway stayed active."
+  ],
+  "documentation_lookups": [
+    "none"
+  ],
+  "result": "On Ubuntu 22.04/glibc 2.35, the exact v1.0.10 Linux binary installed into an isolated HOME, verified a ChatGPT account and live default model, and completed the first prompt without PATH or config edits.",
+  "limitations": [
+    "The ChatGPT path reused an already-valid Codex CLI session on the host (existing-account detection) rather than completing a fresh sign-in callback on a brand-new OS account.",
+    "The one-line public install.sh path for this account used the authenticated draft canary and tagged binary copy because anonymous GitHub Release asset URLs remain unpublished until promote_release.",
+    "Raw login URL, callback payload, account data, and terminal output were not persisted.",
+    "v1.0.11 is v1.0.10 plus OpenCode Go first-run path and the npm local-tarball publish fix. This record rebinds the v1.0.10 observation to tag commit 3666edfafba11b77ad006861365395dcd4c42cca; the delta does not change this criterion runtime path."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.11",
+  "candidate_commit": "3666edfafba11b77ad006861365395dcd4c42cca",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": []
+}

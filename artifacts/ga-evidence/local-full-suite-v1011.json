@@ -1,0 +1,50 @@
+{
+  "record_id": "LOCAL-FULL-20260821-V1011",
+  "criterion_ids": [
+    "TEST-AUTH",
+    "TEST-MODEL",
+    "TEST-CONFIG",
+    "TEST-UI",
+    "TEST-SECURITY"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-21T03:53:26Z",
+  "ended_at": "2026-08-21T03:58:36Z",
+  "duration_seconds": 310.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "JARN_TEST_MODE=1 uv run pytest -q on commit 3666edfafba11b77ad006861365395dcd4c42cca",
+  "implementation": [
+    "src/jarn",
+    "install.sh",
+    ".github/workflows"
+  ],
+  "automated_tests": [
+    "complete 3375-test repository collection"
+  ],
+  "decisions": [
+    "The v1.0.11 tag suite accounted for 3366 passed, 9 skipped, and zero failed or errored in one clean run."
+  ],
+  "documentation_lookups": [
+    "none"
+  ],
+  "result": "All 3375 collected tests on candidate v1.0.11 were accounted for with zero failures or errors.",
+  "limitations": [
+    "This is a local macOS arm64 collection; tagged Release preflight reruns the suite on ubuntu-latest."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.11",
+  "candidate_commit": "3666edfafba11b77ad006861365395dcd4c42cca",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": []
+}

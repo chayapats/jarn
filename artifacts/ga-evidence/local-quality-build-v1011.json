@@ -1,0 +1,53 @@
+{
+  "record_id": "LOCAL-QUALITY-BUILD-20260821-V1011",
+  "criterion_ids": [
+    "AC-SEC-002",
+    "AC-SEC-003",
+    "CONSTRAINT-IMPLEMENTATION"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-21T03:53:40Z",
+  "ended_at": "2026-08-21T03:54:20Z",
+  "duration_seconds": 40.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "uv lock --check; uv run ruff check src tests scripts; uv run mypy src/; uv run pytest -q tests/test_packaging.py",
+  "implementation": [
+    "pyproject.toml",
+    "uv.lock",
+    "src/jarn",
+    "tests/test_packaging.py"
+  ],
+  "automated_tests": [
+    "uv run ruff check src tests scripts",
+    "uv run mypy src/",
+    "uv run pytest -q tests/test_packaging.py"
+  ],
+  "decisions": [
+    "uv lock --check resolved the pinned lock; Ruff passed and mypy passed all 185 source files.",
+    "All 4 packaging tests passed."
+  ],
+  "documentation_lookups": [
+    "none"
+  ],
+  "result": "The v1.0.11 tag commit passed lock, lint, typing, and packaging gates on macOS arm64.",
+  "limitations": [
+    "pip-audit, subprocess audit, and SOURCE_DATE_EPOCH twin builds were not repeated on this commit; tagged Release preflight/security/SBOM jobs cover those surfaces.",
+    "Local wheel bytes are not claimed identical to GitHub Actions wheels."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.11",
+  "candidate_commit": "3666edfafba11b77ad006861365395dcd4c42cca",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": []
+}

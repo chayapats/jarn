@@ -1,0 +1,55 @@
+{
+  "record_id": "GATE-RELEASE-V1011",
+  "criterion_ids": [
+    "GATE-RELEASE",
+    "DELIVERABLES-GA",
+    "COMPLETION-W"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-21T04:58:30Z",
+  "ended_at": "2026-08-21T04:59:10Z",
+  "duration_seconds": 40.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "python3 scripts/ga_evidence.py --evidence-dir artifacts/ga-evidence --candidate-version 1.0.11 --candidate-commit 3666edfafba11b77ad006861365395dcd4c42cca --strict --output artifacts/GA_RELEASE_EVIDENCE.md",
+  "implementation": [
+    "docs/GOAL_GENERAL_AVAILABILITY.md section R",
+    "docs/GOAL_GENERAL_AVAILABILITY.md section V",
+    "docs/GOAL_GENERAL_AVAILABILITY.md section W",
+    ".github/workflows/release.yml",
+    "scripts/ga_evidence.py"
+  ],
+  "automated_tests": [
+    "tests/test_ga_evidence.py",
+    "tests/test_uat_harnesses.py",
+    "tests/test_ci.py"
+  ],
+  "decisions": [
+    "Every extracted and supplemental leaf criterion other than these aggregates already has Passed evidence bound to 1.0.11 and 3666edfafba11b77ad006861365395dcd4c42cca.",
+    "UAT-001 through UAT-006 have Passed records, including OpenCode Go UAT-004. Contract UATs other than the 1.0.11 suite, quality, and draft-canary runs are rebound from v1.0.10 with an explicit delta limitation.",
+    "This aggregate attests verification completeness for the 1.0.11 evidence pack. It does not claim that GitHub Release, PyPI, or npm have already been published."
+  ],
+  "documentation_lookups": [
+    "none"
+  ],
+  "result": "All mapped 1.0.11 leaf criteria are Passed. Section R, the thirteen GA deliverables, and section W verification conditions are attested for this evidence pack.",
+  "limitations": [
+    "Public GitHub Release and PyPI/npm publication remain a later operator step behind JARN_GA_PROMOTE_TAG and a successful tagged Release promote.",
+    "UAT-001, UAT-002, UAT-003, UAT-005, and UAT-006 were originally observed on v1.0.10 and rebound because 1.0.11 only adds OpenCode Go and the npm local-tarball publish fix."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.11",
+  "candidate_commit": "3666edfafba11b77ad006861365395dcd4c42cca",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": []
+}
