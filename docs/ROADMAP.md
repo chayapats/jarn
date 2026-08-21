@@ -2,11 +2,12 @@
 
 > **Audience:** users curious about what is shipped versus planned, and contributors
 > choosing where to contribute. Items marked `[x]` are implemented. Hermes
-> display-parity close-out and conversation UX chrome are in the v1.0.10
-> candidate. `[ ]` items are scaffolded or documented but not yet shipped.
+> display-parity close-out and conversation UX chrome shipped in v1.0.10;
+> OpenCode Go is the v1.0.11 first-run API-key path. `[ ]` items are scaffolded
+> or documented but not yet shipped.
 
-Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-15** (this source line
-targets v1.0.10 GA; consult the release and package registries for publication status).
+Derived from [SPEC.md](../SPEC.md). Status as of **2026-08-21** (this source line
+targets v1.0.11 GA; consult the release and package registries for publication status).
 
 ## v1 — implemented
 
@@ -17,7 +18,7 @@ targets v1.0.10 GA; consult the release and package registries for publication s
 - [x] Thin safety/outcome kernel + conditional plan module + harness verification gate
 
 **Models & cost**
-- [x] 14-provider routing: multi-provider BYO key (OpenRouter default), local models,
+- [x] 15-provider routing: multi-provider BYO key (OpenCode Go first-run shortcut), local models,
   and managed ChatGPT subscription auth through the official Codex App Server
 - [x] Per-task model routing (main / subagent / summarizer) + fallback list
 - [x] Live token & cost tracking with per-model attribution, per-session budget (warn + hard-stop + mid-turn re-check)
@@ -152,7 +153,7 @@ multi-agent review. See the design spec under `docs/superpowers/specs/`.
 - [x] **Quality floor (M3)** — `scripts/eval.py` smoke-eval harness + fixtures (CI-safe offline logic)
 - [x] **Release UX (M4)** — `/mcp status`, in-REPL `/trust` + untrusted-launch notice; security
   audit fixes (Docker cancel/reaper, web_fetch SSRF, eval-checker guard, transcript redaction)
-- Historical v0.x line remained **Alpha**; v1.0.10 targets the completed GA hardening
+- Historical v0.x line remained **Alpha**; v1.0.11 continues the completed GA hardening
   contract (see Known limitations for constraints that still apply).
 
 ## v0.2.0 — released
