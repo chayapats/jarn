@@ -1,0 +1,54 @@
+{
+  "record_id": "UAT-002-V1011",
+  "uat_id": "UAT-002",
+  "criterion_ids": [
+    "UAT-002"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-20T16:02:47Z",
+  "ended_at": "2026-08-21T03:54:06Z",
+  "duration_seconds": 70.0,
+  "platform": {
+    "os": "Ubuntu",
+    "version": "22.04",
+    "architecture": "x86_64",
+    "libc": "glibc 2.35"
+  },
+  "command": "GitHub Actions draft npm-shadow canary on ubuntu-22.04 for tag v1.0.10: global /usr/local npm fixture plus authenticated-draft install.sh --method binary --no-setup --yes",
+  "implementation": [
+    "install.sh",
+    ".github/workflows/release.yml",
+    "src/jarn/config/migrations.py"
+  ],
+  "automated_tests": [
+    "tests/test_installer.py",
+    "tests/test_installer.py::test_exact_npm_shadow_plus_glibc_regression_is_not_false_success",
+    "tests/test_ga_config_migrations.py"
+  ],
+  "decisions": [
+    "A global /usr/local npm 0.10.0-shaped jarn fixture was installed first on PATH and retained byte-for-byte.",
+    "The installer returned documented status 10, printed Activation required, emitted no Done or Ready, and left the new user-space binary reporting jarn 1.0.10.",
+    "A fresh login shell with the shadowed PATH resolved the new user-space command and version.",
+    "Transactional config migration contracts were covered by the exact-tag pytest collection rather than mutating this canary's empty HOME config."
+  ],
+  "documentation_lookups": [
+    "none"
+  ],
+  "result": "On Ubuntu 22.04/glibc 2.35, the exact v1.0.10 draft installer replaced PATH precedence over a retained global npm fixture, preserved that fixture, and activated jarn 1.0.10 in the user-space prefix.",
+  "limitations": [
+    "This canary used authenticated draft assets via a loopback GitHub fixture because draft Release URLs are not anonymously fetchable before promotion.",
+    "First-time provider setup was disabled with --no-setup to isolate command collision behavior; authentication is covered by separate UAT criteria.",
+    "v1.0.11 is v1.0.10 plus OpenCode Go first-run path and the npm local-tarball publish fix. This record rebinds the v1.0.10 observation to tag commit 3666edfafba11b77ad006861365395dcd4c42cca; the delta does not change this criterion runtime path."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.11",
+  "candidate_commit": "3666edfafba11b77ad006861365395dcd4c42cca",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": []
+}

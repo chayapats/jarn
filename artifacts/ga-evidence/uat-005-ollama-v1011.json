@@ -1,0 +1,58 @@
+{
+  "record_id": "UAT-005-V1011",
+  "uat_id": "UAT-005",
+  "criterion_ids": [
+    "UAT-005"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-20T16:28:00Z",
+  "ended_at": "2026-08-21T03:54:06Z",
+  "duration_seconds": 77.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "Isolated disposable macOS HOME using the exact v1.0.10 tagged binary; setup against loopback Ollama and one headless local turn with cloud HTTP proxies directed to closed loopback port 9, followed by a deliberately missing Ollama model",
+  "implementation": [
+    "src/jarn/providers/models.py",
+    "src/jarn/catalog/service.py",
+    "src/jarn/onboarding/model_catalog.py",
+    "src/jarn/onboarding/wizard.py",
+    "src/jarn/onboarding/completion.py",
+    "src/jarn/controller/core.py"
+  ],
+  "automated_tests": [
+    "tests/test_model_catalog.py",
+    "tests/test_local_backend.py",
+    "tests/test_tui_wizard_model_picker.py"
+  ],
+  "decisions": [
+    "Setup discovered local Ollama and reported 1 installed; 1 tool-capable model.",
+    "No credential field was written; the Ollama provider section contained only type and loopback base_url.",
+    "Standard setup selected ollama/qwen2.5:0.5b from live capability metadata without manual config editing.",
+    "With cloud proxies closed, the harmless local turn returned UAT_OK with exit 0 and zero tool calls.",
+    "Missing model returned exit 4, JARN-MODEL-001, /model refresh plus Ollama pull/tool-capability remediation, and no Done or Ready success text.",
+    "Doctor returned default_profile=ollama."
+  ],
+  "documentation_lookups": [
+    "none"
+  ],
+  "result": "Exact v1.0.10 binary discovered the loopback Ollama endpoint, selected the sole tool-capable model with a keyless local provider, completed a cloud-offline local turn, and rejected an unavailable model with stable actionable remediation.",
+  "limitations": [
+    "This is a truthful local equivalent of the SSH-first harness on the current macOS host; scripts/uat/uat-005-ollama.sh --execute was not invoked because it requires a separate disposable SSH target and interactive confirmation.",
+    "v1.0.11 is v1.0.10 plus OpenCode Go first-run path and the npm local-tarball publish fix. This record rebinds the v1.0.10 observation to tag commit 3666edfafba11b77ad006861365395dcd4c42cca; the delta does not change this criterion runtime path."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.11",
+  "candidate_commit": "3666edfafba11b77ad006861365395dcd4c42cca",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": []
+}

@@ -1,0 +1,49 @@
+{
+  "record_id": "UAT-006-V1011",
+  "uat_id": "UAT-006",
+  "criterion_ids": [
+    "UAT-006"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-20T16:37:09Z",
+  "ended_at": "2026-08-21T03:54:06Z",
+  "duration_seconds": 52.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "Isolated-home failure injection: public v1.0.10 tag install.sh with JARN_GITHUB_BASE=https://127.0.0.1:9 after a healthy tagged macOS binary and config were in place",
+  "implementation": [
+    "install.sh",
+    "src/jarn/doctor/collect.py"
+  ],
+  "automated_tests": [
+    "tests/test_installer.py"
+  ],
+  "decisions": [
+    "The release-asset stage returned exit 1, emitted JARN-INSTALL-001 anatomy and an exact retry action, and emitted no Done or Ready success text.",
+    "The isolated active executable SHA-256 f0819dcdf5963c7949f19d78f8eb5d0f849330ddd03b30860dfe552fa7ccf724 and schema-3 config remained byte-identical; the active command still reported jarn 1.0.10.",
+    "Post-failure doctor returned valid JSON."
+  ],
+  "documentation_lookups": [
+    "none"
+  ],
+  "result": "An injected v1.0.10 release-asset failure returned nonzero with actionable anatomy, emitted no false success, preserved every isolated installation/config byte, and left doctor diagnostics valid.",
+  "limitations": [
+    "This local equivalent used the public git-tag install.sh and a closed loopback GitHub base; it validates failure safety of the tagged installer, not anonymous GitHub Release binary URLs.",
+    "v1.0.11 is v1.0.10 plus OpenCode Go first-run path and the npm local-tarball publish fix. This record rebinds the v1.0.10 observation to tag commit 3666edfafba11b77ad006861365395dcd4c42cca; the delta does not change this criterion runtime path."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.11",
+  "candidate_commit": "3666edfafba11b77ad006861365395dcd4c42cca",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": []
+}

@@ -1,0 +1,51 @@
+{
+  "record_id": "LOCAL-IMPLEMENTATION-REVIEW-20260820-V1011",
+  "criterion_ids": [
+    "CONSTRAINT-IMPLEMENTATION"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-20T16:17:47Z",
+  "ended_at": "2026-08-21T03:54:06Z",
+  "duration_seconds": 339.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "uv lock --check; uv run ruff check src tests scripts; uv run mypy src/; exact full 3368-test accounting; constraint review against section T",
+  "implementation": [
+    "docs/GOAL_GENERAL_AVAILABILITY.md",
+    "src/jarn",
+    "install.sh",
+    "tests"
+  ],
+  "automated_tests": [
+    "tests/test_subprocess_security_audit.py",
+    "tests/test_auth_service.py",
+    "tests/test_model_catalog.py",
+    "tests/test_installer.py",
+    "tests/test_util_atomic.py"
+  ],
+  "decisions": [
+    "The tagged worktree at 3499f3a2c024dbf04f710687ed59dc998a6b7583 was the implementation under review.",
+    "Publishing remains gated on promote_release after this evidence pack."
+  ],
+  "result": "Section T review passed: compatibility aliases and advanced providers remain; auth/catalog/redaction are shared; state changes are atomic/recoverable; subprocess audit passes; regression assertions remain strict; entitlement/auth/install success are verified rather than inferred; standard install is user-space; cleanup is explicit.",
+  "limitations": [
+    "This review does not by itself promote aggregate GA completion; UAT and published-URL canaries remain separate records.",
+    "v1.0.11 is v1.0.10 plus OpenCode Go first-run path and the npm local-tarball publish fix. This record rebinds the v1.0.10 observation to tag commit 3666edfafba11b77ad006861365395dcd4c42cca; the delta does not change this criterion runtime path."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.11",
+  "candidate_commit": "3666edfafba11b77ad006861365395dcd4c42cca",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": [],
+  "documentation_lookups": []
+}

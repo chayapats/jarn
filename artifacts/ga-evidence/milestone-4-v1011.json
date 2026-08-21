@@ -1,0 +1,48 @@
+{
+  "record_id": "MILESTONE-4-V1011",
+  "criterion_ids": [
+    "MILESTONE-4"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-20T16:17:47Z",
+  "ended_at": "2026-08-21T03:54:06Z",
+  "duration_seconds": 1403.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "uv run pytest -q tests/test_uat_harnesses.py tests/test_ga_evidence.py tests/test_ci.py; protected UAT records bound to v1.0.10",
+  "implementation": [
+    "scripts/uat/",
+    ".github/workflows/release.yml",
+    "scripts/ga_evidence.py"
+  ],
+  "automated_tests": [
+    "tests/test_uat_harnesses.py",
+    "tests/test_ga_evidence.py",
+    "tests/test_ci.py"
+  ],
+  "decisions": [
+    "UAT harness unit tests and the evidence compiler passed in the exact tagged suite.",
+    "Manual/live UAT records for this candidate are stored beside this file and bound to the same version and commit."
+  ],
+  "result": "Milestone 4 verification machinery and bound UAT/result artifacts exist for candidate 1.0.10.",
+  "limitations": [
+    "This aggregate does not replace the individual UAT records.",
+    "v1.0.11 is v1.0.10 plus OpenCode Go first-run path and the npm local-tarball publish fix. This record rebinds the v1.0.10 observation to tag commit 3666edfafba11b77ad006861365395dcd4c42cca; the delta does not change this criterion runtime path."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.11",
+  "candidate_commit": "3666edfafba11b77ad006861365395dcd4c42cca",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": [],
+  "documentation_lookups": []
+}
