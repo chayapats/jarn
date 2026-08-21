@@ -77,8 +77,8 @@ base** (`/wiki`), **`/config` settings panel** (interactive tabbed UI, persists 
   embedded instructions cannot override user intent or the harness's permission,
   trust, and sandbox boundaries. The agent uses only tools exposed by the active
   policy and backend.
-- **Bring your own model** — 14 providers, including **Codex through your ChatGPT
-  subscription**, OpenRouter, Anthropic, OpenAI, Google, Mistral, Groq, DeepSeek,
+- **Bring your own model** — 15 providers, including **Codex through your ChatGPT
+  subscription**, OpenRouter, OpenCode, Anthropic, OpenAI, Google, Mistral, Groq, DeepSeek,
   Together, Fireworks, xAI, Ollama, LM Studio, and a generic OpenAI-compatible
   endpoint, with per-task routing so subagents can use cheaper models.
 - **Labelled subagent streaming** — output from delegated `task` subagents is tagged

@@ -1,0 +1,53 @@
+{
+  "record_id": "UAT-003-V1010",
+  "uat_id": "UAT-003",
+  "criterion_ids": [
+    "UAT-003"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-20T16:32:40Z",
+  "ended_at": "2026-08-20T16:33:32Z",
+  "duration_seconds": 52.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "Isolated HOME on macOS 26.6.1 using the exact tagged jarn-macos-arm64 with CODEX_HOME pointing at the host GUI Codex session, then one headless prompt",
+  "implementation": [
+    "src/jarn/auth/terminal.py",
+    "src/jarn/onboarding/chatgpt.py",
+    "src/jarn/catalog/"
+  ],
+  "automated_tests": [
+    "tests/test_uat_harnesses.py",
+    "tests/test_auth_service.py",
+    "tests/test_model_catalog.py"
+  ],
+  "decisions": [
+    "The exact tagged macOS ARM64 binary SHA-256 f0819dcdf5963c7949f19d78f8eb5d0f849330ddd03b30860dfe552fa7ccf724 matched checksums.txt and reported jarn 1.0.10.",
+    "Setup verified ChatGPT plan prolite, loaded a live catalog of 7 models, selected GPT-5.6-Sol with reasoning low, and wrote isolated config with no credential material persisted.",
+    "The exact tagged binary completed a harmless first prompt with exit 0, result UAT_OK, one turn, and zero tool calls.",
+    "Offline doctor returned default_profile=codex_subscription with exit 0."
+  ],
+  "documentation_lookups": [
+    "none"
+  ],
+  "result": "On macOS 26.6.1 ARM64, the exact v1.0.10 binary verified the desktop ChatGPT account, selected a live default, and was immediately usable for a first prompt.",
+  "limitations": [
+    "This host already held a valid Codex CLI session, so the wizard used existing-account detection rather than opening a fresh browser callback; browser/fallback URL ceremony was not re-run on an empty CODEX_HOME.",
+    "Raw login URL, callback payload, account data, and terminal output were not persisted."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.10",
+  "candidate_commit": "3499f3a2c024dbf04f710687ed59dc998a6b7583",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": []
+}

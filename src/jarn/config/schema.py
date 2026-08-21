@@ -81,6 +81,7 @@ class ProviderType(str, Enum):
     TOGETHER = "together"
     FIREWORKS = "fireworks"
     XAI = "xai"
+    OPENCODE = "opencode"  # OpenCode Go (OpenAI-compatible, https://opencode.ai/zen/go/v1)
     OPENAI_COMPATIBLE = "openai_compatible"  # any custom base_url endpoint
     # Dedicated integrations
     ANTHROPIC = "anthropic"

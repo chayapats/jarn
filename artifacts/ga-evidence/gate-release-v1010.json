@@ -1,0 +1,55 @@
+{
+  "record_id": "GATE-RELEASE-V1010",
+  "criterion_ids": [
+    "GATE-RELEASE",
+    "DELIVERABLES-GA",
+    "COMPLETION-W"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-21T02:45:10Z",
+  "ended_at": "2026-08-21T02:46:20Z",
+  "duration_seconds": 70.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "python3 scripts/ga_evidence.py --evidence-dir artifacts/ga-evidence --candidate-version 1.0.10 --candidate-commit 3499f3a2c024dbf04f710687ed59dc998a6b7583 --strict --output artifacts/GA_RELEASE_EVIDENCE.md",
+  "implementation": [
+    "docs/GOAL_GENERAL_AVAILABILITY.md section R",
+    "docs/GOAL_GENERAL_AVAILABILITY.md section V",
+    "docs/GOAL_GENERAL_AVAILABILITY.md section W",
+    ".github/workflows/release.yml",
+    "scripts/ga_evidence.py"
+  ],
+  "automated_tests": [
+    "tests/test_ga_evidence.py",
+    "tests/test_uat_harnesses.py",
+    "tests/test_ci.py"
+  ],
+  "decisions": [
+    "Every extracted and supplemental leaf criterion other than these aggregates already has Passed evidence bound to 1.0.10 and 3499f3a2c024dbf04f710687ed59dc998a6b7583.",
+    "UAT-001 through UAT-006 now have Passed records, including isolated OpenCode Go UAT-004.",
+    "This aggregate attests verification completeness for the 1.0.10 evidence pack. It does not claim that GitHub Release, PyPI, or npm have already been published."
+  ],
+  "documentation_lookups": [
+    "none"
+  ],
+  "result": "All mapped 1.0.10 leaf criteria are Passed. Section R, the thirteen GA deliverables, and section W verification conditions are attested for this evidence pack.",
+  "limitations": [
+    "Public GitHub Release and PyPI/npm publication remain a later operator step behind JARN_GA_PROMOTE_TAG and a successful tagged Release promote.",
+    "UAT-004 exercised the current evidence-branch OpenCode Go provider; the frozen tagged v1.0.10 binary does not include type opencode."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.10",
+  "candidate_commit": "3499f3a2c024dbf04f710687ed59dc998a6b7583",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": []
+}

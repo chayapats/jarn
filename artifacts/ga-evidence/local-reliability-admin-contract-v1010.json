@@ -1,0 +1,72 @@
+{
+  "record_id": "LOCAL-RELIABILITY-ADMIN-20260820-V1010",
+  "criterion_ids": [
+    "AC-ERR-001",
+    "AC-ERR-002",
+    "AC-ERR-003",
+    "AC-ERR-004",
+    "AC-ERR-005",
+    "AC-ERR-006",
+    "AC-DOCTOR-001",
+    "AC-DOCTOR-002",
+    "AC-DOCTOR-003",
+    "AC-UPDATE-001",
+    "AC-UPDATE-002",
+    "AC-UPDATE-003",
+    "AC-UPDATE-004",
+    "AC-UPDATE-005",
+    "AC-UPDATE-006",
+    "AC-UPDATE-007",
+    "AC-UNINSTALL-001",
+    "AC-UNINSTALL-002",
+    "AC-PERF-004",
+    "AC-REL-001",
+    "AC-REL-002",
+    "AC-REL-003",
+    "AC-REL-004"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-20T16:17:47Z",
+  "ended_at": "2026-08-20T16:23:26Z",
+  "duration_seconds": 339.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "JARN_TEST_MODE=1 uv run pytest -q full collection including errors/doctor/update/uninstall/turn/provider/background/catalog/auth contracts",
+  "implementation": [
+    "src/jarn/errors.py",
+    "src/jarn/doctor",
+    "src/jarn/update.py",
+    "src/jarn/uninstall.py",
+    "src/jarn/agent"
+  ],
+  "automated_tests": [
+    "tests/test_ga_errors_and_doctor.py",
+    "tests/test_ga_doctor_inventory.py",
+    "tests/test_update.py",
+    "tests/test_uninstall_ga.py",
+    "tests/test_turn_runner.py"
+  ],
+  "decisions": [
+    "Timeout and cancellation tests include kill/reap and no-late-mutation assertions; update E2E used a credential-free loopback release fixture."
+  ],
+  "result": "Stable error anatomy/taxonomy, comprehensive bounded doctor and safe repair/report, install-aware update preview/activation/rollback, atomic itemized uninstall, visible bounded network waits, child cleanup, malformed protocol control, and no-side-effect replay contracts passed.",
+  "limitations": [
+    "A public release update and real network outage remain TEST-RELEASE/UAT-006 evidence."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.10",
+  "candidate_commit": "3499f3a2c024dbf04f710687ed59dc998a6b7583",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": [],
+  "documentation_lookups": []
+}

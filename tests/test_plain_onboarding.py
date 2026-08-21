@@ -30,9 +30,9 @@ def _quiet_probes(monkeypatch) -> None:
 
 def test_plain_setup_stages_then_uses_shared_completion_gate(tmp_path, monkeypatch):
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+    monkeypatch.setenv("OPENCODE_API_KEY", "sk-opencode-secret")
     _quiet_probes(monkeypatch)
-    replies = iter(["anthropic", "dark", "save"])
+    replies = iter(["opencode", "dark", "save"])
     monkeypatch.setattr("jarn.onboarding.wizard.Prompt.ask", lambda *_a, **_k: next(replies))
     captured: dict[str, object] = {}
     expected = tmp_path / "home" / "config.yaml"
@@ -40,7 +40,7 @@ def test_plain_setup_stages_then_uses_shared_completion_gate(tmp_path, monkeypat
     def finish(answers, *, console, pending_credentials):
         del console
         captured.update(answers)
-        assert pending_credentials.get("anthropic") is None
+        assert pending_credentials.get("opencode") is None
         assert not expected.exists()
         return expected
 
@@ -49,10 +49,10 @@ def test_plain_setup_stages_then_uses_shared_completion_gate(tmp_path, monkeypat
     from jarn.onboarding.wizard import run_wizard
 
     assert run_wizard() == expected
-    assert captured["provider"] == "anthropic"
-    assert captured["key_ref"] == "${ANTHROPIC_API_KEY}"
+    assert captured["provider"] == "opencode"
+    assert captured["key_ref"] == "${OPENCODE_API_KEY}"
     assert captured["theme"] == "dark"
-    assert "sk-ant-secret" not in repr(captured)
+    assert "sk-opencode-secret" not in repr(captured)
 
 
 def test_plain_cancel_is_non_success_and_keeps_resumable_state(tmp_path, monkeypatch):

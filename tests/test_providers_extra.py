@@ -25,6 +25,7 @@ def _factory(ptype, **prov):
     (ProviderType.TOGETHER, "https://api.together.xyz/v1"),
     (ProviderType.FIREWORKS, "https://api.fireworks.ai/inference/v1"),
     (ProviderType.XAI, "https://api.x.ai/v1"),
+    (ProviderType.OPENCODE, "https://opencode.ai/zen/go/v1"),
     (ProviderType.OPENAI_COMPATIBLE, "http://localhost:8000/v1"),
 ])
 def test_openai_compatible_providers(ptype, base):

@@ -1,0 +1,61 @@
+{
+  "record_id": "LOCAL-SECURITY-DOC-20260820-V1010",
+  "criterion_ids": [
+    "AC-SEC-002",
+    "AC-SEC-003",
+    "AC-SEC-004",
+    "AC-SEC-005",
+    "AC-SEC-006",
+    "AC-SEC-007",
+    "AC-SEC-008",
+    "AC-DOC-002",
+    "AC-DOC-003",
+    "AC-DOC-004",
+    "AC-DOC-005"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-20T16:17:47Z",
+  "ended_at": "2026-08-20T16:23:26Z",
+  "duration_seconds": 339.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "JARN_TEST_MODE=1 uv run pytest -q full collection including CI/installer/subprocess/bypass/secrets/telemetry/doctor/doc-sync contracts",
+  "implementation": [
+    ".github/workflows",
+    "install.sh",
+    "src/jarn/observability",
+    "src/jarn/config/secrets.py",
+    "src/jarn/doctor/report.py",
+    "docs"
+  ],
+  "automated_tests": [
+    "tests/test_ci.py",
+    "tests/test_subprocess_security_audit.py",
+    "tests/test_permission_bypass_matrix.py",
+    "tests/test_telemetry_reliability.py",
+    "tests/test_doc_sync.py"
+  ],
+  "decisions": [
+    "The uv bootstrap uses the version-specific upstream URL and verifies a pinned script digest before execution; the verified upstream script checks its selected archive."
+  ],
+  "result": "Immutable action pinning, HTTPS/checksum refusal including pinned uv bootstrap, local telemetry consent/boundary, central exact-secret redaction, argv-only subprocess audit, secure temporary/support-report handling, required docs, troubleshooting, error references, and doc-sync contracts passed.",
+  "limitations": [
+    "Actual release checksums, provenance attestations, SBOMs, and public URLs remain AC-SEC-001/TEST-RELEASE evidence and are not inferred from workflow structure."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.10",
+  "candidate_commit": "3499f3a2c024dbf04f710687ed59dc998a6b7583",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": [],
+  "documentation_lookups": []
+}

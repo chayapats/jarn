@@ -11,7 +11,7 @@ from jarn.onboarding.state import SetupState, load_setup_state
 @pytest.fixture(autouse=True)
 def _catalog_fixture(monkeypatch):
     def load(provider: str, **_kwargs):
-        model = "claude-live" if provider == "anthropic" else "provider-live-model"
+        model = "glm-5.2" if provider == "opencode" else "provider-live-model"
         return ModelCatalogSnapshot(
             provider_profile=provider,
             provider_type=provider,
@@ -41,6 +41,7 @@ def _catalog_fixture(monkeypatch):
 @pytest.mark.asyncio
 async def test_textual_progress_is_resumable_and_never_persists_raw_key(tmp_path, monkeypatch):
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr("jarn.onboarding.tui_wizard._detect_env_key", lambda: None)
 
@@ -52,7 +53,7 @@ async def test_textual_progress_is_resumable_and_never_persists_raw_key(tmp_path
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         choices = app.query_one("#step-list")
-        choices.highlighted = 1  # Anthropic
+        choices.highlighted = 1  # OpenCode
         await pilot.press("enter")
         await pilot.pause()
         assert app.step == "storage"
@@ -62,17 +63,17 @@ async def test_textual_progress_is_resumable_and_never_persists_raw_key(tmp_path
         await pilot.pause()
         assert app.step == "key"
         key = app.query_one("#step-input")
-        key.value = "sk-ant-never-persist-this"
+        key.value = "sk-opencode-never-persist-this"
         await pilot.press("enter")
         await pilot.pause()
 
     payload = state_path.read_text(encoding="utf-8")
-    assert "sk-ant-never-persist-this" not in payload
+    assert "sk-opencode-never-persist-this" not in payload
     assert '"_credential_pending":"memory"' in payload
     state = load_setup_state(path=state_path)
     assert state is not None
     assert state.stage == "theme"
-    assert app.pending_credentials.get("anthropic") == "sk-ant-never-persist-this"
+    assert app.pending_credentials.get("opencode") == "sk-opencode-never-persist-this"
 
 
 @pytest.mark.asyncio

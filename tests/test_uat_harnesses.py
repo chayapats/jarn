@@ -35,7 +35,7 @@ def test_all_six_goal_uats_have_reproducible_harnesses() -> None:
         "uat-001-ubuntu-ssh.sh",
         "uat-002-legacy-collision.sh",
         "uat-003-macos-desktop.sh",
-        "uat-004-anthropic.sh",
+        "uat-004-opencode.sh",
         "uat-005-ollama.sh",
         "uat-006-network-failure.sh",
     ]
@@ -270,12 +270,12 @@ def test_ollama_rejects_unsafe_endpoint_before_ssh(
 
 
 @_POSIX_UAT_HARNESS_TEST
-def test_anthropic_harness_never_accepts_api_key_argument() -> None:
-    secret = "sk-ant-test-secret-value"
+def test_opencode_harness_never_accepts_api_key_argument() -> None:
+    secret = "sk-opencode-test-secret-value"
     result = subprocess.run(
         [
             "bash",
-            str(UAT_DIR / "uat-004-anthropic.sh"),
+            str(UAT_DIR / "uat-004-opencode.sh"),
             "--api-key",
             secret,
         ],
@@ -323,17 +323,17 @@ case "$JARN_FAKE_SSH_SCENARIO:$count" in
     printf '%s\\n' 'auth=verified' 'doctor=valid' 'profile=verified' \\
       'route=verified' 'catalog_path=present' 'catalog=live_verified'
     ;;
-  anthropic:1|ollama:1)
+  opencode:1|ollama:1)
     printf '%s\\n' 'os=ubuntu' 'version=22.04' 'arch=x86_64' 'libc=glibc 2.35'
     ;;
-  anthropic:2)
+  opencode:2)
     printf '%s\\n' 'home=/home/uat' 'resolution=/home/uat/.local/bin/jarn' \\
       'version=jarn 1.0.0' 'config=absent' 'key=present'
     ;;
-  anthropic:3) ;;
-  anthropic:4)
+  opencode:3) ;;
+  opencode:4)
     printf '%s\\n' 'config_present=yes' 'config_mode=600' 'config_ref=environment' \\
-      'config_leak=no' 'logs_leak=no' 'doctor=valid' 'profile=verified' 'route=verified'
+      'config_endpoint=go' 'config_leak=no' 'logs_leak=no' 'doctor=valid' 'profile=verified' 'route=verified'
     ;;
   ollama:2)
     printf '%s\\n' 'home=/home/uat' 'resolution=/home/uat/.local/bin/jarn' \\
@@ -402,7 +402,7 @@ def test_uat001_blocked_preflight_redacts_remote_home(tmp_path: Path) -> None:
     ("scenario", "script", "manual_answers"),
     [
         ("macos", "uat-003-macos-desktop.sh", ["y"] * 9),
-        ("anthropic", "uat-004-anthropic.sh", ["y"] * 6 + ["n"]),
+        ("opencode", "uat-004-opencode.sh", ["y"] * 6 + ["n"]),
         ("ollama", "uat-005-ollama.sh", ["y"] * 7),
     ],
 )
@@ -460,7 +460,7 @@ def test_new_uat_execute_orchestration_can_pass_only_complete_fixture_evidence(
     ("scenario", "script"),
     [
         ("macos", "uat-003-macos-desktop.sh"),
-        ("anthropic", "uat-004-anthropic.sh"),
+        ("opencode", "uat-004-opencode.sh"),
         ("ollama", "uat-005-ollama.sh"),
     ],
 )

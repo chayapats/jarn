@@ -123,7 +123,7 @@ When `jarn` starts without a valid configuration, it MUST enter onboarding autom
 The first screen MUST prioritize understandable choices:
 
 - Continue with ChatGPT
-- Use Anthropic
+- Use OpenCode Go
 - Use another cloud provider
 - Use a local model
 
@@ -988,7 +988,7 @@ Public CI MUST use fake/contract Codex app-server fixtures without credentials. 
 - Account and model are verified.
 - J.A.R.N. is immediately usable.
 
-### UAT-004 — Anthropic API user
+### UAT-004 — OpenCode Go API user
 
 - Key does not echo or enter config/logs.
 - Keychain/environment reference works.

@@ -40,7 +40,7 @@ only the validated/redacted JSON result. Dry-run output is never Pass evidence.
 | Ubuntu 22.04/glibc 2.35 over SSH | `scripts/uat/uat-001-ubuntu-ssh.sh` | clean one-line install, visible auth, live catalog, first prompt |
 | Legacy npm/Python collision | `scripts/uat/uat-002-legacy-collision.sh` | correct resolution, retained prior, config migration backup |
 | macOS desktop ChatGPT | `scripts/uat/uat-003-macos-desktop.sh` | browser/fallback challenge and verified account/model |
-| Anthropic API-key path | `scripts/uat/uat-004-anthropic.sh` | reference-only secret, disclosure, verified turn |
+| OpenCode Go API-key path | `scripts/uat/uat-004-opencode.sh` | reference-only secret, disclosure, verified turn |
 | Ollama local/offline | `scripts/uat/uat-005-ollama.sh` | local live catalog/turn and missing-model remediation |
 | Network failure/retry | `scripts/uat/uat-006-network-failure.sh` | no false Done, retry action, prior hashes unchanged |
 

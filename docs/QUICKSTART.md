@@ -24,7 +24,7 @@ The previous working command is retained until all activation checks pass.
 The first screen has four simple choices, plus a clearly separated Advanced path:
 
 1. Continue with ChatGPT
-2. Use Anthropic
+2. Use OpenCode Go
 3. Use another cloud provider
 4. Use a local model
 

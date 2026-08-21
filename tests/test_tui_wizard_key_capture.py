@@ -2,7 +2,7 @@
 verify an API key before finishing (parity with the plain-text wizard).
 
 Covers:
-- env-present path: ANTHROPIC_API_KEY set → Anthropic is ★ recommended and
+- env-present path: OPENCODE_API_KEY set → OpenCode is ★ recommended and
   default-highlighted; choosing it stores the ``${ENV}`` reference (never inline).
 - env-absent path: a cloud provider with no resolvable key prompts for the key
   (keychain) before reaching the confirm screen.
@@ -21,6 +21,7 @@ from jarn.config.defaults import CLOUD_PROVIDERS, PROVIDER_ENV_VARS
 def _catalog_fixture(monkeypatch):
     def load(provider: str, **_kwargs):
         model = {
+            "opencode": "glm-5.2",
             "anthropic": "claude-live",
             "openai": "gpt-live",
             "google": "gemini-live",
@@ -60,7 +61,7 @@ async def _choose_provider(pilot, app, provider: str) -> None:
     """Navigate the simple first screen and, when needed, its detail screen."""
 
     top = app.query_one("#step-list")
-    if provider == "anthropic":
+    if provider == "opencode":
         top.highlighted = 1
         await pilot.press("enter")
         await pilot.pause()
@@ -88,18 +89,18 @@ async def _choose_provider(pilot, app, provider: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_recommended_provider_is_default_highlighted_when_anthropic_key_set(
+async def test_recommended_provider_is_default_highlighted_when_opencode_key_set(
     tmp_path, monkeypatch
 ):
-    """With ANTHROPIC_API_KEY set, Anthropic is tagged recommended and the
-    provider list opens with Anthropic highlighted (not index 0)."""
+    """With OPENCODE_API_KEY set, OpenCode is tagged recommended and the
+    provider list opens with OpenCode highlighted (not index 0)."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     _clear_provider_env(monkeypatch)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-detected")
+    monkeypatch.setenv("OPENCODE_API_KEY", "sk-opencode-detected")
     from jarn.onboarding.tui_wizard import SetupApp
 
     app = SetupApp()
-    assert app.recommended == "anthropic"
+    assert app.recommended == "opencode"
     async with app.run_test(size=(90, 40)) as pilot:
         await pilot.pause()
         assert app.step == "provider"
@@ -111,24 +112,24 @@ async def test_recommended_provider_is_default_highlighted_when_anthropic_key_se
 
 
 @pytest.mark.asyncio
-async def test_choosing_detected_anthropic_stores_env_reference_not_secret(tmp_path, monkeypatch):
-    """Selecting the detected provider stores ``${ANTHROPIC_API_KEY}`` (a
+async def test_choosing_detected_opencode_stores_env_reference_not_secret(tmp_path, monkeypatch):
+    """Selecting the detected provider stores ``${OPENCODE_API_KEY}`` (a
     reference) and never inlines the secret — and skips straight past key entry."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     _clear_provider_env(monkeypatch)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-detected-secret")
+    monkeypatch.setenv("OPENCODE_API_KEY", "sk-opencode-detected-secret")
     from jarn.config import paths
     from jarn.onboarding.tui_wizard import SetupApp
 
     app = SetupApp()
     async with app.run_test(size=(90, 40)) as pilot:
         await pilot.pause()
-        # provider list opens highlighted on anthropic (recommended) → select it.
+        # provider list opens highlighted on opencode (recommended) → select it.
         await pilot.press("enter")
         await pilot.pause()
-        assert app.answers["provider"] == "anthropic"
+        assert app.answers["provider"] == "opencode"
         # Detected env key → no key/storage prompt; key_ref already set.
-        assert app.answers.get("key_ref") == "${ANTHROPIC_API_KEY}"
+        assert app.answers.get("key_ref") == "${OPENCODE_API_KEY}"
         # Walk to the end (model → theme → confirm → save).
         while app.step != "confirm":
             await pilot.press("enter")
@@ -137,10 +138,10 @@ async def test_choosing_detected_anthropic_stores_env_reference_not_secret(tmp_p
         await pilot.pause()
 
     # The Textual surface only stages; the shared outer completion gate commits.
-    assert app._saved_config["default_profile"] == "anthropic"
-    assert app._saved_config["providers"]["anthropic"]["api_key"] == "${ANTHROPIC_API_KEY}"
+    assert app._saved_config["default_profile"] == "opencode"
+    assert app._saved_config["providers"]["opencode"]["api_key"] == "${OPENCODE_API_KEY}"
     assert not paths.global_config_path().exists()
-    assert "sk-ant-detected-secret" not in repr(app._saved_config)
+    assert "sk-opencode-detected-secret" not in repr(app._saved_config)
 
 
 # ---------------------------------------------------------------------------
@@ -213,13 +214,13 @@ async def test_non_detected_cloud_provider_with_env_key_keeps_reference(tmp_path
     auto-detected hit still resolves its ${ENV} reference and skips key entry."""
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     _clear_provider_env(monkeypatch)
-    # Anthropic wins detection; Google also has a key set.
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    # OpenCode wins detection; Google also has a key set.
+    monkeypatch.setenv("OPENCODE_API_KEY", "sk-opencode")
     monkeypatch.setenv("GOOGLE_API_KEY", "g-key")
     from jarn.onboarding.tui_wizard import SetupApp
 
     app = SetupApp()
-    assert app.env_hit == ("anthropic", "ANTHROPIC_API_KEY")
+    assert app.env_hit == ("opencode", "OPENCODE_API_KEY")
     async with app.run_test(size=(90, 40)) as pilot:
         await pilot.pause()
         await _choose_provider(pilot, app, "google")

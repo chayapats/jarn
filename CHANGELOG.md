@@ -5,6 +5,16 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- First-run API-key shortcut is OpenCode Go (`OPENCODE_API_KEY`,
+  `https://opencode.ai/zen/go/v1`) instead of Anthropic. Anthropic remains
+  available under another cloud provider. UAT-004 follows the OpenCode env-ref path.
+
+### Added
+
+- OpenCode Go provider (`type: opencode`, `https://opencode.ai/zen/go/v1`).
+
 ## [1.0.10] - 2026-08-20
 
 Conversation UX (Claude-style chrome, Thai/English `t()` catalog), Codex

@@ -36,6 +36,7 @@ from jarn.config.defaults import (
     EDITABLE_BASE_URL_PROFILES,
     PROVIDER_BASE_URLS,
     PROVIDER_ENV_VARS,
+    STANDARD_API_KEY_PROFILE,
 )
 from jarn.config.secrets import file_fallback_notice, store_secret
 from jarn.onboarding.model_catalog import (
@@ -79,10 +80,11 @@ def _cancelled_notice() -> str:
 def _detect_env_key() -> tuple[str, str] | None:
     """Probe known provider env vars and return (provider, env_var) for the first hit.
 
-    Checks providers in priority order: anthropic, openai, openrouter, then the rest.
+    Checks providers in priority order: opencode, anthropic, openai, openrouter,
+    then the rest.
     Returns ``None`` when no key is found in the environment.
     """
-    priority = ["anthropic", "openai", "openrouter"]
+    priority = ["opencode", "anthropic", "openai", "openrouter"]
     rest = [p for p in ALL_PROVIDERS if p not in priority]
     for provider in priority + rest:
         env_var = PROVIDER_ENV_VARS.get(provider)
@@ -104,6 +106,8 @@ def _recommended_provider(
         return "codex_subscription"
     if env_hit is not None:
         return env_hit[0]
+    if os.environ.get("OPENCODE_API_KEY"):
+        return STANDARD_API_KEY_PROFILE
     if os.environ.get("ANTHROPIC_API_KEY"):
         return "anthropic"
     return "codex_subscription"
@@ -493,7 +497,7 @@ def run_wizard(
             if stage == "provider":
                 default_choice = {
                     "codex_subscription": "chatgpt",
-                    "anthropic": "anthropic",
+                    STANDARD_API_KEY_PROFILE: "opencode",
                     "ollama": "local",
                     "lmstudio": "local",
                 }.get(recommended, "cloud")
@@ -504,24 +508,29 @@ def run_wizard(
                 )
                 console.print("\n" + _t("onboarding.connect.heading"))
                 console.print(f"  chatgpt   — {_t('onboarding.connect.chatgpt')}")
-                console.print(f"  anthropic — {_t('onboarding.connect.anthropic')}")
+                console.print(f"  opencode  — {_t('onboarding.connect.opencode')}")
                 console.print(f"  cloud     — {_t('onboarding.connect.cloud')}")
                 console.print(f"  local     — {_t('onboarding.connect.local')}{local_note}")
                 console.print(f"  {layout.muted(_t('onboarding.connect.advanced.hint'))}")
                 connection = _plain_menu(
                     _t("onboarding.connect.prompt"),
-                    ["chatgpt", "anthropic", "cloud", "local", "advanced"],
+                    ["chatgpt", "opencode", "cloud", "local", "advanced"],
                     default=default_choice,
                 )
                 if connection == "chatgpt":
                     selected, group = "codex_subscription", "standard"
-                elif connection == "anthropic":
-                    selected, group = "anthropic", "standard"
+                elif connection == "opencode":
+                    selected, group = STANDARD_API_KEY_PROFILE, "standard"
                 elif connection == "cloud":
                     cloud_profiles = [
                         p
                         for p in CLOUD_PROVIDERS
-                        if p not in ("anthropic", CUSTOM_OPENAI_PROFILE, "codex_subscription")
+                        if p
+                        not in (
+                            STANDARD_API_KEY_PROFILE,
+                            CUSTOM_OPENAI_PROFILE,
+                            "codex_subscription",
+                        )
                     ]
                     try:
                         selected = _plain_menu(

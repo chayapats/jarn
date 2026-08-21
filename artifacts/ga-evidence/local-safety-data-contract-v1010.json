@@ -1,0 +1,73 @@
+{
+  "record_id": "LOCAL-SAFETY-DATA-20260820-V1010",
+  "criterion_ids": [
+    "AC-SAFE-001",
+    "AC-SAFE-002",
+    "AC-SAFE-003",
+    "AC-SAFE-004",
+    "AC-SAFE-005",
+    "AC-SAFE-006",
+    "AC-SAFE-007",
+    "AC-SAFE-008",
+    "AC-SAFE-009",
+    "AC-SAFE-010",
+    "AC-SESSION-001",
+    "AC-SESSION-002",
+    "AC-SESSION-003",
+    "AC-SESSION-004",
+    "AC-SESSION-005",
+    "AC-SESSION-006",
+    "AC-SESSION-007",
+    "AC-CONFIG-001",
+    "AC-CONFIG-002",
+    "AC-CONFIG-003",
+    "AC-CONFIG-004",
+    "AC-CONFIG-005",
+    "AC-CONFIG-006",
+    "AC-CONFIG-007"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-20T16:17:47Z",
+  "ended_at": "2026-08-20T16:23:26Z",
+  "duration_seconds": 339.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "JARN_TEST_MODE=1 uv run pytest -q full collection including permissions, guards, approval bypass, checkpoint/session/transcript, migration, and admin CLI contracts",
+  "implementation": [
+    "src/jarn/permissions",
+    "src/jarn/agent/checkpoint.py",
+    "src/jarn/memory/sessions.py",
+    "src/jarn/config"
+  ],
+  "automated_tests": [
+    "tests/test_approval_contract.py",
+    "tests/test_permission_bypass_matrix.py",
+    "tests/test_checkpoint.py",
+    "tests/test_memory.py",
+    "tests/test_transcript.py",
+    "tests/test_ga_config_migrations.py"
+  ],
+  "decisions": [
+    "Cross-process failure injection and symlink/partial-write paths are part of the automated result; deletion and undo refuse active/stale state rather than widening scope."
+  ],
+  "result": "Least-privilege labels/prompts, scoped approvals, bypass matrix, protected secrets, undo preview/stability, crash-safe session lifecycle/export/delete, exact-secret redaction, and transactional config migration/provenance contracts passed.",
+  "limitations": [
+    "OS-specific sandbox strength and real power-loss behavior remain platform/release-matrix observations."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.10",
+  "candidate_commit": "3499f3a2c024dbf04f710687ed59dc998a6b7583",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": [],
+  "documentation_lookups": []
+}

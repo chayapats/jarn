@@ -44,6 +44,7 @@ def _cfg(ptype, main_ref, *, prompt_cache="auto", keep_alive=1800, base_url=None
         (ProviderType.TOGETHER, "server_auto"),
         (ProviderType.FIREWORKS, "server_auto"),
         (ProviderType.XAI, "server_auto"),
+        (ProviderType.OPENCODE, "server_auto"),
         (ProviderType.GOOGLE, "server_auto"),
         (ProviderType.MISTRAL, "server_auto"),
         (ProviderType.OLLAMA, "ollama_keepalive"),
