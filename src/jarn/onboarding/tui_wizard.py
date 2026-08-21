@@ -28,6 +28,7 @@ from jarn.config.defaults import (
     DEFAULT_MODELS,
     PROVIDER_BASE_URLS,
     PROVIDER_ENV_VARS,
+    STANDARD_API_KEY_PROFILE,
 )
 from jarn.config.secrets import SecretResolutionError, file_fallback_notice, resolve
 from jarn.onboarding.credentials import PendingCredentials
@@ -416,11 +417,11 @@ class SetupApp(App):
                 ),
             ),
             (
-                "anthropic",
-                self._t("onboarding.connect.anthropic")
+                STANDARD_API_KEY_PROFILE,
+                self._t("onboarding.connect.opencode")
                 + (
                     f"  {layout.warn(self._t('onboarding.recommended.key'))}"
-                    if self.recommended == "anthropic"
+                    if self.recommended == STANDARD_API_KEY_PROFILE
                     else ""
                 ),
             ),
@@ -430,7 +431,7 @@ class SetupApp(App):
         ]
         highlight = {
             "codex_subscription": "codex_subscription",
-            "anthropic": "anthropic",
+            STANDARD_API_KEY_PROFILE: STANDARD_API_KEY_PROFILE,
             "ollama": "__local__",
             "lmstudio": "__local__",
             CUSTOM_OPENAI_PROFILE: "__advanced__",
@@ -445,7 +446,9 @@ class SetupApp(App):
         group = self.answers.get("_provider_group")
         if group == "cloud":
             providers = [
-                p for p in CLOUD_PROVIDERS if p not in ("anthropic", CUSTOM_OPENAI_PROFILE)
+                p
+                for p in CLOUD_PROVIDERS
+                if p not in (STANDARD_API_KEY_PROFILE, CUSTOM_OPENAI_PROFILE)
             ]
             title = self._t("onboarding.cloud.choose")
             highlight = (

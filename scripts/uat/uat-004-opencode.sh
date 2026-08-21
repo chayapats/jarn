@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
-# UAT-004: configure Anthropic from a pre-provisioned environment reference.
+# UAT-004: configure OpenCode Go from a pre-provisioned environment reference.
 # The key is never accepted as an argument and the live setup terminal is not captured.
 
 set -euo pipefail
@@ -16,14 +16,14 @@ EXECUTE=0
 
 usage() {
   cat <<'EOF'
-UAT-004 — Anthropic API-key user
+UAT-004 — OpenCode Go API-key user
 
 Usage:
-  scripts/uat/uat-004-anthropic.sh [--host USER@HOST] [--output FILE] [--execute]
+  scripts/uat/uat-004-opencode.sh [--host USER@HOST] [--output FILE] [--execute]
 
 Default behavior is a local dry-run and does not contact SSH. The disposable
 target must already have a healthy J.A.R.N. command, no existing config, and a
-non-empty ANTHROPIC_API_KEY available in its login shell. Never pass the key to
+non-empty OPENCODE_API_KEY available in its login shell. Never pass the key to
 this harness. Execute mode streams setup directly to the terminal without
 capturing it, then checks only reference/source/leak booleans.
 EOF
@@ -48,11 +48,11 @@ DISPLAY_COMMAND='ssh -tt [HOST] '\''exec "$SHELL" -lic "jarn setup"'\'''
 if [[ "$EXECUTE" -ne 1 ]]; then
   printf '%s\n' "DRY RUN — no SSH connection, key access, or target write will occur."
   printf '%s\n' "Target: ${HOST:-[required with --execute]}"
-  printf '%s\n' "Required fixture: disposable account; J.A.R.N. installed; config absent; ANTHROPIC_API_KEY pre-provisioned in login shell."
+  printf '%s\n' "Required fixture: disposable account; J.A.R.N. installed; config absent; OPENCODE_API_KEY pre-provisioned in login shell."
   printf '%s\n' "Checks: no key echo/plaintext config/log, environment reference, honest model provenance, billable-validation disclosure."
   uat_write_not_run_if_requested \
     "$OUTPUT" "$UAT_ID" "$DISPLAY_COMMAND" \
-    "Pass --execute only after securely provisioning ANTHROPIC_API_KEY on a disposable target."
+    "Pass --execute only after securely provisioning OPENCODE_API_KEY on a disposable target."
   exit 0
 fi
 
@@ -99,8 +99,8 @@ PLATFORM_VERSION=$(uat_probe_value "$PLATFORM_PROBE" version)
 PLATFORM_ARCH=$(uat_probe_value "$PLATFORM_PROBE" arch)
 PLATFORM_LIBC=$(uat_probe_value "$PLATFORM_PROBE" libc)
 
-FIXTURE=$(uat_ssh_readonly "$HOST" 'home=$HOME; resolution=$($SHELL -lic '\''command -v jarn 2>/dev/null || true'\'' 2>/dev/null | tail -n 1); version=$($SHELL -lic '\''jarn --version 2>/dev/null || true'\'' 2>/dev/null | tail -n 1); config=absent; [ -f "$HOME/.jarn/config.yaml" ] && config=present; key=$($SHELL -lic '\''if [ -n "${ANTHROPIC_API_KEY:-}" ] && [ "${#ANTHROPIC_API_KEY}" -ge 8 ]; then printf present; else printf missing; fi'\'' 2>/dev/null); printf "home=%s\nresolution=%s\nversion=%s\nconfig=%s\nkey=%s\n" "$home" "${resolution:-absent}" "${version:-unknown}" "$config" "$key"') || {
-  write_evidence blocked "Anthropic fixture probe failed before mutation." \
+FIXTURE=$(uat_ssh_readonly "$HOST" 'home=$HOME; resolution=$($SHELL -lic '\''command -v jarn 2>/dev/null || true'\'' 2>/dev/null | tail -n 1); version=$($SHELL -lic '\''jarn --version 2>/dev/null || true'\'' 2>/dev/null | tail -n 1); config=absent; [ -f "$HOME/.jarn/config.yaml" ] && config=present; key=$($SHELL -lic '\''if [ -n "${OPENCODE_API_KEY:-}" ] && [ "${#OPENCODE_API_KEY}" -ge 8 ]; then printf present; else printf missing; fi'\'' 2>/dev/null); printf "home=%s\nresolution=%s\nversion=%s\nconfig=%s\nkey=%s\n" "$home" "${resolution:-absent}" "${version:-unknown}" "$config" "$key"') || {
+  write_evidence blocked "OpenCode fixture probe failed before mutation." \
     "Verify the login shell and pre-provisioned environment reference."
   exit 2
 }
@@ -115,21 +115,21 @@ if [[ "$BEFORE_VERSION" != jarn\ * || "$BEFORE_RESOLUTION" == absent ]]; then
   exit 2
 fi
 if [[ "$BEFORE_CONFIG" != absent || "$KEY_STATE" != present ]]; then
-  write_evidence blocked "Fresh Anthropic fixture contract is not satisfied." \
-    "Expected config=absent and ANTHROPIC_API_KEY=present; observed config=$BEFORE_CONFIG, key=$KEY_STATE."
+  write_evidence blocked "Fresh OpenCode fixture contract is not satisfied." \
+    "Expected config=absent and OPENCODE_API_KEY=present; observed config=$BEFORE_CONFIG, key=$KEY_STATE."
   exit 2
 fi
 
-if ! uat_confirm_disposable "$HOST" "read only the presence of the pre-provisioned Anthropic key, write config by reference, and optionally perform a disclosed billable validation"; then
+if ! uat_confirm_disposable "$HOST" "read only the presence of the pre-provisioned OpenCode key, write config by reference, and optionally perform a disclosed billable validation"; then
   write_evidence not_run "Operator declined the disposable-target confirmation." \
     "No setup command was sent and no key value was collected."
   exit 2
 fi
 
-printf '%s\n' "The following setup terminal is live and uncaptured. Choose Anthropic, reuse the detected environment key, observe model provenance and validation disclosure, then finish setup."
+printf '%s\n' "The following setup terminal is live and uncaptured. Choose OpenCode, reuse the detected environment key, observe model provenance and validation disclosure, then finish setup."
 REMOTE_COMMAND='exec "$SHELL" -lic '\''jarn setup'\'''
 if ! ssh -tt -o ConnectTimeout=10 "$HOST" "$REMOTE_COMMAND"; then
-  write_evidence failed "Anthropic setup returned non-zero." \
+  write_evidence failed "OpenCode setup returned non-zero." \
     "Raw terminal/key/validation output was intentionally not persisted; rerun interactively to inspect it."
   exit 1
 fi
@@ -144,11 +144,12 @@ trap 'rm -f "$POST_FILE"' 0 HUP INT TERM
 POST_RC=0
 uat_ssh_readonly "$HOST" 'exec "$SHELL" -lic '\''bash -s'\''' > "$POST_FILE" <<'REMOTE_SCRIPT' || POST_RC=$?
 set -eu
-secret=${ANTHROPIC_API_KEY:-}
+secret=${OPENCODE_API_KEY:-}
 config="$HOME/.jarn/config.yaml"
 config_present=no
 config_mode=unknown
 config_ref=invalid
+config_endpoint=invalid
 config_leak=unknown
 logs_leak=no
 doctor=invalid
@@ -158,8 +159,9 @@ route=invalid
 if [ -f "$config" ]; then
   config_present=yes
   config_mode=$(stat -f %Lp "$config" 2>/dev/null || stat -c %a "$config" 2>/dev/null || printf unknown)
-  section=$(awk '/^  anthropic:/{inside=1; next} inside && /^  [A-Za-z0-9_]+:/{exit} inside{print}' "$config")
-  printf '%s' "$section" | grep -Fq 'api_key: ${ANTHROPIC_API_KEY}' && config_ref=environment
+  section=$(awk '/^  opencode:/{inside=1; next} inside && /^  [A-Za-z0-9_]+:/{exit} inside{print}' "$config")
+  printf '%s' "$section" | grep -Fq 'api_key: ${OPENCODE_API_KEY}' && config_ref=environment
+  printf '%s' "$section" | grep -Fq 'opencode.ai/zen/go' && config_endpoint=go
   config_leak=no
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in *"$secret"*) config_leak=yes; break ;; esac
@@ -184,10 +186,10 @@ fi
 
 doctor_payload=$(jarn doctor --json 2>/dev/null || true)
 printf '%s' "$doctor_payload" | grep -Eq '^[[:space:]]*\{' && doctor=valid
-printf '%s' "$doctor_payload" | grep -Eq '"default_profile"[[:space:]]*:[[:space:]]*"anthropic"' && profile=verified
-printf '%s' "$doctor_payload" | grep -Eq '"main_model"[[:space:]]*:[[:space:]]*"anthropic/' && route=verified
-printf 'config_present=%s\nconfig_mode=%s\nconfig_ref=%s\nconfig_leak=%s\nlogs_leak=%s\ndoctor=%s\nprofile=%s\nroute=%s\n' \
-  "$config_present" "$config_mode" "$config_ref" "$config_leak" \
+printf '%s' "$doctor_payload" | grep -Eq '"default_profile"[[:space:]]*:[[:space:]]*"opencode"' && profile=verified
+printf '%s' "$doctor_payload" | grep -Eq '"main_model"[[:space:]]*:[[:space:]]*"opencode/' && route=verified
+printf 'config_present=%s\nconfig_mode=%s\nconfig_ref=%s\nconfig_endpoint=%s\nconfig_leak=%s\nlogs_leak=%s\ndoctor=%s\nprofile=%s\nroute=%s\n' \
+  "$config_present" "$config_mode" "$config_ref" "$config_endpoint" "$config_leak" \
   "$logs_leak" "$doctor" "$profile" "$route"
 REMOTE_SCRIPT
 POST=$(sed -n '1,40p' "$POST_FILE")
@@ -201,6 +203,7 @@ fi
 POST_CONFIG=$(uat_probe_value "$POST" config_present)
 POST_MODE=$(uat_probe_value "$POST" config_mode)
 POST_REF=$(uat_probe_value "$POST" config_ref)
+POST_ENDPOINT=$(uat_probe_value "$POST" config_endpoint)
 POST_CONFIG_LEAK=$(uat_probe_value "$POST" config_leak)
 POST_LOGS_LEAK=$(uat_probe_value "$POST" logs_leak)
 POST_DOCTOR=$(uat_probe_value "$POST" doctor)
@@ -210,18 +213,19 @@ POST_ROUTE=$(uat_probe_value "$POST" route)
 ERRORS=()
 ERROR_COUNT=0
 add_error() { ERRORS[$ERROR_COUNT]=$1; ERROR_COUNT=$((ERROR_COUNT + 1)); }
-[[ "$POST_CONFIG" == yes && "$POST_REF" == environment ]] || add_error "config did not retain the ANTHROPIC_API_KEY environment reference"
+[[ "$POST_CONFIG" == yes && "$POST_REF" == environment ]] || add_error "config did not retain the OPENCODE_API_KEY environment reference"
+[[ "$POST_ENDPOINT" == go ]] || add_error "config did not retain the OpenCode Go endpoint"
 [[ "$POST_MODE" == 600 ]] || add_error "config permissions are $POST_MODE instead of 600"
 [[ "$POST_CONFIG_LEAK" == no ]] || add_error "raw key appeared in config"
 [[ "$POST_LOGS_LEAK" == no ]] || add_error "raw key appeared in logs/session transcripts"
-[[ "$POST_DOCTOR" == valid && "$POST_PROFILE" == verified && "$POST_ROUTE" == verified ]] || add_error "doctor did not verify Anthropic profile/model construction"
+[[ "$POST_DOCTOR" == valid && "$POST_PROFILE" == verified && "$POST_ROUTE" == verified ]] || add_error "doctor did not verify OpenCode profile/model construction"
 
 MANUAL_OK=1
 DECISIONS=()
 for checkpoint in \
   "The API key never echoed in the setup terminal" \
   "The model choices were current or visibly labeled with honest cache/fallback provenance" \
-  "Before validation, setup clearly disclosed that it could make a billable Anthropic request" \
+  "Before validation, setup clearly disclosed that it could make a billable OpenCode request" \
   "No manual config edit was needed" \
   "No external documentation lookup was needed" \
   "Setup did not claim validation success unless a model response was verified"
@@ -235,20 +239,20 @@ do
 done
 
 VALIDATION_DECISION="skipped by operator after disclosure"
-if uat_yes_no "Did you choose to perform the optional Anthropic validation"; then
+if uat_yes_no "Did you choose to perform the optional OpenCode validation"; then
   VALIDATION_DECISION="performed"
   if uat_yes_no "Did the disclosed validation receive a verified model response"; then
     VALIDATION_DECISION="performed and verified"
   else
     VALIDATION_DECISION="performed but not verified"
-    add_error "optional Anthropic validation was attempted but not verified"
+    add_error "optional OpenCode validation was attempted but not verified"
     MANUAL_OK=0
   fi
 fi
 
 [[ "$ERROR_COUNT" -eq 0 && "$MANUAL_OK" -eq 1 ]] && STATUS=passed || STATUS=failed
-RESULT="Anthropic key-reference, no-leak, model provenance, and billable-validation disclosure checkpoints passed."
-[[ "$STATUS" == passed ]] || RESULT="One or more Anthropic key safety, model provenance, or validation-disclosure checkpoints failed."
+RESULT="OpenCode key-reference, no-leak, model provenance, and billable-validation disclosure checkpoints passed."
+[[ "$STATUS" == passed ]] || RESULT="One or more OpenCode key safety, model provenance, or validation-disclosure checkpoints failed."
 ARGS=(
   --output "$OUTPUT" --uat-id "$UAT_ID" --status "$STATUS"
   --started-at "$STARTED_AT" --ended-at "$(uat_now)"
@@ -259,7 +263,7 @@ ARGS=(
   --implementation "src/jarn/catalog/"
   --automated-test "tests/test_secrets.py"
   --automated-test "tests/test_model_catalog.py"
-  --decision "post checks: ref=$POST_REF, config_leak=$POST_CONFIG_LEAK, logs_leak=$POST_LOGS_LEAK, doctor=$POST_DOCTOR, profile=$POST_PROFILE, route=$POST_ROUTE"
+  --decision "post checks: ref=$POST_REF, endpoint=$POST_ENDPOINT, config_leak=$POST_CONFIG_LEAK, logs_leak=$POST_LOGS_LEAK, doctor=$POST_DOCTOR, profile=$POST_PROFILE, route=$POST_ROUTE"
   --decision "optional validation: $VALIDATION_DECISION"
   --limitation "Key echo, model provenance, and billable disclosure are operator-observed; raw setup output is prohibited evidence."
   --platform-os "$PLATFORM_OS" --platform-version "$PLATFORM_VERSION"

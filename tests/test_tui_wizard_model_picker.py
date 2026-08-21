@@ -71,6 +71,7 @@ def _snapshot(
 def _live_catalog(monkeypatch):
     def load(provider: str, **_kwargs):
         models = {
+            "opencode": ("glm-5.2", "glm-5.1"),
             "anthropic": ("claude-opus-4-8", "claude-haiku-4-5"),
             "ollama": ("qwen3-coder:30b", "llama3:8b"),
             "lmstudio": ("qwen3-coder-30b",),
@@ -138,16 +139,16 @@ async def test_standard_cloud_path_selects_supported_default_without_model_id_st
 ):
     monkeypatch.setenv("JARN_HOME", str(tmp_path / "home"))
     _clear_provider_env(monkeypatch)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+    monkeypatch.setenv("OPENCODE_API_KEY", "sk-opencode")
     from jarn.onboarding.tui_wizard import SetupApp
 
     app = SetupApp()
     async with app.run_test(size=(90, 40)) as pilot:
         await pilot.pause()
-        await pilot.press("enter")  # recommended Anthropic standard path
+        await pilot.press("enter")  # recommended OpenCode standard path
         await pilot.pause()
         assert app.step == "theme"
-        assert app.answers["model"].startswith("anthropic/")
+        assert app.answers["model"].startswith("opencode/")
 
 
 @pytest.mark.asyncio

@@ -37,8 +37,8 @@
 - กลยุทธ์: **Multi-provider** — BYO key โดย default profile = **OpenRouter** และ
   managed ChatGPT subscription ผ่าน Codex App Server
 - Original v1 provider target: **Anthropic · OpenAI · OpenRouter · Ollama · LM Studio**.
-  The current implementation is broader — **14 providers**: Codex subscription,
-  OpenRouter, OpenAI,
+  The current implementation is broader — **15 providers**: Codex subscription,
+  OpenRouter, OpenCode, OpenAI,
   LM Studio, Groq, DeepSeek, Together, Fireworks, xAI, OpenAI-compatible (any
   custom `base_url`), Anthropic, Ollama, Google, Mistral (see `ProviderType`).
 - **Per-task model routing**: มีตั้งแต่ออกแบบ (subagent/งานย่อยใช้โมเดลถูก, งานหลักใช้โมเดลแรง)

@@ -627,6 +627,12 @@ class _CatalogResponse:
             "grok-live",
         ),
         (
+            ProviderConfig(type=ProviderType.OPENCODE, api_key="key"),
+            {"data": [{"id": "glm-5.2"}]},
+            "https://opencode.ai/zen/go/v1/models",
+            "glm-5.2",
+        ),
+        (
             ProviderConfig(
                 type=ProviderType.OPENAI_COMPATIBLE,
                 base_url="https://gateway.example/v1",

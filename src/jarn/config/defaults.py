@@ -69,6 +69,11 @@ DEFAULT_MODELS = {
         "subagent": "xai/grok-4.3",
         "summarizer": "xai/grok-4.3",
     },
+    "opencode": {
+        "main": "opencode/deepseek-v4-flash",
+        "subagent": "opencode/deepseek-v4-flash",
+        "summarizer": "opencode/deepseek-v4-flash",
+    },
     "ollama": {
         "main": "ollama/qwen3-coder:30b",
         "subagent": "ollama/qwen3-coder:7b",
@@ -98,6 +103,7 @@ PROVIDER_ENV_VARS = {
     "together": "TOGETHER_API_KEY",
     "fireworks": "FIREWORKS_API_KEY",
     "xai": "XAI_API_KEY",
+    "opencode": "OPENCODE_API_KEY",
     "openai_compatible": "OPENAI_COMPATIBLE_API_KEY",
 }
 
@@ -109,6 +115,7 @@ PROVIDER_BASE_URLS = {
     "together": "https://api.together.xyz/v1",
     "fireworks": "https://api.fireworks.ai/inference/v1",
     "xai": "https://api.x.ai/v1",
+    "opencode": "https://opencode.ai/zen/go/v1",
     "ollama": "http://localhost:11434",
     "lmstudio": "http://localhost:1234/v1",
     "openai_compatible": "http://localhost:8000/v1",
@@ -128,8 +135,12 @@ CLOUD_PROVIDERS = (
     "together",
     "fireworks",
     "xai",
+    "opencode",
     "openai_compatible",
 )
+
+#: First-screen API-key shortcut (ChatGPT remains the subscription path).
+STANDARD_API_KEY_PROFILE = "opencode"
 
 #: Profile that needs a user-supplied ``base_url`` during setup.
 CUSTOM_OPENAI_PROFILE = "openai_compatible"
@@ -154,6 +165,7 @@ ALL_PROVIDERS = (
     "together",
     "fireworks",
     "xai",
+    "opencode",
     "openai_compatible",
     "ollama",
     "lmstudio",

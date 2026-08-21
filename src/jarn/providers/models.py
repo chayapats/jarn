@@ -229,6 +229,7 @@ _CLOUD_MODEL_LIST_TYPES: frozenset[ProviderType] = frozenset(
         ProviderType.TOGETHER,
         ProviderType.FIREWORKS,
         ProviderType.XAI,
+        ProviderType.OPENCODE,
     }
 )
 _API_KEY_PROVIDER_TYPES = _CLOUD_MODEL_LIST_TYPES | {ProviderType.DEEPSEEK}
@@ -258,6 +259,7 @@ def _model_catalog_base(provider: ProviderConfig) -> str:
         ProviderType.TOGETHER: "https://api.together.xyz/v1",
         ProviderType.FIREWORKS: "https://api.fireworks.ai/inference/v1",
         ProviderType.XAI: "https://api.x.ai/v1",
+        ProviderType.OPENCODE: "https://opencode.ai/zen/go/v1",
     }
     return defaults.get(provider.type, "")
 
@@ -949,6 +951,7 @@ _OPENAI_COMPATIBLE = {
     ProviderType.TOGETHER,
     ProviderType.FIREWORKS,
     ProviderType.XAI,
+    ProviderType.OPENCODE,
     ProviderType.OPENAI_COMPATIBLE,
 }
 

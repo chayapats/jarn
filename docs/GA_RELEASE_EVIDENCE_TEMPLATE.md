@@ -25,7 +25,7 @@ The harnesses are dry-run only unless `--execute` is explicit:
 scripts/uat/uat-001-ubuntu-ssh.sh --host USER@HOST --execute
 scripts/uat/uat-002-legacy-collision.sh --host USER@HOST --execute
 scripts/uat/uat-003-macos-desktop.sh --host USER@MAC --execute
-scripts/uat/uat-004-anthropic.sh --host USER@HOST --execute
+scripts/uat/uat-004-opencode.sh --host USER@HOST --execute
 scripts/uat/uat-005-ollama.sh --host USER@HOST --execute
 scripts/uat/uat-006-network-failure.sh --host USER@HOST --execute
 ```

@@ -1,0 +1,55 @@
+{
+  "record_id": "UAT-004-V1010",
+  "uat_id": "UAT-004",
+  "criterion_ids": [
+    "UAT-004"
+  ],
+  "status": "passed",
+  "started_at": "2026-08-21T02:44:41Z",
+  "ended_at": "2026-08-21T02:45:10Z",
+  "duration_seconds": 29.0,
+  "platform": {
+    "os": "macOS",
+    "version": "26.6.1",
+    "architecture": "arm64",
+    "libc": "n/a"
+  },
+  "command": "Isolated disposable macOS HOME; OpenCode Go setup via environment reference; disclosed billable validation; one headless plan-mode turn",
+  "implementation": [
+    "src/jarn/onboarding/wizard.py",
+    "src/jarn/onboarding/flow.py",
+    "src/jarn/config/secrets.py",
+    "src/jarn/catalog/"
+  ],
+  "automated_tests": [
+    "tests/test_secrets.py",
+    "tests/test_model_catalog.py",
+    "tests/test_uat_harnesses.py"
+  ],
+  "decisions": [
+    "Setup committed config mode 600 with default_profile=opencode, OpenCode Go endpoint, and an environment reference; no raw credential in config or logs.",
+    "Live OpenCode catalog was used during setup; doctor later reported the cached verified catalog, default_profile=opencode, and main_model=opencode/deepseek-v4-flash.",
+    "Billable validation ran only after the disclosure-and-confirm gate; a verified model response was received, then a harmless headless turn returned UAT_OK with exit 0 and zero tool calls.",
+    "No manual config edit was needed.",
+    "No external documentation lookup was needed."
+  ],
+  "documentation_lookups": [
+    "none"
+  ],
+  "result": "Isolated OpenCode Go environment-reference setup wrote a 600 config, kept the Go endpoint, leaked no credential, verified billable validation, and completed one headless turn as opencode/deepseek-v4-flash.",
+  "limitations": [
+    "This is a truthful local equivalent of the SSH-first harness on the current macOS host; scripts/uat/uat-004-opencode.sh --execute was not invoked because it requires a separate disposable SSH target and interactive confirmation.",
+    "Live setup used the current evidence-branch OpenCode Go provider; the tagged v1.0.10 macOS binary does not include type opencode."
+  ],
+  "schema_version": 2,
+  "candidate_version": "1.0.10",
+  "candidate_commit": "3499f3a2c024dbf04f710687ed59dc998a6b7583",
+  "redaction": {
+    "raw_auth_output_persisted": false,
+    "raw_terminal_output_persisted": false,
+    "secrets_allowed": false,
+    "host_identifier_redacted": true,
+    "home_path_redacted": true
+  },
+  "errors": []
+}

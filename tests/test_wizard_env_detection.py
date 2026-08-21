@@ -38,6 +38,14 @@ class TestDetectEnvKey:
             monkeypatch.delenv(ev, raising=False)
         assert _detect_env_key() is None
 
+    def test_detects_opencode_key(self, monkeypatch):
+        from jarn.config.defaults import PROVIDER_ENV_VARS
+        for ev in PROVIDER_ENV_VARS.values():
+            monkeypatch.delenv(ev, raising=False)
+        monkeypatch.setenv("OPENCODE_API_KEY", "sk-opencode-test")
+        result = _detect_env_key()
+        assert result == ("opencode", "OPENCODE_API_KEY")
+
     def test_detects_anthropic_key(self, monkeypatch):
         from jarn.config.defaults import PROVIDER_ENV_VARS
         for ev in PROVIDER_ENV_VARS.values():
@@ -61,6 +69,17 @@ class TestDetectEnvKey:
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
         result = _detect_env_key()
         assert result == ("openrouter", "OPENROUTER_API_KEY")
+
+    def test_opencode_takes_priority_over_anthropic(self, monkeypatch):
+        """opencode is checked before anthropic in priority order."""
+        from jarn.config.defaults import PROVIDER_ENV_VARS
+        for ev in PROVIDER_ENV_VARS.values():
+            monkeypatch.delenv(ev, raising=False)
+        monkeypatch.setenv("OPENCODE_API_KEY", "sk-opencode-test")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        result = _detect_env_key()
+        assert result is not None
+        assert result[0] == "opencode"
 
     def test_anthropic_takes_priority_over_openrouter(self, monkeypatch):
         """anthropic is checked before openrouter in priority order."""
@@ -99,14 +118,23 @@ class TestRecommendedProvider:
         result = _recommended_provider(("openrouter", "OPENROUTER_API_KEY"))
         assert result == "openrouter"
 
+    def test_opencode_recommended_when_key_present_but_no_env_hit(self, monkeypatch):
+        """env_hit is None but OPENCODE_API_KEY is set → opencode recommended."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("OPENCODE_API_KEY", "sk-opencode-test")
+        result = _recommended_provider(None)
+        assert result == "opencode"
+
     def test_anthropic_recommended_when_key_present_but_no_env_hit(self, monkeypatch):
         """env_hit is None but ANTHROPIC_API_KEY is set → anthropic recommended."""
+        monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         result = _recommended_provider(None)
         assert result == "anthropic"
 
     def test_chatgpt_default_when_nothing_present(self, monkeypatch):
         """No env hits at all → the simple ChatGPT subscription path."""
+        monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         result = _recommended_provider(None)
         assert result == "codex_subscription"

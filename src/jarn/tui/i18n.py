@@ -740,6 +740,7 @@ _STRINGS: tuple[tuple[str, str, str], ...] = (
         "ใช้ ChatGPT ต่อ  (สมัครสมาชิก ไม่ต้องใช้ API key)",
     ),
     ("onboarding.connect.anthropic", "Use Anthropic", "ใช้ Anthropic"),
+    ("onboarding.connect.opencode", "Use OpenCode Go", "ใช้ OpenCode Go"),
     ("onboarding.connect.cloud", "Use another cloud provider", "ใช้ผู้ให้บริการคลาวด์รายอื่น"),
     ("onboarding.connect.local", "Use a local model", "ใช้โมเดลในเครื่อง"),
     ("onboarding.connect.local.found", " — found {names}", " — พบ {names}"),

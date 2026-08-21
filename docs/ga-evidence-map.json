@@ -179,10 +179,10 @@
       "limitations": ["Browser launch, fallback URL, callback, and first prompt require protected operator observation; raw auth output is prohibited."]
     },
     "UAT-004": {
-      "implementation": ["scripts/uat/uat-004-anthropic.sh", "src/jarn/onboarding/wizard.py", "src/jarn/config/secrets.py", "src/jarn/catalog/"],
+      "implementation": ["scripts/uat/uat-004-opencode.sh", "src/jarn/onboarding/wizard.py", "src/jarn/config/secrets.py", "src/jarn/catalog/"],
       "automated_tests": ["tests/test_uat_harnesses.py", "tests/test_secrets.py", "tests/test_model_catalog.py"],
-      "commands": ["scripts/uat/uat-004-anthropic.sh --host USER@HOST --execute"],
-      "platforms": ["Disposable supported host with ANTHROPIC_API_KEY pre-provisioned in its login shell"],
+      "commands": ["scripts/uat/uat-004-opencode.sh --host USER@HOST --execute"],
+      "platforms": ["Disposable supported host with OPENCODE_API_KEY pre-provisioned in its login shell"],
       "limitations": ["Key echo, model provenance, and billable-validation disclosure require operator observation; raw setup output is prohibited."]
     },
     "UAT-005": {

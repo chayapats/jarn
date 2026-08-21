@@ -209,7 +209,7 @@ policy:
 # Provider `type` is one of:
 #   Managed ChatGPT subscription: codex_subscription
 #   OpenAI-compatible (ChatOpenAI + base_url): openrouter, openai, lmstudio, groq,
-#     deepseek, together, fireworks, xai, openai_compatible
+#     deepseek, together, fireworks, xai, opencode, openai_compatible
 #   Dedicated integrations: anthropic, ollama, google, mistral
 providers:
   codex_subscription:
@@ -225,6 +225,10 @@ providers:
     type: groq
     api_key: ${GROQ_API_KEY}
     base_url: https://api.groq.com/openai/v1
+  opencode:
+    type: opencode
+    api_key: ${OPENCODE_API_KEY}
+    base_url: https://opencode.ai/zen/go/v1
   google:
     type: google
     api_key: ${GOOGLE_API_KEY}
