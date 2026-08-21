@@ -462,8 +462,18 @@ def test_release_npm_smoke_before_publish() -> None:
     assert "npm publish" not in joined
 
     publish = "\n".join(_run_lines(RELEASE_YML, "npm"))
-    assert 'npm publish "release-subjects/$filename"' in publish
+    assert 'npm publish "./release-subjects/$filename"' in publish
     assert "--provenance" in publish
+
+
+def test_npm_recovery_workflow_publishes_local_tarball_paths() -> None:
+    recovery = REPO / ".github" / "workflows" / "publish-npm-from-release-run.yml"
+    text = recovery.read_text(encoding="utf-8")
+    assert "workflow_dispatch" in text
+    assert 'npm publish "./release-subjects/$filename"' in text
+    assert 'npm publish "release-subjects/$filename"' not in text
+    assert "--provenance" in text
+    assert "run-id:" in text
 
 
 def test_release_canary_fetches_authenticated_draft_before_promotion() -> None:

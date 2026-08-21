@@ -1346,5 +1346,5 @@ jobs:
               echo "==> skip ${name}@${version} (already published)"
               continue
             fi
-            npm publish "release-subjects/$filename" "${publish_args[@]}"
+            npm publish "./release-subjects/$filename" "${publish_args[@]}"
           done < npm-tarballs/publish-order.txt
