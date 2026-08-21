@@ -181,7 +181,7 @@ With `--output-schema`, the parsed object replaces free-text `result` in the `--
 
 Outputs: `result`, `cost_usd`, `turns`. The default `ci` preset needs Docker (Ubuntu runners have it). On docker-less runners use `preset: trusted-repo` with `permission_mode: auto-edit`. Examples: [PR review](examples/github/pr-review.yml) · [issue-fix](examples/github/issue-fix.yml). Full docs: [docs/GITHUB_ACTION.md](docs/GITHUB_ACTION.md).
 
-**Telegram gateway** (optional, single-operator DM). npm/standalone binaries include it; Python installs need `pip install 'jarn[telegram]'`. Then `jarn gateway setup`. Never put `gateway:` in a project's `.jarn/config.yaml`. See [docs/TELEGRAM_GATEWAY.md](docs/TELEGRAM_GATEWAY.md).
+**Telegram gateway** (optional, single-operator DM). npm/standalone binaries include it; Python installs need `pip install 'jarn[telegram]'`. Then `jarn gateway setup`. Replies stream as a coalesced draft; approval cards keep the live prose and disappear when you tap. Never put `gateway:` in a project's `.jarn/config.yaml`. See [docs/TELEGRAM_GATEWAY.md](docs/TELEGRAM_GATEWAY.md).
 
 ## Permission modes
 
@@ -233,7 +233,7 @@ See [docs/EXTENDING.md](docs/EXTENDING.md) and [examples/](examples/).
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                 # 3375 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 3384 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts
 uv run mypy src/
 uv run jarn doctor            # add --json for machine output

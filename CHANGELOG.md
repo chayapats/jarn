@@ -10,6 +10,13 @@ All notable changes to J.A.R.N. are documented here. Format follows
 - Rewrite `README.md` and `README-TH.md` as a short overview (install, quick start,
   usage, permission modes). Slash-command inventory lives in `/help`.
 
+### Fixed
+
+- Telegram gateway: coalesce streaming draft updates (interval + size + single
+  in-flight HTTP) so long replies stay progressive without bursting the chat
+  edit limit; persist live prose before an approval card so it is not discarded;
+  delete the tapped card from the chat (strip buttons if delete fails).
+
 ## [1.0.11] - 2026-08-21
 
 OpenCode Go as the first-run API-key path, plus the npm publish path fix so

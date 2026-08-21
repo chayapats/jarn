@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -9,6 +10,8 @@ import pytest
 
 from jarn.telegram.outbox import (
     BUSY_ACK_TEXT,
+    DRAFT_CHUNK_THRESHOLD,
+    DRAFT_FLUSH_INTERVAL_S,
     LONG_RUNNING_INTERVAL_S,
     Outbox,
     build_approval_card,
@@ -50,13 +53,14 @@ class FakeSender:
         )
         return {"message_id": message_id}
 
-    async def edit_message(self, chat_id, message_id, text, parse_mode=None, **kw):
+    async def edit_message(self, chat_id, message_id, text, parse_mode=None, reply_markup=None, **kw):
         self.edits.append(
             {
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "text": text,
                 "parse_mode": parse_mode,
+                "reply_markup": reply_markup,
             }
         )
         return {"message_id": message_id}
@@ -206,6 +210,7 @@ async def test_draft_finalize_and_restart_after_card():
 
     await out.send_approval_card(7, token="t1", action="bash", description="danger")
     assert sender.messages
+    assert any("Hello" in m["text"] for m in sender.messages)
     assert out._draft_alive.get(7) is False
 
     await out.on_event(7, kind="text", text=" after")
@@ -378,6 +383,7 @@ async def test_approval_card_still_destroys_draft_not_progress():
     await out.send_approval_card(1, token="t1", action="bash", description="danger")
     assert out._draft_alive.get(1) is False
     assert out.progress_message_id(1) == progress_id
+    assert any("Hello" in m["text"] for m in sender.messages)
 
 
 @pytest.mark.asyncio
@@ -430,6 +436,141 @@ async def test_keepalive_draft_does_not_count_as_activity():
     await out.keepalive_draft(1)
     await out.maybe_long_running(1, turn_in_flight=True)
     assert any("Working — 3 min" in m["text"] for m in sender.messages)
+
+
+@pytest.mark.asyncio
+async def test_draft_coalesces_bursts_into_one_http_per_flush_tick():
+    """Many TEXT deltas inside the interval must not equal one HTTP each."""
+    clock = _Clock(0.0)
+    sender = FakeSender()
+    out = Outbox(
+        sender=sender,
+        clock=clock,
+        flush_interval_s=DRAFT_FLUSH_INTERVAL_S,
+        chunk_threshold=DRAFT_CHUNK_THRESHOLD,
+    )
+    await out.on_event(1, kind="text", text="H")
+    assert len(sender.drafts) == 1
+    for _ in range(40):
+        await out.on_event(1, kind="text", text="x")
+    assert len(sender.drafts) == 1
+    clock.t = DRAFT_FLUSH_INTERVAL_S
+    await out.on_event(1, kind="text", text="!")
+    assert len(sender.drafts) == 2
+    assert "H" in sender.drafts[-1][2]
+    assert "!" in sender.drafts[-1][2]
+    await out.on_event(1, kind="done")
+    assert any("H" in m["text"] and "!" in m["text"] for m in sender.messages)
+    assert sender.drafts[-1][2].count("x") == 40
+
+
+@pytest.mark.asyncio
+async def test_draft_flushes_when_pending_chars_pass_threshold():
+    clock = _Clock(0.0)
+    sender = FakeSender()
+    out = Outbox(
+        sender=sender,
+        clock=clock,
+        flush_interval_s=10.0,
+        chunk_threshold=280,
+    )
+    await out.on_event(1, kind="text", text="start")
+    assert len(sender.drafts) == 1
+    await out.on_event(1, kind="text", text="y" * 280)
+    assert len(sender.drafts) == 2
+    assert "yyyy" in sender.drafts[-1][2]
+
+
+@pytest.mark.asyncio
+async def test_single_inflight_draft_edit_coalesces_trailing_flush():
+    clock = _Clock(0.0)
+
+    class GateSender(FakeSender):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = asyncio.Event()
+            self.gate = asyncio.Event()
+
+        async def send_message_draft(self, chat_id, draft_id, text=None, parse_mode=None, **kw):
+            if not self.started.is_set():
+                self.started.set()
+                await self.gate.wait()
+            return await super().send_message_draft(
+                chat_id, draft_id, text=text, parse_mode=parse_mode, **kw
+            )
+
+    sender = GateSender()
+    out = Outbox(sender=sender, clock=clock, flush_interval_s=10.0, chunk_threshold=10_000)
+    first = asyncio.create_task(out.on_event(1, kind="text", text="a"))
+    await sender.started.wait()
+    for ch in "bcdef":
+        await out.on_event(1, kind="text", text=ch)
+    assert sender.drafts == []
+    sender.gate.set()
+    await first
+    # First HTTP + exactly one trailing coalesced edit.
+    assert len(sender.drafts) == 2
+    assert "abcdef" in sender.drafts[-1][2]
+
+
+@pytest.mark.asyncio
+async def test_keepalive_uses_injected_clock_and_same_draft_id():
+    clock = _Clock(1.5)
+    sender = FakeSender()
+    out = Outbox(sender=sender, clock=clock)
+    await out.on_event(1, kind="text", text="hi")
+    draft_id = sender.drafts[-1][1]
+    n = len(sender.drafts)
+    clock.t = 20.0
+    await out.keepalive_draft(1)
+    assert len(sender.drafts) == n + 1
+    assert sender.drafts[-1][1] == draft_id
+    assert out._last_draft_at[1] == 20.0
+
+
+@pytest.mark.asyncio
+async def test_approval_card_persists_live_prose_then_restarts_draft():
+    sender = FakeSender()
+    out = Outbox(sender=sender, progress="new")
+    await out.on_event(1, kind="text", text="Hello")
+    draft_id = sender.drafts[-1][1]
+    await out.on_event(1, kind="tool_start", text="bash")
+    progress_id = out.progress_message_id(1)
+    await out.send_approval_card(1, token="t1", action="bash", description="danger")
+    assert out._draft_alive.get(1) is False
+    assert out.progress_message_id(1) == progress_id
+    assert any(m["text"] == "Hello" or "Hello" in m["text"] for m in sender.messages)
+    assert any(m["reply_markup"] is not None for m in sender.messages)
+    await out.on_event(1, kind="text", text=" after")
+    assert out._draft_alive.get(1) is True
+    assert sender.drafts[-1][1] != draft_id
+
+
+@pytest.mark.asyncio
+async def test_settle_approval_card_deletes_the_card():
+    sender = FakeSender()
+    out = Outbox(sender=sender)
+    await out.settle_approval_card(7, 42, html="<b>Allow shell?</b>")
+    assert sender.deletes == [(7, 42)]
+    assert sender.edits == []
+
+
+@pytest.mark.asyncio
+async def test_settle_approval_card_strips_buttons_when_delete_fails():
+    class NoDeleteSender(FakeSender):
+        async def delete_message(self, chat_id, message_id, **kw):
+            raise RuntimeError("message can't be deleted")
+
+    sender = NoDeleteSender()
+    out = Outbox(sender=sender)
+    html = "<b>Allow shell?</b>"
+    await out.settle_approval_card(7, 42, html=html)
+    assert sender.deletes == []
+    assert len(sender.edits) == 1
+    edit = sender.edits[0]
+    assert edit["message_id"] == 42
+    assert edit["text"] == html
+    assert edit["reply_markup"] is None
 
 
 def test_effective_telegram_tool_progress_does_not_inherit_ui():

@@ -30,6 +30,8 @@ class FakeBot:
     unauthorized_on_poll: bool = False
     sent: list[tuple[Any, ...]] = field(default_factory=list)
     answered: list[Any] = field(default_factory=list)
+    edits: list[dict] = field(default_factory=list)
+    deletes: list[tuple[int, int]] = field(default_factory=list)
     commands_set: list[Any] = field(default_factory=list)
     webhook_url: str = ""
     pending_update_count: int = 0
@@ -72,6 +74,21 @@ class FakeBot:
     async def answer_callback_query(self, callback_query_id, **kwargs):
         self.answered.append(callback_query_id)
 
+    async def edit_message_text(self, text, chat_id=None, message_id=None, **kwargs):
+        self.edits.append(
+            {
+                "text": text,
+                "chat_id": chat_id,
+                "message_id": message_id,
+                **kwargs,
+            }
+        )
+        return True
+
+    async def delete_message(self, chat_id, message_id, **kwargs):
+        self.deletes.append((chat_id, message_id))
+        return True
+
     async def set_my_commands(self, commands, **kwargs):
         self.commands_set = list(commands)
 
@@ -105,7 +122,16 @@ def _update_message(*, uid: int, user_id: int, chat_id: int, text: str, chat_typ
     )
 
 
-def _update_callback(*, uid: int, user_id: int, chat_id: int, data: str):
+def _update_callback(
+    *,
+    uid: int,
+    user_id: int,
+    chat_id: int,
+    data: str,
+    message_id: int | None = None,
+    html_text: str = "",
+    text: str = "",
+):
     return SimpleNamespace(
         update_id=uid,
         message=None,
@@ -114,7 +140,12 @@ def _update_callback(*, uid: int, user_id: int, chat_id: int, data: str):
             id=f"cb-{uid}",
             data=data,
             from_user=SimpleNamespace(id=user_id),
-            message=SimpleNamespace(chat=SimpleNamespace(id=chat_id, type="private")),
+            message=SimpleNamespace(
+                chat=SimpleNamespace(id=chat_id, type="private"),
+                message_id=message_id,
+                html_text=html_text or None,
+                text=text or None,
+            ),
         ),
     )
 
@@ -308,6 +339,30 @@ async def test_callback_verdicts_tool_memory_plan_yolo():
     yolo = backend.verdicts[3]
     assert yolo.approved and yolo.kind == "yolo"
     assert fake.answered  # spinner cleared
+
+
+@pytest.mark.asyncio
+async def test_callback_deletes_card():
+    backend = InMemoryGatewayBackend()
+    app = TelegramBotApp(token="fake", allowed_user_ids=[5], backend=backend)
+    fake = FakeBot()
+    app._bot = fake
+    app._outbox = Outbox(sender=fake)
+    html = "<b>Allow shell ls?</b>"
+    await app.handle_update(
+        _update_callback(
+            uid=1,
+            user_id=5,
+            chat_id=5,
+            data=encode_callback("t", "tokA", "once"),
+            message_id=99,
+            html_text=html,
+        )
+    )
+    assert len(backend.verdicts) == 1
+    assert fake.answered == ["cb-1"]
+    assert fake.deletes == [(5, 99)]
+    assert fake.edits == []
 
 
 @pytest.mark.asyncio

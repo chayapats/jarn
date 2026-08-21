@@ -12,6 +12,14 @@ v1.1 display-parity (quiet default, opt-in `/verbose` bubble, local command
 layers, mutating refuse, second-DM steer) is **Implemented** on this branch.
 v1 still refuses voice notes, stays DM-only, and never grants remote ALWAYS.
 
+Streaming drafts are coalesced before they hit Telegram (`sendMessageDraft` at
+most about twice a second, or sooner if a few hundred unsent characters pile
+up) so a long reply still appears progressively instead of stalling on rate
+limits. An approval, yolo, or undo card first persists any live prose as a real
+message, then posts the card; tapping a button deletes that card from the
+chat (if delete fails, the buttons are stripped). Quiet default remains tool
+progress off.
+
 ## Install and configure
 
 The npm/standalone distribution already includes Telegram support. A Python install

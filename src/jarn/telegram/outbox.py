@@ -4,13 +4,21 @@ Binding (#40)
 -------------
 * Stream assistant prose via ``sendMessageDraft``; finalize with ``sendMessage``.
 * HTML parse mode (never MarkdownV2).
+* Draft HTTP is coalesced: TEXT deltas accumulate in ``_draft_buf`` and the
+  live draft is updated at most once per ``DRAFT_FLUSH_INTERVAL_S`` or when
+  unsent chars pass ``DRAFT_CHUNK_THRESHOLD`` (whichever first). One in-flight
+  ``sendMessageDraft`` at a time; a pending-flush flag runs exactly one
+  trailing edit after that HTTP returns.
 * Tool progress default OFF — ignore ``tool_start`` / ``tool_end`` /
   ``tool_progress`` unless session density is ``new`` / ``all`` / ``verbose``.
 * Drop subagent inner stream (events stamped with ``data['agent']``) always.
 * Progress bubble is a **separate** ``sendMessage`` / ``editMessageText``
   channel from the prose draft. Do not overload ``send_message_draft``.
-* Any real card/notice/media message destroys the live draft — restart with a
-  fresh ``draft_id`` for subsequent prose. Progress upserts do **not**.
+* A real notice/media message still dismisses Telegram's ephemeral draft —
+  restart with a fresh ``draft_id`` for subsequent prose. Approval / yolo /
+  undo cards persist the live buffer as ``sendMessage`` first so the operator
+  does not lose the prose they were reading. Progress upserts do **not**
+  restart the draft.
 
 Cards (#37/#39)
 ---------------
@@ -20,10 +28,13 @@ Cards (#37/#39)
 * Plan-mode: auto-edit / ask / keep planning (three-way).
 * Yolo escalate confirm: Confirm / Cancel.
 * Media refusal: plain notice card (no buttons).
+* After a tap, the card is deleted from the chat. If delete fails, buttons
+  are stripped so it cannot be tapped again.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -47,6 +58,8 @@ _log = logging.getLogger("jarn.telegram.outbox")
 __all__ = [
     "BUSY_ACK_TEXT",
     "CallbackKind",
+    "DRAFT_CHUNK_THRESHOLD",
+    "DRAFT_FLUSH_INTERVAL_S",
     "LONG_RUNNING_INTERVAL_S",
     "Outbox",
     "TelegramSender",
@@ -69,6 +82,13 @@ _CB_MAX = 64
 #: Quiet minutes (as seconds) before a user-visible ``Working — N min`` line.
 #: Separate from draft TTL ``keepalive_draft`` and from ``ui.notify_min_secs``.
 LONG_RUNNING_INTERVAL_S = 180.0
+
+#: Minimum seconds between ``sendMessageDraft`` HTTP calls while TEXT streams.
+#: ~0.6s keeps the draft progressive without bursting Telegram's chat limits.
+DRAFT_FLUSH_INTERVAL_S = 0.6
+
+#: Unsent chars that force a draft update before the flush interval elapses.
+DRAFT_CHUNK_THRESHOLD = 280
 
 #: One-line busy ack. No queued/steering paragraph unless ``busy_ack_detail``.
 BUSY_ACK_TEXT = "Working…"
@@ -117,6 +137,7 @@ class TelegramSender(Protocol):
         message_id: int,
         text: str,
         parse_mode: str | None = None,
+        reply_markup: Any = None,
         **kwargs: Any,
     ) -> Any: ...
 
@@ -214,6 +235,7 @@ class _AiogramSenderAdapter:
         message_id: int,
         text: str,
         parse_mode: str | None = None,
+        reply_markup: Any = None,
         **kwargs: Any,
     ) -> Any:
         return await self._bot.edit_message_text(
@@ -221,6 +243,7 @@ class _AiogramSenderAdapter:
             chat_id=chat_id,
             message_id=message_id,
             parse_mode=parse_mode,
+            reply_markup=reply_markup,
             **kwargs,
         )
 
@@ -565,10 +588,19 @@ class Outbox:
     #: Resolved ``ui.locale`` (``en`` | ``th``). No Telegram overlay key.
     locale: str = "en"
     clock: Callable[[], float] = field(default=time.monotonic)
+    #: Injected so tests can force interval/threshold without wall-clock waits.
+    flush_interval_s: float = DRAFT_FLUSH_INTERVAL_S
+    chunk_threshold: int = DRAFT_CHUNK_THRESHOLD
     _draft_id: dict[int, int] = field(default_factory=dict)
     _draft_buf: dict[int, str] = field(default_factory=dict)
     _draft_alive: dict[int, bool] = field(default_factory=dict)
     _last_draft_at: dict[int, float] = field(default_factory=dict)
+    _draft_sent_len: dict[int, int] = field(default_factory=dict)
+    _draft_pending_flush: dict[int, bool] = field(default_factory=dict)
+    _draft_inflight: dict[int, bool] = field(default_factory=dict)
+    _draft_gen: dict[int, int] = field(default_factory=dict)
+    _draft_locks: dict[int, asyncio.Lock] = field(default_factory=dict, repr=False)
+    _draft_idle: dict[int, asyncio.Event] = field(default_factory=dict, repr=False)
     _seq: int = 0
     _progress_id: dict[int, int] = field(default_factory=dict)
     _progress_tools: dict[int, dict[str, _ToolLine]] = field(default_factory=dict)
@@ -583,11 +615,15 @@ class Outbox:
 
     def _next_draft_id(self, chat_id: int) -> int:
         self._seq += 1
+        self._draft_gen[chat_id] = self._draft_gen.get(chat_id, 0) + 1
         # Telegram requires non-zero draft_id; keep per-chat uniqueness.
         draft_id = (abs(chat_id) % 1_000_000) * 1000 + (self._seq % 1000) or 1
         self._draft_id[chat_id] = draft_id
         self._draft_buf[chat_id] = ""
         self._draft_alive[chat_id] = True
+        self._draft_sent_len[chat_id] = 0
+        self._draft_pending_flush[chat_id] = False
+        self._last_draft_at.pop(chat_id, None)
         return draft_id
 
     def restart_draft(self, chat_id: int) -> None:
@@ -595,6 +631,42 @@ class Outbox:
         self._draft_alive[chat_id] = False
         self._draft_buf.pop(chat_id, None)
         self._draft_id.pop(chat_id, None)
+        self._draft_sent_len.pop(chat_id, None)
+        self._draft_pending_flush.pop(chat_id, None)
+        self._last_draft_at.pop(chat_id, None)
+
+    def _lock_for(self, chat_id: int) -> asyncio.Lock:
+        lock = self._draft_locks.get(chat_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._draft_locks[chat_id] = lock
+        return lock
+
+    def _idle_event(self, chat_id: int) -> asyncio.Event:
+        ev = self._draft_idle.get(chat_id)
+        if ev is None:
+            ev = asyncio.Event()
+            ev.set()
+            self._draft_idle[chat_id] = ev
+        return ev
+
+    async def _await_inflight(self, chat_id: int) -> None:
+        ev = self._draft_idle.get(chat_id)
+        if ev is not None:
+            await ev.wait()
+
+    def _should_flush_now(self, chat_id: int) -> bool:
+        """True when unsent prose should hit Telegram (interval or size)."""
+        buf = self._draft_buf.get(chat_id, "")
+        pending = len(buf) - self._draft_sent_len.get(chat_id, 0)
+        if pending <= 0:
+            return False
+        last = self._last_draft_at.get(chat_id)
+        if last is None:
+            return True
+        if pending >= self.chunk_threshold:
+            return True
+        return (self.clock() - last) >= self.flush_interval_s
 
     def progress_message_id(self, chat_id: int) -> int | None:
         """Live progress-bubble message id, or ``None`` when no bubble exists."""
@@ -830,55 +902,118 @@ class Outbox:
     async def _append_draft(self, chat_id: int, chunk: str) -> None:
         if not chunk:
             return
-        if not self._draft_alive.get(chat_id):
-            self._next_draft_id(chat_id)
-        draft_id = self._draft_id.get(chat_id) or self._next_draft_id(chat_id)
-        buf = self._draft_buf.get(chat_id, "") + chunk
-        # Draft preview is ephemeral; keep under Telegram draft text budget.
-        if len(buf) > TELEGRAM_MESSAGE_MAX:
-            buf = buf[-TELEGRAM_MESSAGE_MAX:]
-        self._draft_buf[chat_id] = buf
-        await self.sender.send_message_draft(
-            chat_id=chat_id,
-            draft_id=draft_id,
-            text=escape_html(buf),
-            parse_mode=self.parse_mode,
-        )
-        self._last_draft_at[chat_id] = time.monotonic()
+        start_flush = False
+        async with self._lock_for(chat_id):
+            if not self._draft_alive.get(chat_id):
+                self._next_draft_id(chat_id)
+            buf = self._draft_buf.get(chat_id, "") + chunk
+            # Draft preview is ephemeral; keep under Telegram draft text budget.
+            if len(buf) > TELEGRAM_MESSAGE_MAX:
+                buf = buf[-TELEGRAM_MESSAGE_MAX:]
+            self._draft_buf[chat_id] = buf
+            if self._draft_inflight.get(chat_id):
+                self._draft_pending_flush[chat_id] = True
+                return
+            if not self._should_flush_now(chat_id):
+                return
+            self._draft_inflight[chat_id] = True
+            self._idle_event(chat_id).clear()
+            start_flush = True
+        if start_flush:
+            await self._run_flush(chat_id)
+
+    async def _run_flush(self, chat_id: int) -> None:
+        """One ``sendMessageDraft`` HTTP; then at most one trailing coalesced edit."""
+        try:
+            if not self._draft_alive.get(chat_id):
+                return
+            draft_id = self._draft_id.get(chat_id)
+            if draft_id is None:
+                return
+            buf = self._draft_buf.get(chat_id, "")
+            await self.sender.send_message_draft(
+                chat_id=chat_id,
+                draft_id=draft_id,
+                text=escape_html(buf) if buf else "",
+                parse_mode=self.parse_mode,
+            )
+            self._last_draft_at[chat_id] = self.clock()
+            self._draft_sent_len[chat_id] = len(buf)
+        finally:
+            trailing = False
+            async with self._lock_for(chat_id):
+                self._draft_inflight[chat_id] = False
+                if self._draft_alive.get(chat_id) and self._draft_pending_flush.get(chat_id):
+                    self._draft_pending_flush[chat_id] = False
+                    self._draft_inflight[chat_id] = True
+                    trailing = True
+                if not trailing:
+                    self._idle_event(chat_id).set()
+            if trailing:
+                await self._run_flush(chat_id)
+
+    async def _commit_draft(self, chat_id: int) -> str:
+        """Stop draft HTTP and return buffered prose so a real message can keep it."""
+        async with self._lock_for(chat_id):
+            gen = self._draft_gen.get(chat_id, 0)
+            buf = self._draft_buf.get(chat_id, "")
+            self._draft_alive[chat_id] = False
+            self._draft_pending_flush[chat_id] = False
+        await self._await_inflight(chat_id)
+        async with self._lock_for(chat_id):
+            if self._draft_gen.get(chat_id, 0) == gen:
+                self.restart_draft(chat_id)
+        return buf
+
+    async def _invalidate_draft(self, chat_id: int) -> None:
+        """Drop the live draft without persisting it (notices / explicit send)."""
+        async with self._lock_for(chat_id):
+            gen = self._draft_gen.get(chat_id, 0)
+            self._draft_alive[chat_id] = False
+            self._draft_pending_flush[chat_id] = False
+        await self._await_inflight(chat_id)
+        async with self._lock_for(chat_id):
+            if self._draft_gen.get(chat_id, 0) == gen:
+                self.restart_draft(chat_id)
+
+    async def _emit_plain(self, chat_id: int, text: str) -> None:
+        for piece in chunk_html(escape_html(text)):
+            await self.sender.send_message(
+                chat_id=chat_id, text=piece, parse_mode=self.parse_mode
+            )
 
     async def keepalive_draft(self, chat_id: int) -> None:
         """Re-send the same draft_id to reset the ~30s TTL (#40 / #32)."""
-        if not self._draft_alive.get(chat_id):
-            return
-        draft_id = self._draft_id.get(chat_id)
-        if draft_id is None:
-            return
-        buf = self._draft_buf.get(chat_id, "")
-        await self.sender.send_message_draft(
-            chat_id=chat_id,
-            draft_id=draft_id,
-            text=escape_html(buf) if buf else "",
-            parse_mode=self.parse_mode,
-        )
-        self._last_draft_at[chat_id] = time.monotonic()
+        start_flush = False
+        async with self._lock_for(chat_id):
+            if not self._draft_alive.get(chat_id):
+                return
+            if self._draft_id.get(chat_id) is None:
+                return
+            if self._draft_inflight.get(chat_id):
+                self._draft_pending_flush[chat_id] = True
+                return
+            self._draft_inflight[chat_id] = True
+            self._idle_event(chat_id).clear()
+            start_flush = True
+        if start_flush:
+            await self._run_flush(chat_id)
 
     async def finalize(self, chat_id: int) -> None:
         """Persist the draft buffer via ``sendMessage``, then drop the bubble."""
-        buf = self._draft_buf.get(chat_id, "")
-        self.restart_draft(chat_id)
+        buf = await self._commit_draft(chat_id)
         if buf.strip():
-            await self.send_plain(chat_id, buf)
+            await self._emit_plain(chat_id, buf)
         await self._cleanup_progress(chat_id)
 
     async def send_plain(self, chat_id: int, text: str) -> None:
         """Send escaped HTML chunks as real messages (destroys any live draft)."""
-        self.restart_draft(chat_id)
-        for piece in chunk_html(escape_html(text)):
-            await self.sender.send_message(chat_id=chat_id, text=piece, parse_mode=self.parse_mode)
+        await self._invalidate_draft(chat_id)
+        await self._emit_plain(chat_id, text)
 
     async def send_html(self, chat_id: int, html: str) -> None:
         """Send already-built HTML; restarts draft (#40)."""
-        self.restart_draft(chat_id)
+        await self._invalidate_draft(chat_id)
         for piece in chunk_html(html):
             await self.sender.send_message(chat_id=chat_id, text=piece, parse_mode=self.parse_mode)
 
@@ -890,35 +1025,68 @@ class Outbox:
             return
         await self.send_plain(chat_id, text)
 
+    async def _send_card(self, chat_id: int, html: str, markup: dict[str, Any]) -> Any:
+        """Persist live prose, then post a real card (Telegram dismisses the draft)."""
+        buf = await self._commit_draft(chat_id)
+        if buf.strip():
+            await self._emit_plain(chat_id, buf)
+        return await self.sender.send_message(
+            chat_id=chat_id,
+            text=html,
+            parse_mode=self.parse_mode,
+            reply_markup=self._coerce_markup(markup),
+        )
+
     async def send_approval_card(self, chat_id: int, **kwargs: Any) -> Any:
         kwargs.setdefault("locale", _chrome_locale(self.locale))
         html, markup = build_approval_card(**kwargs)
-        self.restart_draft(chat_id)
-        return await self.sender.send_message(
-            chat_id=chat_id,
-            text=html,
-            parse_mode=self.parse_mode,
-            reply_markup=self._coerce_markup(markup),
-        )
+        return await self._send_card(chat_id, html, markup)
 
     async def send_yolo_confirm(self, chat_id: int, *, token: str = "yolo") -> Any:
         html, markup = build_yolo_confirm_card(token=token)
-        self.restart_draft(chat_id)
-        return await self.sender.send_message(
-            chat_id=chat_id,
-            text=html,
-            parse_mode=self.parse_mode,
-            reply_markup=self._coerce_markup(markup),
-        )
+        return await self._send_card(chat_id, html, markup)
 
     async def send_undo_confirm(self, chat_id: int, *, token: str = "undo") -> Any:
         html, markup = build_undo_confirm_card(token=token)
-        self.restart_draft(chat_id)
-        return await self.sender.send_message(
+        return await self._send_card(chat_id, html, markup)
+
+    async def settle_approval_card(
+        self,
+        chat_id: int,
+        message_id: int,
+        *,
+        html: str = "",
+        text: str = "",
+    ) -> None:
+        """Delete the tapped card from the chat (Hermes-style).
+
+        Telegram may refuse delete (too old, already gone). Then strip the
+        buttons so the leftover card cannot be tapped again.
+        """
+        delete = getattr(self.sender, "delete_message", None)
+        if callable(delete):
+            try:
+                await delete(chat_id=chat_id, message_id=message_id)
+                return
+            except Exception:  # noqa: BLE001 — fall back to disarming buttons
+                _log.debug(
+                    "approval card delete failed chat=%s id=%s",
+                    chat_id,
+                    message_id,
+                    exc_info=True,
+                )
+        edit = getattr(self.sender, "edit_message", None)
+        if not callable(edit):
+            return
+        body = html.strip() if html.strip() else escape_html(text)
+        if not body:
+            return
+        await edit(
             chat_id=chat_id,
-            text=html,
+            message_id=message_id,
+            text=body,
             parse_mode=self.parse_mode,
-            reply_markup=self._coerce_markup(markup),
+            reply_markup=None,
         )
 
     def _coerce_markup(self, markup: dict[str, Any]) -> Any:

@@ -176,7 +176,7 @@ jarn -p "extract the version" --output-schema schema.json --json
 
 Outputs: `result`, `cost_usd`, `turns` — preset `ci` (ค่าเริ่มต้นของ action) ต้องมี Docker (Ubuntu runner มีให้) สำหรับ runner ที่ไม่มี Docker ให้ใช้ `preset: trusted-repo` คู่กับ `permission_mode: auto-edit` ดูตัวอย่าง [PR review](examples/github/pr-review.yml) · [issue-fix](examples/github/issue-fix.yml) และเอกสารเต็มที่ [docs/GITHUB_ACTION.md](docs/GITHUB_ACTION.md)
 
-**Telegram gateway** (ไม่บังคับ, DM สำหรับ operator คนเดียว) binary จาก npm/standalone รวมไว้แล้ว ส่วน Python ต้อง `pip install 'jarn[telegram]'` จากนั้น `jarn gateway setup` ห้ามใส่ `gateway:` ใน `.jarn/config.yaml` ของโปรเจกต์ ดู [docs/TELEGRAM_GATEWAY.md](docs/TELEGRAM_GATEWAY.md)
+**Telegram gateway** (ไม่บังคับ, DM สำหรับ operator คนเดียว) binary จาก npm/standalone รวมไว้แล้ว ส่วน Python ต้อง `pip install 'jarn[telegram]'` จากนั้น `jarn gateway setup` คำตอบสตรีมเป็นดราฟต์ที่ถูกรวมช่วง และปุ่มอนุมัติคงข้อความที่กำลังอ่านไว้ แล้วลบการ์ดออกจากแชทเมื่อแตะ ห้ามใส่ `gateway:` ใน `.jarn/config.yaml` ของโปรเจกต์ ดู [docs/TELEGRAM_GATEWAY.md](docs/TELEGRAM_GATEWAY.md)
 
 ## Permission modes
 
@@ -228,7 +228,7 @@ API key ถูกอ้างอิง ไม่ inline — `${ENV_VAR}` หร�
 
 ```bash
 uv sync --extra dev --extra telegram
-uv run pytest                 # 3375 tests: logic + mocked-agent + packaging gate
+uv run pytest                 # 3384 tests: logic + mocked-agent + packaging gate
 uv run ruff check src tests scripts
 uv run mypy src/
 uv run jarn doctor            # เพิ่ม --json สำหรับเครื่องอ่าน

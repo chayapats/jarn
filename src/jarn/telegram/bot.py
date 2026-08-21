@@ -494,6 +494,8 @@ class TelegramBotApp:
         if parsed is None:
             return
 
+        await self._settle_callback_card(cb, chat_id=chat_id)
+
         if parsed.kind in {"yolo", "undo"}:
             await self.backend.submit_verdict(
                 chat_id=chat_id,
@@ -548,6 +550,40 @@ class TelegramBotApp:
                 approved=True,
                 kind="plan",
                 plan_mode_target=target,
+            )
+
+    async def _settle_callback_card(self, cb: Any, *, chat_id: int) -> None:
+        """Remove the tapped card from the chat (best-effort)."""
+        if self._outbox is None:
+            return
+        msg = getattr(cb, "message", None)
+        if msg is None and isinstance(cb, dict):
+            msg = cb.get("message")
+        if msg is None:
+            return
+        if isinstance(msg, dict):
+            mid = msg.get("message_id")
+            html = str(msg.get("html_text") or "")
+            text = str(msg.get("text") or "")
+        else:
+            mid = getattr(msg, "message_id", None)
+            html = str(getattr(msg, "html_text", None) or "")
+            text = str(getattr(msg, "text", None) or "")
+        if not isinstance(mid, int) or isinstance(mid, bool):
+            return
+        try:
+            await self._outbox.settle_approval_card(
+                chat_id,
+                mid,
+                html=html,
+                text=text,
+            )
+        except Exception:  # noqa: BLE001 — verdict still proceeds
+            _log.debug(
+                "approval card settle failed chat=%s id=%s",
+                chat_id,
+                mid,
+                exc_info=True,
             )
 
     async def _handle_message(self, msg: Any, *, chat_id: int, user_id: int) -> None:
