@@ -134,15 +134,12 @@ def test_readme_rows_cover_all_builtins():
 
 
 def test_readme_commands_match_registry():
-    """README built-in command table stays aligned with BUILTINS."""
-    from jarn.commands.registry import COMMAND_SPECS
-
+    """README defers the slash-command inventory to /help (registry SSOT)."""
     readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
-    for spec in COMMAND_SPECS:
-        if spec.alias_of:
-            continue
-        assert f"/{spec.name}" in readme
-        assert spec.description in readme, f"README missing description for /{spec.name}"
+    assert "/help" in readme
+    assert "docs/PERMISSIONS.md" in readme
+    assert "docs/CONFIGURATION.md" in readme
+    assert "docs/EXTENDING.md" in readme
 
 
 def test_route_for_unknown():

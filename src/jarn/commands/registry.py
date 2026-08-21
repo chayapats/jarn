@@ -1,6 +1,6 @@
 """Single source of truth for built-in slash-command metadata.
 
-``/help``, completion, README parity, usage errors, and controller dispatch all
+``/help``, completion, usage errors, and controller dispatch all
 read this module. Add a command here first; handlers and docs follow.
 """
 

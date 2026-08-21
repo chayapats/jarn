@@ -5,6 +5,11 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Rewrite `README.md` and `README-TH.md` as a short overview (install, quick start,
+  usage, permission modes). Slash-command inventory lives in `/help`.
+
 ## [1.0.11] - 2026-08-21
 
 OpenCode Go as the first-run API-key path, plus the npm publish path fix so

@@ -149,16 +149,12 @@ reports the exact body tokens, scope, source, and truncation state as plain text
 Shipped commands are declared in `src/jarn/commands/registry.py` as typed
 `CommandSpec` entries (`layer: core` / `ui` / `both`). `extensibility/commands.py`
 exposes a `BUILTINS` facade for completion and older call sites. `/help`, usage
-errors, Tab completion, and the README command table all derive from the registry —
-when adding a built-in, update `COMMAND_SPECS`, add matching
-`help.cmd.<name>.description` (and `.blurb` when the detail page needs more than
-the one-liner) in both `en` and `th` catalogs in `src/jarn/tui/i18n.py`, and keep
-`README.md` in sync (`tests/test_phase3.py::test_readme_commands_match_registry`).
-English registry descriptions stay the README SSOT; `/help` chrome goes through
-`t()`.
-
-The README command table is the authoritative list (kept in sync by the parity
-test). See [README.md § Built-in commands](../README.md#built-in-commands).
+errors, and Tab completion all derive from the registry — when adding a built-in,
+update `COMMAND_SPECS` and add matching `help.cmd.<name>.description` (and `.blurb`
+when the detail page needs more than the one-liner) in both `en` and `th` catalogs
+in `src/jarn/tui/i18n.py`. English registry descriptions are the `/help` SSOT;
+chrome goes through `t()`. `tests/test_phase3.py` checks registry parity. The
+README points operators to `/help` instead of duplicating the table.
 
 ### Custom commands
 
