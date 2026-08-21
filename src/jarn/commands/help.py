@@ -312,10 +312,10 @@ def unknown_command(
 
 
 def readme_command_rows() -> list[tuple[str, str]]:
-    """(command cell, description) rows for README parity tests.
+    """(command cell, description) rows generated from the registry.
 
     Alias-only specs are omitted: the primary row's description names them.
-    English registry copy is the README SSOT — not the locale catalog.
+    English registry copy is the ``/help`` SSOT — not the locale catalog.
     """
     rows: list[tuple[str, str]] = []
     for spec in COMMAND_SPECS:

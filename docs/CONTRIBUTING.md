@@ -50,11 +50,11 @@ If you touch anything under `npm/` (the `jarn-cli` launcher or the package-assem
 script), run those two `node --test` files locally too.
 
 When adding a built-in command, add a `CommandSpec` in `src/jarn/commands/registry.py`
-(not `extensibility/commands.py`). `/help`, usage errors, Tab completion, and the
-README command table all derive from that registry — `tests/test_phase3.py` checks
-parity.
+(not `extensibility/commands.py`). `/help`, usage errors, and Tab completion all
+derive from that registry — `tests/test_phase3.py` checks parity. The README
+points operators to `/help` rather than duplicating the inventory.
 
-**Doc sync:** user-facing docs live in `README.md`, `JARN.md`, `SPEC.md`, and
+**Doc sync:** user-facing docs live in `README.md`, `README-TH.md`, `JARN.md`, `SPEC.md`, and
 `docs/*.md`. Built-in command lists must match `BUILTINS`; test counts must match
 `uv run pytest -q`.
 

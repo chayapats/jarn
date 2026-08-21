@@ -1,17 +1,11 @@
 <div align="center">
 
-```
-     ██╗  █████╗  ██████╗  ███╗   ██╗
-     ██║ ██╔══██╗ ██╔══██╗ ████╗  ██║
-     ██║ ███████║ ██████╔╝ ██╔██╗ ██║
-██   ██║ ██╔══██║ ██╔══██╗ ██║╚██╗██║
-╚█████╔╝ ██║  ██║ ██║  ██║ ██║ ╚████║
- ╚════╝  ╚═╝  ╚═╝ ╚═╝  ╚═╝ ╚═╝  ╚═══╝
-```
-
-**J.A.R.N. — Just A Reliable Nerd**
+# J.A.R.N. — Just A Reliable Nerd
 
 TUI-first coding agent harness ที่สร้างบน [DeepAgents](https://github.com/langchain-ai/deepagents)
+
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 
 [English](README.md) · **ภาษาไทย**
 
@@ -19,71 +13,57 @@ TUI-first coding agent harness ที่สร้างบน [DeepAgents](https
 
 ---
 
-J.A.R.N. คือ terminal coding agent ที่ออกแบบในแนวทางเดียวกับ Claude Code และ Codex CLI แต่สร้างขึ้นเป็น harness ของตัวเองบน DeepAgents library จุดเด่นที่แตกต่างคือ **ความน่าเชื่อถือ (reliability)**: agent จะวางแผนก่อนลงมือ, ตรวจสอบผลลัพธ์ของตัวเอง, ขอ permission ก่อนทำทุกอย่างที่มีความเสี่ยง และไม่อ้างว่าทำสำเร็จแบบเดา
+J.A.R.N. คือ terminal coding agent ในแนวเดียวกับ Claude Code และ Codex CLI แต่สร้างเป็น harness ของตัวเองบน DeepAgents โดยวางแผนก่อนลงมือ ถามก่อนทำสิ่งที่เสี่ยง และบังคับ verification ของโปรเจกต์ได้ แทนที่จะถือว่าสำเร็จเอง Tool รันบน **host** ของคุณเป็นค่าเริ่มต้น — อ่าน [SECURITY.md](SECURITY.md) ก่อนใช้ และถือ `.jarn/config.yaml` ของโปรเจกต์เป็น untrusted จนกว่าจะตรวจแล้ว
 
-รันทั้งหมดใน terminal ของคุณ (Web UI อยู่ใน roadmap หลัง launch) ความสามารถเด่นได้แก่: **AGENTS.md / CLAUDE.md interop** (ทำงานร่วมกับ agent อื่นได้ทันที), **headless one-shot mode** (`jarn -p "..."`), **JSONL session transcript**, **`!` shell escape** (output ถูกส่งเข้า context ของ agent turn ถัดไปโดยอัตโนมัติ), **OS-level execution sandbox** (macOS `sandbox-exec` / Linux `bwrap`) และ **Docker container backend** (`execution.backend: docker`), **presets** (`/preset`, `jarn --preset`) ที่ตั้ง mode + sandbox พร้อมกันในคำสั่งเดียวพร้อม untrusted floor, **auto-checkpoint + `/undo` / `/redo`**, **repo map** (`/map`), **wiki knowledge base** (`/wiki`), **`/config` settings panel** (UI แบบ tab โต้ตอบได้ เซฟลง `~/.jarn/config.yaml`), และ **MCP health** ราย server (`/mcp status`)
+## ความสามารถ
 
-> **สถานะ:** source ชุดนี้มุ่งสู่ v1.0.11 General Availability การ publish ถูกควบคุม
-> ด้วย automated gates, protected UAT และ strict evidence; โปรดดู GitHub Releases,
-> PyPI และ npm เพื่อยืนยันรุ่นที่ publish อยู่ในปัจจุบัน
-> ตามเอกสารชุดนี้ v0.10 เพิ่ม
-> **Telegram gateway สำหรับ operator คนเดียว**: ควบคุมผ่าน DM แบบ long-poll,
-> แยก worker ตาม project root, approval card ที่คงอยู่หลัง restart, รับไฟล์/รูป,
-> ตั้งงานตามเวลา และ deploy บน VPS ด้วย systemd ได้ Release ก่อนหน้านี้เพิ่ม
-> **engine reliability**, **UX parity กับ Claude Code**, ความสามารถอย่าง `--add-dir`,
-> inline images, structured headless output, diagnostics loop และ launch systems
-> สถาปัตยกรรม, config, permission engine และ terminal REPL มีเทสต์ครบ;
-> การเรียก model จริงต้องใช้ API key ของคุณเอง หรือ ChatGPT/Codex subscription ดู [CHANGELOG.md](CHANGELOG.md) และ
-> [SECURITY.md](SECURITY.md)
-
-> **ความปลอดภัย:** J.A.R.N. รัน tool บน **host** ของคุณโดยตรงเป็นค่าเริ่มต้น (filesystem + shell จริง) `.jarn/config.yaml` ของโปรเจกต์สามารถประกาศ hook, MCP server, และ provider override ได้ — ควร trust เฉพาะ repository ที่คุณยอมรันโค้ดจากมันเท่านั้น โปรเจกต์ที่ยังไม่ trust จะถูกกั้นไว้จนกว่าคุณจะอนุมัติ (`jarn trust`) โปรดอ่าน [SECURITY.md](SECURITY.md) ก่อนใช้งาน
-
-## ทำไมต้องเลือก J.A.R.N.?
-
-- **Reliable โดยไม่ micromanage model** — system prompt หลักมีเฉพาะเป้าหมายและขอบเขตความปลอดภัยสั้นๆ จึงปล่อยให้ model เลือก workflow ตามงาน ค่าเริ่มต้น `verify.gate: suggest` จะแสดงคำสั่งตรวจสอบที่ตรวจพบ ส่วน `verify.gate: auto` จะรันคำสั่งนั้นก่อนจบงาน หากไม่ผ่านระบบจะส่งผลกลับให้ agent แก้แบบจำกัดรอบ และมี diagnostics feedback loop สำหรับไฟล์ที่แก้ (`verify.diagnostics: auto`)
-- **ปลอดภัยเป็นค่าเริ่มต้น** — ระบบ permission หลายชั้น (coarse mode + fine-grained rules) คั่นกลางทุก file write และ shell command โดยมี *danger-guard* ที่ยืนยันการกระทำร้ายแรงเสมอ — แม้แต่ใน YOLO mode
-- **รู้ขอบเขตของคำสั่ง** — project context และ skill ใช้ชี้นำได้เฉพาะเป้าหมายที่ผู้ใช้ระบุ ส่วนข้อความจาก source file, เว็บ, log และผลลัพธ์ของ tool ถือเป็นข้อมูล จึงห้าม override เจตนาของผู้ใช้หรือ permission, trust และ sandbox boundary ของระบบ และ agent จะใช้เฉพาะ tool ที่ policy/backend ปัจจุบันเปิดให้จริง
-- **เลือก model เองได้ (Bring your own model)** — รองรับ 15 provider รวม **Codex ผ่าน ChatGPT subscription**, OpenRouter, OpenCode, Anthropic, OpenAI, Google, Mistral, Groq, DeepSeek, Together, Fireworks, xAI, Ollama, LM Studio, และ generic OpenAI-compatible endpoint พร้อม per-task routing ให้ subagent ใช้ model ที่เหมาะกับงานได้
-- **สตรีม subagent แบบมีป้ายกำกับ** — output จาก subagent ที่ถูก delegate ผ่าน `task` จะถูกติดป้ายด้วย prefix สีจาง `┊ <name> ` และยุบเป็นบรรทัดสถานะเดียว `└ <name>: working… (N tool calls)` (ข้อความเต็มดูได้ใน pager ด้วย Ctrl+O) ทำให้ subagent ที่รันขนานกันไม่ปนกันแบบไม่มีชื่ออีกต่อไป
-- **รู้ต้นทุนและ context ตลอดเวลา** — ติดตาม token/cost แบบ live (พร้อม breakdown ราย tool) และ budget ต่อ session ที่แจ้งเตือนหรือหยุดอัตโนมัติได้; มี context-% gauge และ throughput การ generate แบบ live (tok/s) ที่ทำงานกับ local model (LM Studio / Ollama) ด้วย ไม่ใช่แค่ cloud model ที่มีราคา
-- **Prompt module ที่ตรวจสอบและเลือกง่าย** — มีเพียง kernel ด้าน reliability/security 146 คำที่ติดมากับทุก turn ส่วน plan guidance, project context ที่ trust แล้ว, catalog ของ memory/skill/wiki, repo map, วันที่ และ skill body ที่โหลดเอง จะ activate เฉพาะเมื่อเกี่ยวข้องและมี token cap; `/modules` เปิดหน้าจอเลือกพร้อมคำอธิบายสั้นๆ ส่วน `/modules active` แสดง state/scope/source/token/truncation จริง
-- **รู้วันที่ (Date-aware)** — วันที่ท้องถิ่นปัจจุบันถูกใส่เพียงครั้งเดียวต่อ thread/วัน ทำให้คำสั่งที่อ้างอิง "วันนี้" ไม่ยึดติดกับ training cutoff ของ model
-- **ค้นหาเว็บแบบ Pluggable** — `web_search` รองรับ Tavily, Brave Search, และ Exa นอกจาก DuckDuckGo แบบ keyless ที่ใช้เป็น fallback  ตั้งค่า `search.provider: auto` (ค่าเริ่มต้น) แล้ว export `TAVILY_API_KEY` / `BRAVE_API_KEY` / `EXA_API_KEY` — ตัวแรกที่มีค่าจะถูกใช้งาน
-- **ขยายได้ง่าย** — skill, slash command, custom subagent, lifecycle hook, และ MCP server ทั้งหมดกำหนดผ่านไฟล์ธรรมดาใน `~/.jarn` และ `.jarn/`
+- **Verified completion** — `verify.gate: auto` รันคำสั่ง acceptance ที่ตรวจพบ อนุญาตให้ซ่อมแบบจำกัดรอบหนึ่งครั้ง แล้วทำให้ turn ล้มถ้ายังไม่ผ่าน (ค่าเริ่มต้น `verify.gate: suggest`)
+- **Diagnostics loop** — `verify.diagnostics: auto` lint ไฟล์ที่แก้ใน turn นั้น (ruff + pyright) และ queue auto-fix ได้หนึ่งรอบ
+- **Permission system** — ทุก file write และ shell command ผ่าน `plan` / `ask` / `auto-edit` / `yolo` รวมถึง allow/deny rule แบบละเอียด
+- **Trust gate** — hook, MCP server และ provider override ของโปรเจกต์ถูกตัดทิ้งจนกว่าจะรัน `jarn trust`
+- **Danger-guard** — `rm -rf`, force-push, `git reset --hard` และการเขียนนอก scope ต้องยืนยันหรือถูกบล็อกเสมอ รวมถึงใน YOLO
+- **Sandbox** — แยกที่ระดับ OS ด้วย macOS `sandbox-exec` / Linux `bwrap` หรือ `execution.backend: docker`
+- **เลือก model เอง** — 15 provider รวม ChatGPT (Codex subscription), OpenCode Go, OpenRouter, Anthropic, OpenAI, Google, Mistral, Groq, DeepSeek, Together, Fireworks, xAI, Ollama, LM Studio และ OpenAI-compatible endpoint
+- **Headless และ CI** — `jarn exec` / `jarn -p`, `--json`, `--output-schema` และ [GitHub Action](action/action.yml)
+- **Project context** — โหลด `JARN.md`, `AGENTS.md` หรือ `CLAUDE.md` (ไฟล์แรกที่มี) ในฐานะข้อมูล ไม่ใช่การทับ policy
+- **ขยายได้** — skill, slash command, subagent, hook และ MCP จาก `~/.jarn` และ `.jarn/`
+- **Checkpoint** — auto-checkpoint พร้อม `/undo`, `/redo` และ `/rewind`
+- **Multi-root** — `--add-dir` (ใส่ซ้ำได้) เพิ่ม writable root; context และ undo ยังอยู่ที่ primary root
 
 ## ติดตั้ง
 
-รองรับ macOS (Apple Silicon) และ Linux (x64 / arm64); บน Windows ใช้ผ่าน WSL
+รองรับ macOS (Apple Silicon) และ Linux (x64 / arm64) บน Windows ให้ใช้ WSL ส่วน Intel Mac ใช้ pip/uv (ไม่มี binary npm; ตัวติดตั้ง curl จะ fallback เป็น managed Python)
 
-**แนะนำ — ติดตั้งครบด้วยคำสั่งเดียว:**
+**แนะนำ:**
 
 ```bash
 jarn_installer_tmp=$(mktemp "${TMPDIR:-/tmp}/jarn-install.XXXXXX") && trap '[ -z "${jarn_installer_tmp:-}" ] || rm -f "$jarn_installer_tmp"' 0 HUP INT TERM && curl -fsSL 'https://raw.githubusercontent.com/chayapats/jarn/main/install.sh' -o "$jarn_installer_tmp" && sh "$jarn_installer_tmp"; jarn_install_rc=$?; [ -z "${jarn_installer_tmp:-}" ] || rm -f "$jarn_installer_tmp"; trap - 0 HUP INT TERM; if [ "$jarn_install_rc" -eq 0 ] || [ "$jarn_install_rc" -eq 10 ]; then exec "$SHELL" -l; else (exit "$jarn_install_rc"); fi
 ```
 
-คำสั่งนี้ดาวน์โหลดลงไฟล์ชั่วคราวแบบ private ก่อน จึงไม่รัน shell ถ้า `curl` ล้มเหลว
-จากนั้นตัวติดตั้งจะสำรวจ `jarn` เก่าทุกตำแหน่ง ตรวจ OS/CPU/libc, ตรวจ SHA-256,
-stage และ smoke-test candidate, activate แบบ transaction และตรวจว่าคำสั่งใน login
-shell ชี้มาที่ตัวใหม่จริง หาก native binary ใช้ไม่ได้ เช่น GLIBC เก่า จะใช้ Python
-แบบ isolated ที่จัดการให้เอง ส่วน `exec "$SHELL" -l` ท้ายคำสั่งแก้ข้อจำกัดที่ child
-shell ไม่สามารถเปลี่ยน PATH ของ parent shell ได้
+คำสั่งนี้ดาวน์โหลดลงไฟล์ชั่วคราวก่อน (ถ้า `curl` ล้มเหลวจะไม่ถูกรัน) จากนั้นตรวจ checksum, smoke-test และ activate release สถานะ `10` แปลว่าติดตั้งแล้ว แต่ parent shell ยังต้อง `exec "$SHELL" -l` ดู [quickstart ห้านาที](docs/QUICKSTART.md) และ [แพลตฟอร์มที่รองรับ](docs/SUPPORTED_PLATFORMS.md)
 
-**ผ่าน npm** — เป็น binary สำเร็จรูป **ไม่ต้องมี Python**:
+<details>
+<summary>npm / pip / uv / source</summary>
+
+**npm** — binary สำเร็จรูป ไม่ต้องมี Python (Linux x64/arm64, macOS Apple Silicon):
 
 ```bash
 npm install -g jarn-cli     # ได้คำสั่ง `jarn` (ใช้ `jarn-cli` ก็ได้)
 ```
 
-Intel mac ให้ติดตั้งผ่าน pip/uv แทน (ไม่มี binary npm สำหรับ Intel mac)
-
-**ผ่าน pip / uv** — ต้องการ **Python 3.12+** และ [uv](https://docs.astral.sh/uv/):
+**pip** — ต้องการ Python 3.12+:
 
 ```bash
-pip install jarn            # PyPI (alpha)
-# หรือ: uv tool install jarn
+pip install jarn
 ```
 
-**ติดตั้งจาก source:**
+**uv:**
+
+```bash
+uv tool install jarn
+```
+
+**จาก source:**
 
 ```bash
 git clone https://github.com/chayapats/jarn && cd jarn
@@ -91,325 +71,167 @@ uv sync --extra dev --extra telegram
 uv run jarn
 ```
 
-`uv.lock` ถูก track ไว้ใน repo เพื่อให้ทุกคนในทีมได้ dependency เวอร์ชันเดียวกัน
+`uv.lock` ถูก track ไว้ให้ทีมได้ dependency เวอร์ชันเดียวกัน การติดตั้งผ่าน package manager ยังเป็นของ manager นั้น ให้อัปเดตหรือถอนด้วยตัวนั้น ดู [update, rollback และ uninstall](docs/UPDATE_ROLLBACK.md)
 
-### แชร์กับทีม
+</details>
 
 ```bash
-git clone <repo-url> && cd jarn
-uv sync --extra dev --extra telegram
-uv run jarn setup          # ทำครั้งเดียวต่อเครื่อง — config เก็บแค่ reference ไป keychain/env/file
-cd your-project
-jarn doctor                # ตรวจสอบ config, provider, และ extension ที่โหลดอยู่
-jarn                       # จะถามให้ trust ถ้าโปรเจกต์ประกาศ hook/MCP
-jarn trust .               # pre-approve repo ที่คุณควบคุมเอง (ไม่บังคับ)
+jarn uninstall                 # แยกหมวด; เก็บข้อมูลผู้ใช้เป็นค่าเริ่มต้น
+jarn uninstall --yes           # เฉพาะ executable ที่ระบบจัดการ
+jarn uninstall --credentials --yes
 ```
 
-ถ้า repo ที่ clone มามี `.jarn/config.yaml` ที่ประกาศ hook, MCP server หรือ provider override J.A.R.N. จะถามก่อนทำตาม คุณสามารถปฏิเสธเพื่อรันต่ออย่างปลอดภัยโดยตัดค่าเหล่านั้นทิ้ง หรือรัน `jarn trust <path>` หลังตรวจสอบ repo แล้ว ใช้ `jarn doctor` เพื่อดูว่า skill, command, subagent, hook, และ MCP server ใดจะถูกโหลด (รวมถึงไฟล์ที่ถูกบังหรือถูกข้าม)
+ไม่แตะ `.jarn/` ระดับโปรเจกต์ และไม่ลบ Node, Python, uv หรือ Codex ที่ใช้ร่วมกับโปรแกรมอื่น
 
-## ถอนการติดตั้ง (Uninstall)
+## เริ่มใช้งาน
 
-ถอนแบบแยกหมวดและเก็บข้อมูลผู้ใช้ไว้เป็นค่าเริ่มต้น:
-
-```bash
-jarn uninstall                         # เลือกหมวดทีละรายการ
-jarn uninstall --yes                   # ลบเฉพาะ executable ที่ J.A.R.N. จัดการ
-jarn uninstall --sessions --cache      # ยืนยันเฉพาะ session และ cache
-jarn uninstall --credentials --yes     # ลบ credential ของ J.A.R.N. อย่างชัดเจน
-```
-
-ไม่ลบ Node, Python, uv หรือ Codex ที่ใช้ร่วมกับโปรแกรมอื่น และไม่แตะ `.jarn/`
-ระดับโปรเจกต์ ดูรายละเอียดใน [Update/rollback/uninstall](docs/UPDATE_ROLLBACK.md)
-
-## เริ่มใช้งาน (Quick Start)
-
-**ด้วย ChatGPT/Codex subscription (ไม่คิดค่า OpenAI API key แยก):**
+**ChatGPT / Codex subscription** (ไม่คิดค่า OpenAI API key แยก):
 
 ```bash
-jarn setup                # เลือก “Continue with ChatGPT”
-# setup จะเสนอ Codex dependency ที่ตรวจสอบแล้วและแสดงขั้นตอน login ให้เอง
-jarn auth status          # ตรวจ dependency, auth mode, plan/workspace โดยไม่แสดง token
+jarn setup                 # เลือก “Continue with ChatGPT”
+jarn auth status           # ตรวจ dependency, auth mode, plan/workspace — ไม่โชว์ token
 cd your-project && jarn
 ```
 
-J.A.R.N. เชื่อมผ่าน Codex App Server ทางการและไม่อ่าน/เก็บ ChatGPT OAuth token
-provider นี้ปิด execution tool ภายใน Codex แล้วแปลงคำขอใช้ tool กลับมาเป็น tool call
-ของ J.A.R.N. เพื่อให้ permission, danger-guard, checkpoint และ `/undo` เดิมยังควบคุมงาน
-usage จะแสดง token โดยมี API cost เป็น `$0` แต่ยังใช้ quota/credits ของ ChatGPT plan
-สำหรับ CI ที่ใช้ร่วมกันควรใช้ provider แบบ API key แทน
+J.A.R.N. คุยกับ Codex App Server ทางการ และไม่อ่านหรือเก็บ ChatGPT OAuth token พื้นที่ execution ของ Codex ถูกปิด คำขอใช้ tool ถูกแปลงเป็น tool call ของ J.A.R.N. เพื่อให้ permission, danger-guard, checkpoint และ `/undo` ยังคุมงาน usage แสดง token ที่ API cost `$0` แต่ยังใช้โควตาของ ChatGPT plan สำหรับ CI ที่ใช้ร่วมกันให้เลือก provider แบบ API key
 
-**ด้วย OpenRouter OAuth (คำสั่ง credential แยกใน Advanced):**
+**OpenRouter OAuth:**
 
 ```bash
-jarn login        # เปิดเบราว์เซอร์ → อนุญาต → เก็บ key ใน OS keychain อัตโนมัติ
-cd your-project
-jarn              # เปิด TUI (จะรัน setup ถ้ายังไม่ได้ตั้งค่า)
+jarn login                 # เปิดเบราว์เซอร์ → อนุญาต → เก็บ key ใน OS keychain
+cd your-project && jarn
 ```
 
-**หรือตั้งค่าด้วยตนเอง:**
+ตัว setup ไม่รัน OpenRouter OAuth (จะ persist key ก่อนยืนยัน) เมื่อต้องการเส้นทางนี้ให้ใช้ `jarn login`
+
+**ตั้งค่าเอง:**
 
 ```bash
-jarn setup        # wizard แรกเริ่ม: เลือก provider, เก็บ API key, ตั้งค่า default
+jarn setup                 # เลือก provider, อ้างอิง key, ตั้งค่า default
 cd your-project
-jarn init         # สร้างไฟล์ JARN.md สำหรับ project context (ไม่บังคับ แต่แนะนำ)
-jarn              # เปิด TUI
-jarn doctor       # ตรวจสอบ config / provider / key / extension ได้ตลอดเวลา
-jarn bug          # เขียนรายงานที่สแกน privacy แล้ว และถามก่อนเปิด GitHub
+jarn init                  # สร้าง JARN.md (ไม่บังคับ)
+jarn
+jarn doctor                # ตรวจ config, provider, extension
 ```
 
-สำหรับ Ollama ตัว wizard จะอ่าน capability จาก local `/api/show` และเสนอเฉพาะ
-model ที่รองรับ `tools`; model แบบ completion-only จะถูกปฏิเสธก่อนเริ่ม turn
-พร้อมคำสั่ง `ollama pull` และ `/model refresh` ที่ทำต่อได้ทันที
+Wizard ยังมี **OpenCode Go** (ทางลัด API key ตอนติดตั้งครั้งแรก), cloud provider อื่น และ local model (Ollama / LM Studio) ถ้ายังไม่มี config การเปิดครั้งแรกจะรัน setup ให้เอง ใน TUI ใช้ `/help` เพื่อดู slash command
 
-**Shell completions (tab-complete subcommand และ flag):**
+<details>
+<summary>Shell completions</summary>
 
 ```bash
-# zsh — รันครั้งเดียว แล้วรีสตาร์ท shell
+# zsh — ครั้งเดียว แล้วรีสตาร์ท shell
 jarn completions zsh > ~/.zfunc/_jarn
-# เพิ่มใน ~/.zshrc: fpath=(~/.zfunc $fpath) && autoload -Uz compinit && compinit
+# ใน ~/.zshrc ถ้ายังไม่มี: fpath=(~/.zfunc $fpath) && autoload -Uz compinit && compinit
 
-# bash — รันครั้งเดียว แล้ว source หรือรีสตาร์ท shell
+# bash
 jarn completions bash > ~/.bash_completions/jarn.bash
-# เพิ่มใน ~/.bashrc: source ~/.bash_completions/jarn.bash
+# ใน ~/.bashrc: source ~/.bash_completions/jarn.bash
 
-# fish — รันครั้งเดียว
+# fish
 jarn completions fish > ~/.config/fish/completions/jarn.fish
 ```
 
-ถ้ายังไม่มี config เลย J.A.R.N. จะรัน setup wizard ให้อัตโนมัติในการเปิดครั้งแรก
-เพื่อให้ setup ย้อนกลับได้อย่างปลอดภัย OpenRouter OAuth ไม่เขียน credential ระหว่าง
-wizard; เลือก OpenRouter ใน Advanced แล้วรัน `jarn login` แยกหลัง setup เสร็จ
+</details>
 
-### Telegram gateway (ไม่บังคับ)
+## การใช้งาน
 
-v0.10 เพิ่ม gateway แบบ DM-only สำหรับ operator คนเดียว เหมาะกับ VPS ที่เปิดตลอด
-binary จาก npm รวมความสามารถนี้แล้ว ส่วนการติดตั้งด้วย Python ต้องเพิ่ม extra:
+**Interactive:**
 
 ```bash
-pip install 'jarn[telegram]'       # ข้ามบรรทัดนี้เมื่อใช้ standalone/npm distribution
-jarn gateway setup
+jarn
+jarn --resume              # เลือก session เก่า
+jarn --add-dir ../lib      # เพิ่ม writable root (ใส่ซ้ำได้)
 ```
 
-Wizard จะตรวจ token กับ Telegram, ให้ส่ง `/start` หา bot แล้วค้นหาและยืนยัน numeric
-user ID ให้อัตโนมัติ จากนั้นเก็บ token ใน OS keychain (fallback เป็นไฟล์ owner-only),
-อัปเดต global config แบบ transactional และบน Linux จะเสนอสร้าง user systemd service
-ให้ด้วย จึงไม่ต้อง export token หรือเปิด YAML แก้เอง ใช้ `jarn gateway status` เพื่อตรวจสอบ
-ภายหลัง ส่วน repo allowlist และการ deploy ขั้นสูงดูได้ที่
-[คู่มือ Telegram gateway](docs/TELEGRAM_GATEWAY.md)
+พิมพ์แล้วกด Enter `/help` แสดงคำสั่ง Shift+Tab วน permission mode บทสนทนาอยู่ใน native scrollback ของ terminal — ไม่ใช้ alternate screen
 
-## Non-interactive / scripting (โหมด headless)
+**Headless / scripting:**
 
 ```bash
-jarn -p "summarise the open TODOs"          # one-shot: พิมพ์คำตอบแล้วออก
-echo "what changed?" | jarn -p -            # อ่าน prompt จาก stdin
-jarn -p "do X" --json                        # output เป็น JSON: {result, tokens, cost, turns}
-jarn -p "do X" --model anthropic/claude-opus-4-8  # override model สำหรับรันนี้
-jarn -p "do X" --permission-mode auto-edit  # อนุญาต file write โดยไม่ถาม
-jarn -p "do X" --cwd /path/to/project       # กำหนด working directory
+jarn exec "summarise the open TODOs"
+jarn exec --json "what changed?"
+jarn -p "summarise the open TODOs"                 # สัญญาเดียวกับ exec
+echo "what changed?" | jarn -p -
+jarn -p "do X" --json
+jarn -p "do X" --model anthropic/claude-opus-4-8
+jarn -p "do X" --mode auto-edit
+jarn -p "do X" --cwd /path/to/project
+jarn -p "extract the version" --output-schema schema.json --json
 ```
 
-**Fail-closed safety:** mode เริ่มต้น (`ask` / `plan`) จะปฏิเสธ tool ใด ๆ ที่ปกติต้องขออนุมัติ และออกด้วย non-zero exit code ถ้าต้องการให้ทำงานโดยไม่มีคนดู ให้ใช้ `--permission-mode auto-edit` หรือ `yolo` — danger-guard ยังบล็อกคำสั่งร้ายแรงในทุก mode อยู่ดี
+`--mode` (`plan` / `ask` / `auto-edit` / `yolo`) คือ flag สาธารณะ; `--permission-mode` เป็น alias ที่ซ่อนไว้ ค่าเริ่มต้น `ask` / `plan` ปฏิเสธ tool ที่ต้องอนุมัติแล้วออก non-zero — ส่ง `--mode auto-edit` หรือ `yolo` สำหรับงานที่ไม่มีคนดู Danger-guard ยังทำงานในทุก mode
 
-## บน CI
+เมื่อใช้ `--output-schema` object ที่ parse ได้จะแทนที่ `result` แบบข้อความในซอง `--json` ออก `0` เมื่อสำเร็จ; ออก `9` พร้อม `error.kind: "schema"` ถ้าคำตอบไม่ตรง schema; ออก `2` พร้อม `error.kind: "usage"` ถ้าอ่านไฟล์ schema ไม่ได้
 
-J.A.R.N. มี [GitHub Actions composite action](action/action.yml) ให้ใช้ในทุก workflow — PR review, issue-fix bot, nightly audit
+**CI** — [GitHub Action](action/action.yml):
 
 ```yaml
 - uses: chayapats/jarn/action@main
   with:
     prompt: "Review this diff: …"
-    preset: "review-only"     # อ่านอย่างเดียว; ใช้ 'ci' สำหรับรันที่เขียนไฟล์ได้
-    max_turns: "5"
+    preset: "review-only"     # อ่านอย่างเดียว; ใช้ 'ci' เมื่อต้องการเขียนไฟล์
     api_key: ${{ secrets.OPENROUTER_API_KEY }}
 ```
 
-**Outputs:** `result`, `cost_usd`, `turns`
+Outputs: `result`, `cost_usd`, `turns` — preset `ci` (ค่าเริ่มต้นของ action) ต้องมี Docker (Ubuntu runner มีให้) สำหรับ runner ที่ไม่มี Docker ให้ใช้ `preset: trusted-repo` คู่กับ `permission_mode: auto-edit` ดูตัวอย่าง [PR review](examples/github/pr-review.yml) · [issue-fix](examples/github/issue-fix.yml) และเอกสารเต็มที่ [docs/GITHUB_ACTION.md](docs/GITHUB_ACTION.md)
 
-**หมายเหตุ Docker:** preset `ci` (ค่าเริ่มต้น) ต้องใช้ Docker (ubuntu runner มีให้) สำหรับ runner ที่ไม่มี Docker (macOS/Windows) ให้ใช้ `preset: trusted-repo` คู่กับ `permission_mode: auto-edit` (mode ที่ระบุชัดจะ override mode ของ preset) — ดู [docs/GITHUB_ACTION.md](docs/GITHUB_ACTION.md)
+**Telegram gateway** (ไม่บังคับ, DM สำหรับ operator คนเดียว) binary จาก npm/standalone รวมไว้แล้ว ส่วน Python ต้อง `pip install 'jarn[telegram]'` จากนั้น `jarn gateway setup` ห้ามใส่ `gateway:` ใน `.jarn/config.yaml` ของโปรเจกต์ ดู [docs/TELEGRAM_GATEWAY.md](docs/TELEGRAM_GATEWAY.md)
 
-ตัวอย่าง workflow: [PR review bot](examples/github/pr-review.yml) ·
-[Issue-fix bot](examples/github/issue-fix.yml)
-เอกสารเต็ม: [docs/GITHUB_ACTION.md](docs/GITHUB_ACTION.md)
-
-## หน้าตา interface: native inline
-
-```bash
-jarn            # เริ่ม session ใหม่
-jarn --resume   # เลือก session เก่าที่ต้องการต่อตอน launch
-jarn --add-dir ../shared-lib --add-dir ../sibling-repo  # เพิ่ม writable root (ใส่ซ้ำได้)
-```
-
-**Multi-root workspaces (`--add-dir`):** ปกติ write scope ของ agent คือ project root
-เท่านั้น ใช้ `--add-dir <dir>` (ใส่ซ้ำได้) เพื่อให้สิทธิ์เขียนไปยัง directory พี่น้องด้วย
-(เหมาะกับงาน monorepo/sibling-repo) เพิ่มกลาง session ได้ด้วย `/add-dir <path>`
-(ต้องอนุมัติใน `ask` mode; ถูกปฏิเสธถ้า project ยังไม่ trust) root ที่เพิ่มขยายแค่
-**write scope** เท่านั้น — project context (JARN.md) และ checkpoint/undo (`/undo`,
-`/rewind`) ยังใช้ **primary root เท่านั้น**
-
-J.A.R.N. แสดงผล conversation ลงบน terminal buffer ปกติโดยตรง — ไม่มี alternate screen conversation ทั้งหมดอยู่ใน **native scrollback** ของ terminal: เลื่อนทีเดียวเลื่อนทุกอย่าง และ selection/copy ของ terminal ทำงานได้ตลอดทั้งประวัติ เหมือน Claude Code เป๊ะ reply ของ assistant จะ stream แบบ live และ render เป็น Markdown; tool call, การขออนุมัติ, และ diff preview ต่อ turn แสดงแบบ inline
-
-## วิธีใช้งาน
-
-```
-┌ toolbar: model · mode · queue · ctx · cost ─────────────────────────────┐
-│                                                                            │
-│   conversation stream (assistant output, tool calls, approvals)           │
-│                                                                            │
-├────────────────────────────────────────────────────────────────────────┤
-│ › your message…                                                          │
-└────────────────────────────────────────────────────────────────────────┘
-```
-
-- **พิมพ์** message แล้วกด **Enter** เพื่อส่ง (**Shift+Enter** / **Ctrl+J** สำหรับขึ้นบรรทัดใหม่)
-- ขึ้นต้นบรรทัดด้วย **`/`** เพื่อใช้ command (ดูด้านล่าง) ใช้ **`@`** อ้างอิง file path หรือ
-  rich mention:
-  - **`@<path>`** — file หรือ directory (ค่าเริ่มต้น; bare `@`)
-  - **`@folder:<frag>`** — directory เท่านั้น
-  - **`@symbol:<name>`** — symbol จาก repo map (function / class)
-  - **`@git:status|diff|staged|log`** — เมื่อส่ง จะถูกแทนที่ด้วย fenced block ของ git output จริง
-    (read-only: `--porcelain=v1 -b`, `diff`, `diff --staged`, `log --oneline -15`) ใช้ argv คงที่,
-    ไม่ผ่าน shell, timeout 5 วินาที output ถูก redact secret ก่อน inject
-  - **`@url:<url>`** — เมื่อส่ง จะถูก rewrite เป็น `fetch <url> with web_fetch and use its content`
-    (ไม่มีการ prefetch — network ยังอยู่ภายใต้ agent tool และ SSRF guard)
-- **↑ / ↓** เลื่อนดู input history
-- **Tab** ยืนยัน completion ที่ highlight อยู่ (`/command` หรือ `@file`) ระบบ completion
-  ใช้ **fuzzy engine สองชั้น**: prefix matches ที่ตรงแน่ๆ จะแสดงก่อน (predictability เดิม)
-  ตามด้วย subsequence fuzzy matches — เช่น `/cmit` หา `/commit` และ `@pyprjct` หา
-  `pyproject.toml`
-- **Ghost autosuggest:** ขณะพิมพ์ history entry ที่ตรงกันล่าสุดจะปรากฏเป็น ghost text สีหม่นหลัง cursor (แบบ fish/zsh) กด **→ (Right arrow)** หรือ **Ctrl+E** ที่ท้ายบรรทัดเพื่อยืนยัน suggestion เต็ม ghost จะซ่อนตัวขณะที่ completion dropdown เปิดอยู่; Right arrow ยังคงเลื่อน cursor กลางบรรทัดได้ปกติ
-- **Ctrl+R** เปิด **reverse-history picker**: overlay แบบ arrow-key สำหรับ 50 history entry ล่าสุดที่ไม่ซ้ำกัน พร้อม live type-to-filter กด **↑/↓** เพื่อนำทาง, **Enter** เพื่อเติม input (ไม่ส่ง), **Esc** เพื่อยกเลิก ใช้ได้แม้ขณะ turn กำลังรัน
-- **Shift+Tab** วน permission mode (plan → ask → auto-edit → yolo); mode ใหม่จะ flash ที่ input border และค้างอยู่ใน status bar
-- **Ctrl+O** (หรือ **`/expand`**) เปิด tool output เต็มของ turn ล่าสุดใน pager
-- **Ctrl+V** (macOS) วางรูป/screenshot จาก clipboard — จะถูกเซฟไว้ใต้ `.jarn/pastes/` และแทรกเป็น `@path` ที่ agent อ่านตอนส่ง เมื่อ `execution.inline_images: auto` (ค่าเริ่มต้น) รูปที่ `@`-mention (≤ 5 MB) จะถูกส่งให้โมเดลเป็น **image content block** โดยตรงในข้อความ — โมเดล vision ที่อ่อนจึงเห็นรูปทันทีโดยไม่ต้องเรียก `read_file` ตั้ง `inline_images: off` เพื่อกลับไปใช้แบบข้อความ `@path` ล้วน ถ้า provider ปฏิเสธรูป JARN จะลอง turn นั้นใหม่แบบ **text-only** หนึ่งครั้งและหยุด inline รูปตลอด session
-- **Esc Esc** (กด Esc สองครั้งภายใน 500 ms ขณะ idle และ input ว่าง) เปิด **`/rewind` picker** — chord เดียวกับ Claude Code ครั้งแรก Esc ยังล้าง input ที่มีข้อความอยู่ตามเดิม ครั้งที่สองบน buffer ว่างจึงจะเปิด picker หลังเลือก turn จะมี confirm ด้วยลูกศรอีกครั้งให้เลือก **Restore files too** (ย้อน working tree กลับไปที่ checkpoint ของ turn นั้น พร้อม preview แบบ `git diff --stat`) หรือ **Conversation only** (คงไฟล์ไว้เหมือนเดิม) การ restore ย้อนกลับได้ด้วย `/undo` และต้องเปิด `git.autocheckpoint` (ไม่งั้น picker จะย้อนเฉพาะ conversation เหมือนเดิม)
-- **Esc** ยกเลิก turn ที่กำลังรัน **Ctrl+C** ยกเลิก turn / ล้าง input และกด **สองครั้งติดกัน** เพื่อออก (แบบ Claude Code) **Ctrl+Q** ก็ออกได้
-- **Copy text:** terminal เป็นเจ้าของ selection — แค่ **drag เลือกแล้ว ⌘C** (หรือปุ่ม copy ของ terminal) และเลื่อนด้วย native scrollback ของ terminal เหมือน Claude Code เป๊ะ
-- **การแจ้งเตือน:** เมื่อ turn ใช้เวลานานเกิน `ui.notify_min_secs` (ค่าเริ่มต้น 10 วินาที) jarn จะส่ง **terminal bell** (`\a`) ตั้ง `ui.notify: desktop` เพื่อรับ native OS notification (macOS / Linux), `both` สำหรับ bell + desktop, หรือ `off` เพื่อปิดการแจ้งเตือนทั้งหมด (Approval prompt จะแจ้งเตือนเสมอโดยไม่คำนึงถึงเวลา)
-- **ชื่อ tab terminal:** jarn อัปเดต tab title ผ่าน OSC 2 เพื่อแสดงสถานะ — `jarn — <project>` (ว่าง), `✳ jarn — <project>` (กำลังทำงาน), `⏸ jarn — <project>` (รอ approval) ตั้ง `ui.terminal_title: false` เพื่อปิดฟีเจอร์นี้
-- **Checklist แผนงานแบบ live:** เมื่อ agent วางแผน จะมี checklist `⏺ Todos` แสดงเหนือ input และอัปเดต **แบบ in place** ตามที่แต่ละรายการเปลี่ยนสถานะ (✔ เสร็จ / ◐ กำลังทำ / ☐ รอ) แบบ Claude Code โดยมี reply ที่ stream อยู่ด้านล่าง แผนที่ยาวจะถูก cap (ส่วนเกินยุบเป็น `… +N more`); รายการเต็มจะถูก commit ลง scrollback เมื่อจบ turn
-
-Reply ของ assistant render เป็น **Markdown** (heading, list, code ที่มี syntax highlight)
-
-`/model`, `/mode`, และ `/sessions` (alias `/resume`) ถ้าไม่ใส่ argument จะเปิด **arrow-key picker** (↑/↓ + Enter; Esc ยกเลิก) `/model` ยังมี custom ref prompt ด้วย `/sessions [q]` กรองรายการ
-
-ขณะที่ turn กำลังรัน บรรทัดที่ submit ไปจะถูก **queue** (แสดงใน toolbar เป็น `queue N`) จัดการด้วย `/queue`, `/queue clear`, `/queue cancel <n>`, หรือ `/queue move <from> <to>`
-
-**Steer กลางเทิร์น (mid-turn steering).** ไม่อยากรอให้บรรทัดที่ queue ไว้รันในเทิร์นถัดไป? steer มัน **เข้าไป** ในเทิร์นที่กำลังรันได้เลย: กด **`[s]`** (steer now) บนบรรทัดที่เพิ่ง queue หรือใช้ `/queue steer <n>` เพื่อดันบรรทัดที่ _n_ ข้อความ steer จะถูก append เข้า conversation เป็นข้อความ user ใหม่ และ agent จะเห็น **ก่อน tool call ถัดไป** — เหมาะกับการแก้ทิศ agent กลาง refactor ยาว ๆ ("จริง ๆ ใช้ `pathlib` เถอะ") โดยไม่ต้องยกเลิกแล้วพิมพ์ใหม่ การ steer รัน model step ที่กำลัง in-flight ซ้ำพร้อม guidance ของคุณ (เพิ่ม model call หนึ่งครั้ง) — tool result ที่เสร็จแล้วไม่ถูกรันซ้ำ จึงไม่ทำให้ tool call ค้างกลางคัน ถ้าเทิร์นจบก่อนพอดี steer จะรันเป็นเทิร์นถัดไป (ไม่หาย) ปิดด้วย `ui.steering: false` (ซ่อนปุ่ม `[s]`; `/queue steer` จะปฏิเสธอย่างสุภาพ)
-
-### Built-in commands (คำสั่งในตัว)
-
-| Command | คำอธิบาย |
-|---|---|
-| `/help [name]` | แสดงคำสั่งทั้งหมด หรือรายละเอียดของคำสั่งหนึ่ง |
-| `/status` | แสดง directory, model, mode, context และ recap ของ session |
-| `/model [name\|refresh]` | ดูหรือเปลี่ยน model ที่ใช้งานอยู่ |
-| `/mode [plan\|ask\|auto-edit\|yolo]` | ดูหรือเปลี่ยนว่า J.A.R.N. เปลี่ยนไฟล์ได้มากแค่ไหน |
-| `/theme [dark\|light\|high-contrast\|auto]` | ดูหรือเปลี่ยน color theme |
-| `/cost` | ดู token และ cost ของ session (alias: /usage) |
-| `/context [all]` | ดูว่าอะไรกำลังกิน context window |
-| `/verbose` | วนระดับการแสดง tool activity |
-| `/focus [on\|off\|status]` | ซ่อน tool chrome เหลือแค่คำตอบ |
-| `/modules [active]` | เปิดหน้าจอเลือก prompt module |
-| `/module [on <name> [turn\|session] \| off <name>]` | เปิดหรือปิด prompt module |
-| `/undo` | ย้อน file change ของ agent turn ล่าสุด |
-| `/redo` | ทำ file change ที่ undo ไปซ้ำอีกครั้ง |
-| `/abort` | หยุด turn นี้และ roll back ไฟล์ |
-| `/commit` | ร่าง commit จาก diff ปัจจุบัน (ถามก่อน) |
-| `/review` | review diff แบบ read-only |
-| `/diff [staged\|all\|session]` | แสดง git diff ของ staged, working-tree หรือไฟล์ใน session |
-| `/compact [status]` | สรุปแล้วทำต่อใน thread ใหม่ |
-| `/expand` | เปิด tool output เต็มของ turn ล่าสุด |
-| `/memory [search\|show\|add\|update\|delete\|dump] …` | จัดการ long-term memory |
-| `/clear` | เริ่ม conversation ใหม่ (alias: /new) |
-| `/config [get <key> \| set <key> <value>]` | ดูหรือแก้ settings |
-| `/preset [<name>]` | ดูหรือ apply preset mode+sandbox |
-| `/sandbox [docker\|on\|off]` | ดูหรือเปลี่ยนที่ที่คำสั่งรัน |
-| `/trust` | trust โปรเจกต์นี้และยกเลิก read-only floor |
-| `/add-dir <path>` | เพิ่ม directory เข้า write scope ของ session |
-| `/mcp [status\|refresh\|prompts\|prompt <server> <name>\|resources\|read <server> <uri>]` | health / prompt / resource ของ MCP server |
-| `/telemetry status` | ดูสถานะ telemetry opt-in และสถิติ local sink |
-| `/skill <name>` | เรียก skill ตามชื่อ |
-| `/skills` | รายการ skill ที่ใช้ได้ |
-| `/init` | สร้างไฟล์ JARN.md สำหรับ project context |
-| `/permissions` | ดู permission rule และ allowlist |
-| `/key [<key>]` | ตั้ง API key ของ provider ปัจจุบัน (keychain) |
-| `/login` | เข้าสู่ระบบ ChatGPT |
-| `/logout` | ออกจากระบบ ChatGPT |
-| `/doctor` | ตรวจ configuration, provider, และ key |
-| `/tools` | รายการ tool ที่ agent ใช้ได้ใน session นี้ |
-| `/rewind` | ย้อนไป turn ก่อนหน้า (fork เป็น thread ใหม่) |
-| `/sessions [q]` | เลือก session เก่า หรือแสดงรายการ (alias: /resume) |
-| `/title [text]` | ดูหรือตั้งชื่อ session |
-| `/checkpoints` | รายการ auto-checkpoint ล่าสุด |
-| `/ps [kill <id>]` | ดูหรือ kill background process |
-| `/queue [clear\|cancel <n>\|move <from> <to>\|steer <n>]` | ดูหรือจัดการ input ที่ queue ไว้ |
-| `/busy [interrupt\|queue\|steer\|status]` | ตั้งว่า Enter ทำอะไรขณะที่ turn กำลังรัน |
-| `/map [focus] [--refresh]` | แสดง repo map |
-| `/wiki [search <q>\|list]` | ค้นหาหรือแสดงรายการหน้า wiki |
-| `/quit` | ออกจาก J.A.R.N. (alias: /exit) |
-
-## Permission modes (โหมดการอนุญาต)
+## Permission modes
 
 | Mode | อ่านไฟล์ | เขียนไฟล์ | Shell | Network |
 |---|---|---|---|---|
-| `plan` | ✅ | ❌ | ❌ | ❌ |
-| `ask` (ค่าเริ่มต้น) | ✅ | ถาม | ถาม | ถาม |
-| `auto-edit` | ✅ | ✅ ใน scope | ถาม | ✅ *(read-only)* |
-| `yolo` | ✅ | ✅ | ✅ | ✅ |
+| `plan` | อนุญาต | ปฏิเสธ | ปฏิเสธ | ปฏิเสธ |
+| `ask` (ค่าเริ่มต้น) | อนุญาต | ถาม | ถาม | ถาม |
+| `auto-edit` | อนุญาต | อนุญาตใน scope | ถาม | อนุญาต *(read-only)* |
+| `yolo` | อนุญาต | อนุญาต | อนุญาต | อนุญาต |
 
-ใน mode **`plan`** agent จะค้นคว้าแบบ read-only แล้วเสนอแผนที่เป็นรูปธรรม (`exit_plan_mode`) เมื่อคุณอนุมัติ J.A.R.N. จะ escalate mode (ค่าเริ่มต้น `auto-edit`, ตั้งได้ผ่าน `plan.exit_mode`; picker ก็มี `ask` ให้เลือก) แล้วลงมือทำตามแผนใน turn เดียวกัน — ไม่ต้องสลับ mode เอง โปรเจกต์ที่ยังไม่ trust จะถูกล็อกไว้ที่ `plan`
+ใน `plan` agent ค้นแบบ read-only แล้วเสนอแผน (`exit_plan_mode`) เมื่ออนุมัติ session จะ escalate (ค่าเริ่มต้น `auto-edit` ผ่าน `plan.exit_mode`) แล้วทำต่อใน turn เดียวกัน โปรเจกต์ที่ยังไม่ trust ถูกล็อกที่ `plan`
 
-**danger-guard** override ทุก mode: `rm -rf` (รวม `rm -r -f` / `--recursive --force`), force-push, `git reset --hard`, `mkfs`, fork bomb, การเขียนนอก scope ฯลฯ ต้องยืนยันชัดเจนเสมอ (หรือถูกบล็อกเลย) **Esc/Ctrl+C** ยกเลิก turn *และ* kill shell ที่มันเปิดไว้ ดู [docs/PERMISSIONS.md](docs/PERMISSIONS.md)
+Danger-guard ทับทุก mode Esc/Ctrl+C ยกเลิก turn และฆ่า shell ที่เปิดไว้ รายละเอียด: [docs/PERMISSIONS.md](docs/PERMISSIONS.md)
 
-**Untrusted repos:** `.jarn/config.yaml` ของโปรเจกต์สามารถประกาศ hook, MCP server, และ provider ได้ — ความสามารถที่รันโค้ดหรืออ่าน secret ได้ J.A.R.N. จะให้คุณ **trust โปรเจกต์** ก่อนทำตามค่าเหล่านั้น (ครั้งเดียวต่อ repo) ถ้าปฏิเสธ ค่าเหล่านั้นจะถูกข้ามไป และ session ยังรันต่อได้อย่างปลอดภัย
+## Configuration
 
-## Configuration (การตั้งค่า)
-
-สองระดับ ทั้งคู่เป็น YAML และ merge กัน (project override global):
+สองชั้น YAML โดยโปรเจกต์ทับค่า global:
 
 ```
-~/.jarn/config.yaml      global: provider, key (แบบอ้างอิง), default, budget
-.jarn/config.yaml        per-project: MCP server, hook, permission rule (commit ได้)
-JARN.md                  project guidance; โหลด excerpt ขนาดจำกัด และอ่านเต็มเมื่อจำเป็น
+~/.jarn/config.yaml      provider, อ้างอิง key, default, budget
+.jarn/config.yaml        MCP, hook, permission rule (commit ได้)
+JARN.md                  คำแนะนำโปรเจกต์; โหลด excerpt จำกัด และอ่านเต็มเมื่อจำเป็น
 ```
 
-API key ถูก **อ้างอิง ไม่ inline** — ใช้ `${ENV_VAR}` หรือ `keychain:jarn/<provider>` Project config ถูกกั้นด้วย **trust prompt** (ดูด้านบน) ดูรายละเอียดทั้งหมดที่ [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
+API key ถูกอ้างอิง ไม่ inline — `${ENV_VAR}` หรือ `keychain:jarn/<provider>` provider `codex_subscription` ไม่ใช้ key ฝั่ง J.A.R.N. (`jarn auth login`) คีย์ที่ให้ความสามารถระดับโปรเจกต์ถูกกั้นด้วย trust (`jarn trust`) อ้างอิงเต็ม: [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
 
-ตอน startup jarn จะตรวจสอบ PyPI อย่างเงียบๆ ว่ามี release ใหม่หรือไม่ และแสดง 1 บรรทัดเบาๆ ใต้ splash เมื่อมีเวอร์ชันใหม่ (cache 24 ชม. — ข้ามอัตโนมัติเมื่อใช้ `offline` preset หรือ headless mode) ปิดได้ด้วย `updates.check: false` ใน `~/.jarn/config.yaml`
+## Extending
 
-## การขยาย (Extending)
+วางไฟล์ใน `~/.jarn/{skills,commands,agents}` หรือ `.jarn/{...}`:
 
-วางไฟล์ใน `~/.jarn/{skills,commands,agents}` (global) หรือ `.jarn/{...}` (project):
+- **Skills** (`skills/*.md`) — workflow ที่ใช้ซ้ำ ทริกเกอร์อัตโนมัติหรือเอง
+- **Commands** (`commands/*.md`) — `/slash` prompt template ที่กำหนดเอง
+- **Subagents** (`agents/*.md`) — agent เฉพาะทางที่ main loop ส่งงานต่อได้
+- **Hooks** (config) — shell ตาม lifecycle event
+- **MCP servers** (config) — tool server แบบ stdio หรือ HTTP
 
-- **Skills** (`skills/*.md`) — ชุดความรู้/workflow ที่นำกลับมาใช้ได้ ทริกเกอร์อัตโนมัติหรือ manual
-- **Commands** (`commands/*.md`) — custom `/slash` prompt template
-- **Subagents** (`agents/*.md`) — agent เฉพาะทางที่ main loop delegate งานไปได้
-- **Hooks** (config) — shell command ที่รันตาม lifecycle event (เช่น lint หลัง edit, test ก่อน commit)
-- **MCP servers** (config) — เชื่อมต่อ external tool server (stdio หรือ HTTP)
-
-ดู [docs/EXTENDING.md](docs/EXTENDING.md) ([quick start](docs/EXTENDING.md#quick-start-wire-skill--hook--mcp)) และ [examples/](examples/)
+ดู [docs/EXTENDING.md](docs/EXTENDING.md) และ [examples/](examples/)
 
 ## เอกสาร
 
-- [Architecture](docs/ARCHITECTURE.md) — subsystem ต่าง ๆ ประกอบกันยังไง
-- [Configuration](docs/CONFIGURATION.md) — อธิบาย config key ทุกตัว
-- [Telegram gateway](docs/TELEGRAM_GATEWAY.md) — ตั้งค่า bot, security model และ deploy ด้วย systemd
-- [Permissions](docs/PERMISSIONS.md) — mode, rule, danger-guard, การขออนุมัติ
-- [Extending](docs/EXTENDING.md) — skill, command, subagent, hook, MCP
-- [Contributing](docs/CONTRIBUTING.md) — dev setup, test, convention
-- [Roadmap](docs/ROADMAP.md) — อะไรอยู่ใน v1 / v1.x และต่อจากนั้น
-- [Web UI](docs/WEB_UI.md) — แผนหลัง launch
-- [Open-core](docs/OPEN_CORE.md) — licensing & business model
-- [SPEC.md](SPEC.md) — design specification ต้นฉบับ
+- [Quickstart](docs/QUICKSTART.md) · [Supported platforms](docs/SUPPORTED_PLATFORMS.md)
+- [Configuration](docs/CONFIGURATION.md) · [Permissions](docs/PERMISSIONS.md) · [Extending](docs/EXTENDING.md)
+- [Telegram gateway](docs/TELEGRAM_GATEWAY.md) · [GitHub Action](docs/GITHUB_ACTION.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md) · [Update, rollback, uninstall](docs/UPDATE_ROLLBACK.md)
+- [Architecture](docs/ARCHITECTURE.md) · [Contributing](docs/CONTRIBUTING.md) · [สารบัญเอกสาร](docs/README.md)
+- [SPEC.md](SPEC.md) · [CHANGELOG.md](CHANGELOG.md) · [SECURITY.md](SECURITY.md)
 
 ## Development
 
 ```bash
 uv sync --extra dev --extra telegram
 uv run pytest                 # 3375 tests: logic + mocked-agent + packaging gate
-uv run ruff check src tests scripts   # lint
-uv run mypy src/              # type-check (CI-gated)
-uv run jarn doctor            # ตรวจสอบ environment (เพิ่ม --json สำหรับ machine output)
+uv run ruff check src tests scripts
+uv run mypy src/
+uv run jarn doctor            # เพิ่ม --json สำหรับเครื่องอ่าน
 ```
 
 ## License
@@ -417,6 +239,7 @@ uv run jarn doctor            # ตรวจสอบ environment (เพิ่�
 Apache-2.0 ดู [LICENSE](LICENSE)
 
 สร้างบน [DeepAgents](https://github.com/langchain-ai/deepagents),
-[LangGraph](https://github.com/langchain-ai/langgraph), [prompt_toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit),
-[Rich](https://github.com/Textualize/rich), และ
-[Textual](https://github.com/Textualize/textual) (onboarding wizard เท่านั้น)
+[LangGraph](https://github.com/langchain-ai/langgraph),
+[prompt_toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit),
+[Rich](https://github.com/Textualize/rich) และ
+[Textual](https://github.com/Textualize/textual) (onboarding wizard)
