@@ -11,6 +11,11 @@ All notable changes to J.A.R.N. are documented here. Format follows
   `https://opencode.ai/zen/go/v1`) instead of Anthropic. Anthropic remains
   available under another cloud provider. UAT-004 follows the OpenCode env-ref path.
 
+### Fixed
+
+- `npm publish` of release tarballs uses a `./` path so npm 11 does not treat
+  `release-subjects/*.tgz` as a GitHub repository spec.
+
 ### Added
 
 - OpenCode Go provider (`type: opencode`, `https://opencode.ai/zen/go/v1`).

@@ -1,0 +1,70 @@
+# Recover npm publication from an already-verified Release run.
+# Use this only when the tagged Release workflow built attested tarballs but
+# `npm publish release-subjects/$file` was parsed as a GitHub spec (npm 11).
+name: Publish npm tarballs from a Release run
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: GitHub Actions run ID that uploaded release-subjects and npm-tarballs
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+jobs:
+  npm:
+    name: Publish exact attested npm tarballs
+    runs-on: ubuntu-latest
+    environment: NPM_TOKEN
+    steps:
+      - name: Reject a non-numeric run id
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$RUN_ID" | grep -Eq '^[0-9]+$'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-subjects
+          path: release-subjects
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: npm-tarballs
+          path: npm-tarballs
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - run: cd release-subjects && sha256sum -c checksums.txt
+      - name: Verify npm auth
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm whoami
+      - name: Publish exact attested npm tarballs
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          set -euo pipefail
+          publish_args=(--access public)
+          if [ "$REPOSITORY_PRIVATE" = false ]; then
+            publish_args+=(--provenance)
+          fi
+          while IFS='|' read -r filename name version; do
+            [ -n "$filename" ] || continue
+            test -f "./release-subjects/$filename"
+            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+              echo "==> skip ${name}@${version} (already published)"
+              continue
+            fi
+            npm publish "./release-subjects/$filename" "${publish_args[@]}"
+          done < npm-tarballs/publish-order.txt
