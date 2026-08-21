@@ -5,6 +5,11 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.0.12] - 2026-08-21
+
+Telegram gateway streaming coalescing and Hermes-style approval cards, plus the
+short README overview.
+
 ### Changed
 
 - Rewrite `README.md` and `README-TH.md` as a short overview (install, quick start,
@@ -1614,6 +1619,8 @@ First public **alpha** release on PyPI. Terminal-first coding agent harness on
 - Windows: use WSL; native Windows terminal is unsupported
 - Web UI, hosted sandbox, and other post-launch differentiators are not in this release
 
+[1.0.12]: https://github.com/chayapats/jarn/releases/tag/v1.0.12
+[1.0.11]: https://github.com/chayapats/jarn/releases/tag/v1.0.11
 [1.0.10]: https://github.com/chayapats/jarn/releases/tag/v1.0.10
 [1.0.9]: https://github.com/chayapats/jarn/releases/tag/v1.0.9
 [1.0.8]: https://github.com/chayapats/jarn/releases/tag/v1.0.8
