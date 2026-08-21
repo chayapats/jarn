@@ -5,6 +5,15 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.0.11] - 2026-08-21
+
+OpenCode Go as the first-run API-key path, plus the npm publish path fix so
+`jarn-cli@1.0.10` could land after GitHub/PyPI.
+
+### Added
+
+- OpenCode Go provider (`type: opencode`, `https://opencode.ai/zen/go/v1`).
+
 ### Changed
 
 - First-run API-key shortcut is OpenCode Go (`OPENCODE_API_KEY`,
@@ -15,10 +24,6 @@ All notable changes to J.A.R.N. are documented here. Format follows
 
 - `npm publish` of release tarballs uses a `./` path so npm 11 does not treat
   `release-subjects/*.tgz` as a GitHub repository spec.
-
-### Added
-
-- OpenCode Go provider (`type: opencode`, `https://opencode.ai/zen/go/v1`).
 
 ## [1.0.10] - 2026-08-20
 
