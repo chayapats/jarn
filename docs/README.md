@@ -1,6 +1,6 @@
 # J.A.R.N. Documentation
 
-The current source line targets J.A.R.N. v1.0.11 General Availability; protected
+The current source line targets J.A.R.N. v1.0.12 General Availability; protected
 release gates control publication, and GitHub Releases, PyPI, and npm are the
 authoritative sources for the currently published version. J.A.R.N. is a local-first,
 permission-gated terminal agent harness built around
@@ -22,7 +22,7 @@ package-manager/source installs are advanced alternatives.
 | [EXTENDING.md](EXTENDING.md) | Users · Contributors | Five extension surfaces (skills, slash commands, subagents, hooks, MCP) with a working quick-start |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Contributors | System diagram, subsystem table, turn lifecycle, design rationale, and key source files |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contributors | Dev setup, CI gates (ruff · mypy · full pytest collection), testing layers, and how-to guides for common changes |
-| [ROADMAP.md](ROADMAP.md) | Everyone | what is in the v1.0.11 candidate, what is planned, and known limitations |
+| [ROADMAP.md](ROADMAP.md) | Everyone | what is in the v1.0.12 candidate, what is planned, and known limitations |
 | [Hermes-aligned display standard](specs/2026-08-15-hermes-aligned-display-standard.md) | Contributors | Visual grammar SSOT: palette, layout helpers, `/help`, toolbar fill bar, quiet tool stream |
 | [Hermes display-parity close-out](specs/2026-08-15-hermes-parity-closeout.md) | Contributors | Remaining CLI + Telegram work until display/commands match Hermes scanability |
 | [Hermes-parity UAT](assets/UAT-HERMES-PARITY.md) | Contributors | P5 CLI + Telegram checklists (Covered / Not run; no Pass) |
